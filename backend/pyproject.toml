@@ -1,0 +1,50 @@
+[project]
+name = "nldw-task-master-backend"
+version = "0.1.0"
+description = "Nunnari Employee Portal — leave calendar backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "celery[redis]",
+    "redis",
+    "pydantic-settings",
+    # EmailStr. Validating an address at the boundary is a Security-First
+    # requirement, and a correct RFC 5322 validator is well past the
+    # constitution's "replace it with 50 lines" threshold.
+    "email-validator",
+    "supabase",
+    "python-dotenv",
+]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.package-data]
+app = ["**/*"]
+
+[tool.ruff]
+# Pin the language target explicitly rather than inferring it from
+# requires-python, so linting does not shift when that changes.
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Ruff's *default* rule set is not stable across releases. Without this block
+# CI lints against whatever the newest ruff happens to enable, which means a
+# ruff release can turn main red with no code change. Select explicitly.
+#
+#   E4/E7/E9, F  pyflakes + core pycodestyle (the documented default)
+#   I            import sorting
+#   UP           pyupgrade — keep syntax current with target-version
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+]

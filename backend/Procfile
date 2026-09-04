@@ -1,0 +1,7 @@
+web: uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+worker: celery -A app.worker worker --loglevel=info
+# The nightly auto-approval sweep (spec Q-04) is a beat schedule, so a beat
+# process must run alongside the worker. Without this, pending bookings whose
+# date has passed stay pending forever — records that are neither absence nor
+# attendance, which is exactly what §1 says the email workflow already produces.
+beat: celery -A app.worker beat --loglevel=info

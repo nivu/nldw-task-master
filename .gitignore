@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/*.egg-info/
+backend/.ruff_cache/
+backend/.pytest_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.dev
+.env.prod
+.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.dev
+frontend/.env.prod
+backend/.env
+backend/.env.dev
+backend/.env.prod
+backend/keys/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# Claude Code
+# NOTE: .claude/ is deliberately TRACKED here (unlike int.ai) so the speckit
+# skills travel with the template. Only machine-local state is ignored.
+.claude/settings.local.json
+
+# Spec-kit — machine-local state only; templates and scripts are tracked.
+.specify/init-options.json
+.specify/integration.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.playwright/
+
+# Misc
+*.tsbuildinfo
+next-env.d.ts
