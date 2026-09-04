@@ -36,5 +36,22 @@
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "_comment_pnpm_overrides": [
+    "next 16.2.11 pins postcss 8.4.31 and sharp 0.34.5, both of which carry",
+    "published advisories: postcss GHSA-r28c-9q8g-f849 and GHSA-6g55-p6wh-862q",
+    "(high, arbitrary file read via an attacker-controlled sourceMappingURL),",
+    "GHSA-fxqj-rqcc-2cmp and GHSA-qx2v-qp2m-jg93 (moderate); sharp",
+    "GHSA-f88m-g3jw-g9cj (high, inherited libvips CVEs).",
+    "Both are build-time only here and neither processes untrusted input in",
+    "this product, but leaving known-vulnerable versions pinned is not a",
+    "position worth defending. Remove these overrides once next ships",
+    "versions that already satisfy them."
+  ],
+  "pnpm": {
+    "overrides": {
+      "postcss": ">=8.5.23",
+      "sharp": ">=0.35.0"
+    }
   }
 }
