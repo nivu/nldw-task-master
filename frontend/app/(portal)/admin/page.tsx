@@ -9,13 +9,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BackfillPanel } from "@/components/portal/backfill-panel";
+import { ProjectsPanel } from "@/components/portal/projects-panel";
 import {
   createUser,
   declareHoliday,
   deleteHoliday,
   errorMessage,
+  listAllocations,
   listAllowances,
   listBackfills,
+  listProjects,
   listHolidays,
   listSettings,
   listUsers,
@@ -24,12 +27,14 @@ import {
 } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
 import type {
+  AllocationRow,
   Allowance,
   AppSetting,
   BackfillEntry,
   Category,
   Holiday,
   PortalUser,
+  Project,
 } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
@@ -52,15 +57,20 @@ export default function AdminPage() {
     holidays: Holiday[];
     settings: AppSetting[];
     backfills: BackfillEntry[];
+    projects: Project[];
+    allocations: AllocationRow[];
   }>(async () => {
-    const [users, allowances, holidays, settings, backfills] = await Promise.all([
-      listUsers(),
-      listAllowances(),
-      listHolidays(),
-      listSettings(),
-      listBackfills(),
-    ]);
-    return { users, allowances, holidays, settings, backfills };
+    const [users, allowances, holidays, settings, backfills, projects, allocations] =
+      await Promise.all([
+        listUsers(),
+        listAllowances(),
+        listHolidays(),
+        listSettings(),
+        listBackfills(),
+        listProjects(),
+        listAllocations(),
+      ]);
+    return { users, allowances, holidays, settings, backfills, projects, allocations };
   }, []);
 
   const users = data?.users ?? [];
@@ -68,6 +78,8 @@ export default function AdminPage() {
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
   const backfills = data?.backfills ?? [];
+  const projects = data?.projects ?? [];
+  const allocations = data?.allocations ?? [];
 
   return (
     <div className="space-y-4">
@@ -85,6 +97,7 @@ export default function AdminPage() {
           <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="allowances">Allowances</TabsTrigger>
           <TabsTrigger value="holidays">Holidays</TabsTrigger>
+          <TabsTrigger value="projects">Projects</TabsTrigger>
           <TabsTrigger value="backfill">Backfill</TabsTrigger>
           <TabsTrigger value="policy">Policy</TabsTrigger>
         </TabsList>
@@ -185,6 +198,19 @@ export default function AdminPage() {
               ))}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="projects" className="space-y-4 pt-4">
+          <ProjectsPanel
+            projects={projects}
+            allocations={allocations}
+            people={users}
+            onDone={(message) => {
+              setNotice(message);
+              reload();
+            }}
+            onError={setError}
+          />
         </TabsContent>
 
         <TabsContent value="backfill" className="space-y-4 pt-4">

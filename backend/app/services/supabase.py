@@ -257,3 +257,114 @@ def list_audit(limit: int = 200) -> list[dict[str, Any]]:
         supabase.table("audit_log").select("*").order("at", desc=True).limit(limit).execute().data
         or []
     )
+
+
+# ---------------------------------------------------------------------------
+# Projects, phases, allocations and time entries — spec 002
+# ---------------------------------------------------------------------------
+
+
+def list_projects(*, include_archived: bool = False) -> list[dict[str, Any]]:
+    query = supabase.table("projects").select("*").order("name")
+    if not include_archived:
+        query = query.eq("is_archived", False)
+    return query.execute().data or []
+
+
+def get_project(project_id: str) -> dict[str, Any] | None:
+    response = supabase.table("projects").select("*").eq("id", project_id).limit(1).execute()
+    return response.data[0] if response.data else None
+
+
+def insert_project(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("projects").insert(data).execute().data[0]
+
+
+def update_project(project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("projects").update(data).eq("id", project_id).execute().data[0]
+
+
+def list_phases(project_id: str | None = None) -> list[dict[str, Any]]:
+    query = supabase.table("project_phases").select("*")
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    return query.order("starts_on").execute().data or []
+
+
+def upsert_phase(data: dict[str, Any]) -> dict[str, Any]:
+    return (
+        supabase.table("project_phases")
+        .upsert(data, on_conflict="project_id,phase")
+        .execute()
+        .data[0]
+    )
+
+
+def delete_phase(phase_id: str) -> None:
+    supabase.table("project_phases").delete().eq("id", phase_id).execute()
+
+
+def list_allocations(
+    *, user_ids: list[str] | None = None, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    query = supabase.table("allocations").select("*")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    return query.order("starts_on").execute().data or []
+
+
+def insert_allocation(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("allocations").insert(data).execute().data[0]
+
+
+def delete_allocation(allocation_id: str) -> None:
+    supabase.table("allocations").delete().eq("id", allocation_id).execute()
+
+
+def list_time_entries(
+    *,
+    user_ids: list[str] | None = None,
+    project_id: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    query = supabase.table("time_entries").select("*")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    if start is not None:
+        query = query.gte("date", start.isoformat())
+    if end is not None:
+        query = query.lte("date", end.isoformat())
+    return query.order("date").execute().data or []
+
+
+def upsert_time_entry(data: dict[str, Any]) -> dict[str, Any]:
+    """One line per person, per day, per project.
+
+    Logging the same project twice on one day is a correction, not a second
+    fact — accumulating rows would double-count in every total the analytics
+    produce.
+    """
+    return (
+        supabase.table("time_entries")
+        .upsert(data, on_conflict="user_id,date,project_id")
+        .execute()
+        .data[0]
+    )
+
+
+def delete_time_entry(entry_id: str) -> None:
+    supabase.table("time_entries").delete().eq("id", entry_id).execute()
+
+
+def get_time_entry(entry_id: str) -> dict[str, Any] | None:
+    response = supabase.table("time_entries").select("*").eq("id", entry_id).limit(1).execute()
+    return response.data[0] if response.data else None

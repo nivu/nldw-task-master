@@ -477,21 +477,18 @@ def _now() -> str:
 
 
 def _notify(event: str, booking_id: str) -> None:
-    """Hand a notification to Celery without ever letting it fail the caller.
+    """Hand a notification to Celery, off the request thread.
 
-    FR-NOTIF-05: notification delivery failure MUST NOT fail the booking. The
-    failure mode this guards is not a rejected Slack message — the task handles
-    that — but an unreachable broker, where `.delay()` itself raises. Someone
-    marking themselves sick at 08:00 must not be blocked because Redis is down.
+    FR-NOTIF-05: a notification failure MUST NOT fail the booking. The failure
+    mode that matters is not a rejected Slack message — the task handles that —
+    but an unreachable broker, where `.delay()` blocks for about twenty seconds
+    before raising. The booking would still succeed, and the person would still
+    have waited twenty seconds for it, which fails §1.1 completely.
+
+    See `app.services.dispatch` for the measurements and why none of Celery's
+    fail-fast settings help.
     """
-    try:
-        from app.tasks import notifications
+    from app.services.dispatch import fire_and_forget
+    from app.tasks import notifications
 
-        notifications.dispatch.delay(event, booking_id)
-    except Exception:
-        logger.exception(
-            '{"event": "notification_enqueue_failed", "notification": "%s", '
-            '"booking_id": "%s", "impact": "booking stands, lead not notified"}',
-            event,
-            booking_id,
-        )
+    fire_and_forget(notifications.dispatch, event, booking_id, label=f"notify:{event}")

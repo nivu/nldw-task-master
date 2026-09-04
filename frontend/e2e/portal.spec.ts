@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openLastBookableDay, PEOPLE, signIn } from "./helpers";
+import { openDayNumbered, openLastBookableDay, PEOPLE, signIn } from "./helpers";
 
 /**
  * The scenarios from spec §4, driven through the real UI.
@@ -98,7 +98,31 @@ test.describe("the calendar", () => {
     await dialog.getByRole("button", { name: "Confirm" }).click();
 
     await expect(dialog).toBeHidden();
-    await expect(page.getByText("PENDING").first()).toBeVisible();
+
+    // Assert on the cell we actually booked, not on any PENDING anywhere:
+    // Deepika has a SEEDED pending booking, so `getByText("PENDING").first()`
+    // passed whether or not this booking rendered — and the cleanup below then
+    // re-opened a cell the calendar had not yet refreshed.
+    // Case-INSENSITIVE: the status renders as "PENDING" but only because CSS
+    // uppercases it. textContent — which is what Playwright matches — is
+    // "pending", so /PENDING/ silently never matches.
+    const cell = page
+      .locator(".grid.grid-cols-7 button")
+      .filter({ hasText: new RegExp(`^${day}`) })
+      .filter({ hasText: /pending/i });
+    await expect(cell).toBeVisible();
+
+    // Put the allowance back. These tests write real rows, and a booking that
+    // survives the run consumes half a day of casual leave every time — after
+    // enough runs the balance hits zero and this test starts failing for a
+    // reason that has nothing to do with the code under test.
+    //
+    // The cell must be found again by number: saving reloaded the calendar, so
+    // the marker openLastBookableDay left on it no longer exists.
+    await openDayNumbered(page, day!);
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Clear day" }).click();
+    await expect(dialog).toBeHidden();
   });
 
   test("refuses casual leave for today, in words the person can act on (§6.1, A-19)", async ({

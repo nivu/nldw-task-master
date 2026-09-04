@@ -177,6 +177,9 @@ def _mount_routers() -> None:
         ("app.api.team", "router"),
         ("app.api.admin", "router"),
         ("app.api.slack", "router"),
+        # Spec 002 — timesheets and analytics.
+        ("app.api.timesheet", "router"),
+        ("app.api.timesheet", "analytics"),
     ]
 
     for module_path, attr_name in router_modules:

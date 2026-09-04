@@ -14,9 +14,13 @@ from app.api.deps import AdminDep
 from app.api.errors import ProblemDetail
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
+    AllocationIn,
     AllowanceIn,
     BackfillIn,
     HolidayIn,
+    PhaseIn,
+    ProjectIn,
+    ProjectUpdate,
     SettingUpdate,
     UserCreate,
     UserUpdate,
@@ -495,3 +499,226 @@ def upcoming_holidays(admin: AdminDep) -> list[dict]:
         {"id": row["id"], "date": row["date"], "name": row["name"]}
         for row in db.list_holidays(start=today, end=date(today.year + 1, 12, 31))
     ]
+
+
+# ---------------------------------------------------------------------------
+# Projects, phases and allocations — spec 002 §5.1, §5.2
+#
+# Admin only (FR-PROJ-05). Every mutation writes to the append-only audit log.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects")
+def list_projects(admin: AdminDep) -> list[dict]:
+    projects = db.list_projects(include_archived=True)
+    phases: dict[str, list[dict]] = {}
+    for phase in db.list_phases():
+        phases.setdefault(phase["project_id"], []).append(
+            {
+                "id": phase["id"],
+                "phase": phase["phase"],
+                "starts_on": phase["starts_on"],
+                "ends_on": phase["ends_on"],
+                "budget_hours": str(phase["budget_hours"])
+                if phase["budget_hours"] is not None
+                else None,
+            }
+        )
+    return [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "client": p.get("client"),
+            "is_archived": p["is_archived"],
+            "phases": phases.get(p["id"], []),
+        }
+        for p in projects
+    ]
+
+
+@router.post("/projects", status_code=201)
+def create_project(payload: ProjectIn, admin: AdminDep) -> dict:
+    """FR-PROJ-01."""
+    if any(
+        p["name"].strip().lower() == payload.name.strip().lower()
+        for p in db.list_projects(include_archived=True)
+    ):
+        raise ProblemDetail(409, f"A project called {payload.name!r} already exists.")
+
+    row = db.insert_project(
+        {
+            "name": payload.name.strip(),
+            "client": (payload.client or "").strip() or None,
+            "created_by": admin.id,
+        }
+    )
+    audit.record(
+        action="project.created",
+        target_table="projects",
+        target_id=row["id"],
+        actor_id=admin.id,
+        after={"name": row["name"], "client": row.get("client")},
+    )
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "client": row.get("client"),
+        "is_archived": row["is_archived"],
+        "phases": [],
+    }
+
+
+@router.patch("/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectUpdate, admin: AdminDep) -> dict:
+    """FR-PROJ-04 — archiving is the only removal.
+
+    Effort logged against a finished project is exactly the history the
+    analytics exist to report on, so there is no delete.
+    """
+    existing = db.get_project(project_id)
+    if existing is None:
+        raise ProblemDetail(404, "No such project.")
+
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise ProblemDetail(422, "Nothing to change.")
+
+    row = db.update_project(project_id, changes)
+    audit.record(
+        action="project.updated",
+        target_table="projects",
+        target_id=project_id,
+        actor_id=admin.id,
+        before={k: existing.get(k) for k in changes},
+        after=changes,
+    )
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "client": row.get("client"),
+        "is_archived": row["is_archived"],
+    }
+
+
+@router.put("/projects/{project_id}/phases")
+def set_phase(project_id: str, payload: PhaseIn, admin: AdminDep) -> dict:
+    """FR-PROJ-02/03.
+
+    Moving a phase's dates does NOT re-file existing time entries. Each entry
+    stores the phase it was logged against (migration 008), so history keeps
+    saying what it always said — otherwise editing a date would silently
+    reassign past effort between phases and change a budget conversation
+    retroactively.
+    """
+    if db.get_project(project_id) is None:
+        raise ProblemDetail(404, "No such project.")
+    if payload.ends_on < payload.starts_on:
+        raise ProblemDetail(422, "A phase cannot end before it starts.")
+
+    row = db.upsert_phase(
+        {
+            "project_id": project_id,
+            "phase": payload.phase,
+            "starts_on": payload.starts_on.isoformat(),
+            "ends_on": payload.ends_on.isoformat(),
+            "budget_hours": str(payload.budget_hours) if payload.budget_hours is not None else None,
+        }
+    )
+    audit.record(
+        action="project.phase_set",
+        target_table="project_phases",
+        target_id=row["id"],
+        actor_id=admin.id,
+        after={
+            "project_id": project_id,
+            "phase": payload.phase,
+            "starts_on": payload.starts_on.isoformat(),
+            "ends_on": payload.ends_on.isoformat(),
+            "budget_hours": str(payload.budget_hours) if payload.budget_hours is not None else None,
+        },
+    )
+    return {
+        "id": row["id"],
+        "phase": row["phase"],
+        "starts_on": row["starts_on"],
+        "ends_on": row["ends_on"],
+        "budget_hours": str(row["budget_hours"]) if row["budget_hours"] is not None else None,
+    }
+
+
+@router.get("/allocations")
+def list_allocations(admin: AdminDep) -> list[dict]:
+    people = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
+    return [
+        {
+            "id": a["id"],
+            "project_id": a["project_id"],
+            "project_name": projects.get(a["project_id"], "—"),
+            "user_id": a["user_id"],
+            "display_name": people.get(a["user_id"], "—"),
+            "starts_on": a["starts_on"],
+            "ends_on": a["ends_on"],
+            "percent": str(a["percent"]),
+        }
+        for a in db.list_allocations()
+    ]
+
+
+@router.post("/allocations", status_code=201)
+def create_allocation(payload: AllocationIn, admin: AdminDep) -> dict:
+    """FR-ALLOC-01/02/03.
+
+    Concurrent allocations past 100% are permitted and reported, not refused
+    (FR-ALLOC-04). Over-allocation is a real thing an admin does mid-crunch,
+    and a product that cannot record it cannot warn about it either.
+    """
+    if db.get_project(payload.project_id) is None:
+        raise ProblemDetail(404, "No such project.")
+    if db.get_profile(payload.user_id) is None:
+        raise ProblemDetail(404, "No such person.")
+    if payload.ends_on < payload.starts_on:
+        raise ProblemDetail(422, "An allocation cannot end before it starts.")
+
+    row = db.insert_allocation(
+        {
+            "project_id": payload.project_id,
+            "user_id": payload.user_id,
+            "starts_on": payload.starts_on.isoformat(),
+            "ends_on": payload.ends_on.isoformat(),
+            "percent": str(payload.percent),
+            "created_by": admin.id,
+        }
+    )
+    audit.record(
+        action="allocation.created",
+        target_table="allocations",
+        target_id=row["id"],
+        actor_id=admin.id,
+        after={
+            "project_id": payload.project_id,
+            "user_id": payload.user_id,
+            "percent": str(payload.percent),
+            "starts_on": payload.starts_on.isoformat(),
+            "ends_on": payload.ends_on.isoformat(),
+        },
+    )
+    return {"id": row["id"], "percent": str(row["percent"])}
+
+
+@router.delete("/allocations/{allocation_id}")
+def remove_allocation(allocation_id: str, admin: AdminDep) -> dict:
+    """FR-ALLOC-05 — removing intent never removes recorded fact.
+
+    Time already logged against the project stays. An allocation says what was
+    planned; a time entry says what happened, and deleting the plan must not
+    erase the history.
+    """
+    db.delete_allocation(allocation_id)
+    audit.record(
+        action="allocation.deleted",
+        target_table="allocations",
+        target_id=allocation_id,
+        actor_id=admin.id,
+    )
+    return {"status": "deleted"}

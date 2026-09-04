@@ -183,3 +183,75 @@ class SettingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     value: object
+
+
+# ---------------------------------------------------------------------------
+# Timesheets — spec 002
+# ---------------------------------------------------------------------------
+
+Phase = Literal["pre", "delivery", "support"]
+
+
+class TimesheetLine(BaseModel):
+    """One project's worth of a day — FR-TIME-01/02."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    hours_office: Decimal = Field(default=Decimal("0"), ge=0, le=24)
+    hours_home: Decimal = Field(default=Decimal("0"), ge=0, le=24)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class TimesheetDay(BaseModel):
+    """A whole day, submitted at once.
+
+    Whole-day rather than per-line because FR-TIME-05 caps the *day*, and a
+    per-line endpoint cannot enforce that without the caller sending the day
+    anyway. It also makes removing a line the same operation as changing one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    lines: list[TimesheetLine] = Field(default_factory=list, max_length=20)
+
+
+class ProjectIn(BaseModel):
+    """FR-PROJ-01."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    client: str | None = Field(default=None, max_length=160)
+
+
+class ProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    client: str | None = Field(default=None, max_length=160)
+    is_archived: bool | None = None
+
+
+class PhaseIn(BaseModel):
+    """FR-PROJ-02. `budget_hours` is HOURS — Q-05 keeps money out of this."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phase: Phase
+    starts_on: date
+    ends_on: date
+    budget_hours: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+
+
+class AllocationIn(BaseModel):
+    """FR-ALLOC-01/03. `percent` is a share of capacity, not of the calendar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    user_id: str
+    starts_on: date
+    ends_on: date
+    percent: Decimal = Field(gt=0, le=100)

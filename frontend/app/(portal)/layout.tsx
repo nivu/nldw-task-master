@@ -3,7 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { CalendarDays, Users, CheckSquare, Settings, LogOut, User } from "lucide-react";
+import {
+  CalendarDays,
+  Users,
+  CheckSquare,
+  Settings,
+  LogOut,
+  User,
+  Clock,
+  BarChart3,
+} from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { getMe } from "@/lib/api/portal";
@@ -49,8 +58,10 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   // one of these routes regardless — hiding a link is tidiness, not security.
   const links = [
     { href: "/calendar", label: "Calendar", icon: CalendarDays, show: true },
+    { href: "/timesheet", label: "Time", icon: Clock, show: true },
     { href: "/team", label: "Team", icon: Users, show: me?.capabilities.team_view },
     { href: "/approvals", label: "Approvals", icon: CheckSquare, show: me?.capabilities.team_view },
+    { href: "/analytics", label: "Effort", icon: BarChart3, show: me?.capabilities.team_view },
     { href: "/admin", label: "Admin", icon: Settings, show: me?.capabilities.admin_panel },
     { href: "/account", label: "Account", icon: User, show: true },
   ].filter((link) => link.show);

@@ -208,3 +208,164 @@ export const CATEGORY_SHORT: Record<Category, string> = {
   casual: "Casual",
   sick: "Sick",
 };
+
+// ---------------------------------------------------------------------------
+// Timesheets — spec 002
+//
+// Hours are strings for the same reason day counts are (see the note at the
+// top): these totals get quoted in budget conversations and JSON has only
+// floats. The UI formats them and never does arithmetic on them.
+// ---------------------------------------------------------------------------
+
+export type Phase = "pre" | "delivery" | "support";
+
+export const PHASE_LABEL: Record<Phase, string> = {
+  pre: "Pre-project",
+  delivery: "Delivery",
+  support: "Post-delivery support",
+};
+
+export interface TimesheetEntry {
+  id: string;
+  project_id: string;
+  project_name: string;
+  phase_id: string | null;
+  hours_office: string;
+  hours_home: string;
+  total: string;
+  note: string | null;
+}
+
+export interface LoggableProject {
+  id: string;
+  name: string;
+  client: string | null;
+  /** False when the person is logging against a project they are not
+   *  allocated to — allowed (Q-07), and shown as unallocated in analytics. */
+  allocated: boolean;
+}
+
+export interface TimesheetDay {
+  date: string;
+  today: string;
+  locked: boolean;
+  locks_on: string;
+  can_log: boolean;
+  refusal: string | null;
+  /** Q-03 — a warning, never a refusal. */
+  leave_warning: string | null;
+  max_hours: string;
+  entries: TimesheetEntry[];
+  projects: LoggableProject[];
+  total: string;
+}
+
+export interface TimesheetWeekDay {
+  date: string;
+  is_today: boolean;
+  locked: boolean;
+  holiday: boolean;
+  on_leave: string | null;
+  entries: TimesheetEntry[];
+  total: string;
+}
+
+export interface TimesheetWeek {
+  week_start: string;
+  days: TimesheetWeekDay[];
+  total: string;
+}
+
+export interface ProjectPhase {
+  id: string;
+  phase: Phase;
+  label?: string;
+  starts_on: string;
+  ends_on: string;
+  budget_hours: string | null;
+  logged_hours?: string;
+  hours_office?: string;
+  hours_home?: string;
+  over_by?: string | null;
+  people?: { user_id: string; display_name: string; hours: string }[];
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  client: string | null;
+  is_archived: boolean;
+  phases?: ProjectPhase[];
+  logged_hours?: string;
+}
+
+export interface ProjectEffort {
+  project: Project;
+  phases: ProjectPhase[];
+  outside_any_phase: {
+    logged_hours: string;
+    hours_office: string;
+    hours_home: string;
+    people: { user_id: string; display_name: string; hours: string }[];
+  };
+  total: {
+    budget_hours: string | null;
+    logged_hours: string;
+    hours_office: string;
+    hours_home: string;
+  };
+}
+
+/** FR-ANALYTICS-05 — the number every other number depends on. */
+export interface Coverage {
+  start: string;
+  end: string;
+  expected_days: number;
+  logged_days: number;
+  coverage: string | null;
+  people: {
+    user_id: string;
+    display_name: string;
+    expected_days: number;
+    logged_days: number;
+    missing_days: string[];
+  }[];
+}
+
+export interface Forecast {
+  start: string;
+  end: string;
+  projects: {
+    project_id: string;
+    project_name: string;
+    capacity_hours: string;
+    people: { user_id: string; display_name: string; percent: string; hours: string }[];
+  }[];
+  over_allocated: {
+    user_id: string;
+    display_name: string;
+    days: number;
+    first: string;
+    last: string;
+    peak_percent: string;
+  }[];
+}
+
+export interface CurrentWork {
+  user_id: string;
+  display_name: string;
+  projects: { project_id: string; project_name: string; hours: string }[];
+  total: string;
+  latest_note: string | null;
+}
+
+export interface AllocationRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  user_id: string;
+  display_name: string;
+  starts_on: string;
+  ends_on: string;
+  percent: string;
+}

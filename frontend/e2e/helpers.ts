@@ -70,3 +70,27 @@ export async function openLastBookableDay(page: Page) {
   if (marked) await page.click('[data-e2e="target-day"]');
   return marked;
 }
+
+/**
+ * Re-open a day cell by its number.
+ *
+ * `openLastBookableDay` tags its cell with a data attribute, but saving a
+ * booking reloads the calendar and React re-renders the grid — so that
+ * attribute is gone and any later click on it silently misses. Anything that
+ * needs the same cell again has to find it afresh.
+ */
+export async function openDayNumbered(page: Page, dayNumber: string) {
+  const marked = await page.evaluate((wanted) => {
+    const grid = [...document.querySelectorAll(".grid.grid-cols-7")].pop();
+    if (!grid) return false;
+    const cell = [...grid.querySelectorAll("button")].find(
+      (b) => (b.textContent || "").trim().startsWith(wanted) && !(b as HTMLButtonElement).disabled
+    );
+    if (!cell) return false;
+    cell.setAttribute("data-e2e", "reopen");
+    return true;
+  }, dayNumber);
+
+  if (marked) await page.click('[data-e2e="reopen"]');
+  return marked;
+}

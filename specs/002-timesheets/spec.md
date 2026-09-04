@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Feature** | `002-timesheets` |
-| **Status** | Draft — open questions in §9 must be settled before the data model is built |
+| **Status** | Settled 5 September 2026 — §9 answered, ready to build |
 | **Source** | Product owner, 5 September 2026 |
 | **Depends on** | [`001-leave-calendar`](../001-leave-calendar/spec.md), in production |
 
@@ -156,7 +156,7 @@ Given three people are allocated to "Acme Portal" at 50% until 31 October
 
 ## 5. Functional requirements
 
-Keywords follow RFC 2119. **These are provisional** until §9 is settled.
+Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 
 ### 5.1 Projects — FR-PROJ
 
@@ -174,7 +174,7 @@ Keywords follow RFC 2119. **These are provisional** until §9 is settled.
 |---|---|
 | FR-ALLOC-01 | An admin MUST be able to allocate a person to a project for a date range. |
 | FR-ALLOC-02 | A person MUST be able to hold several concurrent allocations. |
-| FR-ALLOC-03 | An allocation MUST carry an intended level of effort (see Q-02). |
+| FR-ALLOC-03 | An allocation MUST carry an intended level of effort as a **percentage of capacity** (Q-02). |
 | FR-ALLOC-04 | The system MUST surface when a person's concurrent allocations exceed full capacity. |
 | FR-ALLOC-05 | Removing an allocation MUST NOT delete time already logged against that project. |
 
@@ -186,11 +186,12 @@ Keywords follow RFC 2119. **These are provisional** until §9 is settled.
 | FR-TIME-02 | A short note MUST be captured per entry. |
 | FR-TIME-03 | A user MUST be able to log against several projects on the same date. |
 | FR-TIME-04 | Hours MUST support half-hour granularity at minimum. |
-| FR-TIME-05 | The system MUST reject a day whose total exceeds a configured maximum (see Q-06). |
-| FR-TIME-06 | A user MUST only be able to log time against projects they are allocated to (see Q-07). |
+| FR-TIME-05 | The system MUST reject a day whose total exceeds a configured maximum, default **16 hours** (Q-06). |
+| FR-TIME-06 | A user MAY log time against a project they are not allocated to; such effort MUST be shown as unallocated rather than refused (Q-07). |
 | FR-TIME-07 | An entry MUST record which phase was active on that date. |
-| FR-TIME-08 | A user MUST be able to correct an entry within the edit window (see Q-01). |
+| FR-TIME-08 | A user MUST be able to correct an entry until the **end of the following week** in Asia/Kolkata, and MUST NOT be able to afterwards (Q-01). |
 | FR-TIME-09 | Every change to an entry MUST be recorded in the audit log with actor and timestamp. |
+| FR-TIME-10 | Logging on a day with approved leave MUST warn and MUST NOT refuse (Q-03). The clash MUST be visible in analytics. |
 
 ### 5.4 Analytics — FR-ANALYTICS
 
@@ -241,7 +242,7 @@ projects        id, name, client, is_archived, created_at
 project_phases  id, project_id, phase(pre|delivery|support),
                 starts_on, ends_on, budget_hours
 allocations     id, project_id, user_id, starts_on, ends_on,
-                intent (Q-02), created_by
+                percent numeric(5,2), created_by
 time_entries    id, user_id, date, project_id, phase_id,
                 hours_office numeric(4,2), hours_home numeric(4,2),
                 note, created_at, updated_at
@@ -256,22 +257,23 @@ which phase it was logged against.
 
 ---
 
-## 9. Open questions — MUST be settled before building
+## 9. Decisions
 
-Unlike `001`, these are not shipping with defaults. Several change the data
-model, and guessing wrong means a migration over live data.
+Settled 5 September 2026. The first four changed the data model and were
+answered before any schema was written; the remaining five ship with the
+defaults below.
 
-| ID | Question | Why it cannot be defaulted |
+| ID | Question | Decision |
 |---|---|---|
-| **Q-01** | **Is there an edit window for time entries, like `001` §6.3 for leave?** | Leave is locked once its date passes, which is what makes the record trustworthy. The same argument applies to hours — but people genuinely forget Friday until Monday, and a same-day lock guarantees a permanently incomplete timesheet, which FR-ANALYTICS-05 says is worse than none. A grace period (say, until the end of the following week) is the likely answer, but its length is a policy decision. |
-| **Q-02** | **How is allocation intent expressed — percentage, hours per week, or just membership?** | Determines whether forecasting is possible at all. "Dedicated to one or more projects" suggests a percentage, but 50% of what: a working day, after leave, before it? |
-| **Q-03** | **What happens when someone logs hours on a day they are on approved leave?** | Refuse, warn, or allow? People do work on a sick day. Refusing makes the data cleaner and the humans lie; allowing makes leave balances and utilisation disagree. |
-| **Q-04** | **Does anybody approve or lock a timesheet?** | §2.2 assumes not. If a lead must sign off a week, that is a state machine, a notification path and a screen — comparable in size to `001`'s approval flow. |
-| **Q-05** | **Is budget expressed in hours, money, or both?** | "Justify the budget" implies money. Money implies rates per person, which implies salary-adjacent data in a system currently readable by every lead. Hours avoid that entirely. |
-| **Q-06** | **What is the maximum loggable day, and is it enforced or advisory?** | FR-TIME-05 needs a number. It also decides whether the product has an opinion about overwork. |
-| **Q-07** | **Can somebody log time against a project they are not allocated to?** | Strict is cleaner but blocks the person who helped out for an afternoon — and they are exactly the effort a budget conversation misses. |
-| **Q-08** | **Who may see an individual's timesheet?** | §6 proposes person / their lead / admins, matching leave. Confirm — because a per-project analytics view naturally wants to name everyone who logged hours, which is wider. |
-| **Q-09** | **Are historical projects and past effort being imported, or does this start empty?** | `001` needed an admin backfill (A-21) for exactly this reason at go-live, and that was one month of leave. This would be far more data. |
+| **Q-01** | Edit window for time entries? | **Grace period, then lock.** Editable until the **end of the following week** in Asia/Kolkata, then permanently. A same-day lock like `001` §6.3 would guarantee a permanently incomplete timesheet, which FR-ANALYTICS-05 says is worse than none; always-editable would let a project's recorded effort change after the budget conversation it fed. Bounded, so history cannot be quietly rewritten months later. |
+| **Q-02** | How is allocation intent expressed? | **Percentage of capacity.** "50% on Acme until 31 Oct." Capacity is working days minus approved leave and declared holidays, which `001` already knows. Over-allocation (FR-ALLOC-04) is then simply concurrent percentages summing above 100. |
+| **Q-03** | Logging hours on an approved leave day? | **Warn, but allow.** People do work on a sick day. Refusing makes the data clean and the humans lie, and that effort vanishes from the project. The clash is surfaced in analytics so it can be questioned rather than hidden. |
+| **Q-04** | Does anybody approve a timesheet? | **No.** §2.2 stands. Hours are a record, not a request; nobody signs them off. |
+| **Q-05** | Budget in hours or money? | **Hours only.** Money implies per-person rates, which is salary-adjacent data in a system every lead can read. Hours answer "did this take longer than planned" without going near that. |
+| **Q-06** | Maximum loggable day? | **16 hours, enforced.** A sanity check against a mistyped 80, not a position on overwork. Configurable in `app_settings`. |
+| **Q-07** | Logging against a project you are not allocated to? | **Allowed, and shown as unallocated effort.** The person who helped out for an afternoon is exactly the effort a budget conversation misses. Refusing it would push that work into somebody else's project or into nothing. |
+| **Q-08** | Who may see an individual's timesheet? | **The person, their lead, and admins** — the same rule as a leave reason (`001` NFR-05). Project analytics aggregate across everyone, but a named individual's day is not browsable by a colleague. |
+| **Q-09** | Import historical effort? | **Start empty.** Note this interacts with Q-01: once the grace period passes, past days cannot be logged at all, so any later decision to import history needs an admin backfill path like `001` A-21. Not built. |
 
 ---
 

@@ -24,6 +24,8 @@ const PUBLIC_ROUTES = ["/auth/"];
  */
 const PROTECTED_ROUTES = [
   "/calendar",
+  "/timesheet",
+  "/analytics",
   "/team",
   "/approvals",
   "/admin",

@@ -25,6 +25,16 @@ import type {
   PortalUser,
   TeamDay,
   YearHistory,
+  AllocationRow,
+  Coverage,
+  CurrentWork,
+  Forecast,
+  Phase,
+  Project,
+  ProjectEffort,
+  ProjectPhase,
+  TimesheetDay,
+  TimesheetWeek,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -185,3 +195,62 @@ export function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "Something went wrong. Please try again.";
 }
+
+// ---------------------------------------------------------------------------
+// Timesheets — spec 002
+// ---------------------------------------------------------------------------
+
+export const getTimesheetDay = (day?: string) =>
+  call<TimesheetDay>(`/timesheet/day${day ? `?day=${day}` : ""}`);
+
+export const saveTimesheetDay = (input: {
+  date: string;
+  lines: { project_id: string; hours_office: string; hours_home: string; note: string | null }[];
+}) => call<{ date: string; entries: number; total: string }>("/timesheet/day", {
+  method: "PUT",
+  ...body(input),
+});
+
+export const getTimesheetWeek = (weekStart?: string) =>
+  call<TimesheetWeek>(`/timesheet/week${weekStart ? `?week_start=${weekStart}` : ""}`);
+
+export const getAnalyticsProjects = () => call<Project[]>("/analytics/projects");
+
+export const getProjectEffort = (projectId: string) =>
+  call<ProjectEffort>(`/analytics/projects/${projectId}`);
+
+export const getCoverage = (start?: string, end?: string) =>
+  call<Coverage>(
+    `/analytics/coverage${start ? `?start=${start}&end=${end ?? start}` : ""}`
+  );
+
+export const getForecast = () => call<Forecast>("/analytics/forecast");
+
+export const getCurrentWork = (days = 7) => call<CurrentWork[]>(`/analytics/current?days=${days}`);
+
+// Admin — projects and allocations
+export const listProjects = () => call<Project[]>("/admin/projects");
+
+export const createProject = (input: { name: string; client: string | null }) =>
+  call<Project>("/admin/projects", { method: "POST", ...body(input) });
+
+export const updateProject = (id: string, changes: { is_archived?: boolean; name?: string }) =>
+  call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
+
+export const setProjectPhase = (
+  projectId: string,
+  input: { phase: Phase; starts_on: string; ends_on: string; budget_hours: string | null }
+) => call<ProjectPhase>(`/admin/projects/${projectId}/phases`, { method: "PUT", ...body(input) });
+
+export const listAllocations = () => call<AllocationRow[]>("/admin/allocations");
+
+export const createAllocation = (input: {
+  project_id: string;
+  user_id: string;
+  starts_on: string;
+  ends_on: string;
+  percent: string;
+}) => call<{ id: string }>("/admin/allocations", { method: "POST", ...body(input) });
+
+export const deleteAllocation = (id: string) =>
+  call<{ status: string }>(`/admin/allocations/${id}`, { method: "DELETE" });
