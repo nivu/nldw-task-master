@@ -1,5 +1,17 @@
+# Railway build and deploy configuration.
+#
+# `dockerfilePath` is relative to the BUILD CONTEXT, which is this directory —
+# either because `railway up` is run from backend/, or because the service's
+# root directory is set to /backend. It previously read "backend/Dockerfile",
+# which implied a repo-root context; the Dockerfile's `COPY pyproject.toml`
+# would then have failed, because that file is at backend/pyproject.toml.
+#
+# Which process a service runs is chosen by the PROCESS_TYPE environment
+# variable (api | worker | beat) rather than by a start command typed into the
+# dashboard. See entrypoint.sh and docs/operations/deployment.md.
+
 [build]
-dockerfilePath = "backend/Dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 restartPolicyType = "ON_FAILURE"

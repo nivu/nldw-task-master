@@ -11,8 +11,11 @@ services:
 
   worker:
     build: .
-    command: celery -A app.worker worker --loglevel=info
+    # PROCESS_TYPE rather than `command:` so local development exercises the
+    # same entrypoint production runs. A dispatch bug then shows up here
+    # instead of on Railway.
     environment:
+      - PROCESS_TYPE=worker
       - REDIS_URL=redis://redis:6379/0
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
@@ -35,8 +38,8 @@ services:
   # beat process the schedule in app/worker.py never fires.
   beat:
     build: .
-    command: celery -A app.worker beat --loglevel=info
     environment:
+      - PROCESS_TYPE=beat
       - REDIS_URL=redis://redis:6379/0
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
@@ -50,10 +53,11 @@ services:
 
   api:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     environment:
+      - PROCESS_TYPE=api
+      - PORT=8000
       - REDIS_URL=redis://redis:6379/0
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}

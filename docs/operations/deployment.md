@@ -64,22 +64,39 @@ bundle and every row in the database is readable by anyone.
 
 Four services in one project, all built from `backend/Dockerfile`:
 
-| Service | Start command | Why |
+All three application services run the **same image** and differ only by
+`PROCESS_TYPE` (see `backend/entrypoint.sh`). Nothing needs a start command
+typed into the dashboard, so a deployment is fully described by the variables
+below — and a typo in `PROCESS_TYPE` fails the container loudly rather than
+quietly starting a second API where a scheduler was meant to be.
+
+| Service | `PROCESS_TYPE` | Why |
 |---|---|---|
-| `api` | *(image default — `python start_api.py`)* | Reads `$PORT`, which Railway assigns |
-| `worker` | `celery -A app.worker worker --loglevel=info` | Notifications |
-| `beat` | `celery -A app.worker beat --loglevel=info` | **The Q-04 nightly sweep.** Without it, pending bookings whose date has passed stay pending forever |
-| `redis` | Railway's Redis template | Broker |
+| `api` | `api` (or unset) | FastAPI. Reads `$PORT`, which Railway assigns |
+| `worker` | `worker` | Notifications (FR-NOTIF) |
+| `beat` | `beat` | **The Q-04 nightly sweep.** Without it, pending bookings whose date has passed stay pending forever |
+| `redis` | — | Railway's Redis template. The broker |
+
+Deploy each from `backend/`, so the build context contains the Dockerfile's
+`COPY` sources:
+
+```bash
+cd backend
+railway up --service api
+railway up --service worker
+railway up --service beat
+```
 
 Environment, on `api`, `worker` and `beat` alike — a worker missing
 `SUPABASE_URL` fails silently on its first task rather than at boot:
 
 ```
+PROCESS_TYPE=api | worker | beat       # differs per service; everything else matches
 SUPABASE_URL=https://<ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
-REDIS_URL=${{Redis.REDIS_URL}}        # Railway reference variable
-FRONTEND_URL=https://<netlify-domain> # set after step 3
-RUN_EMBEDDED_WORKER=false             # must stay false — see below
+REDIS_URL=${{Redis.REDIS_URL}}         # Railway reference variable
+FRONTEND_URL=https://<netlify-domain>  # set after step 3
+RUN_EMBEDDED_WORKER=false              # must stay false — see below
 ```
 
 `RUN_EMBEDDED_WORKER` must be false in production. True runs a Celery worker

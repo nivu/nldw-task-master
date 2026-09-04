@@ -21,11 +21,14 @@ RUN uv sync --no-dev --no-install-project
 
 # Copy application code
 COPY app/ app/
-COPY start_api.py ./
+COPY start_api.py entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
 # Now install the project (app/ exists at this point)
 RUN uv sync --no-dev
 
 EXPOSE 8000
 
-CMD ["python", "start_api.py"]
+# One image, three process types — see entrypoint.sh. PROCESS_TYPE selects
+# which; unset means the API, so this stays a drop-in web image.
+CMD ["./entrypoint.sh"]
