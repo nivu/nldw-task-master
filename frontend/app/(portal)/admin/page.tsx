@@ -8,12 +8,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BackfillPanel } from "@/components/portal/backfill-panel";
 import {
   createUser,
   declareHoliday,
   deleteHoliday,
   errorMessage,
   listAllowances,
+  listBackfills,
   listHolidays,
   listSettings,
   listUsers,
@@ -21,7 +23,14 @@ import {
   updateUser,
 } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
-import type { Allowance, AppSetting, Category, Holiday, PortalUser } from "@/lib/api/types";
+import type {
+  Allowance,
+  AppSetting,
+  BackfillEntry,
+  Category,
+  Holiday,
+  PortalUser,
+} from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
@@ -42,20 +51,23 @@ export default function AdminPage() {
     allowances: Allowance[];
     holidays: Holiday[];
     settings: AppSetting[];
+    backfills: BackfillEntry[];
   }>(async () => {
-    const [users, allowances, holidays, settings] = await Promise.all([
+    const [users, allowances, holidays, settings, backfills] = await Promise.all([
       listUsers(),
       listAllowances(),
       listHolidays(),
       listSettings(),
+      listBackfills(),
     ]);
-    return { users, allowances, holidays, settings };
+    return { users, allowances, holidays, settings, backfills };
   }, []);
 
   const users = data?.users ?? [];
   const allowances = data?.allowances ?? [];
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
+  const backfills = data?.backfills ?? [];
 
   return (
     <div className="space-y-4">
@@ -73,6 +85,7 @@ export default function AdminPage() {
           <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="allowances">Allowances</TabsTrigger>
           <TabsTrigger value="holidays">Holidays</TabsTrigger>
+          <TabsTrigger value="backfill">Backfill</TabsTrigger>
           <TabsTrigger value="policy">Policy</TabsTrigger>
         </TabsList>
 
@@ -172,6 +185,18 @@ export default function AdminPage() {
               ))}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="backfill" className="space-y-4 pt-4">
+          <BackfillPanel
+            people={users}
+            entries={backfills}
+            onDone={(message) => {
+              setNotice(message);
+              reload();
+            }}
+            onError={setError}
+          />
         </TabsContent>
 
         <TabsContent value="policy" className="space-y-4 pt-4">

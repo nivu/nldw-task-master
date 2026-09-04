@@ -124,6 +124,10 @@ def _day_cell(day: date, today: date, holidays: dict, bookings: dict) -> dict:
             # FR-BOOK-07: editable only while the day is unlocked. An
             # unrecognised flag is a lead's record and is never self-editable.
             "can_edit": not locked and booking["status"] != "unrecognised",
+            # Spec A-21 — a day an admin entered on this person's behalf is
+            # shown as such. Somebody finding leave on their calendar they do
+            # not remember booking deserves to see where it came from.
+            "backfilled": bool(booking.get("backfilled_by")),
         },
     }
 

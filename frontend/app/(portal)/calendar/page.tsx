@@ -210,6 +210,15 @@ function DayButton({ cell, onSelect }: { cell: DayCell; onSelect: () => void }) 
           {booking.status}
         </span>
       )}
+
+      {/* Spec A-21. Somebody finding leave on their own calendar that they do
+          not remember booking deserves to see where it came from, rather than
+          being left to wonder. */}
+      {booking?.backfilled && (
+        <span className="truncate text-[8px] uppercase tracking-wide text-amber-700 dark:text-amber-400">
+          by admin
+        </span>
+      )}
     </button>
   );
 }
@@ -232,6 +241,7 @@ function Legend() {
         Weekend
       </span>
       <span>½ marks a half day.</span>
+      <span>&ldquo;by admin&rdquo; was entered on your behalf.</span>
       <span>Faded days are locked — the date has passed.</span>
     </div>
   );

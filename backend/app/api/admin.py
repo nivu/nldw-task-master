@@ -15,6 +15,7 @@ from app.api.errors import ProblemDetail
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
     AllowanceIn,
+    BackfillIn,
     HolidayIn,
     SettingUpdate,
     UserCreate,
@@ -318,6 +319,85 @@ def remove_holiday(holiday_id: str, admin: AdminDep) -> dict:
         before={"date": existing["date"], "name": existing["name"]},
     )
     return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Backfill — spec A-21
+#
+# The one sanctioned way past the lock in §6.3, for recording leave already
+# taken when the portal goes live partway through a month. Every route here is
+# admin-only and writes to the append-only audit log.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/backfill", status_code=201)
+def backfill_booking(payload: BackfillIn, admin: AdminDep) -> dict:
+    """Record leave somebody already took, on a date that is already locked.
+
+    Enters as `approved` and is permanently marked as backfilled. Deliberately
+    NOT checked against the remaining allowance: this records what happened,
+    and a balance that goes negative because more was taken than granted is a
+    true statement about the month, which the ledger reports rather than hides.
+    """
+    try:
+        created = booking_service.backfill(
+            user_id=payload.user_id,
+            day=payload.date,
+            category=payload.category,
+            duration=payload.duration,
+            reason=payload.reason,
+            note=payload.note,
+            actor=admin,
+        )
+    except booking_service.BookingRefused as exc:
+        raise ProblemDetail(exc.status, exc.message) from exc
+
+    return {
+        "id": created["id"],
+        "user_id": created["user_id"],
+        "date": created["date"],
+        "category": created["category"],
+        "duration": str(created["duration"]),
+        "status": created["status"],
+        "backfilled_by": created["backfilled_by"],
+    }
+
+
+@router.delete("/backfill/{booking_id}")
+def undo_backfill(booking_id: str, admin: AdminDep) -> dict:
+    """Reverse a backfill. Refuses anything that was not itself a backfill."""
+    try:
+        updated = booking_service.undo_backfill(booking_id=booking_id, actor=admin)
+    except booking_service.BookingRefused as exc:
+        raise ProblemDetail(exc.status, exc.message) from exc
+
+    return {"id": updated["id"], "status": updated["status"]}
+
+
+@router.get("/backfill")
+def list_backfills(admin: AdminDep) -> list[dict]:
+    """Everything entered by hand, so it can be reviewed as a set.
+
+    A go-live produces a burst of these. Being able to look at them together —
+    rather than hunting them one date at a time on individual calendars — is
+    what makes a mistyped entry findable.
+    """
+    people = {row["id"]: row["display_name"] for row in db.list_profiles()}
+    rows = [row for row in db.list_bookings() if row.get("backfilled_by")]
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "display_name": people.get(row["user_id"], "—"),
+            "date": row["date"],
+            "category": row["category"],
+            "duration": str(row["duration"]),
+            "status": row["status"],
+            "note": row.get("backfill_note"),
+            "entered_by": people.get(row["backfilled_by"], "—"),
+        }
+        for row in sorted(rows, key=lambda r: r["date"], reverse=True)
+    ]
 
 
 # ---------------------------------------------------------------------------

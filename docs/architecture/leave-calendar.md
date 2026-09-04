@@ -45,6 +45,7 @@ a second with no database.
 | What is the balance? | `domain/ledger.py` | FR-BAL, §7.3 |
 | Who may decide this? | `domain/approval.py::can_decide` | FR-APPR-05, Q-05 |
 | What does a day cost? | `domain/cost.py` | §6.2, Q-09 |
+| May an admin backfill this? | `domain/rules.py::check_backfill` | FR-BACK, A-21 |
 
 ## Three things that are easy to get wrong
 
@@ -87,6 +88,31 @@ colleague (NFR-05); the audit log is admin-readable and long-lived, so copying
 one in would both widen and outlive that access. The log records that a
 transition happened, not somebody's medical situation.
 
+## The one hole in the lock
+
+Spec A-21 / FR-BACK. An admin can record leave somebody already took, on a date
+that is already locked. It exists because go-live happens partway through a
+month and the leave already taken has to go in somehow.
+
+Everything about how it is built is aimed at keeping it from growing:
+
+* `domain/rules.py::check_backfill` is a **separate function**, not a
+  `skip_lock=True` argument on `validate_booking`. An exception reachable from
+  the ordinary path is one refactor away from not being an exception.
+* `services/bookings.py::backfill` and `undo_backfill` are likewise their own
+  pair, not privileged branches inside `create_or_replace` and `withdraw`.
+* Past dates only. Today and the future are ordinary bookings.
+* The undo checks `backfilled_by IS NOT NULL`. An admin can correct their own
+  typo; they can never reach a record somebody made themselves. That single
+  clause is what keeps §6.3 true for real bookings.
+* Every backfilled row is marked, and the mark is shown on the person's own
+  calendar and on their lead's roster. Nothing here produces a row that looks
+  like an ordinary one.
+* The allowance check deliberately does *not* apply — this records what
+  happened, and at go-live the allowances usually have not been set yet.
+  `test_backfill.py` asserts the absence of that parameter structurally, so
+  adding it later fails a test rather than silently changing behaviour.
+
 ## Who can see a reason
 
 Three layers, deliberately not the same:
@@ -126,8 +152,8 @@ blocked because Redis is down. Verified by stopping Redis and booking anyway.
 ## Testing it
 
 ```bash
-cd backend  && uv run pytest    # 121 unit tests over the pure rules, no database
-cd frontend && pnpm test:e2e    # 28 browser tests, phone + desktop viewports
+cd backend  && uv run pytest    # 137 unit tests over the pure rules, no database
+cd frontend && pnpm test:e2e    # 32 browser tests, phone + desktop viewports
 ```
 
 The unit tests need nothing running. The browser tests need Supabase and the

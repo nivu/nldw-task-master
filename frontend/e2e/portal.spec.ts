@@ -173,6 +173,29 @@ test.describe("the admin", () => {
   });
 });
 
+test.describe("the admin backfill (spec A-21)", () => {
+  test("is labelled as the exception it is, and lists what was entered", async ({ page }) => {
+    await signIn(page, PEOPLE.admin);
+    await page.goto("/admin");
+    await page.getByRole("tab", { name: "Backfill" }).click();
+
+    // The warning is not decoration. Distinct labelling is the condition on
+    // which this override of §6.3 was added at all, so its absence is a
+    // regression worth failing a build over.
+    await expect(
+      page.getByText(/the one place a locked day can be changed/i)
+    ).toBeVisible();
+    await expect(page.getByText(/Record leave already taken/i)).toBeVisible();
+    await expect(page.getByText(/Everything entered by hand/i)).toBeVisible();
+  });
+
+  test("is not reachable by a lead", async ({ page }) => {
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/admin");
+    await expect(page.getByText(/Only an admin can do that/i)).toBeVisible();
+  });
+});
+
 test.describe("authorisation", () => {
   test("a plain user gets no lead or admin navigation", async ({ page }) => {
     await signIn(page, PEOPLE.otherUser);

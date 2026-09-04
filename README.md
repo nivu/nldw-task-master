@@ -104,6 +104,7 @@ pools will consume the same queue.
 | Notifications | `backend/app/tasks/notifications.py`, adapters in `backend/app/services/notify/` |
 | Which routes need a login | `frontend/lib/supabase/middleware.ts` |
 | Screens | `frontend/app/(portal)/` |
+| The admin backfill (the one exception to the lock) | `backend/app/domain/rules.py::check_backfill` |
 | Browser tests | `frontend/e2e/` |
 | Audit log guarantees | `supabase/migrations/005_audit_triggers.sql` |
 | Schema | numbered files in `supabase/migrations/` |
@@ -131,7 +132,7 @@ Read `CLAUDE.md` before contributing. Three rules matter most:
 cd frontend && pnpm build      # includes strict TypeScript
 cd frontend && pnpm lint
 cd backend  && uvx ruff check . && uvx ruff format --check .
-cd backend  && uv run pytest   # 121 unit tests, no database needed
+cd backend  && uv run pytest   # 137 unit tests, no database needed
 
 # End-to-end, in a real browser, on phone and desktop viewports.
 # Builds and serves its own app on :3100, so it never tests a stale server.

@@ -156,6 +156,10 @@ export default function TeamPage() {
                   >
                     {person.state}
                   </Badge>
+                  {/* A-21 — a lead planning around an absence should know
+                      which records were entered by an admin after the fact
+                      rather than requested at the time. */}
+                  {person.backfilled && <Badge variant="outline">by admin</Badge>}
                 </>
               )}
             </div>

@@ -86,6 +86,9 @@ def team_day(
             else CATEGORY_LABELS[booking["category"]],
             "duration": None if booking is None else str(booking["duration"]),
             "booking_id": None if booking is None else booking["id"],
+            # A-21 — a lead planning a day should know which records were
+            # entered by an admin after the fact rather than requested.
+            "backfilled": bool(booking and booking.get("backfilled_by")),
         }
         # Q-06 — off by default. The setting exists so the decision is visible
         # in the product rather than buried in a document.

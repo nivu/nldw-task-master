@@ -262,6 +262,30 @@ until day-login ships.
 | FR-NOTIF-04 | A Slack notification SHOULD allow approve and reject without leaving Slack. |
 | FR-NOTIF-05 | Notification delivery failure MUST NOT fail the booking. The booking stands and the failure is logged. |
 
+### 5.10 Backfill — FR-BACK
+
+Added 2026-09-04, resolving A-21. **This is the only sanctioned exception to
+§6.3**, and it is deliberately narrow.
+
+| ID | Requirement |
+|---|---|
+| FR-BACK-01 | An admin MUST be able to record a booking on another person's behalf for a date that has already passed. |
+| FR-BACK-02 | Only an admin MAY do this. A lead MUST NOT, for their own reports or anyone else. |
+| FR-BACK-03 | The date MUST be strictly in the past. Today and future dates are booked by the person themselves. |
+| FR-BACK-04 | A note explaining why the record is being entered by hand MUST be required, and MUST be written to the audit log. |
+| FR-BACK-05 | Every backfilled booking MUST be permanently marked as such, and that marking MUST be visible to the person on their own calendar and to their lead on the team view. |
+| FR-BACK-06 | A backfilled booking MUST enter the `approved` state — it has already happened, so there is nothing left to decide — and MUST NOT notify anybody. |
+| FR-BACK-07 | The allowance check (FR-BOOK-05) MUST NOT apply. A backfill records what happened; a resulting negative balance MUST be reported honestly rather than clamped or refused. |
+| FR-BACK-08 | Weekends, holidays, the reason requirement and the one-booking-per-day rule MUST all still apply. The exception is to the lock, and to nothing else. |
+| FR-BACK-09 | An admin MUST be able to undo a backfill, and MUST NOT be able to undo anything else. A booking somebody made themselves stays locked once its date has passed. |
+
+**Why FR-BACK-09 is worded that way.** Without an undo, one mistyped entry
+permanently corrupts a person's balance. With an unrestricted one, "an admin
+may withdraw any past booking" quietly repeals §6.3 — the rule that stops
+someone taking a work-from-home day and later erasing the record. Confining the
+undo to rows where `backfilled_by IS NOT NULL` gives an admin the ability to
+correct their own mistake and no ability at all to reach a genuine record.
+
 ---
 
 ## 6. Business rules
@@ -486,7 +510,7 @@ small diff — never a rebuild. Nothing here is silently decided.
 | A-18 | A booking's `category` is **nullable for `unrecognised` rows only**. Every other status requires one. | FR-LEAD-03 has a lead flagging that somebody was absent without booking. The lead genuinely may not know which category it was, and forcing them to pick one would put a guess into the record. |
 | A-19 | **RESOLVED — confirmed 2026-09-04.** §6.1's table (casual leave, "same-day: No") is authoritative over FR-BOOK-09. Casual leave is bookable for a **future date only** — not for today. | The two read as a conflict: FR-BOOK-09 is a *floor* (no booking in the past) while the §6.1 table is a positive statement about notice. Casual leave is planned by definition; somebody taking an unplanned day off today is describing sick leave or work from home. Confirmed by the product owner; FR-BOOK-09 should be reworded in the next revision of this file to remove the ambiguity. |
 | A-20 | Sick leave cannot be booked for a **future** date. | §6.1's table, "planned ahead: No". Nobody knows they will be ill next Tuesday, and a future-dated sick day is almost always a mis-tap on casual. |
-| A-21 | **OPEN — needs a decision.** Go-live happens early in a month with "current status manually added by admin". Two readings, and only one of them is currently possible: (a) the admin **adjusts each person's allowance** for that month to net off days already taken — supported today via per-user allowance rows; (b) the admin **backfills the actual bookings**, which requires creating a booking on somebody else's behalf on a **past, locked** date — not supported, and in direct tension with FR-BOOK-08 and §6.3. | Reading (a) needs no code and loses the detail of which days were taken. Reading (b) needs a deliberate, audited admin override of the integrity rule the product rests on. That override should not be added casually — it is exactly the capability §6.3 exists to prevent — so it needs an explicit decision rather than a quiet implementation. |
+| A-21 | **RESOLVED — decided 2026-09-04. Implemented.** An admin can record leave somebody already took, on a date that is already locked, as a **distinctly-labelled, audited action**. See §5.10. | Go-live happens partway through a month and the leave already taken has to be recorded. The alternative — quietly reducing each person's allowance to net it off — loses which days were taken, which is the "tracking that stops describing reality" problem from §1. |
 
 ---
 

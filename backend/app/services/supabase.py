@@ -30,7 +30,10 @@ supabase: Client = create_client(
 # Columns that are safe to return for someone other than the booking's owner
 # when the reason must not travel (Q-06, NFR-05).
 BOOKING_PUBLIC_COLUMNS = "id,user_id,date,category,duration,status,created_at,decided_by,decided_at"
-BOOKING_FULL_COLUMNS = BOOKING_PUBLIC_COLUMNS + ",reason,decision_note,created_by"
+BOOKING_FULL_COLUMNS = (
+    BOOKING_PUBLIC_COLUMNS
+    + ",reason,decision_note,created_by,backfilled_by,backfilled_at,backfill_note"
+)
 
 
 # ---------------------------------------------------------------------------

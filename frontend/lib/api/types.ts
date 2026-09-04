@@ -49,6 +49,10 @@ export interface DayBooking {
   status: BookingStatus;
   reason: string | null;
   can_edit: boolean;
+  /** Spec A-21 — entered by an admin after the fact, not requested by this
+   *  person. Shown on the calendar so nobody finds leave they do not remember
+   *  booking with no explanation for where it came from. */
+  backfilled: boolean;
 }
 
 /**
@@ -84,6 +88,7 @@ export interface Booking {
   decision_note: string | null;
   locked: boolean;
   can_edit: boolean;
+  backfilled?: boolean;
 }
 
 /** The roster. Note there is no `reason` — Q-06 keeps it out of this view. */
@@ -95,6 +100,7 @@ export interface TeamMemberDay {
   category_label: string | null;
   duration: string | null;
   booking_id: string | null;
+  backfilled: boolean;
 }
 
 export interface TeamDay {
@@ -130,6 +136,19 @@ export interface PersonBalances {
   display_name: string;
   role?: Role;
   balances: Balance[];
+}
+
+/** Spec A-21 — a record an admin entered by hand, listed for review. */
+export interface BackfillEntry {
+  id: string;
+  user_id: string;
+  display_name: string;
+  date: string;
+  category: Category;
+  duration: string;
+  status: BookingStatus;
+  note: string | null;
+  entered_by: string;
 }
 
 export interface Holiday {

@@ -287,6 +287,147 @@ def flag_unrecognised(
     return created
 
 
+# ---------------------------------------------------------------------------
+# The admin backfill — spec A-21
+#
+# The one sanctioned way past the lock in §6.3. Kept in its own pair of
+# functions rather than as a privileged branch inside create_or_replace and
+# withdraw, because an exception reachable from the ordinary path is one
+# refactor away from not being an exception.
+# ---------------------------------------------------------------------------
+
+
+def backfill(
+    *,
+    user_id: str,
+    day: date,
+    category: str,
+    duration: Decimal,
+    reason: str | None,
+    note: str,
+    actor: Person,
+) -> dict[str, Any]:
+    """Record leave somebody already took, on a date that is already locked.
+
+    Enters as `approved` — it happened, so there is nothing left to decide —
+    and is marked with `backfilled_by`, which the API returns and the calendar
+    shows. A backfilled row is never indistinguishable from one the person made
+    themselves.
+
+    No notification is sent. The person lived through the day being recorded;
+    telling them their lead has "requested" it would be noise at best.
+    """
+    if actor.role != "admin":
+        raise BookingRefused("Only an admin can enter leave that was already taken.", status=403)
+
+    if not (note or "").strip():
+        raise BookingRefused("A backfill needs a note saying why it was entered by hand.")
+
+    subject = db.get_profile(user_id)
+    if subject is None:
+        raise BookingRefused("No such person.", status=404)
+
+    today = today_in_company_tz()
+    holiday = db.get_holiday_on(day)
+
+    refusal = rules.check_backfill(
+        day, category, reason, holiday_name=holiday["name"] if holiday else None, today=today
+    )
+    if refusal:
+        raise BookingRefused(refusal)
+
+    if db.find_booking_on(user_id, day, sorted(rules.OCCUPYING_STATES)):
+        raise BookingRefused(
+            f"{subject['display_name']} already has something recorded on {day.isoformat()}.",
+            status=409,
+        )
+
+    stamp = _now()
+    created = db.insert_booking(
+        {
+            "user_id": user_id,
+            "date": day.isoformat(),
+            "category": category,
+            "duration": str(duration),
+            "reason": (reason or "").strip() or None,
+            "status": "approved",
+            "created_by": actor.id,
+            "decided_by": actor.id,
+            "decided_at": stamp,
+            "backfilled_by": actor.id,
+            "backfilled_at": stamp,
+            "backfill_note": note.strip(),
+        }
+    )
+    audit.record(
+        action="booking.backfilled",
+        target_table="bookings",
+        target_id=created["id"],
+        actor_id=actor.id,
+        after={
+            "status": "approved",
+            "date": day.isoformat(),
+            "user_id": user_id,
+            "category": category,
+            "duration": str(duration),
+            # The note justifies an override of the integrity rule, so it is
+            # recorded. Unlike `reason` (redacted — see services/audit.py) it is
+            # an administrative justification, not the person's own words about
+            # their health.
+            "backfill_note": note.strip(),
+        },
+    )
+    return created
+
+
+def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
+    """Reverse a backfill — and ONLY a backfill.
+
+    An admin entering a month of history by hand will mistype something, and
+    without this the mistake is permanent and somebody's balance is wrong
+    forever.
+
+    The `backfilled_by` guard is the part that matters. It confines this power
+    to rows an admin created through the path above; a booking somebody
+    genuinely made themselves stays locked once its date has passed, exactly as
+    §6.3 requires. Widening this to "an admin may withdraw any past booking"
+    would quietly repeal the integrity rule.
+    """
+    if actor.role != "admin":
+        raise BookingRefused("Only an admin can undo a backfill.", status=403)
+
+    booking = _require(booking_id)
+
+    if not booking.get("backfilled_by"):
+        raise BookingRefused(
+            "That booking was not entered by an admin, so it cannot be undone. "
+            "Bookings are locked once their date has passed.",
+            status=409,
+        )
+
+    if booking["status"] not in rules.CONSUMING_STATES:
+        raise BookingRefused(f"That backfill is already {booking['status']}.", status=409)
+
+    updated = db.update_booking(
+        booking_id,
+        {
+            "status": "withdrawn",
+            "decided_by": actor.id,
+            "decided_at": _now(),
+            "backfill_note": (booking.get("backfill_note") or "") + " [undone by admin]",
+        },
+    )
+    audit.record(
+        action="booking.backfill_undone",
+        target_table="bookings",
+        target_id=booking_id,
+        actor_id=actor.id,
+        before={"status": booking["status"], "date": booking["date"]},
+        after={"status": "withdrawn"},
+    )
+    return updated
+
+
 def release_for_holiday(*, day: date, holiday_name: str, actor_id: str) -> list[dict[str, Any]]:
     """Cancel bookings a newly declared holiday has made redundant.
 

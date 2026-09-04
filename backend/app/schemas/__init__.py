@@ -151,6 +151,30 @@ class AllowanceIn(BaseModel):
     user_id: str | None = None
 
 
+class BackfillIn(BaseModel):
+    """Spec A-21 — an admin recording leave somebody already took.
+
+    `note` is required and has no default. It is the justification for
+    overriding the lock in §6.3, and it goes into the append-only audit log.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    date: date
+    category: Category
+    duration: Decimal
+    reason: str | None = Field(default=None, max_length=500)
+    note: str = Field(min_length=1, max_length=500)
+
+    @field_validator("duration")
+    @classmethod
+    def _half_or_full(cls, value: Decimal) -> Decimal:
+        if value not in (Decimal("0.5"), Decimal("1.0")):
+            raise ValueError("duration must be 0.5 (half day) or 1.0 (full day)")
+        return value
+
+
 class ProfileOut(BaseModel):
     id: str
     email: str

@@ -203,6 +203,54 @@ def check_allowance(
     return None
 
 
+def check_backfill(
+    day: date,
+    category: str,
+    reason: str | None,
+    *,
+    holiday_name: str | None,
+    today: date,
+) -> str | None:
+    """Rules for an admin recording leave that was already taken — spec A-21.
+
+    A deliberately separate function from `validate_booking`, not a flag on it.
+    This is the one sanctioned way past the lock in §6.3, and it must be
+    impossible to reach by accident from the ordinary booking path — a shared
+    code path with a `skip_lock=True` argument is exactly how such an exception
+    stops being an exception.
+
+    What still holds:
+
+    * **Past dates only.** Today and the future are ordinary bookings the
+      person makes themselves; there is no reason for an admin to enter one on
+      their behalf, and allowing it would turn this into a general
+      book-for-anyone power.
+    * Weekends and holidays are still refused — they cost nothing (§6.2), so a
+      backfill on one records a charge that never existed.
+    * A reason is still required for casual and sick leave (FR-BOOK-03).
+
+    What deliberately does NOT hold: the allowance check. A backfill records
+    what already happened, and refusing to record it because the allowance is
+    short would leave the ledger describing a month that did not occur. The
+    resulting balance may go negative, and the ledger reports that honestly.
+    """
+    for failure in (
+        check_category(category),
+        check_reason(category, reason),
+        check_bookable_day(day, holiday_name=holiday_name),
+    ):
+        if failure:
+            return failure
+
+    if day >= today:
+        return (
+            f"{day.isoformat()} has not passed yet. A backfill records leave that was "
+            "already taken; anything from today onwards is booked by the person themselves."
+        )
+
+    return None
+
+
 def check_transition(current: str, target: str) -> str | None:
     """§6.4 — is this state change one the machine permits?"""
     allowed = ALLOWED_TRANSITIONS.get(current)

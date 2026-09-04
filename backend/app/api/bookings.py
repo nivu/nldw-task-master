@@ -122,6 +122,7 @@ def _present(booking: dict, *, user_id: str, include_reason: bool = True) -> dic
         "decided_at": booking.get("decided_at"),
         "decision_note": booking.get("decision_note"),
         "locked": locked,
+        "backfilled": bool(booking.get("backfilled_by")),
         "can_edit": (
             not locked
             and booking["user_id"] == user_id

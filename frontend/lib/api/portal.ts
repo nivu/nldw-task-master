@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Allowance,
   AppSetting,
+  BackfillEntry,
   AuditEntry,
   Balance,
   Booking,
@@ -151,6 +152,21 @@ export const getOrgConsumption = (period?: string) =>
   call<{ period: string; people: PersonBalances[] }>(
     `/admin/consumption${period ? `?period=${period}` : ""}`
   );
+
+// Spec A-21 — the sanctioned override of the lock in §6.3. Admin only.
+export const listBackfills = () => call<BackfillEntry[]>("/admin/backfill");
+
+export const backfillLeave = (input: {
+  user_id: string;
+  date: string;
+  category: Category;
+  duration: string;
+  reason: string | null;
+  note: string;
+}) => call<{ id: string }>("/admin/backfill", { method: "POST", ...body(input) });
+
+export const undoBackfill = (id: string) =>
+  call<{ id: string; status: string }>(`/admin/backfill/${id}`, { method: "DELETE" });
 
 export const listSettings = () => call<AppSetting[]>("/admin/settings");
 
