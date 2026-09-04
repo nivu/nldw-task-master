@@ -10,6 +10,7 @@ Leave currently arrives by email, too late to plan around. This replaces that.
 - **What it must do** — [`specs/001-leave-calendar/spec.md`](specs/001-leave-calendar/spec.md)
 - **Why, and the rules it may not break** — [`.specify/memory/constitution.md`](.specify/memory/constitution.md)
 - **How it works today** — [`docs/`](docs/)
+- **How to deploy it** — [`docs/operations/deployment.md`](docs/operations/deployment.md)
 
 Built from [nl-sdd-app-starter](https://github.com/nunnarilabs/nl-sdd-app-starter).
 

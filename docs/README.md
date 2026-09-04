@@ -22,7 +22,7 @@ Specifications live in [`../specs/`](../specs/), not here.
 
 | Document | Covers |
 |---|---|
-| _(none yet)_ | |
+| [`operations/deployment.md`](operations/deployment.md) | Deploying to Supabase + Railway + Netlify, in order; the two settings that are easy to skip and expensive to skip (`config push` for FR-AUTH-02, the `beat` process for Q-04); and bootstrapping the first admin into an empty database |
 
 ## Where things go
 
