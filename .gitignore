@@ -20,6 +20,11 @@ backend/.pytest_cache/
 dist/
 build/
 
+# Google OAuth client secrets. Downloaded from Google Cloud Console straight
+# into the working directory, which is exactly how they get committed.
+client_secret_*.json
+*client_secret*.json
+
 # Environment files (contain secrets)
 .env
 .env.local
