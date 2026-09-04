@@ -4,6 +4,15 @@ NFR-08: deployment MUST be reproducible from the repository. This file is that
 requirement's implementation — if you find yourself doing something here that
 is not written down, write it down.
 
+**Currently deployed:**
+
+| | |
+|---|---|
+| Frontend | <https://nunnari-employee-portal.netlify.app> |
+| Backend | <https://api-production-9edd.up.railway.app> |
+| Supabase | project `worjtvnpizpyfimwotkl`, region `ap-south-1` (Mumbai) |
+| Railway | project `nunnari-employee-portal` — `api`, `worker`, `beat`, `Redis` |
+
 Three pieces, deployed in this order because each needs the previous one's URL:
 
 ```
@@ -83,10 +92,15 @@ Deploy each from `backend/`, so the build context contains the Dockerfile's
 
 ```bash
 cd backend
-railway up --service api
-railway up --service worker
-railway up --service beat
+railway up . --path-as-root --service api
+railway up . --path-as-root --service worker
+railway up . --path-as-root --service beat
 ```
+
+**`--path-as-root` is not optional.** `railway up` uploads from the *git root*,
+not the working directory, so without it Railway receives the whole monorepo,
+fails to recognise it, and reports `railpack prepare exited with an error` —
+which reads like a build problem rather than a wrong-directory one.
 
 Environment, on `api`, `worker` and `beat` alike — a worker missing
 `SUPABASE_URL` fails silently on its first task rather than at boot:
@@ -116,6 +130,12 @@ SMTP_HOST= SMTP_PORT= SMTP_USER= SMTP_PASSWORD= SMTP_FROM=
 Slack's interactivity request URL is `https://<railway-domain>/api/v1/slack/interactions`.
 
 ## 3. Netlify
+
+If `pnpm build` fails inside `netlify deploy --build` with
+`Cannot find matching keyid` or `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`, that
+is corepack, not this code: an older bundled corepack cannot verify current
+pnpm releases. `package.json` pins `packageManager` to stop it resolving
+"latest", which is what fails; if it still happens, `npm i -g corepack@latest`.
 
 ```bash
 cd frontend
