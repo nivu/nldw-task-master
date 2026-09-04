@@ -13,8 +13,32 @@ export const PEOPLE = {
 
 export const PASSWORD = "portal123";
 
+/**
+ * Sign in as one of the seeded accounts.
+ *
+ * Uses the password form, which is a local-development affordance only —
+ * production is Google-only (FR-AUTH-08) and OAuth cannot be driven by a
+ * headless browser. Two things must be true for this to work locally:
+ *
+ *   frontend/.env       NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=true
+ *   supabase/config.toml  password sign-in enabled, via
+ *                         backend/scripts/ops/local_password_auth.sh on
+ *
+ * The check below turns "every test fails on a missing selector" into one
+ * sentence naming the actual cause.
+ */
 export async function signIn(page: Page, email: string) {
   await page.goto("/auth/login");
+
+  if ((await page.locator("#password").count()) === 0) {
+    throw new Error(
+      "No password form on the sign-in page. These tests need the local " +
+        "development fallback: set NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=true in " +
+        "frontend/.env, run backend/scripts/ops/local_password_auth.sh on, and " +
+        "restart Supabase (the auth flag is read at startup)."
+    );
+  }
+
   await page.fill("#email", email);
   await page.fill("#password", PASSWORD);
   await page.click('button[type="submit"]');

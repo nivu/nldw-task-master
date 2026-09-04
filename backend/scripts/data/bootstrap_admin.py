@@ -22,8 +22,10 @@ Usage:
     uv run python scripts/data/bootstrap_admin.py \\
         --email vinita@nunnari.com --name "Vinita"
 
-The password is read from the terminal without echoing, or from
-BOOTSTRAP_ADMIN_PASSWORD if this is being run somewhere non-interactive.
+No password is set: sign-in is Google only (FR-AUTH-08). The account exists
+but cannot be signed into until this person authenticates with Google, whose
+identity is then attached to this same auth user. So the address given here
+MUST be one they can sign in to Google with.
 
 It refuses to run if an active admin already exists. That is the safety
 property that matters: this script can create the first admin and can never
@@ -33,14 +35,11 @@ quietly create a second one.
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
 import sys
 
 # Importable without the app's settings module, which requires a full .env.
 from supabase import create_client
-
-MIN_PASSWORD_LENGTH = 12
 
 
 def main() -> int:
@@ -78,28 +77,11 @@ def main() -> int:
         )
         return 1
 
-    password = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD")
-    if not password:
-        password = getpass.getpass(f"Password for {args.email}: ")
-        if password != getpass.getpass("Confirm: "):
-            print("Those did not match.", file=sys.stderr)
-            return 1
-
-    if len(password) < MIN_PASSWORD_LENGTH:
-        # Stricter than the 8 the API enforces for ordinary accounts. This one
-        # can create and deactivate every other account in the company.
-        print(
-            f"The first admin's password must be at least {MIN_PASSWORD_LENGTH} characters.",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Supabase Auth owns the password and hashes it (FR-AUTH-07). It is never
-    # written to any table this product controls, and never logged.
+    # No password (FR-AUTH-08). This account cannot be signed into at all
+    # until its owner authenticates with Google.
     created = supabase.auth.admin.create_user(
         {
             "email": args.email,
-            "password": password,
             "email_confirm": True,  # nobody exists to send a confirmation to
             "user_metadata": {"display_name": args.name},
         }
@@ -136,7 +118,9 @@ def main() -> int:
     ).execute()
 
     print(f"\nCreated admin {args.email} ({user_id}).")
-    print("\nNext, signed in as this account:")
+    print("\nSign in at the portal with Google, using exactly this address.")
+    print("There is no password; the first Google sign-in attaches to this account.")
+    print("\nThen, signed in as this account:")
     print("  1. Admin -> Allowances: set the real monthly figures (spec Q-01).")
     print("     Nobody can book anything until an allowance exists.")
     print("  2. Admin -> People: create everyone else and assign their leads.")

@@ -146,6 +146,24 @@ netlify env:set BACKEND_URL                   "https://<railway-domain>"
 netlify deploy --build --prod
 ```
 
+> **`netlify deploy --build` builds LOCALLY, using `frontend/.env`.** It is not
+> a CI build. Any development-only value in that file ships straight into the
+> production bundle — this was caught with
+> `NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=true`, which put a password form on the
+> production sign-in page. Every variable that must differ has to be set in
+> Netlify **and** overridden on the build command:
+>
+> ```bash
+> NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=false netlify deploy --build --prod
+> ```
+>
+> A shell variable wins over `.env`; the Netlify value alone does not, because
+> the build never runs on Netlify. Verify afterwards:
+>
+> ```bash
+> curl -s https://<netlify-domain>/auth/login | grep -c 'id="password"'   # must be 0
+> ```
+
 `BACKEND_URL` has no `NEXT_PUBLIC_` prefix, deliberately. The browser reaches
 FastAPI only through `/api/proxy/[...path]`, and the constitution requires the
 backend's address stay out of every client bundle. After deploying, confirm it:
@@ -217,6 +235,15 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<netlify-domain>/calendar   # 3
 ```
 
 - Sign-up is refused (the curl in step 1).
+- Password sign-in is refused — FR-AUTH-08:
+
+  ```bash
+  curl -s -X POST "https://<ref>.supabase.co/auth/v1/token?grant_type=password" \
+    -H "apikey: <anon-key>" -H 'Content-Type: application/json' \
+    -d '{"email":"someone@known.address","password":"anything"}'
+  # must return: {"code":422,"error_code":"email_provider_disabled",...}
+  ```
+- The sign-in page shows the Google button and **no** password field.
 - Sign in as the admin; the calendar loads.
 - `railway logs --service beat` shows the scheduler running. The Q-04 sweep
   fires at **00:05 Asia/Kolkata**; a deployment whose beat process is not

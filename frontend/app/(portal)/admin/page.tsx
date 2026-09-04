@@ -238,7 +238,6 @@ function NewUserForm({
 }) {
   const [form, setForm] = useState({
     email: "",
-    password: "",
     display_name: "",
     role: "user",
     lead_id: "",
@@ -250,9 +249,11 @@ function NewUserForm({
       <CardHeader>
         <CardTitle className="text-base">Add someone</CardTitle>
         <CardDescription>
-          Accounts exist only because an admin makes one (FR-AUTH-02). Use the
-          Nunnari convention — firstname.nl@gmail.com — where the person has no
-          company address.
+          Accounts exist only because an admin makes one (FR-AUTH-02). No
+          password is set — they sign in with Google (FR-AUTH-08), so the
+          address must be one they can sign in to Google with. Use the Nunnari
+          convention — firstname.nl@gmail.com — where the person has no company
+          address.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -264,7 +265,7 @@ function NewUserForm({
             try {
               await createUser({ ...form, lead_id: form.lead_id || null });
               onDone(`${form.display_name} can now sign in.`);
-              setForm({ email: "", password: "", display_name: "", role: "user", lead_id: "" });
+              setForm({ email: "", display_name: "", role: "user", lead_id: "" });
             } catch (err) {
               onError(errorMessage(err));
             } finally {
@@ -289,17 +290,6 @@ function NewUserForm({
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
               placeholder="firstname.nl@gmail.com"
-              required
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="new-password">Initial password</Label>
-            <Input
-              id="new-password"
-              type="text"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-              minLength={8}
               required
             />
           </div>

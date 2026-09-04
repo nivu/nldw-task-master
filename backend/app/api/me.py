@@ -13,7 +13,6 @@ from datetime import date
 from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentUserDep
-from app.api.errors import ProblemDetail
 from app.domain.calendar import (
     is_weekend,
     month_matrix,
@@ -22,7 +21,6 @@ from app.domain.calendar import (
     today_in_company_tz,
 )
 from app.domain.rules import OCCUPYING_STATES, is_locked
-from app.schemas import PasswordChange
 from app.services import balances
 from app.services import supabase as db
 
@@ -150,21 +148,3 @@ def my_history(
     """FR-BAL-08 — consumption across a calendar year."""
     resolved = year or str(today_in_company_tz().year)
     return {"year": resolved, "months": balances.year_history_for(user.id, resolved)}
-
-
-@router.post("/password")
-def change_password(payload: PasswordChange, user: CurrentUserDep) -> dict:
-    """FR-AUTH-05, FR-AUTH-07.
-
-    Delegated to Supabase Auth, which salts and hashes with bcrypt. This
-    product never sees, stores or logs a password — the plaintext exists only
-    for the length of this call.
-    """
-    from app.services.supabase import supabase
-
-    try:
-        supabase.auth.admin.update_user_by_id(user.id, {"password": payload.new_password})
-    except Exception as exc:  # noqa: BLE001 - message is normalised below
-        raise ProblemDetail(422, "That password was rejected. Try a longer one.") from exc
-
-    return {"status": "updated"}

@@ -66,12 +66,6 @@ export const getBalances = (period?: string) =>
 export const getHistory = (year?: string) =>
   call<YearHistory>(`/me/history${year ? `?year=${year}` : ""}`);
 
-export const changePassword = (newPassword: string) =>
-  call<{ status: string }>("/me/password", {
-    method: "POST",
-    ...body({ new_password: newPassword }),
-  });
-
 // ---------------------------------------------------------------------------
 // Bookings
 // ---------------------------------------------------------------------------
@@ -120,7 +114,6 @@ export const listUsers = () => call<PortalUser[]>("/admin/users");
 
 export const createUser = (input: {
   email: string;
-  password: string;
   display_name: string;
   role: string;
   lead_id: string | null;

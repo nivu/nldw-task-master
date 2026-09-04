@@ -108,6 +108,10 @@ class HolidayOut(BaseModel):
 class UserCreate(BaseModel):
     """FR-AUTH-03 — everything an admin supplies to make an account.
 
+    No password: sign-in is Google only (FR-AUTH-08). An admin creates the
+    account, and the person's first Google sign-in attaches an identity to it.
+    Nothing is issued that could be written down or passed to a colleague.
+
     There is no self-registration equivalent of this model, deliberately
     (FR-AUTH-02).
     """
@@ -115,7 +119,6 @@ class UserCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=120)
     role: Role = "user"
     lead_id: str | None = None
@@ -130,14 +133,6 @@ class UserUpdate(BaseModel):
     role: Role | None = None
     lead_id: str | None = None
     is_active: bool | None = None
-
-
-class PasswordChange(BaseModel):
-    """FR-AUTH-05."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    new_password: str = Field(min_length=8, max_length=128)
 
 
 class AllowanceIn(BaseModel):

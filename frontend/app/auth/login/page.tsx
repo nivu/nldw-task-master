@@ -1,10 +1,8 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { useSearchParams } from "next/navigation";
+
 import {
   Card,
   CardContent,
@@ -12,22 +10,35 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { useSearchParams } from "next/navigation";
 import { GoogleButton } from "@/components/portal/google-button";
+import { PasswordFallback } from "@/components/portal/password-fallback";
 
 /**
- * FR-CAL-01 — the calendar is the primary view after sign-in.
- */
-const AFTER_LOGIN_PATH = "/calendar";
-
-/**
- * Sign in.
+ * A development-only affordance, never set in production.
  *
- * Email and password only. The starter's one-time-code mode has been removed
- * because it called `signInWithOtp({ shouldCreateUser: true })`, which creates
- * an account for any address that asks — exactly what FR-AUTH-02 forbids.
- * Accounts are created by an admin, and there is deliberately no way to make
- * one from this page.
+ * Google OAuth cannot be driven by a headless browser, so the 32 tests in
+ * `e2e/` sign in as the seeded accounts with a password. This renders the form
+ * they need.
+ *
+ * It is NOT what keeps production safe. That is Supabase's email provider
+ * being disabled server-side (`[auth.email] enable_signup = false`), which
+ * makes a password sign-in fail no matter what this page renders. Turning this
+ * flag on against production would produce a form that cannot work, not a way
+ * in.
+ */
+const PASSWORD_FALLBACK = process.env.NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN === "true";
+
+/**
+ * Sign in — FR-AUTH-08.
+ *
+ * Google, and nothing else. There is no password field because there are no
+ * passwords: in a small company they get shared ("just use mine, I'll approve
+ * it later"), and a leave record somebody else can create is not a record.
+ * Removing the credential removes the thing that can be passed around.
+ *
+ * There is also no way to create an account here (FR-AUTH-02). Google proves
+ * who somebody is; whether they may use the portal is decided by a `profiles`
+ * row an admin created (FR-AUTH-09).
  */
 export default function LoginPage() {
   return (
@@ -38,51 +49,17 @@ export default function LoginPage() {
         </div>
       }
     >
-      <LoginForm />
+      <SignIn />
     </Suspense>
   );
 }
 
-function LoginForm() {
+function SignIn() {
   const searchParams = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  // `reason` is written by /auth/callback and already reads as a sentence.
-  //
-  // Only the query string is read, not the URL fragment. This app uses the
-  // PKCE code flow, where Supabase returns errors as query parameters to the
-  // callback route — which is how they reach the server at all. Fragment
-  // errors belong to the implicit flow, which is not used here.
-  const [error, setError] = useState<string | null>(searchParams.get("reason"));
-
-
-  const supabase = createClient();
-
-  async function handleLogin(event: React.FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setError(null);
-
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    if (signInError) {
-      // Supabase says "Invalid login credentials" for a wrong password AND for
-      // an address that has no account. That is the correct behaviour — saying
-      // which would confirm who works here to anyone who asks — so the message
-      // is passed through rather than made more specific.
-      setError(signInError.message);
-      setLoading(false);
-      return;
-    }
-
-    // A full page load, not a router push, so the middleware sees the new
-    // session cookie on the very next request.
-    window.location.href = AFTER_LOGIN_PATH;
-  }
+  // Written by /auth/callback, and already a sentence. Only the query string
+  // is read: this app uses the PKCE code flow, where Supabase returns errors
+  // as query parameters to the callback route.
+  const [reason] = useState<string | null>(searchParams.get("reason"));
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
@@ -92,60 +69,24 @@ function LoginForm() {
           <CardDescription>Sign in to mark leave and see your team.</CardDescription>
         </CardHeader>
         <CardContent>
-          {/* FR-AUTH-08 — the intended way in. The password form below is a
-              temporary fallback and is removed once Google is confirmed
-              working against production; disabling it first would lock
-              everybody out of a live system with no way back. */}
-          <GoogleButton />
-
-          <div className="my-5 flex items-center gap-3">
-            <span className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">or, for now</span>
-            <span className="h-px flex-1 bg-border" />
-          </div>
-
-          {error && (
+          {reason && (
             <div
               role="alert"
               className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive"
             >
-              {error}
+              {reason}
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@nunnari.example"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Signing in…" : "Sign in"}
-            </Button>
-          </form>
+          <GoogleButton />
+
+          {PASSWORD_FALLBACK && <PasswordFallback />}
 
           <p className="mt-6 text-xs text-muted-foreground">
-            Accounts are created by an admin — signing in with Google proves who
-            you are, it does not create an account. If Google works but the
-            portal still refuses you, ask an admin to add you.
+            Accounts are created by an admin. Signing in with Google proves who
+            you are — it does not create an account. If Google works but the
+            portal still turns you away, ask an admin to add the address you
+            signed in with.
           </p>
         </CardContent>
       </Card>

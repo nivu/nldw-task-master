@@ -216,8 +216,19 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# Allow/disallow new user signups via email to your project.
-enable_signup = true
+# FR-AUTH-08 — this is the email/password PROVIDER switch, not just
+# registration: false disables password sign-in entirely, which is the
+# point. Google is the only way in.
+#
+# This file is pushed wholesale and env() does not work on booleans, so
+# this one value cannot differ between local and production. It holds the
+# PRODUCTION-correct value deliberately: local development needs password
+# sign-in for the seeded accounts and the browser tests, and it is enabled
+# there by scripts/ops/local_password_auth.sh — which edits this line and
+# so shows up in `git status` before it can be committed by accident.
+# The divergence therefore fails towards a broken local test run, never
+# towards a production that quietly accepts passwords.
+enable_signup = false
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true

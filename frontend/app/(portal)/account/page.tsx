@@ -2,31 +2,25 @@
 
 import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { changePassword, errorMessage, getHistory, getMe } from "@/lib/api/portal";
+import { errorMessage, getHistory, getMe } from "@/lib/api/portal";
 import type { Category, Me, YearHistory } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
 
 /**
- * The person's own account — FR-AUTH-05 and FR-BAL-08.
+ * The person's own account — FR-BAL-08.
  *
- * Self-service profile editing is an explicit non-goal for V1 (spec §2.2), so
- * name, role and lead are shown but not editable. Only the password can be
- * changed here, and that goes to Supabase Auth rather than to any table this
- * product owns (FR-AUTH-07).
+ * Read-only. Self-service profile editing is an explicit non-goal for V1
+ * (spec §2.2), so name, role and lead are shown but not editable, and since
+ * sign-in moved to Google only (FR-AUTH-08) there is no password to change
+ * either — FR-AUTH-05 was withdrawn with it. What remains is this person's own
+ * consumption history for the year.
  */
 export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [history, setHistory] = useState<YearHistory | null>(null);
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,32 +28,15 @@ export default function AccountPage() {
     getHistory().then(setHistory).catch(() => undefined);
   }, []);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setNotice(null);
-
-    if (password !== confirm) {
-      setError("Those two passwords do not match.");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      await changePassword(password);
-      setNotice("Password changed.");
-      setPassword("");
-      setConfirm("");
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="space-y-6">
       <h1 className="font-heading text-lg font-semibold">Account</h1>
+
+      {error && (
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {me && (
         <Card>
@@ -123,47 +100,12 @@ export default function AccountPage() {
       )}
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Change password</CardTitle>
-          <CardDescription>At least 8 characters.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {error && (
-            <div role="alert" className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-          {notice && <div className="mb-4 rounded-md bg-muted p-3 text-sm">{notice}</div>}
-
-          <form onSubmit={submit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="password">New password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={8}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="confirm">Confirm</Label>
-              <Input
-                id="confirm"
-                type="password"
-                autoComplete="new-password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                minLength={8}
-                required
-              />
-            </div>
-            <Button type="submit" disabled={busy || password.length < 8}>
-              {busy ? "Saving…" : "Change password"}
-            </Button>
-          </form>
+        <CardContent className="p-4 text-sm text-muted-foreground">
+          {/* FR-AUTH-05 was withdrawn when sign-in moved to Google only
+              (FR-AUTH-08). There is no password here to change, and saying so
+              is better than leaving people hunting for the setting. */}
+          You sign in with Google, so there is no portal password to change.
+          Manage that account in your Google settings.
         </CardContent>
       </Card>
     </div>

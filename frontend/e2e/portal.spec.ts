@@ -27,8 +27,19 @@ test.describe("signing in", () => {
     await expect(page.getByText(/Accounts are created by an admin/i)).toBeVisible();
   });
 
-  test("a bad password is refused", async ({ page }) => {
+  test("Google is offered as the way in (FR-AUTH-08)", async ({ page }) => {
     await page.goto("/auth/login");
+    await expect(page.getByRole("button", { name: /Sign in with Google/i })).toBeVisible();
+  });
+
+  test("a bad password is refused", async ({ page }) => {
+    // The password form is a local-development affordance only
+    // (NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN); production is Google-only per
+    // FR-AUTH-08, where this test has nothing to assert against.
+    await page.goto("/auth/login");
+    if ((await page.locator("#password").count()) === 0) {
+      test.skip(true, "password fallback is off — Google-only, as in production");
+    }
     await page.fill("#email", PEOPLE.user);
     await page.fill("#password", "wrong-password");
     await page.click('button[type="submit"]');
@@ -93,11 +104,21 @@ test.describe("the calendar", () => {
   test("refuses casual leave for today, in words the person can act on (§6.1, A-19)", async ({
     page,
   }) => {
+    // Today's cell is the one the server marked as today. It is only
+    // clickable on a working day: on a weekend or a declared holiday the
+    // server marks it non-bookable and the cell is disabled (FR-CAL-05), so
+    // there is no dialog to assert against and nothing to test. Checking
+    // *before* clicking matters — this ran green on weekdays and timed out
+    // every Saturday and Sunday, which reads like a broken app rather than a
+    // test that assumed the day of the week.
     const today = page.locator("button.ring-primary, button.border-primary").first();
+    if (await today.isDisabled()) {
+      test.skip(true, "today is a weekend or holiday — nothing bookable to refuse");
+    }
     await today.click();
 
     const dialog = page.locator('[data-slot="dialog-content"]');
-    if (!(await dialog.isVisible())) test.skip(true, "today is a weekend or holiday");
+    await expect(dialog).toBeVisible();
 
     await dialog.getByRole("button", { name: "Casual leave" }).scrollIntoViewIfNeeded();
     await dialog.getByRole("button", { name: "Casual leave" }).click();

@@ -58,8 +58,9 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
     refused by `deps.current_user`, which looks exactly like a broken login and
     is miserable to diagnose.
 
-    The password is passed straight to Supabase Auth, which salts and hashes it
-    (FR-AUTH-07). It is never stored or logged here.
+    No password is set (FR-AUTH-08). The account exists but cannot be signed
+    into until the person authenticates with Google, whose identity is then
+    attached to this same auth user. Nothing is issued that could be shared.
     """
     from app.services.supabase import supabase
 
@@ -73,8 +74,9 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
         created = supabase.auth.admin.create_user(
             {
                 "email": payload.email,
-                "password": payload.password,
-                "email_confirm": True,  # admin-created; there is nobody to confirm to
+                # Confirmed on creation: admin-created, so there is nobody to
+                # send a confirmation to, and Google is the only way in anyway.
+                "email_confirm": True,
                 "user_metadata": {"display_name": payload.display_name},
             }
         )
