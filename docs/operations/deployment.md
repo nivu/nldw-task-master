@@ -158,6 +158,32 @@ curl -s https://<netlify-domain>/_next/static/chunks/*.js | grep -c '<railway-do
 Then go back to Railway and set `FRONTEND_URL` to the Netlify address, and to
 Supabase to set `site_url`.
 
+## Auth configuration: one file, two environments
+
+`config.toml` is pushed wholesale by `supabase config push`, and **`env()`
+substitution works only on string fields** — a boolean like
+`[auth.email] enable_signup` rejects it:
+
+```
+Invalid TOML document: invalid value
+  enable_signup = env(SUPABASE_AUTH_EMAIL_ENABLED)
+                  ^
+```
+
+So there is no way to express "password login enabled locally, disabled in
+production" in a single config file. Whoever completes FR-AUTH-08 has to pick
+one of these deliberately:
+
+* **Production-correct config.** `config.toml` disables the email provider.
+  Local development and the 32 browser tests then cannot sign in with a
+  password and need another route to a session.
+* **Local-correct config plus a production override script.** Simple locally,
+  but leaves a trap: any future `supabase config push` silently re-enables
+  password sign-in in production. If this route is taken, the override MUST run
+  immediately after every push, from the same script.
+
+The trap in the second option is the reason to prefer the first.
+
 ## 4. The first admin
 
 A fresh deployment has **no users at all**, and no way to make one: FR-AUTH-02

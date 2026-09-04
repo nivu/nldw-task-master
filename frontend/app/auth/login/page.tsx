@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useSearchParams } from "next/navigation";
+import { GoogleButton } from "@/components/portal/google-button";
 
 /**
  * FR-CAL-01 — the calendar is the primary view after sign-in.
@@ -49,7 +50,7 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(
     searchParams.get("error") === "auth_failed"
-      ? "That sign-in link did not work. Try your password."
+      ? "That sign-in did not complete. Try again."
       : null
   );
 
@@ -88,6 +89,18 @@ function LoginForm() {
           <CardDescription>Sign in to mark leave and see your team.</CardDescription>
         </CardHeader>
         <CardContent>
+          {/* FR-AUTH-08 — the intended way in. The password form below is a
+              temporary fallback and is removed once Google is confirmed
+              working against production; disabling it first would lock
+              everybody out of a live system with no way back. */}
+          <GoogleButton />
+
+          <div className="my-5 flex items-center gap-3">
+            <span className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">or, for now</span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
+
           {error && (
             <div
               role="alert"
@@ -127,8 +140,9 @@ function LoginForm() {
           </form>
 
           <p className="mt-6 text-xs text-muted-foreground">
-            Accounts are created by an admin. If you cannot sign in, ask Vinita
-            rather than signing up — there is no sign-up.
+            Accounts are created by an admin — signing in with Google proves who
+            you are, it does not create an account. If Google works but the
+            portal still refuses you, ask an admin to add you.
           </p>
         </CardContent>
       </Card>

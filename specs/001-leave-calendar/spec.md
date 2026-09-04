@@ -148,16 +148,34 @@ Keywords follow RFC 2119: MUST, MUST NOT, SHOULD, MAY.
 |---|---|
 | FR-AUTH-01 | The system MUST require authentication for every page except the sign-in page. |
 | FR-AUTH-02 | The system MUST NOT offer self-registration. Accounts are created by an admin only. |
-| FR-AUTH-03 | An admin MUST be able to create a user with an email address, an initial password, a display name, a role and an assigned lead. |
+| FR-AUTH-03 | An admin MUST be able to create a user with an email address, a display name, a role and an assigned lead. *(Amended 2026-09-05: no initial password — see FR-AUTH-08.)* |
 | FR-AUTH-04 | The system MUST enforce role-based access: a user MUST NOT be able to read another user's bookings, reasons or balances. |
-| FR-AUTH-05 | A user MUST be able to change their own password. |
+| ~~FR-AUTH-05~~ | ~~A user MUST be able to change their own password.~~ **Withdrawn 2026-09-05.** There are no passwords to change; identity is delegated to Google (FR-AUTH-08). Account recovery is a Google concern, which is where it belongs. |
 | FR-AUTH-06 | An admin MUST be able to deactivate a user without deleting their historical records. |
-| FR-AUTH-07 | Passwords MUST be stored using a salted one-way hash. Plaintext or reversible storage is prohibited. |
+| FR-AUTH-07 | Passwords MUST be stored using a salted one-way hash. Plaintext or reversible storage is prohibited. *(Satisfied vacuously from 2026-09-05: this system stores no passwords at all.)* |
+| FR-AUTH-08 | Sign-in MUST be via Google only. The email/password provider MUST be disabled in production. |
+| FR-AUTH-09 | A Google account MUST NOT be able to sign in unless an admin has already created a matching portal account. Google authenticates; it does not authorise. |
+| FR-AUTH-10 | Sign-in MUST NOT be restricted to a single email domain. See the note below. |
 
 **Convention.** Accounts use Nunnari IDs. Where a person has none, the
 convention is `firstname.nl@gmail.com` (for example `sriram.nl@gmail.com`). This
 is why self-registration is disallowed — left to themselves, people sign up with
 personal addresses out of habit.
+
+**Why Google, and why not a domain restriction (FR-AUTH-08, FR-AUTH-10).**
+
+Passwords in a small company get shared — "just use mine, I'll approve it
+later" — and a leave record that somebody else can create is not a record.
+Delegating identity to Google removes the thing that can be passed around.
+Nothing is stored that is worth sharing, and there is no password reset flow to
+socially engineer.
+
+It is tempting to also require a `@nunnarilabs.com` Workspace address, and it
+would be wrong. The convention above puts interns and junior engineers on
+`firstname.nl@gmail.com` precisely because they have no company ID — and they
+are the people §1 says this product exists for. A domain gate would lock out
+its primary users. The gate stays *"an admin created your account"*
+(FR-AUTH-09), which is the check that actually expresses the rule.
 
 ### 5.2 Calendar — FR-CAL
 

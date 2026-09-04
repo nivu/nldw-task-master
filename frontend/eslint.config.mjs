@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Netlify writes generated edge-function code and vendored Deno stdlib
+    // here during a deploy. It is build output, not source, and linting it
+    // reports dozens of errors in code nobody in this repo wrote.
+    ".netlify/**",
   ]),
 ]);
 
