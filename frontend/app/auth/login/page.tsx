@@ -48,11 +48,14 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(
-    searchParams.get("error") === "auth_failed"
-      ? "That sign-in did not complete. Try again."
-      : null
-  );
+  // `reason` is written by /auth/callback and already reads as a sentence.
+  //
+  // Only the query string is read, not the URL fragment. This app uses the
+  // PKCE code flow, where Supabase returns errors as query parameters to the
+  // callback route — which is how they reach the server at all. Fragment
+  // errors belong to the implicit flow, which is not used here.
+  const [error, setError] = useState<string | null>(searchParams.get("reason"));
+
 
   const supabase = createClient();
 
