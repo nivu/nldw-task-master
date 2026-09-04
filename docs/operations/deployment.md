@@ -62,7 +62,8 @@ bundle and every row in the database is readable by anyone.
 
 ## 2. Railway
 
-Four services in one project, all built from `backend/Dockerfile`:
+Four services in one project. The three application services are built from
+`backend/Dockerfile`; Redis comes from Railway's template.
 
 All three application services run the **same image** and differ only by
 `PROCESS_TYPE` (see `backend/entrypoint.sh`). Nothing needs a start command
