@@ -250,6 +250,25 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<netlify-domain>/calendar   # 3
   running looks completely healthy until pending bookings start piling up.
 - The audit log has one `admin.bootstrapped` entry and nothing else.
 
+### After the management layer (spec 003) is deployed
+
+Nothing in the new tier works until an admin does two things by hand, under
+Admin → People:
+
+- Set the role of each delivery head to **Manager**. A manager runs projects
+  and sees money; they still do not approve leave unless they are also
+  somebody's approver. Until this is done nobody but the admin can create a
+  project, and there is no Projects link in anybody's navigation.
+- Enter a **cost rate** for everybody who will log project hours. Every
+  project figure is marked *incomplete* until every person on it has one — a
+  missing rate is an unknown cost, not a free hour. Rates are captured onto
+  time entries as they are saved, so hours logged **before** a rate is set stay
+  unpriced; set rates before the first day people log time.
+
+Verify the guard, because it is the point of the release: signed in as a lead,
+`/projects` must show *Only a manager or admin can do that*, and the Effort
+page must have no Money or Resources tab.
+
 ## Rolling back
 
 Application code: redeploy the previous commit on Railway and Netlify.

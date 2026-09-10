@@ -37,6 +37,17 @@ DEFAULT_GRACE_DAYS = 7
 #: A full working day, used to turn an allocation percentage into hours.
 HOURS_PER_WORKING_DAY = Decimal("8")
 
+#: Spec 003 FR-ACT-02 — time that is real work but belongs to no project. A
+#: fixed set, on purpose: a free-text activity becomes a second, unmanaged
+#: project list within a month.
+ACTIVITIES = ("learning", "internal", "admin", "other")
+ACTIVITY_LABELS = {
+    "learning": "Learning",
+    "internal": "Internal work",
+    "admin": "Admin",
+    "other": "Other",
+}
+
 
 # ---------------------------------------------------------------------------
 # The edit window — Q-01, FR-TIME-08
@@ -87,16 +98,39 @@ def is_locked(
 
 @dataclass(frozen=True)
 class DayEntry:
-    """One line of a day: a project, and how the hours were split."""
+    """One line of a day: a project OR an activity, and how the hours split.
 
-    project_id: str
+    Exactly one of `project_id` / `activity` is set (spec 003 FR-ACT-01). The
+    database enforces the same rule with a CHECK; this mirrors it so a bad line
+    is refused with a sentence rather than a constraint name.
+    """
+
+    # Field order is load-bearing: 002 code and tests construct this
+    # positionally as (project_id, hours_office, hours_home). `activity` is
+    # appended, and a project line passes None for it.
+    project_id: str | None
     hours_office: Decimal
     hours_home: Decimal
     note: str | None = None
+    activity: str | None = None
 
     @property
     def total(self) -> Decimal:
         return self.hours_office + self.hours_home
+
+    @property
+    def key(self) -> str:
+        """What this line is *for* — the identity a day may hold once."""
+        return self.project_id if self.project_id else f"activity:{self.activity}"
+
+
+def check_target(project_id: str | None, activity: str | None) -> str | None:
+    """FR-ACT-01/02 — a line is for a project or an activity, never both."""
+    if bool(project_id) == bool(activity):
+        return "Each line must be for either a project or an activity — not both, not neither."
+    if activity and activity not in ACTIVITIES:
+        return f"Unknown activity {activity!r}."
+    return None
 
 
 def day_total(entries: list[DayEntry]) -> Decimal:

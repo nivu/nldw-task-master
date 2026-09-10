@@ -7,6 +7,7 @@ import { expect, type Page } from "@playwright/test";
 export const PEOPLE = {
   admin: "vinita@nunnari.example",
   lead: "devansh.nl@gmail.com",
+  manager: "sriram.nl@gmail.com",
   user: "deepika.nl@gmail.com",
   otherUser: "tarun.nl@gmail.com",
 } as const;

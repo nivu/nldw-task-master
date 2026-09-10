@@ -15,7 +15,7 @@ import {
   setProjectPhase,
   updateProject,
 } from "@/lib/api/portal";
-import type { AllocationRow, Phase, PortalUser, Project } from "@/lib/api/types";
+import type { AllocatablePerson, AllocationRow, Phase, Project } from "@/lib/api/types";
 import { PHASE_LABEL } from "@/lib/api/types";
 
 const PHASES: Phase[] = ["pre", "delivery", "support"];
@@ -30,24 +30,32 @@ const today = () => new Date().toISOString().slice(0, 10);
  * project is precisely the history the analytics exist to report on.
  *
  * An allocation over 100% is recorded and then reported, not refused
- * (FR-ALLOC-04). Over-allocating somebody mid-crunch is a real thing an admin
+ * (FR-ALLOC-04). Over-allocating somebody mid-crunch is a real thing a manager
  * does, and a product that cannot record it cannot warn about it either.
+ *
+ * Spec 003 opens this to managers (FR-ROLE-02) and adds revenue (FR-FIN-02).
+ * Revenue is money, so this panel is only ever rendered for the manager tier;
+ * `people` is the name-and-id list from /analytics/people, because a manager
+ * cannot reach the user directory (FR-ROLE-03) and does not need to.
  */
 export function ProjectsPanel({
   projects,
   allocations,
   people,
+  currency,
   onDone,
   onError,
 }: {
   projects: Project[];
   allocations: AllocationRow[];
-  people: PortalUser[];
+  people: AllocatablePerson[];
+  currency: string;
   onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
+  const [revenue, setRevenue] = useState("");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -69,10 +77,15 @@ export function ProjectsPanel({
               event.preventDefault();
               setBusy(true);
               try {
-                await createProject({ name, client: client.trim() || null });
+                await createProject({
+                  name,
+                  client: client.trim() || null,
+                  revenue: revenue.trim() || null,
+                });
                 onDone(`Added ${name}.`);
                 setName("");
                 setClient("");
+                setRevenue("");
               } catch (err) {
                 onError(errorMessage(err));
               } finally {
@@ -93,6 +106,21 @@ export function ProjectsPanel({
                 placeholder="Internal"
               />
             </div>
+            <div className="space-y-1.5">
+              {/* FR-FIN-02 — contract value or internal budget. What it is
+                  worth, not what it costs; COGS is derived from hours. */}
+              <Label htmlFor="prevenue">Revenue ({currency})</Label>
+              <Input
+                id="prevenue"
+                type="number"
+                min="0"
+                step="1000"
+                className="w-36"
+                value={revenue}
+                onChange={(e) => setRevenue(e.target.value)}
+                placeholder="optional"
+              />
+            </div>
             <Button type="submit" disabled={busy || !name.trim()}>
               {busy ? "Adding…" : "Add"}
             </Button>
@@ -109,13 +137,18 @@ export function ProjectsPanel({
                 {project.client ?? "Internal"}
               </span>
               {project.is_archived && <Badge variant="outline">archived</Badge>}
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {project.revenue !== null && project.revenue !== undefined
+                  ? `${currency} ${formatMoney(project.revenue)}`
+                  : "no revenue set"}
+              </span>
               <div className="ml-auto flex gap-1">
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setExpanded(expanded === project.id ? null : project.id)}
                 >
-                  {expanded === project.id ? "Hide" : "Phases & people"}
+                  {expanded === project.id ? "Hide" : "Phases, people & revenue"}
                 </Button>
                 <Button
                   variant="ghost"
@@ -149,6 +182,12 @@ export function ProjectsPanel({
 
             {expanded === project.id && (
               <div className="space-y-4 border-t pt-3">
+                <RevenueForm
+                  project={project}
+                  currency={currency}
+                  onDone={onDone}
+                  onError={onError}
+                />
                 <PhaseForm project={project} onDone={onDone} onError={onError} />
                 <AllocationForm
                   project={project}
@@ -163,6 +202,65 @@ export function ProjectsPanel({
         </Card>
       ))}
     </div>
+  );
+}
+
+/** Format a money string with thousands separators. Display only — the UI
+ *  never does arithmetic on money (see the note atop `types.ts`). */
+export function formatMoney(value: string): string {
+  const [whole, fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction && Number(fraction) > 0 ? `${grouped}.${fraction.slice(0, 2)}` : grouped;
+}
+
+function RevenueForm({
+  project,
+  currency,
+  onDone,
+  onError,
+}: {
+  project: Project;
+  currency: string;
+  onDone: (m: string) => void;
+  onError: (m: string) => void;
+}) {
+  // `String(Number(...))` drops the ".0" the JSON number arrives with.
+  const [revenue, setRevenue] = useState(project.revenue ? String(Number(project.revenue)) : "");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <form
+      className="flex flex-wrap items-end gap-2"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        try {
+          // FR-FIN-08 — the backend audits this change.
+          await updateProject(project.id, { revenue: revenue.trim() || null });
+          onDone(`Revenue for ${project.name} set.`);
+        } catch (err) {
+          onError(errorMessage(err));
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="space-y-1.5">
+        <Label className="text-xs">Revenue ({currency})</Label>
+        <Input
+          type="number"
+          min="0"
+          step="1000"
+          className="w-36"
+          value={revenue}
+          onChange={(e) => setRevenue(e.target.value)}
+          placeholder="not set"
+        />
+      </div>
+      <Button type="submit" variant="outline" size="sm" disabled={busy}>
+        {busy ? "Saving…" : "Set revenue"}
+      </Button>
+    </form>
   );
 }
 
@@ -225,8 +323,8 @@ function PhaseForm({
         <Input type="date" value={endsOn} onChange={(e) => setEndsOn(e.target.value)} required />
       </div>
       <div className="space-y-1.5">
-        {/* Q-05 — hours, not money. Money needs per-person rates, which is
-            salary-adjacent data in a system every lead can read. */}
+        {/* Hours. Money lives on the project (revenue) and is derived per
+            person (COGS) — spec 003 §4 — never typed in per phase. */}
         <Label className="text-xs">Budget (hours)</Label>
         <Input
           type="number"
@@ -253,7 +351,7 @@ function AllocationForm({
   onError,
 }: {
   project: Project;
-  people: PortalUser[];
+  people: AllocatablePerson[];
   allocations: AllocationRow[];
   onDone: (m: string) => void;
   onError: (m: string) => void;
@@ -297,13 +395,11 @@ function AllocationForm({
             required
           >
             <option value="">Choose…</option>
-            {people
-              .filter((p) => p.is_active)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.display_name}
-                </option>
-              ))}
+            {people.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name}
+              </option>
+            ))}
           </select>
         </div>
         <div className="space-y-1.5">

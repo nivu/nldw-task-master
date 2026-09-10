@@ -46,6 +46,9 @@ a second with no database.
 | Who may decide this? | `domain/approval.py::can_decide` | FR-APPR-05, Q-05 |
 | What does a day cost? | `domain/cost.py` | §6.2, Q-09 |
 | May an admin backfill this? | `domain/rules.py::check_backfill` | FR-BACK, A-21 |
+| Is this timesheet line valid? | `domain/timesheets.py` | 002 FR-TIME, 003 FR-ACT |
+| What did a project cost, and is that figure complete? | `domain/financials.py` | 003 §4, FR-FIN |
+| Who may see somebody's timesheet? | `domain/approval.py::can_view_timesheet` | 002 Q-08, 003 §7 |
 
 ## Three things that are easy to get wrong
 
@@ -127,6 +130,47 @@ Three layers, deliberately not the same:
 Q-06 is a setting (`lead_view_shows_reason`, default false) so the decision is
 visible in the product rather than buried in a document.
 
+## Roles, and who can see money (spec 003)
+
+Four roles: `user`, `lead`, `manager`, `admin`. Two properties in
+`app/api/deps.py::CurrentUser` decide most things — `is_lead` (lead, manager,
+admin: may see the team view and effort) and `is_manager` (manager, admin: may
+run projects and see money). Three guards hang off them: `LeadDep`,
+`ManagerDep`, `AdminDep`.
+
+A manager runs *projects*; a lead runs *people*. A manager approves nobody's
+leave unless they are also somebody's `lead_id` (`can_decide` is unchanged),
+and does not gain access to leave reasons (`can_view_reason` is unchanged —
+health data, 001 Q-06). `can_view_timesheet` is a separate rule precisely so
+that widening one never silently widens the other.
+
+Money — `profiles.cost_rate_hourly`, `projects.revenue`,
+`time_entries.cost_rate_snapshot`, and everything derived from them — is
+withheld from everyone below manager in three places, on purpose:
+
+1. **The database.** `009_management.sql` revokes table-level SELECT on those
+   three tables from the browser role and re-grants it column by column,
+   without the money columns. A `select *` from the browser now fails loudly
+   rather than leaking. (A column-level `REVOKE` on its own is a no-op when a
+   table-level grant exists — that was the first attempt, and it withheld
+   nothing.)
+2. **The API.** Every money route lives behind `ManagerDep`, separately from the
+   `LeadDep` effort routes, and no route below manager ever selects the
+   columns. A person cannot see their own rate (003 Q-01).
+3. **The arithmetic.** `domain/financials.py` treats a missing rate as
+   *unknown*, never zero; every figure carries `complete` and names who is
+   unrated. The rate used is the one captured onto each time entry when it was
+   saved — a rate change never re-prices history.
+
+`cost_rate_hourly` is labelled *cost rate* on every screen and never *salary*.
+It is a fully-loaded cost the company attributes; it is not what anybody is
+paid, and the person it describes cannot see it.
+
+**Managers see every project** (003 Q-02). This was chosen against the
+recommendation; every delivery head can see every other project's margin and
+every person's cost rate. The consequence is recorded in the spec so it is
+never mistaken for an oversight.
+
 ## Background work
 
 Celery over Redis. Two things run off the request path:
@@ -185,7 +229,8 @@ Demo accounts, all with password `portal123` (see `supabase/seed.sql`):
 |---|---|
 | `vinita@nunnari.example` | admin |
 | `devansh.nl@gmail.com` | lead |
-| `sriram.nl@gmail.com` / `deepika.nl@gmail.com` / `tarun.nl@gmail.com` | user |
+| `sriram.nl@gmail.com` | manager |
+| `deepika.nl@gmail.com` / `tarun.nl@gmail.com` | user |
 
 ## Known gaps
 

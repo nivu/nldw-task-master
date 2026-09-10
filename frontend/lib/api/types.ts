@@ -13,7 +13,8 @@
  */
 
 export type Category = "wfh" | "casual" | "sick";
-export type Role = "user" | "lead" | "admin";
+/** Spec 003 FR-ROLE-01 — `manager` sits between lead and admin. */
+export type Role = "user" | "lead" | "manager" | "admin";
 export type BookingStatus =
   | "pending"
   | "approved"
@@ -30,7 +31,13 @@ export interface Me {
   lead_id: string | null;
   /** A hint for which navigation to render. Never a permission — every
    *  guarded route re-checks the role server-side. */
-  capabilities: { team_view: boolean; admin_panel: boolean };
+  capabilities: {
+    team_view: boolean;
+    admin_panel: boolean;
+    /** Spec 003 — the manager tier: runs projects, sees money. */
+    manage_projects: boolean;
+    financials: boolean;
+  };
 }
 
 export interface Balance {
@@ -165,6 +172,10 @@ export interface PortalUser {
   role: Role;
   lead_id: string | null;
   is_active: boolean;
+  /** Spec 003 FR-FIN-01 — a fully-loaded hourly COST the company attributes.
+   *  Only ever present in the admin's user list. Labelled "cost rate" on
+   *  every screen and never "salary" (spec 003 §9). */
+  cost_rate_hourly?: string | null;
 }
 
 export interface Allowance {
@@ -225,10 +236,16 @@ export const PHASE_LABEL: Record<Phase, string> = {
   support: "Post-delivery support",
 };
 
+/** Spec 003 FR-ACT-02 — the fixed set of non-project activities. */
+export type Activity = "learning" | "internal" | "admin" | "other";
+
 export interface TimesheetEntry {
   id: string;
-  project_id: string;
-  project_name: string;
+  /** Exactly one of `project_id` / `activity` is set (FR-ACT-01). */
+  project_id: string | null;
+  project_name: string | null;
+  activity: Activity | null;
+  activity_name: string | null;
   phase_id: string | null;
   hours_office: string;
   hours_home: string;
@@ -257,6 +274,8 @@ export interface TimesheetDay {
   max_hours: string;
   entries: TimesheetEntry[];
   projects: LoggableProject[];
+  /** FR-TIME-12 — offered alongside projects, always. */
+  activities: { id: Activity; name: string }[];
   total: string;
 }
 
@@ -297,6 +316,8 @@ export interface Project {
   is_archived: boolean;
   phases?: ProjectPhase[];
   logged_hours?: string;
+  /** Spec 003 FR-FIN-02 — present only on manager/admin routes. */
+  revenue?: string | null;
 }
 
 export interface ProjectEffort {
@@ -354,7 +375,7 @@ export interface Forecast {
 export interface CurrentWork {
   user_id: string;
   display_name: string;
-  projects: { project_id: string; project_name: string; hours: string }[];
+  projects: { project_id: string | null; project_name: string; hours: string }[];
   total: string;
   latest_note: string | null;
 }
@@ -368,4 +389,72 @@ export interface AllocationRow {
   starts_on: string;
   ends_on: string;
   percent: string;
+}
+
+// ---------------------------------------------------------------------------
+// Management — spec 003. Manager and admin only.
+//
+// Money is a string for the same reason hours are. Every figure that could be
+// incomplete says so (`complete`) and names who is unrated (FR-FIN-06): a
+// margin that quietly omits somebody's cost is a better number than the truth.
+// ---------------------------------------------------------------------------
+
+export interface AllocatablePerson {
+  id: string;
+  display_name: string;
+}
+
+export interface ProjectFinancials {
+  project_id: string;
+  currency: string;
+  revenue: string | null;
+  total_hours: string;
+  /** Null when anybody on the project is unrated — see `cogs_partial`. */
+  cogs: string | null;
+  /** What the rated people cost: a true lower bound, never the total. */
+  cogs_partial: string | null;
+  margin: string | null;
+  margin_pct: string | null;
+  complete: boolean;
+  unrated: { user_id: string; display_name: string }[];
+  /** Sorted by name, never by money (spec 003 §9). */
+  people: {
+    user_id: string;
+    display_name: string;
+    hours: string;
+    cost_rate: string | null;
+    cogs: string | null;
+    attributed_revenue: string | null;
+  }[];
+}
+
+export interface PeopleFinancials {
+  currency: string;
+  people: {
+    user_id: string;
+    display_name: string;
+    current_cost_rate: string | null;
+    hours: string;
+    cogs: string | null;
+    attributed_revenue: string | null;
+    projects: number;
+    complete: boolean;
+  }[];
+  unrated: { user_id: string; display_name: string }[];
+}
+
+export interface ResourceWeek {
+  week_start: string;
+  allocated_pct: string;
+  over: boolean;
+  leave_days: string;
+  working_days: number;
+  projects: { project_id: string; project_name: string; percent: string }[];
+}
+
+export interface ResourcesTimeline {
+  start: string;
+  end: string;
+  weeks: string[];
+  people: { user_id: string; display_name: string; role: Role; weeks: ResourceWeek[] }[];
 }

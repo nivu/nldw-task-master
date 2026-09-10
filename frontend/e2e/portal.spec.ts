@@ -13,7 +13,7 @@ import { openDayNumbered, openLastBookableDay, PEOPLE, signIn } from "./helpers"
 
 test.describe("signing in", () => {
   test("every guarded route redirects an anonymous visitor (FR-AUTH-01)", async ({ page }) => {
-    for (const route of ["/", "/calendar", "/team", "/admin", "/approvals", "/account"]) {
+    for (const route of ["/", "/calendar", "/team", "/admin", "/approvals", "/account", "/projects", "/timesheet"]) {
       await page.goto(route);
       await expect(page).toHaveURL(/\/auth\/login/);
     }
@@ -254,5 +254,61 @@ test.describe("authorisation", () => {
     await page.goto("/admin");
     // Hiding the link is tidiness; this is the check that matters.
     await expect(page.getByText(/Only an admin can do that/i)).toBeVisible();
+  });
+});
+
+test.describe("the management layer (spec 003)", () => {
+  test("a manager runs projects and sees money", async ({ page }) => {
+    await signIn(page, PEOPLE.manager);
+    // Header nav on desktop, bottom bar on a phone — whichever is visible.
+    await expect(page.getByRole("link", { name: "Projects" }).first()).toBeVisible();
+    // FR-ROLE-03 — but not the admin panel.
+    await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
+
+    await page.goto("/projects");
+    await expect(page.getByText("Add a project")).toBeVisible();
+    await expect(page.getByLabel(/Revenue/)).toBeVisible();
+
+    await page.goto("/analytics");
+    await expect(page.getByRole("tab", { name: "Money" })).toBeVisible();
+    await page.getByRole("tab", { name: "Money" }).click();
+    await expect(page.getByText(/Per person, across projects/)).toBeVisible();
+  });
+
+  test("a lead sees effort but never money (FR-FIN-07)", async ({ page }) => {
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/analytics");
+    await expect(page.getByRole("tab", { name: "Projects" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Money" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Resources" })).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText(/COGS|margin|cost rate/i);
+
+    // Hiding the tab is tidiness; the refusal is the check that matters.
+    await page.goto("/projects");
+    await expect(page.getByText(/Only a manager or admin can do that/i)).toBeVisible();
+  });
+
+  test("a plain user gets no Projects navigation and is refused directly", async ({ page }) => {
+    await signIn(page, PEOPLE.otherUser);
+    await expect(page.locator("header").getByRole("link", { name: "Projects" })).toHaveCount(0);
+    await page.goto("/projects");
+    await expect(page.getByText(/Only a manager or admin can do that/i)).toBeVisible();
+  });
+
+  test("the timesheet offers activities and asks what was done (FR-TIME-11/12)", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/timesheet");
+    await expect(page.getByText("Not for a project")).toBeVisible();
+    await page.getByRole("button", { name: /Learning/ }).click();
+    await expect(page.getByLabel("What did you do?").first()).toBeVisible();
+    await expect(page.getByText("activity").first()).toBeVisible();
+  });
+
+  test("the admin labels the rate as a cost rate, never salary", async ({ page }) => {
+    await signIn(page, PEOPLE.admin);
+    await page.goto("/admin");
+    await expect(page.getByText(/Cost rate/).first()).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(/salary|rate of pay/i);
+    await expect(page.getByLabel("Role for Sriram")).toHaveValue("manager");
   });
 });

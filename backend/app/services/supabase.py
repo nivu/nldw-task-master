@@ -346,19 +346,19 @@ def list_time_entries(
     return query.order("date").execute().data or []
 
 
-def upsert_time_entry(data: dict[str, Any]) -> dict[str, Any]:
-    """One line per person, per day, per project.
+def insert_time_entry(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("time_entries").insert(data).execute().data[0]
 
-    Logging the same project twice on one day is a correction, not a second
-    fact — accumulating rows would double-count in every total the analytics
-    produce.
+
+def update_time_entry(entry_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Correct an existing line in place.
+
+    Update-by-id rather than upsert: since 009 there are two partial unique
+    indexes (one for project lines, one for activity lines), and PostgREST's
+    `on_conflict` cannot name a partial index's predicate. The service layer
+    already knows which row it is correcting, so it says so.
     """
-    return (
-        supabase.table("time_entries")
-        .upsert(data, on_conflict="user_id,date,project_id")
-        .execute()
-        .data[0]
-    )
+    return supabase.table("time_entries").update(data).eq("id", entry_id).execute().data[0]
 
 
 def delete_time_entry(entry_id: str) -> None:

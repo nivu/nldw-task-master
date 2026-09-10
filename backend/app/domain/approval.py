@@ -48,7 +48,10 @@ def can_decide(actor: Person, subject: Person) -> bool:
         return False
     if actor.role == "admin":
         return True
-    return actor.role == "lead" and subject.lead_id == actor.id
+    # Spec 003 FR-ROLE-04: a manager runs projects, not people. They approve
+    # leave only for someone whose lead_id they are — exactly like a lead. The
+    # role list here is who MAY be a lead_id; the lead_id match is the rule.
+    return actor.role in ("lead", "manager") and subject.lead_id == actor.id
 
 
 def can_view_reason(actor: Person, subject: Person) -> bool:
@@ -59,11 +62,35 @@ def can_view_reason(actor: Person, subject: Person) -> bool:
     conflating them makes it easy to widen one while meaning to widen the
     other. Q-06 further restricts *where* a reason is shown; this answers only
     whether the viewer is entitled to it at all.
+
+    Managers are NOT added here. A sick-leave reason is health information, and
+    "runs all the projects" is not a reason to read it. See `can_view_timesheet`
+    for the wider rule that governs project work.
     """
     if not actor.is_active:
         return False
     if actor.id == subject.id:
         return True
     if actor.role == "admin":
+        return True
+    return actor.role in ("lead", "manager") and subject.lead_id == actor.id
+
+
+def can_view_timesheet(actor: Person, subject: Person) -> bool:
+    """Spec 003 §7, 002 Q-08 — who may read an individual's timesheet.
+
+    The person, their lead, admins — and managers, who see every project's
+    effort and therefore every person's hours on it (FR-ROLE-05).
+
+    Kept apart from `can_view_reason` on purpose. A timesheet note is "built
+    the export API"; a leave reason may be "chemotherapy". Widening one must
+    not widen the other, and a shared function is how that happens by
+    accident.
+    """
+    if not actor.is_active:
+        return False
+    if actor.id == subject.id:
+        return True
+    if actor.role in ("admin", "manager"):
         return True
     return actor.role == "lead" and subject.lead_id == actor.id

@@ -60,8 +60,19 @@ class CurrentUser(Person):
         return self.role == "admin"
 
     @property
+    def is_manager(self) -> bool:
+        """Spec 003 FR-ROLE — runs projects, sees all effort and all money."""
+        return self.role in ("manager", "admin")
+
+    @property
     def is_lead(self) -> bool:
-        return self.role in ("lead", "admin")
+        """May see the team view and effort analytics.
+
+        Managers are included: they need to know who is available to allocate.
+        This grants *sight*, not approval — `can_decide` still requires being
+        the person's `lead_id`, and a manager who leads nobody approves nobody.
+        """
+        return self.role in ("lead", "manager", "admin")
 
 
 def _bearer_token(request: Request) -> str:
@@ -150,5 +161,18 @@ def require_admin(user: CurrentUserDep) -> CurrentUser:
     return user
 
 
+def require_manager(user: CurrentUserDep) -> CurrentUser:
+    """Guards projects, allocations and every money figure — spec 003.
+
+    This is the visibility tier that made reversing 002 Q-05 acceptable: cost
+    rates and revenue exist behind this guard and nowhere below it. A lead
+    reaching a route guarded here gets the same refusal as a user.
+    """
+    if not user.is_manager:
+        raise ProblemDetail(403, "Only a manager or admin can do that.")
+    return user
+
+
 LeadDep = Annotated[CurrentUser, Depends(require_lead)]
+ManagerDep = Annotated[CurrentUser, Depends(require_manager)]
 AdminDep = Annotated[CurrentUser, Depends(require_admin)]

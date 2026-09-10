@@ -20,7 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 Category = Literal["wfh", "casual", "sick"]
-Role = Literal["user", "lead", "admin"]
+Role = Literal["user", "lead", "manager", "admin"]
 Status = Literal["pending", "approved", "rejected", "withdrawn", "released", "unrecognised"]
 
 
@@ -133,6 +133,10 @@ class UserUpdate(BaseModel):
     role: Role | None = None
     lead_id: str | None = None
     is_active: bool | None = None
+    # Spec 003 FR-FIN-01. A fully-loaded hourly COST the company attributes —
+    # not salary, and never labelled as such. Admin-only route; never echoed
+    # back to anyone below manager.
+    cost_rate_hourly: Decimal | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class AllowanceIn(BaseModel):
@@ -192,12 +196,20 @@ class SettingUpdate(BaseModel):
 Phase = Literal["pre", "delivery", "support"]
 
 
+Activity = Literal["learning", "internal", "admin", "other"]
+
+
 class TimesheetLine(BaseModel):
-    """One project's worth of a day — FR-TIME-01/02."""
+    """One project's — or one activity's — worth of a day — FR-TIME-01/02.
+
+    Exactly one of `project_id` / `activity` (spec 003 FR-ACT-01). The service
+    layer refuses the other combinations with a sentence; this only shapes.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str
+    project_id: str | None = None
+    activity: Activity | None = None
     hours_office: Decimal = Field(default=Decimal("0"), ge=0, le=24)
     hours_home: Decimal = Field(default=Decimal("0"), ge=0, le=24)
     note: str | None = Field(default=None, max_length=500)
@@ -218,12 +230,13 @@ class TimesheetDay(BaseModel):
 
 
 class ProjectIn(BaseModel):
-    """FR-PROJ-01."""
+    """FR-PROJ-01; revenue per spec 003 FR-FIN-02 (money — manager/admin only)."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=160)
     client: str | None = Field(default=None, max_length=160)
+    revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
 
 
 class ProjectUpdate(BaseModel):
@@ -232,6 +245,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     client: str | None = Field(default=None, max_length=160)
     is_archived: bool | None = None
+    revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
 
 
 class PhaseIn(BaseModel):

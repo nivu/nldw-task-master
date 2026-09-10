@@ -8,8 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { errorMessage, getTimesheetDay, saveTimesheetDay } from "@/lib/api/portal";
-import type { TimesheetDay } from "@/lib/api/types";
+import type { Activity, TimesheetDay } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
@@ -24,15 +25,26 @@ import { cn } from "@/lib/utils";
  *
  * If this feels like filling in a form, it will be filled in on Friday for the
  * whole week, from memory, and the numbers will be wrong (§1.1).
+ *
+ * Spec 003 adds two things. A line is for a project OR an activity — learning,
+ * internal work, admin — never both (FR-ACT-01), so a day spent on a course is
+ * a logged day rather than a gap. And the note is the only record of what was
+ * done (Q-03: free text, not a task tracker), so it is labelled as such and
+ * sits above the hours rather than as an afterthought below them (FR-TIME-11).
  */
 
 interface Line {
   key: string;
-  project_id: string;
+  /** Exactly one of these is set. */
+  project_id: string | null;
+  activity: Activity | null;
   hours_office: string;
   hours_home: string;
   note: string;
 }
+
+const lineKey = (line: { project_id: string | null; activity: Activity | null }) =>
+  line.project_id ?? `activity:${line.activity}`;
 
 export default function TimesheetPage() {
   const [day, setDay] = useState<string>("");
@@ -71,6 +83,7 @@ function DayForm({
     data.entries.map((entry) => ({
       key: entry.id,
       project_id: entry.project_id,
+      activity: entry.activity,
       hours_office: entry.hours_office,
       hours_home: entry.hours_home,
       note: entry.note ?? "",
@@ -81,8 +94,9 @@ function DayForm({
   const [saved, setSaved] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const used = new Set(lines.map((l) => l.project_id));
+  const used = new Set(lines.map(lineKey));
   const available = data.projects.filter((p) => !used.has(p.id));
+  const availableActivities = data.activities.filter((a) => !used.has(`activity:${a.id}`));
   const total = lines.reduce(
     (sum, l) => sum + (Number(l.hours_office) || 0) + (Number(l.hours_home) || 0),
     0
@@ -110,6 +124,7 @@ function DayForm({
           .filter((l) => Number(l.hours_office) > 0 || Number(l.hours_home) > 0)
           .map((l) => ({
             project_id: l.project_id,
+            activity: l.activity,
             hours_office: l.hours_office || "0",
             hours_home: l.hours_home || "0",
             note: l.note.trim() || null,
@@ -182,12 +197,24 @@ function DayForm({
 
       <div className="space-y-3">
         {lines.map((line) => {
-          const project = data.projects.find((p) => p.id === line.project_id);
+          const project = line.project_id
+            ? data.projects.find((p) => p.id === line.project_id)
+            : undefined;
+          const activity = line.activity
+            ? data.activities.find((a) => a.id === line.activity)
+            : undefined;
           return (
             <Card key={line.key}>
               <CardContent className="space-y-3 p-3">
                 <div className="flex items-center gap-2">
-                  <span className="flex-1 text-sm font-medium">{project?.name ?? "—"}</span>
+                  <span className="flex-1 text-sm font-medium">
+                    {project?.name ?? activity?.name ?? "—"}
+                  </span>
+                  {activity && (
+                    <Badge variant="secondary" title="Not for a client project">
+                      activity
+                    </Badge>
+                  )}
                   {/* Q-07 — allowed, and named rather than hidden. */}
                   {project && !project.allocated && (
                     <Badge variant="outline" title="You are not allocated to this project">
@@ -208,6 +235,27 @@ function DayForm({
                   </Button>
                 </div>
 
+                {/* FR-TIME-11 — the only task record there is, so it comes
+                    first and says what it is for. */}
+                <div className="space-y-1.5">
+                  <Label htmlFor={`note-${line.key}`} className="text-xs">
+                    What did you do?
+                  </Label>
+                  <Textarea
+                    id={`note-${line.key}`}
+                    value={line.note}
+                    disabled={!data.can_log}
+                    onChange={(e) => update(line.key, { note: e.target.value })}
+                    placeholder={
+                      activity
+                        ? "e.g. Finished module 3 of the Rust course"
+                        : "e.g. Built the export API, reviewed the data model"
+                    }
+                    maxLength={500}
+                    rows={2}
+                  />
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <HoursField
                     label="Office"
@@ -222,52 +270,82 @@ function DayForm({
                     onChange={(v) => update(line.key, { hours_home: v })}
                   />
                 </div>
-
-                <Input
-                  value={line.note}
-                  disabled={!data.can_log}
-                  onChange={(e) => update(line.key, { note: e.target.value })}
-                  placeholder="What did you work on?"
-                  maxLength={500}
-                />
               </CardContent>
             </Card>
           );
         })}
 
-        {data.can_log && available.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {available.map((project) => (
-              <Button
-                key={project.id}
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setLines((c) => [
-                    ...c,
-                    {
-                      key: `new-${project.id}`,
-                      project_id: project.id,
-                      hours_office: "0",
-                      hours_home: "0",
-                      note: "",
-                    },
-                  ]);
-                  setDirty(true);
-                }}
-              >
-                <Plus className="size-3.5" />
-                {project.name}
-              </Button>
-            ))}
+        {data.can_log && (available.length > 0 || availableActivities.length > 0) && (
+          <div className="space-y-2">
+            {available.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Projects</span>
+                {available.map((project) => (
+                  <Button
+                    key={project.id}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setLines((c) => [
+                        ...c,
+                        {
+                          key: `new-${project.id}`,
+                          project_id: project.id,
+                          activity: null,
+                          hours_office: "0",
+                          hours_home: "0",
+                          note: "",
+                        },
+                      ]);
+                      setDirty(true);
+                    }}
+                  >
+                    <Plus className="size-3.5" />
+                    {project.name}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {/* FR-TIME-12 — always offered, so a day with no project work is
+                still a logged day rather than a gap in coverage. */}
+            {availableActivities.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Not for a project</span>
+                {availableActivities.map((activity) => (
+                  <Button
+                    key={activity.id}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setLines((c) => [
+                        ...c,
+                        {
+                          key: `new-activity-${activity.id}`,
+                          project_id: null,
+                          activity: activity.id,
+                          hours_office: "0",
+                          hours_home: "0",
+                          note: "",
+                        },
+                      ]);
+                      setDirty(true);
+                    }}
+                  >
+                    <Plus className="size-3.5" />
+                    {activity.name}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {data.projects.length === 0 && (
           <Card>
             <CardContent className="p-4 text-sm text-muted-foreground">
-              You are not allocated to any project for this date. Ask an admin to
-              allocate you, and it will appear here.
+              You are not allocated to any project for this date. A manager can
+              allocate you, and it will appear here. Learning, internal and admin
+              time can still be logged above.
             </CardContent>
           </Card>
         )}

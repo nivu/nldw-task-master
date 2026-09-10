@@ -10,7 +10,7 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import AdminDep
+from app.api.deps import AdminDep, ManagerDep
 from app.api.errors import ProblemDetail
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
@@ -47,6 +47,11 @@ def list_users(admin: AdminDep) -> list[dict]:
             "role": row["role"],
             "lead_id": row["lead_id"],
             "is_active": row["is_active"],
+            # FR-FIN-01 — admin sets it here. Spec 003 §9: "cost rate", never
+            # "salary"; the UI label must match.
+            "cost_rate_hourly": (
+                str(row["cost_rate_hourly"]) if row.get("cost_rate_hourly") is not None else None
+            ),
         }
         for row in db.list_profiles()
     ]
@@ -147,6 +152,9 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
 
     if user_id == admin.id and changes.get("is_active") is False:
         raise ProblemDetail(422, "You cannot deactivate your own account.")
+
+    if "cost_rate_hourly" in changes and changes["cost_rate_hourly"] is not None:
+        changes["cost_rate_hourly"] = str(changes["cost_rate_hourly"])
 
     updated = db.update_profile(user_id, changes)
     audit.record(
@@ -502,14 +510,18 @@ def upcoming_holidays(admin: AdminDep) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Projects, phases and allocations — spec 002 §5.1, §5.2
+# Projects, phases and allocations — spec 002 §5.1, §5.2; spec 003 FR-ROLE-02
 #
-# Admin only (FR-PROJ-05). Every mutation writes to the append-only audit log.
+# Manager OR admin (spec 003 lifted 002's FR-PROJ-05 admin-only rule). Every
+# mutation writes to the append-only audit log. Everything ABOVE this line in
+# the file stays admin-only: people, allowances, holidays, settings, backfill
+# (FR-ROLE-03). The split is a section boundary on purpose — a role swap that
+# touched the whole file would hand managers the user directory.
 # ---------------------------------------------------------------------------
 
 
 @router.get("/projects")
-def list_projects(admin: AdminDep) -> list[dict]:
+def list_projects(manager: ManagerDep) -> list[dict]:
     projects = db.list_projects(include_archived=True)
     phases: dict[str, list[dict]] = {}
     for phase in db.list_phases():
@@ -530,6 +542,10 @@ def list_projects(admin: AdminDep) -> list[dict]:
             "name": p["name"],
             "client": p.get("client"),
             "is_archived": p["is_archived"],
+            # Money — FR-FIN-02. Safe here only because every route in this
+            # section is ManagerDep; the analytics routes a lead can reach
+            # never select it.
+            "revenue": str(p["revenue"]) if p.get("revenue") is not None else None,
             "phases": phases.get(p["id"], []),
         }
         for p in projects
@@ -537,7 +553,7 @@ def list_projects(admin: AdminDep) -> list[dict]:
 
 
 @router.post("/projects", status_code=201)
-def create_project(payload: ProjectIn, admin: AdminDep) -> dict:
+def create_project(payload: ProjectIn, manager: ManagerDep) -> dict:
     """FR-PROJ-01."""
     if any(
         p["name"].strip().lower() == payload.name.strip().lower()
@@ -549,27 +565,33 @@ def create_project(payload: ProjectIn, admin: AdminDep) -> dict:
         {
             "name": payload.name.strip(),
             "client": (payload.client or "").strip() or None,
-            "created_by": admin.id,
+            "revenue": str(payload.revenue) if payload.revenue is not None else None,
+            "created_by": manager.id,
         }
     )
     audit.record(
         action="project.created",
         target_table="projects",
         target_id=row["id"],
-        actor_id=admin.id,
-        after={"name": row["name"], "client": row.get("client")},
+        actor_id=manager.id,
+        after={
+            "name": row["name"],
+            "client": row.get("client"),
+            "revenue": str(payload.revenue) if payload.revenue is not None else None,
+        },
     )
     return {
         "id": row["id"],
         "name": row["name"],
         "client": row.get("client"),
         "is_archived": row["is_archived"],
+        "revenue": str(row["revenue"]) if row.get("revenue") is not None else None,
         "phases": [],
     }
 
 
 @router.patch("/projects/{project_id}")
-def update_project(project_id: str, payload: ProjectUpdate, admin: AdminDep) -> dict:
+def update_project(project_id: str, payload: ProjectUpdate, manager: ManagerDep) -> dict:
     """FR-PROJ-04 — archiving is the only removal.
 
     Effort logged against a finished project is exactly the history the
@@ -582,13 +604,15 @@ def update_project(project_id: str, payload: ProjectUpdate, admin: AdminDep) -> 
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
+    if "revenue" in changes and changes["revenue"] is not None:
+        changes["revenue"] = str(changes["revenue"])
 
     row = db.update_project(project_id, changes)
     audit.record(
         action="project.updated",
         target_table="projects",
         target_id=project_id,
-        actor_id=admin.id,
+        actor_id=manager.id,
         before={k: existing.get(k) for k in changes},
         after=changes,
     )
@@ -597,11 +621,12 @@ def update_project(project_id: str, payload: ProjectUpdate, admin: AdminDep) -> 
         "name": row["name"],
         "client": row.get("client"),
         "is_archived": row["is_archived"],
+        "revenue": str(row["revenue"]) if row.get("revenue") is not None else None,
     }
 
 
 @router.put("/projects/{project_id}/phases")
-def set_phase(project_id: str, payload: PhaseIn, admin: AdminDep) -> dict:
+def set_phase(project_id: str, payload: PhaseIn, manager: ManagerDep) -> dict:
     """FR-PROJ-02/03.
 
     Moving a phase's dates does NOT re-file existing time entries. Each entry
@@ -628,7 +653,7 @@ def set_phase(project_id: str, payload: PhaseIn, admin: AdminDep) -> dict:
         action="project.phase_set",
         target_table="project_phases",
         target_id=row["id"],
-        actor_id=admin.id,
+        actor_id=manager.id,
         after={
             "project_id": project_id,
             "phase": payload.phase,
@@ -647,7 +672,7 @@ def set_phase(project_id: str, payload: PhaseIn, admin: AdminDep) -> dict:
 
 
 @router.get("/allocations")
-def list_allocations(admin: AdminDep) -> list[dict]:
+def list_allocations(manager: ManagerDep) -> list[dict]:
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
     projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
     return [
@@ -666,7 +691,7 @@ def list_allocations(admin: AdminDep) -> list[dict]:
 
 
 @router.post("/allocations", status_code=201)
-def create_allocation(payload: AllocationIn, admin: AdminDep) -> dict:
+def create_allocation(payload: AllocationIn, manager: ManagerDep) -> dict:
     """FR-ALLOC-01/02/03.
 
     Concurrent allocations past 100% are permitted and reported, not refused
@@ -687,14 +712,14 @@ def create_allocation(payload: AllocationIn, admin: AdminDep) -> dict:
             "starts_on": payload.starts_on.isoformat(),
             "ends_on": payload.ends_on.isoformat(),
             "percent": str(payload.percent),
-            "created_by": admin.id,
+            "created_by": manager.id,
         }
     )
     audit.record(
         action="allocation.created",
         target_table="allocations",
         target_id=row["id"],
-        actor_id=admin.id,
+        actor_id=manager.id,
         after={
             "project_id": payload.project_id,
             "user_id": payload.user_id,
@@ -707,7 +732,7 @@ def create_allocation(payload: AllocationIn, admin: AdminDep) -> dict:
 
 
 @router.delete("/allocations/{allocation_id}")
-def remove_allocation(allocation_id: str, admin: AdminDep) -> dict:
+def remove_allocation(allocation_id: str, manager: ManagerDep) -> dict:
     """FR-ALLOC-05 — removing intent never removes recorded fact.
 
     Time already logged against the project stays. An allocation says what was
@@ -719,6 +744,6 @@ def remove_allocation(allocation_id: str, admin: AdminDep) -> dict:
         action="allocation.deleted",
         target_table="allocations",
         target_id=allocation_id,
-        actor_id=admin.id,
+        actor_id=manager.id,
     )
     return {"status": "deleted"}

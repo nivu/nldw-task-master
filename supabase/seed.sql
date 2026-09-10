@@ -60,12 +60,13 @@ WHERE u.email LIKE '%@nunnari.example' OR u.email LIKE '%.nl@gmail.com';
 -- Profiles and the reporting line
 --
 -- Devansh is the lead. Vinita is admin and has no lead — per Q-05 her leave,
--- like a lead's, falls to an admin.
+-- like a lead's, falls to an admin. Sriram is a manager (spec 003): he runs
+-- projects and sees money, but Devansh still approves his leave.
 -- ============================================================
 INSERT INTO profiles (id, email, display_name, role, lead_id, created_at) VALUES
     ('a0000000-0000-4000-8000-000000000001', 'vinita@nunnari.example', 'Vinita',  'admin', NULL, now() - interval '6 months'),
     ('a0000000-0000-4000-8000-000000000002', 'devansh.nl@gmail.com',  'Devansh', 'lead',  NULL, now() - interval '6 months'),
-    ('a0000000-0000-4000-8000-000000000003', 'sriram.nl@gmail.com',   'Sriram',  'user',  'a0000000-0000-4000-8000-000000000002', now() - interval '6 months'),
+    ('a0000000-0000-4000-8000-000000000003', 'sriram.nl@gmail.com',   'Sriram',  'manager', 'a0000000-0000-4000-8000-000000000002', now() - interval '6 months'),
     ('a0000000-0000-4000-8000-000000000004', 'deepika.nl@gmail.com',  'Deepika', 'user',  'a0000000-0000-4000-8000-000000000002', now() - interval '6 months'),
     ('a0000000-0000-4000-8000-000000000005', 'tarun.nl@gmail.com',    'Tarun',   'user',  'a0000000-0000-4000-8000-000000000002', now() - interval '6 months');
 

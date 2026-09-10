@@ -8,17 +8,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import Link from "next/link";
+
 import { BackfillPanel } from "@/components/portal/backfill-panel";
-import { ProjectsPanel } from "@/components/portal/projects-panel";
 import {
   createUser,
   declareHoliday,
   deleteHoliday,
   errorMessage,
-  listAllocations,
   listAllowances,
   listBackfills,
-  listProjects,
   listHolidays,
   listSettings,
   listUsers,
@@ -27,18 +26,25 @@ import {
 } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
 import type {
-  AllocationRow,
   Allowance,
   AppSetting,
   BackfillEntry,
   Category,
   Holiday,
   PortalUser,
-  Project,
+  Role,
 } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
+// Spec 003 FR-ROLE-01. Only an admin assigns these (FR-ROLE-06).
+const ROLES: Role[] = ["user", "lead", "manager", "admin"];
+const ROLE_LABEL: Record<Role, string> = {
+  user: "User",
+  lead: "Lead",
+  manager: "Manager",
+  admin: "Admin",
+};
 const currentPeriod = () => new Date().toISOString().slice(0, 7);
 
 /**
@@ -57,20 +63,15 @@ export default function AdminPage() {
     holidays: Holiday[];
     settings: AppSetting[];
     backfills: BackfillEntry[];
-    projects: Project[];
-    allocations: AllocationRow[];
   }>(async () => {
-    const [users, allowances, holidays, settings, backfills, projects, allocations] =
-      await Promise.all([
-        listUsers(),
-        listAllowances(),
-        listHolidays(),
-        listSettings(),
-        listBackfills(),
-        listProjects(),
-        listAllocations(),
-      ]);
-    return { users, allowances, holidays, settings, backfills, projects, allocations };
+    const [users, allowances, holidays, settings, backfills] = await Promise.all([
+      listUsers(),
+      listAllowances(),
+      listHolidays(),
+      listSettings(),
+      listBackfills(),
+    ]);
+    return { users, allowances, holidays, settings, backfills };
   }, []);
 
   const users = data?.users ?? [];
@@ -78,12 +79,19 @@ export default function AdminPage() {
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
   const backfills = data?.backfills ?? [];
-  const projects = data?.projects ?? [];
-  const allocations = data?.allocations ?? [];
+  const currency = String(
+    settings.find((s) => s.key === "currency_code")?.value ?? "INR"
+  ).replace(/"/g, "");
 
   return (
     <div className="space-y-4">
-      <h1 className="font-heading text-lg font-semibold">Admin</h1>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="font-heading text-lg font-semibold">Admin</h1>
+        {/* Spec 003 — projects have their own page, shared with managers. */}
+        <Link href="/projects" className="text-sm text-muted-foreground hover:text-foreground">
+          Projects and allocations →
+        </Link>
+      </div>
 
       {error && (
         <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
@@ -93,11 +101,11 @@ export default function AdminPage() {
       {notice && <div className="rounded-md bg-muted p-3 text-sm">{notice}</div>}
 
       <Tabs defaultValue="people">
-        <TabsList>
+        {/* Scrolls sideways on a phone rather than overlapping (NFR-01). */}
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="allowances">Allowances</TabsTrigger>
           <TabsTrigger value="holidays">Holidays</TabsTrigger>
-          <TabsTrigger value="projects">Projects</TabsTrigger>
           <TabsTrigger value="backfill">Backfill</TabsTrigger>
           <TabsTrigger value="policy">Policy</TabsTrigger>
         </TabsList>
@@ -113,6 +121,7 @@ export default function AdminPage() {
           />
           <UserTable
             users={users}
+            currency={currency}
             onChanged={reload}
             onError={setError}
           />
@@ -198,19 +207,6 @@ export default function AdminPage() {
               ))}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="projects" className="space-y-4 pt-4">
-          <ProjectsPanel
-            projects={projects}
-            allocations={allocations}
-            people={users}
-            onDone={(message) => {
-              setNotice(message);
-              reload();
-            }}
-            onError={setError}
-          />
         </TabsContent>
 
         <TabsContent value="backfill" className="space-y-4 pt-4">
@@ -327,10 +323,17 @@ function NewUserForm({
               value={form.role}
               onChange={(e) => setForm({ ...form, role: e.target.value })}
             >
-              <option value="user">User</option>
-              <option value="lead">Lead</option>
-              <option value="admin">Admin</option>
+              {ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {ROLE_LABEL[role]}
+                </option>
+              ))}
             </select>
+            <p className="text-xs text-muted-foreground">
+              A manager runs projects and sees their money; a lead approves
+              leave for their reports. One person can be both — set the role
+              to manager and make them somebody&apos;s approver below.
+            </p>
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="lead">Approved by</Label>
@@ -363,15 +366,27 @@ function NewUserForm({
 
 function UserTable({
   users,
+  currency,
   onChanged,
   onError,
 }: {
   users: PortalUser[];
+  currency: string;
   onChanged: () => void;
   onError: (message: string) => void;
 }) {
   return (
     <Card>
+      <CardHeader>
+        <CardTitle className="text-base">People</CardTitle>
+        <CardDescription>
+          The cost rate is the fully-loaded hourly cost the company attributes to
+          a person&apos;s time, used to work out what a project cost. It is not
+          what anybody is paid. Only managers and admins ever see it, and a
+          person without one makes every project they touch report an incomplete
+          cost rather than a cheaper one.
+        </CardDescription>
+      </CardHeader>
       <CardContent className="overflow-x-auto p-0">
         <table className="w-full text-sm">
           <thead>
@@ -379,6 +394,7 @@ function UserTable({
               <th className="p-3 font-medium">Name</th>
               <th className="p-3 font-medium">Role</th>
               <th className="p-3 font-medium">Approved by</th>
+              <th className="p-3 font-medium">Cost rate ({currency}/h)</th>
               <th className="p-3" />
             </tr>
           </thead>
@@ -389,11 +405,41 @@ function UserTable({
                   <span className="font-medium">{user.display_name}</span>
                   <span className="block text-xs text-muted-foreground">{user.email}</span>
                 </td>
-                <td className="p-3 capitalize">{user.role}</td>
+                <td className="p-3">
+                  {/* FR-ROLE-06 — only an admin changes a role. */}
+                  <select
+                    aria-label={`Role for ${user.display_name}`}
+                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    value={user.role}
+                    disabled={!user.is_active}
+                    onChange={async (e) => {
+                      try {
+                        await updateUser(user.id, { role: e.target.value });
+                        onChanged();
+                      } catch (err) {
+                        onError(errorMessage(err));
+                      }
+                    }}
+                  >
+                    {ROLES.map((role) => (
+                      <option key={role} value={role}>
+                        {ROLE_LABEL[role]}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="p-3 text-muted-foreground">
                   {user.lead_id
                     ? users.find((u) => u.id === user.lead_id)?.display_name ?? "—"
                     : "An admin"}
+                </td>
+                <td className="p-3">
+                  <CostRateField
+                    key={user.cost_rate_hourly ?? ""}
+                    user={user}
+                    onChanged={onChanged}
+                    onError={onError}
+                  />
                 </td>
                 <td className="p-3 text-right">
                   <Button
@@ -419,6 +465,65 @@ function UserTable({
         </table>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * FR-FIN-01 — an admin sets a person's cost rate.
+ *
+ * Saves on blur or Enter, not on every keystroke: each save is audited
+ * (FR-FIN-08) and a rate typed digit by digit would be five audit rows. Keyed
+ * on the saved value by the caller, so a reload reseeds the field.
+ */
+function CostRateField({
+  user,
+  onChanged,
+  onError,
+}: {
+  user: PortalUser;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [value, setValue] = useState(
+    user.cost_rate_hourly ? String(Number(user.cost_rate_hourly)) : ""
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function commit() {
+    const next = value.trim();
+    const current = user.cost_rate_hourly ?? "";
+    const unchanged =
+      next === current || (next !== "" && current !== "" && Number(next) === Number(current));
+    if (unchanged) return;
+    setBusy(true);
+    try {
+      await updateUser(user.id, { cost_rate_hourly: next || null });
+      onChanged();
+    } catch (err) {
+      onError(errorMessage(err));
+      setValue(current);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Input
+      type="number"
+      inputMode="decimal"
+      min="0"
+      step="50"
+      aria-label={`Cost rate for ${user.display_name}`}
+      className="h-8 w-28 tabular-nums"
+      value={value}
+      disabled={busy || !user.is_active}
+      placeholder="not set"
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
   );
 }
 
