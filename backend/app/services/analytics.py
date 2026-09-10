@@ -24,6 +24,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from app.domain import financials as fin
 from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
 from app.services import supabase as db
@@ -298,7 +299,9 @@ def current_work(user_ids: list[str], *, days: int = 7) -> list[dict[str, Any]]:
                 (
                     {
                         "project_id": pid,
-                        "project_name": projects.get(pid, "—"),
+                        "project_name": projects.get(pid, "—")
+                        if pid
+                        else "Activities (no project)",
                         "hours": str(hours),
                     }
                     for pid, hours in (by_user.get(user_id) or {}).items()
@@ -340,3 +343,232 @@ def _by_person(rows: list[dict], people: dict[str, str]) -> list[dict[str, Any]]
         ),
         key=lambda p: p["display_name"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Financials — spec 003 §4. MANAGER AND ADMIN ONLY.
+#
+# Nothing in this section may be reached from a route guarded by less than
+# ManagerDep. The arithmetic lives in app.domain.financials; this assembles the
+# inputs, and the one thing it must get right is WHICH rate it hands over: the
+# snapshot captured on each entry, never the person's current rate.
+# ---------------------------------------------------------------------------
+
+
+def _efforts_for(entries: list[dict]) -> list[fin.Effort]:
+    """Time entries → efforts carrying the rate captured when they were logged.
+
+    Activity rows (no project) never reach here — every caller filters by
+    project — but the guard stays, because an activity row with a snapshot
+    would be a bug worth refusing rather than pricing.
+    """
+    out = []
+    for e in entries:
+        if not e.get("project_id"):
+            continue
+        hours = Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"]))
+        snap = e.get("cost_rate_snapshot")
+        out.append(
+            fin.Effort(
+                user_id=e["user_id"],
+                hours=hours,
+                rate=Decimal(str(snap)) if snap is not None else None,
+            )
+        )
+    return out
+
+
+def _currency() -> str:
+    from app.services import settings_store
+
+    return str(settings_store.get("currency_code", "INR"))
+
+
+def project_financials(project_id: str) -> dict[str, Any]:
+    """Revenue, COGS, margin and per-person attribution — FR-FIN-04/06."""
+    project = db.get_project(project_id)
+    if project is None:
+        return {}
+
+    entries = db.list_time_entries(project_id=project_id)
+    people = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    revenue = Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
+    result = fin.project_financials(revenue, _efforts_for(entries))
+
+    return {
+        "project_id": project_id,
+        "currency": _currency(),
+        "revenue": _m(result.revenue),
+        "total_hours": str(result.total_hours),
+        "cogs": _m(result.cogs),
+        "cogs_partial": _m(result.cogs_partial),
+        "margin": _m(result.margin),
+        "margin_pct": _m(result.margin_pct),
+        "complete": result.complete,
+        # FR-FIN-06 — named, so an incomplete figure says exactly who to rate.
+        "unrated": [
+            {"user_id": uid, "display_name": people.get(uid, "—")}
+            for uid in result.unrated_user_ids
+        ],
+        # Sorted by name, never by money (spec 003 §9).
+        "people": sorted(
+            (
+                {
+                    "user_id": line.user_id,
+                    "display_name": people.get(line.user_id, "—"),
+                    "hours": str(line.hours),
+                    "cost_rate": _m(line.rate),
+                    "cogs": _m(line.cogs),
+                    "attributed_revenue": _m(line.attributed_revenue),
+                }
+                for line in result.people
+            ),
+            key=lambda r: r["display_name"],
+        ),
+    }
+
+
+def people_financials() -> dict[str, Any]:
+    """Each person across every project — FR-FIN-05.
+
+    Deliberately NOT sortable by any money column from here: the API returns
+    rows by name and the UI keeps that order. Spec 003 §9.
+    """
+    projects = db.list_projects(include_archived=True)
+    people = {p["id"]: p for p in db.list_profiles()}
+
+    per_project = []
+    for project in projects:
+        entries = db.list_time_entries(project_id=project["id"])
+        revenue = Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
+        per_project.append(fin.project_financials(revenue, _efforts_for(entries)))
+
+    totals = fin.person_totals(per_project)
+    rows = [
+        {
+            "user_id": t.user_id,
+            "display_name": people.get(t.user_id, {}).get("display_name", "—"),
+            "current_cost_rate": _m(
+                Decimal(str(people[t.user_id]["cost_rate_hourly"]))
+                if t.user_id in people and people[t.user_id].get("cost_rate_hourly") is not None
+                else None
+            ),
+            "hours": str(t.hours),
+            "cogs": _m(t.cogs),
+            "attributed_revenue": _m(t.attributed_revenue),
+            "projects": t.projects,
+            "complete": t.complete,
+        }
+        for t in totals
+    ]
+    return {
+        "currency": _currency(),
+        "people": sorted(rows, key=lambda r: r["display_name"]),
+        # People with a rate but no logged project hours still deserve a row so
+        # "who is unrated" can be answered from one screen.
+        "unrated": sorted(
+            (
+                {"user_id": pid, "display_name": p["display_name"]}
+                for pid, p in people.items()
+                if p.get("is_active") and p.get("cost_rate_hourly") is None
+            ),
+            key=lambda r: r["display_name"],
+        ),
+    }
+
+
+def _m(value: Decimal | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Resource timeline — spec 003 FR-RES. Manager and admin.
+# ---------------------------------------------------------------------------
+
+
+def resources_timeline(start: date, end: date) -> dict[str, Any]:
+    """Per person, per week: allocated %, leave, and whether they are over.
+
+    Weeks rather than days because that is how allocation conversations
+    happen — "Sriram is on Acme until the end of the month" — and a day grid
+    over a quarter is unreadable. Over-allocation is still computed daily
+    (FR-ALLOC-04) and the week reports its peak.
+    """
+    people = [p for p in db.list_profiles(active_only=True)]
+    allocations = db.list_allocations()
+    projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
+    holidays = holidays_between(start, end)
+    leave = leave_days_for([p["id"] for p in people], start, end)
+
+    # Monday-aligned week starts covering the range.
+    first_monday = start - timedelta(days=start.weekday())
+    weeks: list[date] = []
+    cursor = first_monday
+    while cursor <= end:
+        weeks.append(cursor)
+        cursor += timedelta(days=7)
+
+    rows = []
+    for person in people:
+        mine = [a for a in allocations if a["user_id"] == person["id"]]
+        my_leave = leave.get(person["id"], {})
+        cells = []
+        for monday in weeks:
+            sunday = monday + timedelta(days=6)
+            segments: dict[str, Decimal] = {}
+            peak = ZERO
+            working = 0
+            leave_days = ZERO
+            day = monday
+            while day <= sunday:
+                if not is_weekend(day) and day not in holidays:
+                    working += 1
+                    leave_days += min(my_leave.get(day, ZERO), Decimal("1"))
+                    total = ZERO
+                    for a in mine:
+                        if (
+                            date.fromisoformat(a["starts_on"])
+                            <= day
+                            <= date.fromisoformat(a["ends_on"])
+                        ):
+                            pct = Decimal(str(a["percent"]))
+                            total += pct
+                            segments[a["project_id"]] = max(
+                                segments.get(a["project_id"], ZERO), pct
+                            )
+                    peak = max(peak, total)
+                day += timedelta(days=1)
+            cells.append(
+                {
+                    "week_start": monday.isoformat(),
+                    "allocated_pct": str(peak),
+                    "over": peak > Decimal("100"),
+                    "leave_days": str(leave_days),
+                    "working_days": working,
+                    "projects": [
+                        {
+                            "project_id": pid,
+                            "project_name": projects.get(pid, "—"),
+                            "percent": str(pct),
+                        }
+                        for pid, pct in sorted(
+                            segments.items(), key=lambda kv: projects.get(kv[0], "")
+                        )
+                    ],
+                }
+            )
+        rows.append(
+            {
+                "user_id": person["id"],
+                "display_name": person["display_name"],
+                "role": person["role"],
+                "weeks": cells,
+            }
+        )
+
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "weeks": [w.isoformat() for w in weeks],
+        "people": sorted(rows, key=lambda r: r["display_name"]),
+    }

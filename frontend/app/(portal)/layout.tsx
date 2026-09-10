@@ -12,6 +12,7 @@ import {
   User,
   Clock,
   BarChart3,
+  FolderKanban,
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -62,6 +63,9 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     { href: "/team", label: "Team", icon: Users, show: me?.capabilities.team_view },
     { href: "/approvals", label: "Approvals", icon: CheckSquare, show: me?.capabilities.team_view },
     { href: "/analytics", label: "Effort", icon: BarChart3, show: me?.capabilities.team_view },
+    // Spec 003 — the manager tier runs projects from its own page, not from
+    // inside the admin panel it may not enter (FR-ROLE-03).
+    { href: "/projects", label: "Projects", icon: FolderKanban, show: me?.capabilities.manage_projects },
     { href: "/admin", label: "Admin", icon: Settings, show: me?.capabilities.admin_panel },
     { href: "/account", label: "Account", icon: User, show: true },
   ].filter((link) => link.show);

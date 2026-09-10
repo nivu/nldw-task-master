@@ -26,6 +26,7 @@ const PROTECTED_ROUTES = [
   "/calendar",
   "/timesheet",
   "/analytics",
+  "/projects",
   "/team",
   "/approvals",
   "/admin",

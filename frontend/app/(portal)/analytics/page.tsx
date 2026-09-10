@@ -1,19 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatMoney } from "@/components/portal/projects-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAnalyticsProjects,
   getCoverage,
   getCurrentWork,
   getForecast,
+  getMe,
+  getPeopleFinancials,
   getProjectEffort,
+  getProjectFinancials,
+  getResources,
 } from "@/lib/api/portal";
-import type { Coverage, CurrentWork, Forecast, Project, ProjectEffort } from "@/lib/api/types";
+import type {
+  Coverage,
+  CurrentWork,
+  Forecast,
+  PeopleFinancials,
+  Project,
+  ProjectEffort,
+  ProjectFinancials,
+  ResourcesTimeline,
+} from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +48,11 @@ import { cn } from "@/lib/utils";
  * logged fewer hours than that one", and the second reading arrives for free
  * unless the page actively declines to serve it. Nothing here ranks people or
  * sorts them by hours.
+ *
+ * Spec 003 adds two tabs for the manager tier only — Money and Resources.
+ * They are rendered on a capability the server handed us and every call
+ * behind them is guarded again server-side (FR-FIN-07): a lead who edits the
+ * DOM to reveal the tab gets a refusal, not a number.
  */
 export default function AnalyticsPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -42,14 +62,16 @@ export default function AnalyticsPage() {
     coverage: Coverage;
     forecast: Forecast;
     current: CurrentWork[];
+    financials: boolean;
   }>(async () => {
-    const [projects, coverage, forecast, current] = await Promise.all([
+    const [projects, coverage, forecast, current, me] = await Promise.all([
       getAnalyticsProjects(),
       getCoverage(),
       getForecast(),
       getCurrentWork(7),
+      getMe(),
     ]);
-    return { projects, coverage, forecast, current };
+    return { projects, coverage, forecast, current, financials: me.capabilities.financials };
   }, []);
 
   if (error) {
@@ -68,22 +90,29 @@ export default function AnalyticsPage() {
       <CoverageBanner coverage={data.coverage} />
 
       <Tabs defaultValue="projects">
-        <TabsList>
+        {/* Scrolls sideways on a phone rather than overlapping (NFR-01). */}
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="projects">Projects</TabsTrigger>
           <TabsTrigger value="current">Right now</TabsTrigger>
           <TabsTrigger value="forecast">Forecast</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
+          {data.financials && <TabsTrigger value="resources">Resources</TabsTrigger>}
+          {data.financials && <TabsTrigger value="money">Money</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="projects" className="space-y-3 pt-4">
           {projectId ? (
-            <ProjectDetail projectId={projectId} onBack={() => setProjectId(null)} />
+            <ProjectDetail
+              projectId={projectId}
+              financials={data.financials}
+              onBack={() => setProjectId(null)}
+            />
           ) : (
             <Card>
               <CardContent className="divide-y p-0">
                 {data.projects.length === 0 && (
                   <p className="p-4 text-sm text-muted-foreground">
-                    No projects yet. An admin adds them under Admin → Projects.
+                    No projects yet. A manager or admin adds them under Projects.
                   </p>
                 )}
                 {data.projects.map((project) => (
@@ -202,6 +231,18 @@ export default function AnalyticsPage() {
           )}
         </TabsContent>
 
+        {data.financials && (
+          <TabsContent value="resources" className="space-y-3 pt-4">
+            <ResourcesTab />
+          </TabsContent>
+        )}
+
+        {data.financials && (
+          <TabsContent value="money" className="space-y-3 pt-4">
+            <MoneyTab onOpenProject={setProjectId} projects={data.projects} />
+          </TabsContent>
+        )}
+
         <TabsContent value="coverage" className="space-y-3 pt-4">
           <Card>
             <CardHeader>
@@ -269,7 +310,15 @@ function CoverageBanner({ coverage }: { coverage: Coverage }) {
   );
 }
 
-function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
+function ProjectDetail({
+  projectId,
+  financials,
+  onBack,
+}: {
+  projectId: string;
+  financials: boolean;
+  onBack: () => void;
+}) {
   const { data, error } = useAsync<ProjectEffort>(() => getProjectEffort(projectId), [projectId]);
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
@@ -291,6 +340,11 @@ function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () =>
           </CardDescription>
         </CardHeader>
       </Card>
+
+      {/* Spec 003 FR-FIN-04 — money, only for the manager tier. A separate
+          request behind a separate guard, so the effort view above never
+          carries a figure it must not. */}
+      {financials && <ProjectMoney projectId={projectId} />}
 
       {data.phases.map((phase) => {
         const over = phase.over_by !== null && phase.over_by !== undefined;
@@ -343,5 +397,333 @@ function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () =>
         </Card>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Spec 003 — money and resourcing. Rendered only for the manager tier.
+// ---------------------------------------------------------------------------
+
+const money = (currency: string, value: string | null) =>
+  value === null ? "—" : `${currency} ${formatMoney(value)}`;
+
+/**
+ * FR-FIN-06 given the same treatment as coverage: an incomplete figure is
+ * flagged BEFORE the number, because a margin that quietly omits somebody's
+ * cost is a better number than the truth and will be quoted as the truth.
+ */
+function IncompleteNotice({
+  unrated,
+  what,
+}: {
+  unrated: { user_id: string; display_name: string }[];
+  what: string;
+}) {
+  if (unrated.length === 0) return null;
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+      <p className="font-medium">
+        {what} {unrated.length === 1 ? "is" : "are"} incomplete
+      </p>
+      <p className="mt-1">
+        {unrated.map((p) => p.display_name).join(", ")}{" "}
+        {unrated.length === 1 ? "has" : "have"} no cost rate, so their hours cost
+        an <strong>unknown</strong> amount — not nothing. An admin sets cost
+        rates under Admin → People.
+      </p>
+    </div>
+  );
+}
+
+function ProjectMoney({ projectId }: { projectId: string }) {
+  const { data, error } = useAsync<ProjectFinancials>(
+    () => getProjectFinancials(projectId),
+    [projectId]
+  );
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return null;
+
+  const c = data.currency;
+  return (
+    <div className="space-y-3">
+      <IncompleteNotice unrated={data.unrated} what="Cost and margin" />
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Money</CardTitle>
+          <CardDescription>
+            Cost is hours × each person&apos;s cost rate as it was when the hours
+            were logged, so a rate change later never re-prices this project.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Figure label="Revenue" value={money(c, data.revenue)} />
+            <Figure
+              label={data.complete ? "Cost (COGS)" : "Cost so far (incomplete)"}
+              value={money(c, data.complete ? data.cogs : data.cogs_partial)}
+              muted={!data.complete}
+            />
+            <Figure label="Margin" value={money(c, data.margin)} />
+            <Figure
+              label="Margin %"
+              value={data.margin_pct === null ? "—" : `${data.margin_pct}%`}
+            />
+          </div>
+          {data.revenue === null && (
+            <p className="text-xs text-muted-foreground">
+              No revenue set for this project, so there is no margin to report.
+              Set it under Projects.
+            </p>
+          )}
+          {data.people.length > 0 && (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="py-2 font-medium">Person</th>
+                  <th className="py-2 text-right font-medium">Hours</th>
+                  <th className="py-2 text-right font-medium">Cost</th>
+                  <th className="py-2 text-right font-medium">Attributed revenue</th>
+                </tr>
+              </thead>
+              {/* Sorted by name, never by money — spec 003 §9. */}
+              <tbody className="divide-y">
+                {data.people.map((p) => (
+                  <tr key={p.user_id}>
+                    <td className="py-2">{p.display_name}</td>
+                    <td className="py-2 text-right tabular-nums">{p.hours}</td>
+                    <td className="py-2 text-right tabular-nums">
+                      {p.cogs === null ? (
+                        <Badge variant="outline">unrated</Badge>
+                      ) : (
+                        money(c, p.cogs)
+                      )}
+                    </td>
+                    <td className="py-2 text-right tabular-nums">
+                      {money(c, p.attributed_revenue)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function Figure({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={cn("text-lg font-semibold tabular-nums", muted && "text-muted-foreground")}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * FR-FIN-05 — each person across every project.
+ *
+ * Per project AND per person is the whole of what spec 003 asks for. There is
+ * no column sort here on purpose: sorting by cost or by attributed revenue is
+ * how this table becomes a leaderboard without anybody deciding it should
+ * (spec 003 §9).
+ */
+function MoneyTab({
+  projects,
+  onOpenProject,
+}: {
+  projects: Project[];
+  onOpenProject: (id: string) => void;
+}) {
+  const { data, error } = useAsync<PeopleFinancials>(() => getPeopleFinancials(), []);
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const c = data.currency;
+  return (
+    <div className="space-y-3">
+      <IncompleteNotice unrated={data.unrated} what="Some of these figures" />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Per person, across projects</CardTitle>
+          <CardDescription>
+            Attributed revenue is each project&apos;s revenue shared out by hours.
+            It says what a person&apos;s time went into, not what they are worth —
+            and it is never shown to the person themselves.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto p-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-muted-foreground">
+                <th className="p-3 font-medium">Person</th>
+                <th className="p-3 text-right font-medium">Projects</th>
+                <th className="p-3 text-right font-medium">Hours</th>
+                <th className="p-3 text-right font-medium">Cost</th>
+                <th className="p-3 text-right font-medium">Attributed revenue</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.people.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="p-4 text-muted-foreground">
+                    No project hours logged yet.
+                  </td>
+                </tr>
+              )}
+              {data.people.map((p) => (
+                <tr key={p.user_id}>
+                  <td className="p-3 font-medium">{p.display_name}</td>
+                  <td className="p-3 text-right tabular-nums">{p.projects}</td>
+                  <td className="p-3 text-right tabular-nums">{p.hours}</td>
+                  <td className="p-3 text-right tabular-nums">
+                    {p.complete ? money(c, p.cogs) : <Badge variant="outline">incomplete</Badge>}
+                  </td>
+                  <td className="p-3 text-right tabular-nums">{money(c, p.attributed_revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Per project</CardTitle>
+          <CardDescription>Open a project for its revenue, cost and margin.</CardDescription>
+        </CardHeader>
+        <CardContent className="divide-y p-0">
+          {projects.map((project) => (
+            <button
+              key={project.id}
+              onClick={() => onOpenProject(project.id)}
+              className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/60"
+            >
+              <span className="flex-1 text-sm font-medium">{project.name}</span>
+              {project.is_archived && <Badge variant="outline">archived</Badge>}
+              <span className="tabular-nums text-sm text-muted-foreground">
+                {project.logged_hours}h
+              </span>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * FR-RES — who is on what, week by week, now and next.
+ *
+ * A grid of people × weeks. Each cell is the week's peak allocation; over 100%
+ * is red (FR-RES-02), under is left pale so free capacity is visible at a
+ * glance (FR-RES-03), and approved leave is written in so a full fortnight
+ * that is also a holiday reads as what it is (FR-RES-04).
+ */
+function ResourcesTab() {
+  const [offset, setOffset] = useState(0);
+  const range = (() => {
+    const start = new Date();
+    start.setDate(start.getDate() - 14 + offset * 7 * 8);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7 * 8 - 1);
+    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  })();
+
+  const { data, error } = useAsync<ResourcesTimeline>(
+    () => getResources(range.start, range.end),
+    [range.start, range.end]
+  );
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const week = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <CardTitle className="text-base">Who is on what</CardTitle>
+            <CardDescription>
+              Peak allocation per week. Red is over 100%; pale is free capacity;
+              leave is counted in days.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier">
+            <ChevronLeft className="size-4" />
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later">
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="sticky left-0 bg-card p-2 font-medium">Person</th>
+              {data.weeks.map((w) => (
+                <th key={w} className="p-2 text-center font-medium whitespace-nowrap">
+                  {week(w)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.people.map((person) => (
+              <tr key={person.user_id}>
+                <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">
+                  {person.display_name}
+                </td>
+                {person.weeks.map((cell) => {
+                  const pct = Number(cell.allocated_pct);
+                  const title = [
+                    ...cell.projects.map((p) => `${p.project_name} ${p.percent}%`),
+                    Number(cell.leave_days) > 0 ? `${cell.leave_days}d leave` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <td key={cell.week_start} className="p-1">
+                      <div
+                        title={title || "Unallocated"}
+                        className={cn(
+                          "rounded px-1.5 py-1 text-center tabular-nums",
+                          cell.working_days === 0
+                            ? "text-muted-foreground"
+                            : cell.over
+                              ? "bg-destructive/15 font-medium text-destructive"
+                              : pct >= 100
+                                ? "bg-muted font-medium"
+                                : pct > 0
+                                  ? "bg-muted/50"
+                                  : "text-muted-foreground"
+                        )}
+                      >
+                        {cell.working_days === 0 ? "—" : `${pct}%`}
+                        {Number(cell.leave_days) > 0 && (
+                          <span className="block text-[10px] font-normal text-muted-foreground">
+                            {cell.leave_days}d leave
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
   );
 }

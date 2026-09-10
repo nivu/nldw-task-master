@@ -82,7 +82,8 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
     """Everything the "log today" screen needs, in one call.
 
     NFR-02: the form pre-fills from current allocations, so the common case is
-    adjusting numbers rather than hunting for projects in a list.
+    adjusting numbers rather than hunting for projects in a list. The four
+    activities (spec 003 FR-ACT) are always offered alongside them.
     """
     today = today_in_company_tz()
     grace = _grace_days()
@@ -97,7 +98,9 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
 
     # Projects to offer: the ones allocated for this date, plus any already
     # logged (so an entry made before an allocation ended stays editable).
-    offered_ids = {a["project_id"] for a in allocations} | {e["project_id"] for e in entries}
+    offered_ids = {a["project_id"] for a in allocations} | {
+        e["project_id"] for e in entries if e.get("project_id")
+    }
 
     booking = db.find_booking_on(user_id, day, sorted(CONSUMING_STATES))
 
@@ -127,6 +130,7 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
             )
             if pid in projects
         ],
+        "activities": [{"id": key, "name": rules.ACTIVITY_LABELS[key]} for key in rules.ACTIVITIES],
         "total": str(
             sum(
                 (Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"])) for e in entries),
@@ -145,6 +149,12 @@ def save_day(
     and a per-line endpoint cannot enforce it without the caller sending the
     day anyway. It also makes removing a line the same operation as changing
     one, which is how the screen behaves.
+
+    Each project line captures the person's cost rate AS OF NOW into the entry
+    (spec 003 FR-FIN-03). COGS is computed from that captured value forever
+    after, so a rate change next year cannot re-price this day. Activity lines
+    capture nothing: they belong to no project and cost no project anything
+    (FR-ACT-05).
     """
     today = today_in_company_tz()
     grace = _grace_days()
@@ -155,6 +165,11 @@ def save_day(
 
     parsed: list[rules.DayEntry] = []
     for line in lines:
+        project_id = (line.get("project_id") or None) and str(line["project_id"])
+        activity = (line.get("activity") or None) and str(line["activity"])
+        problem = rules.check_target(project_id, activity)
+        if problem:
+            raise TimesheetRefused(problem)
         office = Decimal(str(line.get("hours_office") or 0))
         home = Decimal(str(line.get("hours_home") or 0))
         problem = rules.check_hours(office, home)
@@ -162,15 +177,16 @@ def save_day(
             raise TimesheetRefused(problem)
         parsed.append(
             rules.DayEntry(
-                project_id=str(line["project_id"]),
+                project_id=project_id,
+                activity=activity,
                 hours_office=office,
                 hours_home=home,
                 note=(line.get("note") or "").strip() or None,
             )
         )
 
-    if len({e.project_id for e in parsed}) != len(parsed):
-        raise TimesheetRefused("The same project appears twice. Combine those lines.")
+    if len({e.key for e in parsed}) != len(parsed):
+        raise TimesheetRefused("The same project or activity appears twice. Combine those lines.")
 
     problem = rules.check_day_total(rules.day_total(parsed), max_hours=_max_hours())
     if problem:
@@ -178,38 +194,52 @@ def save_day(
 
     known = {p["id"] for p in db.list_projects(include_archived=True)}
     for entry in parsed:
-        if entry.project_id not in known:
+        if entry.project_id and entry.project_id not in known:
             raise TimesheetRefused("That project does not exist.", status=404)
 
     # Q-07: logging against a project you are not allocated to is allowed. The
     # person who helped out for an afternoon is exactly the effort a budget
     # conversation misses, and refusing it pushes that work into nothing.
 
+    profile = db.get_profile(user_id) or {}
+    rate_now = profile.get("cost_rate_hourly")
     phases_by_project = _phases_by_project()
     existing = {
-        e["project_id"]: e for e in db.list_time_entries(user_ids=[user_id], start=day, end=day)
+        _row_key(e): e for e in db.list_time_entries(user_ids=[user_id], start=day, end=day)
     }
 
     saved = []
     for entry in parsed:
-        saved.append(
-            db.upsert_time_entry(
-                {
-                    "user_id": user_id,
-                    "date": day.isoformat(),
-                    "project_id": entry.project_id,
-                    "phase_id": rules.phase_for(day, phases_by_project.get(entry.project_id, [])),
-                    "hours_office": str(entry.hours_office),
-                    "hours_home": str(entry.hours_home),
-                    "note": entry.note,
-                }
+        data = {
+            "user_id": user_id,
+            "date": day.isoformat(),
+            "project_id": entry.project_id,
+            "activity": entry.activity,
+            "phase_id": (
+                rules.phase_for(day, phases_by_project.get(entry.project_id, []))
+                if entry.project_id
+                else None
+            ),
+            "hours_office": str(entry.hours_office),
+            "hours_home": str(entry.hours_home),
+            "note": entry.note,
+        }
+        current = existing.get(entry.key)
+        if current is None:
+            # New line: capture the rate in force right now (FR-FIN-03).
+            data["cost_rate_snapshot"] = (
+                str(rate_now) if (entry.project_id and rate_now is not None) else None
             )
-        )
+            saved.append(db.insert_time_entry(data))
+        else:
+            # Correcting an existing line keeps its ORIGINAL snapshot. The
+            # hours changed; the price they were logged at did not.
+            saved.append(db.update_time_entry(current["id"], data))
 
     # Lines the person removed from the day.
-    submitted = {e.project_id for e in parsed}
-    for project_id, row in existing.items():
-        if project_id not in submitted:
+    submitted = {e.key for e in parsed}
+    for key, row in existing.items():
+        if key not in submitted:
             db.delete_time_entry(row["id"])
 
     audit.record(
@@ -289,14 +319,27 @@ def _phases_by_project() -> dict[str, list[tuple[str, date, date]]]:
     return out
 
 
+def _row_key(row: dict[str, Any]) -> str:
+    return row["project_id"] if row.get("project_id") else f"activity:{row.get('activity')}"
+
+
 def _present_entry(row: dict[str, Any], projects: dict[str, dict]) -> dict[str, Any]:
-    project = projects.get(row["project_id"], {})
+    """Shape an entry for the wire.
+
+    `cost_rate_snapshot` is deliberately NOT here. This function serves the
+    person's own timesheet screens, and spec 003 Q-01 says a person does not
+    see their own rate. The financial views read the snapshot through
+    `app.services.analytics`, behind the manager guard.
+    """
+    project = projects.get(row.get("project_id") or "", {})
     office = Decimal(str(row["hours_office"]))
     home = Decimal(str(row["hours_home"]))
     return {
         "id": row["id"],
-        "project_id": row["project_id"],
-        "project_name": project.get("name", "—"),
+        "project_id": row.get("project_id"),
+        "project_name": project.get("name") if row.get("project_id") else None,
+        "activity": row.get("activity"),
+        "activity_name": rules.ACTIVITY_LABELS.get(row.get("activity") or "", None),
         "phase_id": row.get("phase_id"),
         "hours_office": str(office),
         "hours_home": str(home),

@@ -35,6 +35,11 @@ import type {
   ProjectPhase,
   TimesheetDay,
   TimesheetWeek,
+  Activity,
+  AllocatablePerson,
+  PeopleFinancials,
+  ProjectFinancials,
+  ResourcesTimeline,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -131,7 +136,13 @@ export const createUser = (input: {
 
 export const updateUser = (
   id: string,
-  changes: Partial<{ display_name: string; role: string; lead_id: string | null; is_active: boolean }>
+  changes: Partial<{
+    display_name: string;
+    role: string;
+    lead_id: string | null;
+    is_active: boolean;
+    cost_rate_hourly: string | null;
+  }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 
 export const listAllowances = () => call<Allowance[]>("/admin/allowances");
@@ -205,7 +216,13 @@ export const getTimesheetDay = (day?: string) =>
 
 export const saveTimesheetDay = (input: {
   date: string;
-  lines: { project_id: string; hours_office: string; hours_home: string; note: string | null }[];
+  lines: {
+    project_id?: string | null;
+    activity?: Activity | null;
+    hours_office: string;
+    hours_home: string;
+    note: string | null;
+  }[];
 }) => call<{ date: string; entries: number; total: string }>("/timesheet/day", {
   method: "PUT",
   ...body(input),
@@ -228,14 +245,32 @@ export const getForecast = () => call<Forecast>("/analytics/forecast");
 
 export const getCurrentWork = (days = 7) => call<CurrentWork[]>(`/analytics/current?days=${days}`);
 
-// Admin — projects and allocations
+// Projects and allocations — manager and admin (spec 003 FR-ROLE-02). The
+// path still says /admin because that is where 002 put it; the guard is the
+// manager tier.
 export const listProjects = () => call<Project[]>("/admin/projects");
 
-export const createProject = (input: { name: string; client: string | null }) =>
+export const createProject = (input: { name: string; client: string | null; revenue?: string | null }) =>
   call<Project>("/admin/projects", { method: "POST", ...body(input) });
 
-export const updateProject = (id: string, changes: { is_archived?: boolean; name?: string }) =>
-  call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
+export const updateProject = (
+  id: string,
+  changes: { is_archived?: boolean; name?: string; client?: string | null; revenue?: string | null }
+) => call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
+
+/** Who can be allocated — name and id only, so a manager needs no /admin/users. */
+export const listAllocatablePeople = () => call<AllocatablePerson[]>("/analytics/people");
+
+// Money and resourcing — manager and admin only (spec 003 FR-FIN-07, FR-RES).
+export const getProjectFinancials = (projectId: string) =>
+  call<ProjectFinancials>(`/analytics/projects/${projectId}/financials`);
+
+export const getPeopleFinancials = () => call<PeopleFinancials>("/analytics/people/financials");
+
+export const getResources = (start?: string, end?: string) =>
+  call<ResourcesTimeline>(
+    `/analytics/resources${start ? `?start=${start}&end=${end ?? start}` : ""}`
+  );
 
 export const setProjectPhase = (
   projectId: string,

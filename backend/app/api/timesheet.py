@@ -13,9 +13,9 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import CurrentUserDep, LeadDep
+from app.api.deps import CurrentUserDep, LeadDep, ManagerDep
 from app.api.errors import ProblemDetail
-from app.domain.approval import Person, can_view_reason
+from app.domain.approval import Person, can_view_timesheet
 from app.domain.calendar import today_in_company_tz
 from app.schemas import TimesheetDay
 from app.services import analytics as analytics_service
@@ -63,11 +63,13 @@ def my_week(
 
 @router.get("/of/{user_id}/week")
 def someone_elses_week(user_id: str, user: CurrentUserDep, week_start: date | None = None) -> dict:
-    """A report's week — Q-08.
+    """A report's week — 002 Q-08, widened to managers by spec 003 §7.
 
-    Reuses `can_view_reason` from `001` rather than reimplementing the rule.
-    Who may read a colleague's timesheet is the same question as who may read
-    their leave reason, and answering it twice is how the two answers drift.
+    `can_view_timesheet`, not `can_view_reason`. They were one function until
+    managers arrived: a manager sees every project's hours and therefore every
+    person's timesheet, but "runs the projects" is no reason to read a
+    colleague's sick-leave reason. Keeping the two rules apart is what stops
+    widening one from widening the other.
     """
     subject_row = db.get_profile(user_id)
     if subject_row is None:
@@ -79,7 +81,7 @@ def someone_elses_week(user_id: str, user: CurrentUserDep, week_start: date | No
         lead_id=subject_row["lead_id"],
         is_active=subject_row["is_active"],
     )
-    if not can_view_reason(user, subject):
+    if not can_view_timesheet(user, subject):
         # 404 rather than 403: confirming that a colleague's timesheet exists
         # already says something about them.
         raise ProblemDetail(404, "No such person.")
@@ -99,8 +101,13 @@ analytics = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 def _population(user) -> list[str]:  # noqa: ANN001
-    """Whose data this person may aggregate — the same rule as the team view."""
-    if user.is_admin:
+    """Whose data this person may aggregate.
+
+    Managers see everyone (spec 003 FR-ROLE-05, Q-02 — chosen against the
+    recommendation; the consequence is recorded in spec 003 §3). Leads see
+    their reports, as in 002.
+    """
+    if user.is_manager:
         return [p["id"] for p in db.list_profiles(active_only=True)]
     return [p["id"] for p in db.list_reports(user.id, active_only=True)]
 
@@ -114,6 +121,8 @@ def project_list(user: LeadDep) -> list[dict]:
 
     totals: dict[str, Decimal] = {}
     for entry in entries:
+        if not entry.get("project_id"):
+            continue  # an activity has no project to total under (FR-ACT-04)
         totals[entry["project_id"]] = (
             totals.get(entry["project_id"], Decimal("0"))
             + Decimal(str(entry["hours_office"]))
@@ -169,6 +178,53 @@ def capacity_forecast(user: LeadDep, start: date | None = None, end: date | None
 def what_the_team_is_doing(user: LeadDep, days: int = Query(default=7, ge=1, le=90)) -> list[dict]:
     """G-6, FR-ANALYTICS-04 — what people have actually been working on."""
     return analytics_service.current_work(_population(user), days=days)
+
+
+# ---------------------------------------------------------------------------
+# Money and resourcing — spec 003. MANAGER AND ADMIN ONLY.
+#
+# A separate guard from the effort routes above, on purpose. Effort (hours) is
+# a lead's business; money is not. Putting these behind LeadDep with a role
+# check inside the handler would be one forgotten `if` away from a lead seeing
+# every cost rate in the company.
+# ---------------------------------------------------------------------------
+
+
+@analytics.get("/projects/{project_id}/financials")
+def project_financials(project_id: str, user: ManagerDep) -> dict:
+    """Revenue, COGS, margin, per-person attribution — FR-FIN-04/06."""
+    result = analytics_service.project_financials(project_id)
+    if not result:
+        raise ProblemDetail(404, "No such project.")
+    return result
+
+
+@analytics.get("/people/financials")
+def people_financials(user: ManagerDep) -> dict:
+    """Hours, COGS and attributed revenue per person across projects — FR-FIN-05."""
+    return analytics_service.people_financials()
+
+
+@analytics.get("/resources")
+def resources(user: ManagerDep, start: date | None = None, end: date | None = None) -> dict:
+    """Who is on what, week by week, present and future — FR-RES-01..04."""
+    today = today_in_company_tz()
+    return analytics_service.resources_timeline(
+        start or (today - timedelta(days=14)), end or (today + timedelta(days=90))
+    )
+
+
+@analytics.get("/people")
+def people_for_allocation(user: ManagerDep) -> list[dict]:
+    """Everyone who can be allocated — name and id, nothing else.
+
+    Managers cannot reach /admin/users (FR-ROLE-03), so the allocation picker
+    needs a list that carries no email, no role and certainly no cost rate.
+    """
+    return [
+        {"id": p["id"], "display_name": p["display_name"]}
+        for p in sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
+    ]
 
 
 def _monday(week_start: date | None) -> date:
