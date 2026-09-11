@@ -144,9 +144,10 @@ and does not gain access to leave reasons (`can_view_reason` is unchanged —
 health data, 001 Q-06). `can_view_timesheet` is a separate rule precisely so
 that widening one never silently widens the other.
 
-Money — `profiles.cost_rate_hourly`, `projects.revenue`,
-`time_entries.cost_rate_snapshot`, and everything derived from them — is
-withheld from everyone below manager in three places, on purpose:
+Money — `cost_periods` (CTC, spec 005), `projects.revenue`, and everything
+derived from them — is withheld from everyone below manager in three places,
+on purpose. (`profiles.cost_rate_hourly` and `time_entries.cost_rate_snapshot`
+are 003's retired rate model: still in the schema, no longer read or written.)
 
 1. **The database.** `009_management.sql` revokes table-level SELECT on those
    three tables from the browser role and re-grants it column by column,
@@ -157,10 +158,18 @@ withheld from everyone below manager in three places, on purpose:
 2. **The API.** Every money route lives behind `ManagerDep`, separately from the
    `LeadDep` effort routes, and no route below manager ever selects the
    columns. A person cannot see their own rate (003 Q-01).
-3. **The arithmetic.** `domain/financials.py` treats a missing rate as
-   *unknown*, never zero; every figure carries `complete` and names who is
-   unrated. The rate used is the one captured onto each time entry when it was
-   saved — a rate change never re-prices history.
+3. **The arithmetic.** `domain/financials.py` and `domain/pnl.py` treat a
+   missing rate as *unknown*, never zero; every figure carries `complete` and
+   names who is unrated. The rate on an entry is derived from the CTC period
+   covering the entry's date (`services/pnl.py::RateBook`) — past hours at
+   past figures, upcoming plans at upcoming ones — so a change never
+   re-prices history.
+
+Monthly profit (spec 005 §3): a project's revenue is spread evenly over the
+working days of its timeline (first phase start to last phase end); past
+months attribute it by logged hours, the current and future months by
+allocation; a person's monthly cost is their CTC pro-rated by covered working
+days. `/analytics/pnl` and `/analytics/timeline` are manager-tier.
 
 `cost_rate_hourly` is labelled *cost rate* on every screen and never *salary*.
 It is a fully-loaded cost the company attributes; it is not what anybody is

@@ -214,6 +214,29 @@ def resources(user: ManagerDep, start: date | None = None, end: date | None = No
     )
 
 
+@analytics.get("/pnl")
+def monthly_profit(user: ManagerDep, start: str | None = None, end: str | None = None) -> dict:
+    """Revenue, cost and profit per person and per project, month by month —
+    spec 005 FR-PNL. `start`/`end` are YYYY-MM; default three months back to
+    five ahead. Past months are actual (logged hours), the current and future
+    months planned (allocations)."""
+    from app.services import pnl as pnl_service
+
+    return pnl_service.monthly(start, end)
+
+
+@analytics.get("/timeline")
+def allocation_timeline(
+    user: ManagerDep, start: date | None = None, end: date | None = None
+) -> dict:
+    """Allocations as bars per person — spec 005 FR-TL. Default: this month
+    back to six months ahead."""
+    from app.services import pnl as pnl_service
+
+    today = today_in_company_tz()
+    return pnl_service.timeline(start or today.replace(day=1), end or (today + timedelta(days=183)))
+
+
 @analytics.get("/people")
 def people_for_allocation(user: ManagerDep) -> list[dict]:
     """Everyone who can be allocated — name and id, nothing else.

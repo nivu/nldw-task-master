@@ -16,7 +16,7 @@ and who approves their leave. No password is set; their first Google sign-in
 attaches to the account. Use the company convention for the address where the
 person has no company mailbox.
 
-In the table you can change a person's **role**, set their **cost rate**, and
+In the table you can change a person's **role**, open their **CTC** history, and
 **deactivate** them. Deactivation keeps every booking and hour they ever
 logged; it only stops them signing in.
 
@@ -30,15 +30,23 @@ logged; it only stops them signing in.
 
 Only an admin can change a role.
 
-### Cost rate
+### CTC
 
-The cost rate is the fully loaded hourly cost the company attributes to a
-person's time. It is not their salary and is never labelled as such. Only
-managers and admins can see it; the person cannot.
+CTC (cost to company) is the annual cost the portal attributes to a person's
+time. It is entered with a **start date** and an optional **end date**, so a
+person's history holds their past, current and upcoming figures at once:
 
-Set it **before** the person logs project hours. The rate is captured onto
-each hour as it is saved, so hours logged before a rate exists stay unpriced,
-and every project they touch reports an incomplete cost until then.
+- To record a change from next month, add a period starting on the 1st of
+  next month. The current open-ended period closes automatically the day
+  before.
+- To record history, add periods with both dates.
+- A wrong period is removed and re-added; periods are never edited in place.
+
+Every project is costed at the CTC in force on the day each hour was logged,
+and every future month is planned at the CTC in force on those days. A
+person with no CTC for a date makes every figure for that date report as
+**incomplete**, never cheaper. Only managers and admins see CTC; the person
+never does, and it is never called salary.
 
 ## Allowances
 

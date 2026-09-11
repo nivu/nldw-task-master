@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,11 +12,14 @@ import Link from "next/link";
 
 import { BackfillPanel } from "@/components/portal/backfill-panel";
 import {
+  addCtc,
   createUser,
   declareHoliday,
   deleteHoliday,
   errorMessage,
   listAllowances,
+  listCtc,
+  removeCtc,
   listBackfills,
   listHolidays,
   listSettings,
@@ -30,10 +33,12 @@ import type {
   AppSetting,
   BackfillEntry,
   Category,
+  CtcList,
   Holiday,
   PortalUser,
   Role,
 } from "@/lib/api/types";
+import { formatMoney } from "@/components/portal/projects-panel";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
@@ -375,16 +380,17 @@ function UserTable({
   onChanged: () => void;
   onError: (message: string) => void;
 }) {
+  const [ctcFor, setCtcFor] = useState<string | null>(null);
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">People</CardTitle>
         <CardDescription>
-          The cost rate is the fully-loaded hourly cost the company attributes to
-          a person&apos;s time, used to work out what a project cost. It is not
-          what anybody is paid. Only managers and admins ever see it, and a
-          person without one makes every project they touch report an incomplete
-          cost rather than a cheaper one.
+          CTC is the cost to company the portal attributes to a person&apos;s time,
+          entered annually with a start date, so past, current and upcoming figures
+          all exist and every project is costed at the figure in force on the day.
+          Only managers and admins ever see it. A person with no CTC for a date
+          makes every figure for that date report as incomplete, never cheaper.
         </CardDescription>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
@@ -394,13 +400,14 @@ function UserTable({
               <th className="p-3 font-medium">Name</th>
               <th className="p-3 font-medium">Role</th>
               <th className="p-3 font-medium">Approved by</th>
-              <th className="p-3 font-medium">Cost rate ({currency}/h)</th>
+              <th className="p-3 font-medium">CTC ({currency}/month)</th>
               <th className="p-3" />
             </tr>
           </thead>
           <tbody className="divide-y">
             {users.map((user) => (
-              <tr key={user.id} className={user.is_active ? "" : "opacity-50"}>
+              <Fragment key={user.id}>
+              <tr className={user.is_active ? "" : "opacity-50"}>
                 <td className="p-3">
                   <span className="font-medium">{user.display_name}</span>
                   <span className="block text-xs text-muted-foreground">{user.email}</span>
@@ -434,12 +441,14 @@ function UserTable({
                     : "An admin"}
                 </td>
                 <td className="p-3">
-                  <CostRateField
-                    key={user.cost_rate_hourly ?? ""}
-                    user={user}
-                    onChanged={onChanged}
-                    onError={onError}
-                  />
+                  <button
+                    type="button"
+                    className="text-left tabular-nums underline-offset-2 hover:underline"
+                    aria-label={`CTC for ${user.display_name}`}
+                    onClick={() => setCtcFor(ctcFor === user.id ? null : user.id)}
+                  >
+                    {user.ctc_monthly_now ? formatMoney(user.ctc_monthly_now) : "not set"}
+                  </button>
                 </td>
                 <td className="p-3 text-right">
                   <Button
@@ -460,6 +469,14 @@ function UserTable({
                   </Button>
                 </td>
               </tr>
+              {ctcFor === user.id && (
+                <tr>
+                  <td colSpan={5} className="bg-muted/40 p-3">
+                    <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -469,61 +486,135 @@ function UserTable({
 }
 
 /**
- * FR-FIN-01 — an admin sets a person's cost rate.
+ * Spec 005 FR-CTC — a person's CTC as a dated history.
  *
- * Saves on blur or Enter, not on every keystroke: each save is audited
- * (FR-FIN-08) and a rate typed digit by digit would be five audit rows. Keyed
- * on the saved value by the caller, so a reload reseeds the field.
+ * Add and remove, never edit in place: an editable history is not a history.
+ * Adding a period that starts after an open-ended one closes that one the day
+ * before, which is how "CTC changes next month" is entered.
  */
-function CostRateField({
+function CtcEditor({
   user,
+  currency,
   onChanged,
   onError,
 }: {
   user: PortalUser;
+  currency: string;
   onChanged: () => void;
   onError: (message: string) => void;
 }) {
-  const [value, setValue] = useState(
-    user.cost_rate_hourly ? String(Number(user.cost_rate_hourly)) : ""
-  );
+  const { data, reload } = useAsync<CtcList>(() => listCtc(user.id), [user.id]);
+  const [annual, setAnnual] = useState("");
+  const [startsOn, setStartsOn] = useState("");
+  const [endsOn, setEndsOn] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function commit() {
-    const next = value.trim();
-    const current = user.cost_rate_hourly ?? "";
-    const unchanged =
-      next === current || (next !== "" && current !== "" && Number(next) === Number(current));
-    if (unchanged) return;
-    setBusy(true);
-    try {
-      await updateUser(user.id, { cost_rate_hourly: next || null });
-      onChanged();
-    } catch (err) {
-      onError(errorMessage(err));
-      setValue(current);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const fmt = (iso: string | null) =>
+    iso
+      ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        })
+      : "until further notice";
 
   return (
-    <Input
-      type="number"
-      inputMode="decimal"
-      min="0"
-      step="50"
-      aria-label={`Cost rate for ${user.display_name}`}
-      className="h-8 w-28 tabular-nums"
-      value={value}
-      disabled={busy || !user.is_active}
-      placeholder="not set"
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-    />
+    <div className="space-y-3 text-sm">
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          try {
+            await addCtc(user.id, {
+              annual_ctc: annual,
+              starts_on: startsOn,
+              ends_on: endsOn || null,
+            });
+            setAnnual("");
+            setEndsOn("");
+            reload();
+            onChanged();
+          } catch (err) {
+            onError(errorMessage(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="space-y-1.5">
+          <Label className="text-xs">Annual CTC ({currency})</Label>
+          <Input
+            type="number"
+            min="0"
+            step="10000"
+            className="w-36"
+            value={annual}
+            onChange={(e) => setAnnual(e.target.value)}
+            required
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">From</Label>
+          <Input type="date" value={startsOn} onChange={(e) => setStartsOn(e.target.value)} required />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">To</Label>
+          <Input
+            type="date"
+            value={endsOn}
+            onChange={(e) => setEndsOn(e.target.value)}
+            placeholder="open"
+          />
+        </div>
+        <Button type="submit" size="sm" disabled={busy || !annual || !startsOn}>
+          {busy ? "Saving…" : "Add period"}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          Leave &ldquo;To&rdquo; empty for until further notice. A new period
+          closes the open one before it.
+        </span>
+      </form>
+
+      {data && data.periods.length === 0 && (
+        <p className="text-xs text-muted-foreground">No CTC recorded for {user.display_name}.</p>
+      )}
+      {data && data.periods.length > 0 && (
+        <div className="divide-y rounded-md border bg-background">
+          {data.periods.map((period) => (
+            <div key={period.id} className="flex flex-wrap items-center gap-3 p-2">
+              <span className="tabular-nums font-medium">
+                {currency} {formatMoney(period.annual_ctc)}
+                <span className="font-normal text-muted-foreground"> a year</span>
+              </span>
+              <span className="tabular-nums text-muted-foreground">
+                {formatMoney(period.monthly_ctc)}/month
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {fmt(period.starts_on)} → {fmt(period.ends_on)}
+              </span>
+              {data.current?.id === period.id && <Badge variant="secondary">now</Badge>}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-7"
+                onClick={async () => {
+                  try {
+                    await removeCtc(period.id);
+                    reload();
+                    onChanged();
+                  } catch (err) {
+                    onError(errorMessage(err));
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

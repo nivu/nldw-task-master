@@ -133,10 +133,6 @@ class UserUpdate(BaseModel):
     role: Role | None = None
     lead_id: str | None = None
     is_active: bool | None = None
-    # Spec 003 FR-FIN-01. A fully-loaded hourly COST the company attributes —
-    # not salary, and never labelled as such. Admin-only route; never echoed
-    # back to anyone below manager.
-    cost_rate_hourly: Decimal | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class AllowanceIn(BaseModel):
@@ -277,3 +273,14 @@ class TokenCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=80)
+
+
+class CtcPeriodIn(BaseModel):
+    """Spec 005 FR-CTC — one dated CTC figure. Annual (Q-03); the API shows
+    it monthly. `ends_on` None means until further notice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    annual_ctc: Decimal = Field(ge=0, le=1_000_000_000)
+    starts_on: date
+    ends_on: date | None = None

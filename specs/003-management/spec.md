@@ -84,6 +84,8 @@ was offered and declined.
 
 ### 4.1 Definitions
 
+> **Superseded by [`005`](../005-ctc-timeline/spec.md) §3.1** (12 September 2026): the hourly cost rate and the per-entry snapshot are retired; cost is derived from a dated CTC history. FR-FIN-01 and FR-FIN-03 read accordingly. Everything else in this section stands.
+
 | Term | Meaning | Where it lives |
 |---|---|---|
 | **Cost rate** | Fully-loaded hourly cost the company attributes to a person. Set by an admin. | `profiles.cost_rate_hourly` |

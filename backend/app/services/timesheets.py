@@ -201,8 +201,6 @@ def save_day(
     # person who helped out for an afternoon is exactly the effort a budget
     # conversation misses, and refusing it pushes that work into nothing.
 
-    profile = db.get_profile(user_id) or {}
-    rate_now = profile.get("cost_rate_hourly")
     phases_by_project = _phases_by_project()
     existing = {
         _row_key(e): e for e in db.list_time_entries(user_ids=[user_id], start=day, end=day)
@@ -225,15 +223,12 @@ def save_day(
             "note": entry.note,
         }
         current = existing.get(entry.key)
+        # Spec 005 retired 003's cost_rate_snapshot: the cost of an entry is
+        # now derived from the CTC period covering its date, so nothing about
+        # price is written here at all.
         if current is None:
-            # New line: capture the rate in force right now (FR-FIN-03).
-            data["cost_rate_snapshot"] = (
-                str(rate_now) if (entry.project_id and rate_now is not None) else None
-            )
             saved.append(db.insert_time_entry(data))
         else:
-            # Correcting an existing line keeps its ORIGINAL snapshot. The
-            # hours changed; the price they were logged at did not.
             saved.append(db.update_time_entry(current["id"], data))
 
     # Lines the person removed from the day.
