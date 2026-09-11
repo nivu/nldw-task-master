@@ -380,3 +380,59 @@ test.describe("connecting Claude (spec 004)", () => {
     await expect(page.getByText(/revoked or expired token/)).toBeVisible();
   });
 });
+
+test.describe("org operations (spec 006)", () => {
+  test("a person can claim comp-off, see their calendar feed and write up their quarter", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await expect(page.getByText(/Worked a weekend or a holiday/)).toBeVisible();
+    await page.goto("/account");
+    await expect(page.getByText("Leave in your calendar")).toBeVisible();
+    await expect(page.locator("code", { hasText: /\/api\/v1\/feed\// })).toBeVisible();
+    await page.goto("/review");
+    await expect(page.getByText("In your words")).toBeVisible();
+    // FR-REV-03 — nothing on this page rates anybody.
+    await expect(page.locator("body")).not.toContainText(/\brating\b|\/ *5|\bgrade\b/i);
+  });
+
+  test("a lead signs off weeks and sees comp-off claims and reviews", async ({ page }) => {
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/team");
+    await expect(page.getByText("Weekly sign-off")).toBeVisible();
+    await expect(page.getByText("Comp-off claims")).toBeVisible();
+    await expect(page.getByText(/Quarter in review/)).toBeVisible();
+  });
+
+  test("a manager sees utilisation, bench, hiring and project health", async ({ page }) => {
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/analytics");
+    await page.getByRole("tab", { name: "Utilisation" }).click();
+    await expect(page.getByText(/Target \d+%/)).toBeVisible();
+    await page.getByRole("tab", { name: "Bench" }).click();
+    await expect(page.getByText("Hiring signal")).toBeVisible();
+  });
+
+  test("a lead is refused bench and hiring (manager tier)", async ({ page }) => {
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/analytics");
+    await expect(page.getByRole("tab", { name: "Utilisation" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Bench" })).toHaveCount(0);
+  });
+
+  test("the admin has locations, checklists and notification controls", async ({ page }) => {
+    await signIn(page, PEOPLE.admin);
+    await page.goto("/admin");
+    await page.getByRole("tab", { name: "Holidays" }).click();
+    await expect(page.getByText("Locations", { exact: true }).first()).toBeVisible();
+    await expect(page.getByLabel("Applies to")).toBeVisible();
+    await page.getByRole("tab", { name: "Checklists" }).click();
+    await expect(page.getByText("Start a checklist")).toBeVisible();
+    await page.getByRole("tab", { name: "Notifications" }).click();
+    await expect(page.getByRole("button", { name: "Send me a test" })).toBeVisible();
+  });
+
+  test("the OAuth consent page needs a request and a signed-in person", async ({ page }) => {
+    await page.goto("/auth/connect?txn=abc");
+    // Not signed in: sent to sign in, and brought back afterwards.
+    await expect(page).toHaveURL(/\/auth\/login\?next=/);
+  });
+});

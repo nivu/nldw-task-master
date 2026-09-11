@@ -7,13 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import Link from "next/link";
+
 import {
   createToken,
   errorMessage,
   getHistory,
   getMe,
+  getMyFeed,
   listTokens,
   revokeToken,
+  rotateMyFeed,
 } from "@/lib/api/portal";
 import type { Category, Me, TokenCreated, TokenList, YearHistory } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
@@ -59,6 +63,23 @@ export default function AccountPage() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Your quarter</CardTitle>
+          <CardDescription>
+            Your hours and notes for the quarter, and a place to write it up in your own words for
+            your lead.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Link href="/review" className="text-sm underline underline-offset-2">
+            Open the quarter in review →
+          </Link>
+        </CardContent>
+      </Card>
+
+      <FeedPanel />
 
       <TokensPanel />
 
@@ -291,6 +312,63 @@ function TokensPanel() {
               </Badge>
             ))}
           </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Calendar feed — spec 006 FR-FEED.
+ *
+ * A private address for Google Calendar or any calendar app. Category only,
+ * never reasons. Rotating it invalidates the old address at once.
+ */
+function FeedPanel() {
+  const { data, error, setError, reload } = useAsync<{ url: string }>(() => getMyFeed(), []);
+  const [copied, setCopied] = useState(false);
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // The address is on screen regardless.
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Leave in your calendar</CardTitle>
+        <CardDescription>
+          Subscribe to this address in Google Calendar (Other calendars → From URL) to see approved
+          leave and holidays for the people you can see in the portal. Categories only — never
+          reasons. Treat the address like a password; rotate it if it leaks.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {error && <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+        {data && (
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-xs">{data.url}</code>
+            <Button size="sm" variant="outline" onClick={() => copy(data.url)}>{copied ? "Copied" : "Copy"}</Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={async () => {
+                try {
+                  await rotateMyFeed();
+                  reload();
+                } catch (err) {
+                  setError(errorMessage(err));
+                }
+              }}
+            >
+              Rotate
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>

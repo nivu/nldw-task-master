@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-Category = Literal["wfh", "casual", "sick"]
+Category = Literal["wfh", "casual", "sick", "compoff"]
 Role = Literal["user", "lead", "manager", "admin"]
 Status = Literal["pending", "approved", "rejected", "withdrawn", "released", "unrecognised"]
 
@@ -97,6 +97,8 @@ class HolidayIn(BaseModel):
 
     date: date
     name: str = Field(min_length=1, max_length=120)
+    # Spec 006 FR-LOC-02 — None applies everywhere.
+    location_id: str | None = None
 
 
 class HolidayOut(BaseModel):
@@ -133,6 +135,8 @@ class UserUpdate(BaseModel):
     role: Role | None = None
     lead_id: str | None = None
     is_active: bool | None = None
+    # Spec 006 FR-LOC-01.
+    location_id: str | None = None
 
 
 class AllowanceIn(BaseModel):
@@ -284,3 +288,95 @@ class CtcPeriodIn(BaseModel):
     annual_ctc: Decimal = Field(ge=0, le=1_000_000_000)
     starts_on: date
     ends_on: date | None = None
+
+
+# ---------------------------------------------------------------------------
+# Spec 006 — org operations
+# ---------------------------------------------------------------------------
+
+
+class CompoffClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    worked_on: date
+    days: Decimal = Field(default=Decimal("1"))
+    note: str | None = Field(default=None, max_length=300)
+
+
+class CompoffDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approve: bool
+    note: str | None = Field(default=None, max_length=300)
+
+
+class ConfirmWeek(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=300)
+
+
+class ReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quarter: str = Field(pattern=r"^\d{4}-Q[1-4]$")
+    summary: str = Field(max_length=8000)
+    submit: bool = False
+
+
+class OAuthApprove(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    txn: str = Field(min_length=8, max_length=200)
+    approved: bool
+
+
+class LocationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+
+
+class MilestoneIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    due_on: date
+    amount: Decimal = Field(ge=0, le=1_000_000_000)
+
+
+class MilestoneUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    due_on: date | None = None
+    amount: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
+    invoiced_on: date | None = None
+    clear_invoiced: bool = False
+
+
+class ChecklistStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    kind: Literal["onboarding", "offboarding"]
+
+
+class ChecklistItemUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    done: bool | None = None
+    owner_id: str | None = None
+    due_on: date | None = None
+
+
+class ChecklistTemplateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    labels: list[str] = Field(max_length=40)
+
+
+class NudgeRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["today", "weekly_gaps", "over_allocation", "morning_post", "digest"]

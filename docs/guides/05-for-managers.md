@@ -37,6 +37,39 @@ than refuse to write it down.
 Projects are **archived**, never deleted. The hours logged against a finished
 project are exactly the history the reports exist for.
 
+### Milestones
+
+Under the same panel, add **milestones**: a name, a due date and an amount, and
+mark each one invoiced when it is. Once a project has milestones, its monthly
+revenue follows them instead of being spread evenly over the timeline. If the
+milestones do not add up to the project's revenue, the panel and the monthly
+table say so.
+
+## Project health
+
+Every project on the Effort page carries a colour. Open it to see three
+dimensions, each with the numbers behind the colour: **burn** (hours logged
+against budget, judged against how far along the timeline is), **margin**
+(margin to date against the margin the allocations planned for) and
+**schedule** (past the end date with budget unspent). Overall is the worst of
+the three. A red is a prompt for a conversation, not a verdict.
+
+## Effort statements
+
+Open a project and choose **Effort statement for this month** for a
+client-ready page: hours by person by day, totals by phase and the work notes.
+Print it, or download the CSV to send with an invoice. It never contains
+money. Weeks a lead has not yet confirmed are marked.
+
+## Bench and hiring
+
+**Bench** shows each person's allocated percent for the coming weeks and
+flags weeks under the threshold as free capacity. **Hiring signal**, on the
+same tab, compares the hours the allocations demand with what the team can
+supply at target utilisation, month by month, and prices the shortfall in
+people at an annual CTC you type in. It is a planning number, not anybody's
+figure.
+
 ## Effort, with money
 
 Managers see two extra tabs on **Effort**.

@@ -18,8 +18,17 @@ from app.domain.calendar import is_weekend, today_in_company_tz
 # Categories and states — §6.1, §6.4
 # ---------------------------------------------------------------------------
 
-CATEGORIES = ("wfh", "casual", "sick")
-CATEGORY_LABELS = {"wfh": "Work from home", "casual": "Casual leave", "sick": "Sick leave"}
+CATEGORIES = ("wfh", "casual", "sick", "compoff")
+CATEGORY_LABELS = {
+    "wfh": "Work from home",
+    "casual": "Casual leave",
+    "sick": "Sick leave",
+    # Spec 006 FR-COMP — draws on earned credits, not an allowance.
+    "compoff": "Comp-off",
+}
+#: Categories that draw down a monthly allowance. Comp-off does not; it
+#: consumes credits earned by working a weekend or holiday (spec 006).
+ALLOWANCE_CATEGORIES = ("wfh", "casual", "sick")
 
 FULL_DAY = Decimal("1.0")
 HALF_DAY = Decimal("0.5")
@@ -28,16 +37,16 @@ VALID_DURATIONS = (HALF_DAY, FULL_DAY)
 #: Q-07 — a reason is required for casual and sick leave, optional for work
 #: from home. Sick and casual are absences someone else has to plan around;
 #: work from home is not.
-REASON_REQUIRED = {"wfh": False, "casual": True, "sick": True}
+REASON_REQUIRED = {"wfh": False, "casual": True, "sick": True, "compoff": False}
 
 #: §6.1 — casual leave is planned (a family event, an appointment) and may not
 #: be filed for today. Sick leave is by nature unplanned and must be. The
 #: system must not force the same notice rules on both.
-ALLOWS_SAME_DAY = {"wfh": True, "casual": False, "sick": True}
+ALLOWS_SAME_DAY = {"wfh": True, "casual": False, "sick": True, "compoff": False}
 
 #: §6.1 — sick leave cannot be booked in advance; nobody knows they will be ill
 #: next Tuesday. A future-dated sick day is almost always a mis-tap on casual.
-ALLOWS_FUTURE = {"wfh": True, "casual": True, "sick": False}
+ALLOWS_FUTURE = {"wfh": True, "casual": True, "sick": False, "compoff": True}
 
 #: §6.4 — the states that draw down an allowance. Everything else (rejected,
 #: withdrawn, released, unrecognised) returns it.

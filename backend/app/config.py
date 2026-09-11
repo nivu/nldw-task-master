@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # means the Account page explains that MCP is not enabled here.
     MCP_PUBLIC_URL: str = ""
 
+    # Spec 006 FR-FEED. Optional dedicated secret for calendar feed keys;
+    # derived from the service key when unset.
+    FEED_SECRET: str = ""
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

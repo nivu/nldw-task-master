@@ -84,13 +84,28 @@ def create_or_replace(
         if existing["category"] == category:
             give_back = Decimal(str(existing["duration"]))
 
-    holiday = db.get_holiday_on(day)
-    remaining = balances.remaining_for(
-        user_id,
-        period_of(day),
-        category,
-        exclude_booking_duration=give_back,
-    )
+    from app.services import compoff as compoff_service
+    from app.services.holidays import holiday_on_for_user
+
+    holiday = holiday_on_for_user(user_id, day)
+    if category == "compoff":
+        # Spec 006 FR-COMP-03 — credits, not an allowance. Checked here with
+        # comp-off wording; the generic allowance check below is then passed
+        # a figure it cannot refuse.
+        have = compoff_service.available(user_id, today) + (give_back or Decimal("0"))
+        if have < duration:
+            raise BookingRefused(
+                f"You have {have} day(s) of comp-off available and this needs {duration}. "
+                "Claim comp-off for a weekend or holiday you worked, and ask your lead to approve it."
+            )
+        remaining = duration
+    else:
+        remaining = balances.remaining_for(
+            user_id,
+            period_of(day),
+            category,
+            exclude_booking_duration=give_back,
+        )
 
     refusal = rules.validate_booking(
         rules.BookingRequest(day=day, category=category, duration=duration, reason=reason),
@@ -108,6 +123,8 @@ def create_or_replace(
             existing["id"],
             {"status": "withdrawn", "decided_by": actor_id, "decided_at": _now()},
         )
+        if existing["category"] == "compoff":
+            compoff_service.release_for_booking(existing["id"])
         audit.record(
             action="booking.replaced",
             target_table="bookings",
@@ -128,6 +145,9 @@ def create_or_replace(
             "created_by": actor_id,
         }
     )
+
+    if category == "compoff":
+        compoff_service.consume(user_id=user_id, days=duration, booking_id=created["id"], on=today)
 
     _notify("booking_created", created["id"])
     return created
@@ -160,6 +180,7 @@ def withdraw(*, booking_id: str, actor_id: str) -> dict[str, Any]:
     updated = db.update_booking(
         booking_id, {"status": "withdrawn", "decided_by": actor_id, "decided_at": _now()}
     )
+    _return_compoff(booking)
     audit.record(
         action="booking.withdrawn",
         target_table="bookings",
@@ -220,6 +241,8 @@ def decide(
             "decision_note": (note or "").strip() or None,
         },
     )
+    if target == "rejected":
+        _return_compoff(booking)
     audit.record(
         action=f"booking.{target}",
         target_table="bookings",
@@ -428,7 +451,9 @@ def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
     return updated
 
 
-def release_for_holiday(*, day: date, holiday_name: str, actor_id: str) -> list[dict[str, Any]]:
+def release_for_holiday(
+    *, day: date, holiday_name: str, actor_id: str, location_id: str | None = None
+) -> list[dict[str, Any]]:
     """Cancel bookings a newly declared holiday has made redundant.
 
     FR-HOL-05/06 — the allowance goes back (again, automatically: `released` is
@@ -436,6 +461,12 @@ def release_for_holiday(*, day: date, holiday_name: str, actor_id: str) -> list[
     a day they had planned around silently changes meaning.
     """
     affected = db.list_bookings(start=day, end=day, statuses=sorted(rules.CONSUMING_STATES))
+    if location_id:
+        # Spec 006 FR-LOC-02 — a holiday for one location releases only the
+        # bookings of the people there.
+        default = db.default_location_id()
+        where = {p["id"]: (p.get("location_id") or default) for p in db.list_profiles()}
+        affected = [b for b in affected if where.get(b["user_id"]) == location_id]
     released: list[dict[str, Any]] = []
     for booking in affected:
         updated = db.update_booking(
@@ -447,6 +478,7 @@ def release_for_holiday(*, day: date, holiday_name: str, actor_id: str) -> list[
                 "decision_note": f"Released — {day.isoformat()} declared as {holiday_name}.",
             },
         )
+        _return_compoff(booking)
         audit.record(
             action="booking.released",
             target_table="bookings",
@@ -492,3 +524,13 @@ def _notify(event: str, booking_id: str) -> None:
     from app.tasks import notifications
 
     fire_and_forget(notifications.dispatch, event, booking_id, label=f"notify:{event}")
+
+
+def _return_compoff(booking: dict[str, Any]) -> None:
+    """Spec 006 FR-COMP-03 — a comp-off booking that stops occupying its day
+    hands its credits back."""
+    if booking.get("category") != "compoff":
+        return
+    from app.services import compoff as compoff_service
+
+    compoff_service.release_for_booking(booking["id"])

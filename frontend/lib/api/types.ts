@@ -12,7 +12,7 @@
  * owns the ledger.
  */
 
-export type Category = "wfh" | "casual" | "sick";
+export type Category = "wfh" | "casual" | "sick" | "compoff";
 /** Spec 003 FR-ROLE-01 — `manager` sits between lead and admin. */
 export type Role = "user" | "lead" | "manager" | "admin";
 export type BookingStatus =
@@ -163,6 +163,9 @@ export interface Holiday {
   date: string;
   name: string;
   released_bookings?: number;
+  /** Spec 006 — null applies everywhere. */
+  location_id?: string | null;
+  location_name?: string | null;
 }
 
 export interface PortalUser {
@@ -172,6 +175,8 @@ export interface PortalUser {
   role: Role;
   lead_id: string | null;
   is_active: boolean;
+  /** Spec 006 FR-LOC-01. */
+  location_id?: string | null;
   /** Spec 005 — the CTC (cost to company) in force today, shown monthly.
    *  Only in the admin's user list. Never labelled "salary". */
   ctc_monthly_now?: string | null;
@@ -211,12 +216,15 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   wfh: "Work from home",
   casual: "Casual leave",
   sick: "Sick leave",
+  /** Spec 006 — draws on earned credits, not a monthly allowance. */
+  compoff: "Comp-off",
 };
 
 export const CATEGORY_SHORT: Record<Category, string> = {
   wfh: "WFH",
   casual: "Casual",
   sick: "Sick",
+  compoff: "Comp-off",
 };
 
 // ---------------------------------------------------------------------------
@@ -472,6 +480,8 @@ export interface ApiToken {
   expires_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  /** Spec 006 — set when an OAuth client (claude.ai) holds the token. */
+  client_id?: string | null;
   active: boolean;
 }
 
@@ -560,4 +570,180 @@ export interface Timeline {
     peak_percent: string;
     over: boolean;
   }[];
+}
+
+// ---------------------------------------------------------------------------
+// Org operations — spec 006
+// ---------------------------------------------------------------------------
+
+export interface Location {
+  id: string;
+  name: string;
+  is_default: boolean;
+}
+
+export interface CompoffClaim {
+  id: string;
+  user_id: string;
+  display_name: string;
+  worked_on: string;
+  days: string;
+  note: string | null;
+  status: "pending" | "approved" | "rejected" | "used" | "lapsed";
+  expires_on: string | null;
+  decision_note: string | null;
+  decided_at: string | null;
+}
+
+export interface MyCompoff {
+  available: string;
+  valid_days: number;
+  claims: CompoffClaim[];
+}
+
+export interface TeamWeek {
+  week_start: string;
+  people: {
+    user_id: string;
+    display_name: string;
+    total: string;
+    days: { date: string; total: string; holiday: boolean; on_leave: string | null }[];
+    missing_days: string[];
+    confirmation: { status: "confirmed" | "auto"; confirmed_at: string; note: string | null } | null;
+  }[];
+}
+
+export interface Review {
+  quarter: string;
+  first: string;
+  last: string;
+  hours: { name: string; hours: string }[];
+  total_hours: string;
+  notes: { name: string; months: { period: string; entries: { date: string; note: string; hours: string }[] }[] }[];
+  summary: string;
+  submitted_at: string | null;
+  closed_at: string | null;
+}
+
+export interface TeamReviews {
+  quarter: string;
+  people: (Review & { user_id: string; display_name: string })[];
+}
+
+export interface Statement {
+  project: { id: string; name: string; client: string | null };
+  period: string;
+  first: string;
+  last: string;
+  days: string[];
+  people: {
+    user_id: string;
+    display_name: string;
+    days: Record<string, string>;
+    total: string;
+    unconfirmed_weeks: string[];
+    notes: { date: string; note: string }[];
+  }[];
+  by_phase: { phase: string; hours: string }[];
+  total_hours: string;
+  unconfirmed: boolean;
+}
+
+export interface Utilisation {
+  start: string;
+  end: string;
+  target_pct: string;
+  people: {
+    user_id: string;
+    display_name: string;
+    months: {
+      period: string;
+      billable: string;
+      internal: string;
+      activity: string;
+      logged: string;
+      capacity: string;
+      utilisation_pct: string | null;
+      below_target: boolean;
+    }[];
+  }[];
+}
+
+export interface Bench {
+  weeks: string[];
+  threshold_pct: string;
+  people: {
+    user_id: string;
+    display_name: string;
+    weeks: { week_start: string; allocated_pct: string; bench: boolean }[];
+    bench_weeks: number;
+  }[];
+}
+
+export interface Hiring {
+  target_pct: string;
+  annual_ctc: string;
+  months: {
+    period: string;
+    demand_hours: string;
+    supply_hours: string;
+    shortfall_hours: string;
+    fte_needed: string;
+    monthly_cost_at_ctc: string;
+  }[];
+}
+
+export type Rag = "green" | "amber" | "red";
+
+export interface ProjectHealth {
+  project_id: string;
+  project_name: string;
+  overall: Rag;
+  dimensions: { key: string; colour: Rag; detail: string; inputs: Record<string, string | boolean | null> }[];
+  timeline: { starts_on: string; ends_on: string } | null;
+}
+
+export interface Milestone {
+  id: string;
+  project_id: string;
+  name: string;
+  due_on: string;
+  amount: string;
+  invoiced_on: string | null;
+}
+
+export interface MilestoneList {
+  milestones: Milestone[];
+  total: string;
+  invoiced: string;
+  revenue: string | null;
+  gap: string | null;
+}
+
+export interface ChecklistItem {
+  id: string;
+  position: number;
+  label: string;
+  owner_id: string | null;
+  owner_name: string | null;
+  due_on: string | null;
+  done_at: string | null;
+  done_by: string | null;
+}
+
+export interface Checklist {
+  id: string;
+  user_id: string;
+  display_name: string;
+  kind: "onboarding" | "offboarding";
+  created_at: string;
+  closed_at: string | null;
+  items: ChecklistItem[];
+  done: number;
+  total: number;
+}
+
+export interface Checklists {
+  templates: { onboarding: string[]; offboarding: string[] };
+  checklists: Checklist[];
 }

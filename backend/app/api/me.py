@@ -73,7 +73,9 @@ def my_calendar(
     resolved = period or period_of(today)
     first, last = period_bounds(resolved)
 
-    holidays = {row["date"]: row["name"] for row in db.list_holidays(first, last)}
+    from app.services.holidays import holidays_for_user
+
+    holidays = holidays_for_user(user.id, first, last)  # spec 006 FR-LOC-02
     bookings = {
         row["date"]: row
         for row in db.list_bookings(

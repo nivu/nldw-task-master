@@ -55,6 +55,20 @@ for comparing people.
 Your lead sees it when deciding the request, and admins can see it. Nobody
 else can, and the team view never shows it.
 
+**I worked on Saturday. Do I get the day back?**
+Claim it under Calendar → Comp-off. Once your lead approves it you have a
+limited time to book it as a comp-off day.
+
+**Why did I get a Slack message at six?**
+You had nothing logged for the day. Log it and the reminders stop.
+
+**Can I see leave in Google Calendar?**
+Yes. Account → Leave in your calendar gives you a private address to subscribe to.
+
+**Can I use the portal from claude.ai?**
+Yes. Add it as a connector; you will be sent to the portal to sign in with
+Google and allow it. Claude Code and Claude Desktop use a token instead.
+
 **How do I change my name or email?**
 Ask an admin. The sign-in address is tied to your Google account, so changing
 it means a new account under the new address.

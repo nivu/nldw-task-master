@@ -348,8 +348,17 @@ def set_allowance(payload: AllowanceIn, admin: AdminDep) -> dict:
 
 @router.get("/holidays")
 def list_holidays(admin: AdminDep) -> list[dict]:
+    locations = {loc["id"]: loc["name"] for loc in db.list_locations()}
     return [
-        {"id": row["id"], "date": row["date"], "name": row["name"]} for row in db.list_holidays()
+        {
+            "id": row["id"],
+            "date": row["date"],
+            "name": row["name"],
+            # Spec 006 FR-LOC-02 — None applies everywhere.
+            "location_id": row.get("location_id"),
+            "location_name": locations.get(row.get("location_id") or "", None),
+        }
+        for row in db.list_holidays()
     ]
 
 
@@ -362,14 +371,31 @@ def declare_holiday(payload: HolidayIn, admin: AdminDep) -> dict:
     (FR-HOL-06). Doing it silently would leave someone's casual leave charged
     for a day the whole company had off.
     """
-    if db.get_holiday_on(payload.date):
+    clash = [
+        h
+        for h in db.list_holidays(payload.date, payload.date)
+        if h.get("location_id") in (None, payload.location_id) or payload.location_id is None
+    ]
+    if clash:
         raise ProblemDetail(409, f"{payload.date.isoformat()} is already a holiday.")
+    if payload.location_id and not any(
+        loc["id"] == payload.location_id for loc in db.list_locations()
+    ):
+        raise ProblemDetail(422, "No such location.")
 
     row = db.insert_holiday(
-        {"date": payload.date.isoformat(), "name": payload.name, "created_by": admin.id}
+        {
+            "date": payload.date.isoformat(),
+            "name": payload.name,
+            "created_by": admin.id,
+            "location_id": payload.location_id,
+        }
     )
     released = booking_service.release_for_holiday(
-        day=payload.date, holiday_name=payload.name, actor_id=admin.id
+        day=payload.date,
+        holiday_name=payload.name,
+        actor_id=admin.id,
+        location_id=payload.location_id,
     )
     audit.record(
         action="holiday.declared",

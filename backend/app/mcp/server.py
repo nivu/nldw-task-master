@@ -662,6 +662,250 @@ async def run_lock_sweep(ctx: Context) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Org operations — spec 006
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ)
+async def my_compoff(ctx: Context) -> dict:
+    """The person's comp-off: days available to book now, and every claim
+    with its status and expiry."""
+    return await _api(ctx, "GET", "/compoff")
+
+
+@mcp.tool(annotations=WRITE)
+async def claim_compoff(
+    ctx: Context, worked_on: str, days: str = "1", note: str | None = None
+) -> dict:
+    """Claim comp-off for a weekend or holiday the person worked. CONFIRM
+    FIRST. days is "1" or "0.5". Their lead approves it; then it can be
+    booked with book_leave(category="compoff")."""
+    return await _api(
+        ctx, "POST", "/compoff", body={"worked_on": worked_on, "days": days, "note": note}
+    )
+
+
+@mcp.tool(annotations=READ)
+async def team_compoff(ctx: Context) -> list:
+    """LEADS. Comp-off claims from the people this person may decide for,
+    pending first."""
+    return await _api(ctx, "GET", "/compoff/team")
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def decide_compoff(
+    ctx: Context, credit_id: str, approve: bool, note: str | None = None
+) -> dict:
+    """LEADS. Approve or reject a comp-off claim. CONFIRM FIRST. Rejecting
+    needs a note the person will read."""
+    return await _api(
+        ctx, "POST", f"/compoff/{credit_id}/decision", body={"approve": approve, "note": note}
+    )
+
+
+@mcp.tool(annotations=READ)
+async def team_weeks(ctx: Context, week_start: str | None = None) -> dict:
+    """LEADS. Each report's week (Monday date, default this week): hours,
+    missing days and whether it is confirmed."""
+    return await _api(ctx, "GET", "/team/timesheets", params={"week_start": week_start})
+
+
+@mcp.tool(annotations=WRITE)
+async def confirm_week(
+    ctx: Context, user_id: str, week_start: str, note: str | None = None
+) -> dict:
+    """LEADS. Sign off a report's week. CONFIRM FIRST."""
+    return await _api(
+        ctx, "POST", f"/team/timesheets/{user_id}/{week_start}/confirm", body={"note": note}
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def reopen_week(ctx: Context, user_id: str, week_start: str) -> dict:
+    """LEADS. Reopen a confirmed week while it is still editable. CONFIRM FIRST."""
+    return await _api(ctx, "DELETE", f"/team/timesheets/{user_id}/{week_start}/confirm")
+
+
+@mcp.tool(annotations=READ)
+async def team_reviews(ctx: Context, quarter: str | None = None) -> dict:
+    """LEADS. Reports' quarterly self-summaries (quarter like 2026-Q3) with
+    their hours and notes. Their own words; never rate or compare them."""
+    return await _api(ctx, "GET", "/team/reviews", params={"quarter": quarter})
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def close_review(ctx: Context, user_id: str, quarter: str) -> dict:
+    """LEADS. Close a report's quarterly review so it can no longer be edited.
+    CONFIRM FIRST."""
+    return await _api(ctx, "POST", f"/team/reviews/{user_id}/{quarter}/close")
+
+
+@mcp.tool(annotations=READ)
+async def my_review(ctx: Context, quarter: str | None = None) -> dict:
+    """The person's own quarter: hours by project, every note they wrote,
+    and their summary so far."""
+    return await _api(ctx, "GET", "/me/review", params={"quarter": quarter})
+
+
+@mcp.tool(annotations=WRITE)
+async def save_review(ctx: Context, quarter: str, summary: str, submit: bool = False) -> dict:
+    """Save (or with submit=true, submit) the person's quarterly summary.
+    CONFIRM FIRST, showing the text. Their words, not yours."""
+    return await _api(
+        ctx, "PUT", "/me/review", body={"quarter": quarter, "summary": summary, "submit": submit}
+    )
+
+
+@mcp.tool(annotations=READ)
+async def effort_statement(ctx: Context, project_id: str, period: str) -> dict:
+    """MANAGERS AND ADMINS. Client-ready hours by person by day for a project
+    and month (YYYY-MM), with unconfirmed weeks flagged. No money."""
+    return await _api(
+        ctx, "GET", f"/analytics/projects/{project_id}/statement", params={"period": period}
+    )
+
+
+@mcp.tool(annotations=READ)
+async def utilisation(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
+    """LEADS AND ABOVE. Billable, internal and activity hours against capacity
+    per person per month (YYYY-MM range). Sorted by name; never rank."""
+    return await _api(ctx, "GET", "/analytics/utilisation", params={"start": start, "end": end})
+
+
+@mcp.tool(annotations=READ)
+async def bench(ctx: Context, weeks: int = 8) -> dict:
+    """MANAGERS AND ADMINS. Allocated percent per person for the coming
+    weeks, flagging weeks under the bench threshold."""
+    return await _api(ctx, "GET", "/analytics/bench", params={"weeks": weeks})
+
+
+@mcp.tool(annotations=READ)
+async def hiring_signal(ctx: Context, months: int = 6, annual_ctc: str = "1200000") -> dict:
+    """MANAGERS AND ADMINS. Demand from allocations against supply at target
+    utilisation, FTE needed per month, and their monthly cost at the given
+    annual CTC (an input, not anybody's figure)."""
+    return await _api(
+        ctx, "GET", "/analytics/hiring", params={"months": months, "annual_ctc": annual_ctc}
+    )
+
+
+@mcp.tool(annotations=READ)
+async def project_health(ctx: Context, project_id: str) -> dict:
+    """MANAGERS AND ADMINS. Red/amber/green for burn, margin and schedule,
+    with the inputs beside each colour."""
+    return await _api(ctx, "GET", f"/analytics/projects/{project_id}/health")
+
+
+@mcp.tool(annotations=READ)
+async def projects_health(ctx: Context) -> list:
+    """MANAGERS AND ADMINS. Overall health colour for every active project."""
+    return await _api(ctx, "GET", "/analytics/health")
+
+
+@mcp.tool(annotations=READ)
+async def list_locations(ctx: Context) -> list:
+    """ADMINS. Office locations; holidays can apply to one or to all."""
+    return await _api(ctx, "GET", "/admin/locations")
+
+
+@mcp.tool(annotations=WRITE)
+async def add_location(ctx: Context, name: str) -> dict:
+    """ADMINS. Add a location. CONFIRM FIRST."""
+    return await _api(ctx, "POST", "/admin/locations", body={"name": name})
+
+
+@mcp.tool(annotations=READ)
+async def list_milestones(ctx: Context, project_id: str) -> dict:
+    """MANAGERS AND ADMINS. A project's invoicing milestones, what is invoiced,
+    and whether they add up to the revenue."""
+    return await _api(ctx, "GET", f"/admin/projects/{project_id}/milestones")
+
+
+@mcp.tool(annotations=WRITE)
+async def add_milestone(ctx: Context, project_id: str, name: str, due_on: str, amount: str) -> dict:
+    """MANAGERS AND ADMINS. Add a dated billing amount. CONFIRM FIRST. Once a
+    project has milestones, its monthly revenue follows them."""
+    return await _api(
+        ctx,
+        "POST",
+        f"/admin/projects/{project_id}/milestones",
+        body={"name": name, "due_on": due_on, "amount": amount},
+    )
+
+
+@mcp.tool(annotations=WRITE)
+async def update_milestone(ctx: Context, milestone_id: str, changes: dict[str, Any]) -> dict:
+    """MANAGERS AND ADMINS. Change a milestone (name, due_on, amount,
+    invoiced_on, or clear_invoiced=true). CONFIRM FIRST."""
+    return await _api(ctx, "PATCH", f"/admin/milestones/{milestone_id}", body=changes)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def remove_milestone(ctx: Context, milestone_id: str) -> dict:
+    """MANAGERS AND ADMINS. Remove a milestone. CONFIRM FIRST."""
+    return await _api(ctx, "DELETE", f"/admin/milestones/{milestone_id}")
+
+
+@mcp.tool(annotations=READ)
+async def list_checklists(ctx: Context) -> dict:
+    """ADMINS. Onboarding and offboarding templates, and every checklist in
+    progress with its items."""
+    return await _api(ctx, "GET", "/admin/checklists")
+
+
+@mcp.tool(annotations=WRITE)
+async def set_checklist_template(ctx: Context, kind: str, labels: list[str]) -> dict:
+    """ADMINS. Replace the template items for onboarding or offboarding.
+    CONFIRM FIRST."""
+    return await _api(ctx, "PUT", f"/admin/checklists/templates/{kind}", body={"labels": labels})
+
+
+@mcp.tool(annotations=WRITE)
+async def start_checklist(ctx: Context, user_id: str, kind: str) -> dict:
+    """ADMINS. Start an onboarding or offboarding checklist for a person from
+    the template. CONFIRM FIRST. Does not deactivate anybody."""
+    return await _api(ctx, "POST", "/admin/checklists", body={"user_id": user_id, "kind": kind})
+
+
+@mcp.tool(annotations=WRITE)
+async def update_checklist_item(
+    ctx: Context,
+    item_id: str,
+    done: bool | None = None,
+    owner_id: str | None = None,
+    due_on: str | None = None,
+) -> dict:
+    """ADMINS. Tick or untick an item, or set its owner and due date. CONFIRM FIRST."""
+    return await _api(
+        ctx,
+        "PATCH",
+        f"/admin/checklist-items/{item_id}",
+        body={"done": done, "owner_id": owner_id, "due_on": due_on},
+    )
+
+
+@mcp.tool(annotations=WRITE)
+async def close_checklist(ctx: Context, checklist_id: str) -> dict:
+    """ADMINS. Close a finished checklist. CONFIRM FIRST."""
+    return await _api(ctx, "POST", f"/admin/checklists/{checklist_id}/close")
+
+
+@mcp.tool(annotations=WRITE)
+async def test_notification(ctx: Context) -> dict:
+    """ADMINS. Send yourself a test Slack message to prove the token works.
+    CONFIRM FIRST."""
+    return await _api(ctx, "POST", "/admin/notifications/test")
+
+
+@mcp.tool(annotations=WRITE)
+async def run_nudge(ctx: Context, kind: str) -> dict:
+    """ADMINS. Run a scheduled message now: today | weekly_gaps |
+    over_allocation | morning_post | digest. CONFIRM FIRST — it messages
+    real people."""
+    return await _api(ctx, "POST", "/admin/nudges/run", body={"kind": kind})
+
+
+# ---------------------------------------------------------------------------
 # The ASGI app, guarded — FR-MCP-06
 # ---------------------------------------------------------------------------
 
@@ -680,6 +924,18 @@ _inner = mcp.streamable_http_app(
     # platform's, not 127.0.0.1.
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
+
+
+def _www_authenticate() -> bytes:
+    """RFC 9728: point OAuth-capable clients (claude.ai) at the resource
+    metadata so they can discover the authorization server — spec 006."""
+    from app.config import settings
+
+    value = 'Bearer realm="nunnari-portal"'
+    if settings.MCP_PUBLIC_URL:
+        issuer = settings.MCP_PUBLIC_URL.rsplit("/mcp", 1)[0]
+        value += f', resource_metadata="{issuer}/.well-known/oauth-protected-resource/mcp"'
+    return value.encode()
 
 
 class _Guarded:
@@ -724,7 +980,7 @@ async def _guard(scope: dict, receive: Any, send: Any) -> None:
                 "status": 401,
                 "headers": [
                     (b"content-type", b"application/problem+json"),
-                    (b"www-authenticate", b'Bearer realm="nunnari-portal"'),
+                    (b"www-authenticate", _www_authenticate()),
                 ],
             }
         )

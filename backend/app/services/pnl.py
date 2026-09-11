@@ -132,6 +132,9 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     ]
     rates = rate_book(range_first, range_last)
     holidays = holidays_between(range_first, range_last)
+    milestones_by_project: dict[str, list[dict]] = defaultdict(list)
+    for m in db.list_milestones():
+        milestones_by_project[m["project_id"]].append(m)
 
     windows: dict[str, tuple[date, date] | None] = {}
     for project in projects:
@@ -170,7 +173,19 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
             revenue = (
                 Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
             )
-            rev_m = pnl.month_revenue(revenue, windows[pid], first, last, holidays)
+            mine = milestones_by_project.get(pid, [])
+            if mine:
+                # Spec 006 FR-MILE-02 — milestones override the even spread.
+                rev_m = sum(
+                    (
+                        Decimal(str(m["amount"]))
+                        for m in mine
+                        if first.isoformat() <= m["due_on"] <= last.isoformat()
+                    ),
+                    ZERO,
+                )
+            else:
+                rev_m = pnl.month_revenue(revenue, windows[pid], first, last, holidays)
 
             # Weights for attribution — hours (actual) or allocation-days (planned).
             weights: dict[str, Decimal] = defaultdict(lambda: ZERO)
@@ -240,7 +255,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                 {
                     **cell.as_dict(),
                     "unattributed": unattributed,
-                    "no_timeline": revenue is not None and windows[pid] is None,
+                    "no_timeline": revenue is not None and windows[pid] is None and not mine,
                 }
             )
 
@@ -294,6 +309,8 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                     "is_archived": p["is_archived"],
                     "has_timeline": windows[p["id"]] is not None,
                     "revenue": str(p["revenue"]) if p.get("revenue") is not None else None,
+                    # Spec 006 FR-MILE-03 — milestones that do not add up.
+                    **_milestone_summary(p, milestones_by_project.get(p["id"], [])),
                     "cells": project_cells[p["id"]],
                 }
                 for p in projects
@@ -378,4 +395,15 @@ def timeline(start: date, end: date) -> dict[str, Any]:
             key=lambda r: r["colour"],
         ),
         "people": rows,
+    }
+
+
+def _milestone_summary(project: dict, milestones: list[dict]) -> dict[str, str | None]:
+    if not milestones:
+        return {"milestones_total": None, "milestone_gap": None}
+    total = sum((Decimal(str(m["amount"])) for m in milestones), ZERO)
+    revenue = Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
+    return {
+        "milestones_total": str(pnl.money(total)),
+        "milestone_gap": None if revenue is None else str(pnl.money(revenue - total)),
     }

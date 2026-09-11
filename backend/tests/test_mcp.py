@@ -21,6 +21,12 @@ EXCLUDED |= {
     ("POST", "/api/v1/me/tokens"),
     ("DELETE", "/api/v1/me/tokens/{token_id}"),
 }
+# Spec 006: the calendar feed address is a second long-lived credential, so it
+# is session-only like tokens; the OAuth consent routes are the browser's.
+EXCLUDED |= {
+    ("GET", "/api/v1/me/feed"),
+    ("POST", "/api/v1/me/feed/rotate"),
+}
 
 
 def _operations() -> set[tuple[str, str]]:

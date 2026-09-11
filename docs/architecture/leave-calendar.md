@@ -205,6 +205,37 @@ The MCP address shown on the Account page comes from `MCP_PUBLIC_URL` on
 the backend, returned to a signed-in person by the API; it is not in the web
 bundle.
 
+## Org operations (spec 006)
+
+Thirteen additions, all thin over the existing model:
+
+- **Schedules** live in `app/worker.py` (Celery beat, Asia/Kolkata) and
+  `app/tasks/ops.py`; the messages are composed in `services/digest.py` and
+  delivered by `services/notify` (Slack DM by email; a channel post for the
+  morning who-is-out). Every job is also runnable from Admin → Notifications.
+- **Sign-off**: `timesheet_confirmations`, `services/confirmations.py`;
+  auto-confirm runs nightly for weeks whose edit window closed.
+- **Comp-off**: a fourth booking category with no allowance. Credits in
+  `compoff_credits` (`services/compoff.py`, rules in `domain/compoff.py`);
+  `bookings.create_or_replace` consumes them and withdraw / reject / release
+  return them; a nightly task lapses expired ones.
+- **Locations**: `locations`, `profiles.location_id`, `holidays.location_id`
+  (NULL = everywhere). `services/holidays.py` answers per person; the calendar,
+  day form, week view, utilisation and hiring use it. Org-wide effort views
+  still use the union of all holidays, deliberately.
+- **Money views**: `services/utilisation.py` (utilisation, bench, hiring),
+  `services/health.py` (RAG from `domain/health.py`), milestones in
+  `project_milestones` overriding the even spread in `services/pnl.py`.
+- **Statements**: `services/statements.py`, JSON and CSV, hours only.
+- **Checklists**, **reviews**, **feeds**: their own small services; the
+  calendar feed is unauthenticated by design and keyed per person
+  (`domain/feeds.py::feed_key`, rotated by changing `profiles.feed_salt`).
+- **OAuth** (`services/oauth.py`): the SDK's authorization-server routes are
+  mounted at the API origin when `MCP_PUBLIC_URL` is set; approval happens in
+  the web app (`/auth/connect`) with a Supabase session and issues an ordinary
+  personal token tagged with the client, plus a hashed refresh token. The MCP
+  401 carries `resource_metadata` so claude.ai can discover it.
+
 ## The help guides
 
 `docs/guides/*.md` are the public how-to pages. `frontend/lib/help.ts` reads

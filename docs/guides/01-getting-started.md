@@ -33,7 +33,7 @@ The navigation shows only what your role can use:
 | **Effort** | Leads, managers, admins | Where the team's hours are going |
 | **Projects** | Managers, admins | Create projects and allocate people |
 | **Admin** | Admins | People, allowances, holidays, policy |
-| **Account** | Everyone | Your details and yearly history |
+| **Account** | Everyone | Your details, yearly history, calendar feed, Claude tokens, your quarter |
 
 On a phone the same links sit along the bottom of the screen.
 

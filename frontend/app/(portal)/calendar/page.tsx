@@ -8,7 +8,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { BookingDialog } from "@/components/portal/booking-dialog";
 import { getCalendar } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
-import type { CalendarMonth, Category, DayCell } from "@/lib/api/types";
+import type { CalendarMonth, Category, DayCell, MyCompoff } from "@/lib/api/types";
+import { CompoffCard } from "@/components/portal/compoff-card";
+import { getMyCompoff } from "@/lib/api/portal";
 import { CATEGORY_LABEL, CATEGORY_SHORT } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +31,7 @@ const CATEGORY_STYLE: Record<Category, string> = {
   wfh: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200",
   casual: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200",
   sick: "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200",
+  compoff: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
 export default function CalendarPage() {
@@ -39,6 +42,8 @@ export default function CalendarPage() {
     () => getCalendar(period || undefined),
     [period]
   );
+  // Spec 006 — comp-off credits, shown beside the balances and in the dialog.
+  const compoff = useAsync<MyCompoff>(() => getMyCompoff(), [period]);
 
   function shiftMonth(delta: number) {
     if (!data) return;
@@ -122,11 +127,18 @@ export default function CalendarPage() {
 
       <Legend />
 
+      {/* Spec 006 FR-COMP — claim a weekend or holiday worked. */}
+      <CompoffCard data={compoff.data} onChanged={compoff.reload} />
+
       <BookingDialog
         day={selected}
         balances={data.balances}
+        compoffAvailable={compoff.data?.available ?? "0"}
         onClose={() => setSelected(null)}
-        onSaved={reload}
+        onSaved={() => {
+          reload();
+          compoff.reload();
+        }}
       />
     </div>
   );

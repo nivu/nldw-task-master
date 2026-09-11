@@ -8,14 +8,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  addMilestone,
   createAllocation,
   createProject,
   deleteAllocation,
   errorMessage,
+  listMilestones,
+  removeMilestone,
   setProjectPhase,
+  updateMilestone,
   updateProject,
 } from "@/lib/api/portal";
-import type { AllocatablePerson, AllocationRow, Phase, Project } from "@/lib/api/types";
+import type { AllocatablePerson, AllocationRow, MilestoneList, Phase, Project } from "@/lib/api/types";
+import { useAsync } from "@/lib/use-async";
 import { PHASE_LABEL } from "@/lib/api/types";
 
 const PHASES: Phase[] = ["pre", "delivery", "support"];
@@ -189,6 +194,7 @@ export function ProjectsPanel({
                   onError={onError}
                 />
                 <PhaseForm project={project} onDone={onDone} onError={onError} />
+                <MilestonesForm project={project} currency={currency} onError={onError} />
                 <AllocationForm
                   project={project}
                   people={people}
@@ -261,6 +267,120 @@ function RevenueForm({
         {busy ? "Saving…" : "Set revenue"}
       </Button>
     </form>
+  );
+}
+
+/**
+ * Invoicing milestones — spec 006 FR-MILE.
+ *
+ * Dated billing amounts. Once a project has any, its monthly revenue follows
+ * them instead of the even spread; if they do not add up to the revenue the
+ * gap is shown here and on the monthly table.
+ */
+function MilestonesForm({
+  project,
+  currency,
+  onError,
+}: {
+  project: Project;
+  currency: string;
+  onError: (m: string) => void;
+}) {
+  const { data, reload } = useAsync<MilestoneList>(() => listMilestones(project.id), [project.id]);
+  const [name, setName] = useState("");
+  const [dueOn, setDueOn] = useState(today());
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          try {
+            await addMilestone(project.id, { name, due_on: dueOn, amount });
+            setName("");
+            setAmount("");
+            reload();
+          } catch (err) {
+            onError(errorMessage(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="space-y-1.5">
+          <Label className="text-xs">Milestone</Label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Kickoff invoice" required />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Due</Label>
+          <Input type="date" value={dueOn} onChange={(e) => setDueOn(e.target.value)} required />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Amount ({currency})</Label>
+          <Input type="number" min="0" step="1000" className="w-32" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+        </div>
+        <Button type="submit" variant="outline" size="sm" disabled={busy || !name.trim() || !amount}>
+          {busy ? "Saving…" : "Add milestone"}
+        </Button>
+      </form>
+      {data && data.milestones.length > 0 && (
+        <div className="space-y-1 text-xs">
+          {data.milestones.map((m) => (
+            <div key={m.id} className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{m.name}</span>
+              <span className="tabular-nums text-muted-foreground">{m.due_on}</span>
+              <span className="tabular-nums">{currency} {formatMoney(m.amount)}</span>
+              {m.invoiced_on ? (
+                <Badge variant="secondary">invoiced {m.invoiced_on}</Badge>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6"
+                  onClick={async () => {
+                    try {
+                      await updateMilestone(m.id, { invoiced_on: today() });
+                      reload();
+                    } catch (err) {
+                      onError(errorMessage(err));
+                    }
+                  }}
+                >
+                  Mark invoiced
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6"
+                onClick={async () => {
+                  try {
+                    await removeMilestone(m.id);
+                    reload();
+                  } catch (err) {
+                    onError(errorMessage(err));
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+          <p className="text-muted-foreground">
+            Milestones {currency} {formatMoney(data.total)} · invoiced {formatMoney(data.invoiced)}
+            {data.gap !== null && Number(data.gap) !== 0 && (
+              <span className="text-amber-700 dark:text-amber-300">
+                {" "}· {Number(data.gap) > 0 ? "short of" : "over"} the revenue by {formatMoney(String(Math.abs(Number(data.gap))))}
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

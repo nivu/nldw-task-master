@@ -13,7 +13,7 @@ from typing import Any
 
 from app.domain import ledger
 from app.domain.calendar import period_of
-from app.domain.rules import CATEGORIES, CONSUMING_STATES
+from app.domain.rules import ALLOWANCE_CATEGORIES, CATEGORIES, CONSUMING_STATES
 from app.services import settings_store
 from app.services import supabase as db
 
@@ -73,7 +73,7 @@ def balances_for(
     tracking_start = ledger.earliest_period(grants, entries, default=period)
 
     result: dict[str, ledger.Balance] = {}
-    for category in CATEGORIES:
+    for category in ALLOWANCE_CATEGORIES:
         balance = ledger.balance_for(
             grants,
             entries,

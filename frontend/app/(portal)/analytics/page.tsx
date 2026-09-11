@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +11,12 @@ import { formatMoney } from "@/components/portal/projects-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAnalyticsProjects,
+  getBench,
   getCoverage,
+  getHiring,
+  getProjectHealth,
+  getProjectsHealth,
+  getUtilisation,
   getCurrentWork,
   getForecast,
   getMe,
@@ -21,7 +27,11 @@ import {
   getTimeline,
 } from "@/lib/api/portal";
 import type {
+  Bench,
   Coverage,
+  Hiring,
+  ProjectHealth,
+  Utilisation,
   CurrentWork,
   Forecast,
   PeopleFinancials,
@@ -65,6 +75,7 @@ export default function AnalyticsPage() {
     forecast: Forecast;
     current: CurrentWork[];
     financials: boolean;
+    health: Record<string, "green" | "amber" | "red">;
   }>(async () => {
     const [projects, coverage, forecast, current, me] = await Promise.all([
       getAnalyticsProjects(),
@@ -73,7 +84,12 @@ export default function AnalyticsPage() {
       getCurrentWork(7),
       getMe(),
     ]);
-    return { projects, coverage, forecast, current, financials: me.capabilities.financials };
+    // Spec 006 FR-HEALTH — a colour per project for the manager tier.
+    const health: Record<string, "green" | "amber" | "red"> = {};
+    if (me.capabilities.financials) {
+      for (const h of await getProjectsHealth()) health[h.project_id] = h.overall;
+    }
+    return { projects, coverage, forecast, current, financials: me.capabilities.financials, health };
   }, []);
 
   if (error) {
@@ -98,7 +114,9 @@ export default function AnalyticsPage() {
           <TabsTrigger value="current">Right now</TabsTrigger>
           <TabsTrigger value="forecast">Forecast</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
+          <TabsTrigger value="utilisation">Utilisation</TabsTrigger>
           {data.financials && <TabsTrigger value="resources">Resources</TabsTrigger>}
+          {data.financials && <TabsTrigger value="bench">Bench</TabsTrigger>}
           {data.financials && <TabsTrigger value="money">Money</TabsTrigger>}
         </TabsList>
 
@@ -130,6 +148,7 @@ export default function AnalyticsPage() {
                       )}
                     </span>
                     {project.is_archived && <Badge variant="outline">archived</Badge>}
+                    {data.health[project.id] && <RagDot colour={data.health[project.id]} />}
                     <span className="tabular-nums text-sm">{project.logged_hours}h</span>
                   </button>
                 ))}
@@ -233,9 +252,20 @@ export default function AnalyticsPage() {
           )}
         </TabsContent>
 
+        <TabsContent value="utilisation" className="space-y-3 pt-4">
+          <UtilisationTab />
+        </TabsContent>
+
         {data.financials && (
           <TabsContent value="resources" className="space-y-3 pt-4">
             <ResourcesTab />
+          </TabsContent>
+        )}
+
+        {data.financials && (
+          <TabsContent value="bench" className="space-y-3 pt-4">
+            <BenchTab />
+            <HiringCard />
           </TabsContent>
         )}
 
@@ -340,12 +370,23 @@ function ProjectDetail({
             {data.total.budget_hours && ` of ${data.total.budget_hours}h budgeted`} ·{" "}
             {data.total.hours_office}h office, {data.total.hours_home}h home
           </CardDescription>
+          {financials && (
+            <p className="text-xs">
+              <Link
+                href={`/analytics/statement?project=${projectId}&period=${new Date().toISOString().slice(0, 7)}`}
+                className="underline underline-offset-2"
+              >
+                Effort statement for this month →
+              </Link>
+            </p>
+          )}
         </CardHeader>
       </Card>
 
       {/* Spec 003 FR-FIN-04 — money, only for the manager tier. A separate
           request behind a separate guard, so the effort view above never
           carries a figure it must not. */}
+      {financials && <HealthBlock projectId={projectId} />}
       {financials && <ProjectMoney projectId={projectId} />}
 
       {data.phases.map((phase) => {
@@ -961,6 +1002,212 @@ function ResourcesTab() {
             )}
           </div>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Spec 006 — health, utilisation, bench, hiring
+// ---------------------------------------------------------------------------
+
+const RAG: Record<"green" | "amber" | "red", string> = {
+  green: "bg-emerald-500",
+  amber: "bg-amber-500",
+  red: "bg-red-500",
+};
+
+function RagDot({ colour }: { colour: "green" | "amber" | "red" }) {
+  return <span className={cn("inline-block size-2.5 rounded-full", RAG[colour])} title={colour} aria-label={colour} />;
+}
+
+/** FR-HEALTH-03 — every input beside its colour, so a red can be argued with. */
+function HealthBlock({ projectId }: { projectId: string }) {
+  const { data, error } = useAsync<ProjectHealth>(() => getProjectHealth(projectId), [projectId]);
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <RagDot colour={data.overall} /> Health: {data.overall}
+        </CardTitle>
+        <CardDescription>
+          Burn against the timeline, margin to date against plan, and schedule. The inputs are shown
+          so the colour can be checked.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-3">
+        {data.dimensions.map((d) => (
+          <div key={d.key} className="rounded-md border p-3 text-sm">
+            <p className="flex items-center gap-2 font-medium capitalize">
+              <RagDot colour={d.colour} /> {d.key}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{d.detail}</p>
+            <dl className="mt-2 space-y-0.5 text-xs">
+              {Object.entries(d.inputs).map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-2">
+                  <dt className="text-muted-foreground">{k.replaceAll("_", " ")}</dt>
+                  <dd className="tabular-nums">{v === null ? "—" : String(v)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** FR-UTIL — billable against capacity, per person per month. Sorted by name. */
+function UtilisationTab() {
+  const { data, error } = useAsync<Utilisation>(() => getUtilisation(), []);
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  const months = data.people[0]?.months.map((m) => m.period) ?? [];
+  const label = (p: string) => new Date(`${p}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Utilisation</CardTitle>
+        <CardDescription>
+          Billable hours (projects with a client) as a share of capacity, which is working days less
+          approved leave. Target {data.target_pct}%. Internal projects and activities such as learning
+          are shown but not billable.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="sticky left-0 bg-card p-2 font-medium">Person</th>
+              {months.map((m) => (
+                <th key={m} className="p-2 text-right font-medium whitespace-nowrap">{label(m)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.people.map((p) => (
+              <tr key={p.user_id}>
+                <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">{p.display_name}</td>
+                {p.months.map((m) => (
+                  <td
+                    key={m.period}
+                    className={cn("p-2 text-right tabular-nums align-top", m.below_target && m.utilisation_pct !== null && "text-amber-700 dark:text-amber-300")}
+                    title={`billable ${m.billable}h · internal ${m.internal}h · activities ${m.activity}h · capacity ${m.capacity}h`}
+                  >
+                    <span className="block font-medium">{m.utilisation_pct === null ? "—" : `${m.utilisation_pct}%`}</span>
+                    <span className="block text-muted-foreground">{m.billable}/{m.capacity}h</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** FR-UTIL-03 — who is under-allocated in the coming weeks. */
+function BenchTab() {
+  const { data, error } = useAsync<Bench>(() => getBench(8), []);
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  const week = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Bench</CardTitle>
+        <CardDescription>
+          Allocated percent per week for the next eight weeks. Under {data.threshold_pct}% is bench —
+          capacity that could take new work.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="sticky left-0 bg-card p-2 font-medium">Person</th>
+              {data.weeks.map((w) => (
+                <th key={w} className="p-2 text-center font-medium whitespace-nowrap">{week(w)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.people.map((p) => (
+              <tr key={p.user_id}>
+                <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">
+                  {p.display_name}
+                  {p.bench_weeks > 0 && <span className="block text-[10px] font-normal text-muted-foreground">{p.bench_weeks} bench week{p.bench_weeks === 1 ? "" : "s"}</span>}
+                </td>
+                {p.weeks.map((w) => (
+                  <td key={w.week_start} className="p-1">
+                    <div className={cn("rounded px-1.5 py-1 text-center tabular-nums", w.bench ? "bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200" : "bg-muted")}>
+                      {w.allocated_pct}%
+                    </div>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** FR-HIRE — demand against supply, and what the gap would cost to hire. */
+function HiringCard() {
+  const [ctc, setCtc] = useState("1200000");
+  const { data, error } = useAsync<Hiring>(() => getHiring(6, ctc || "0"), [ctc]);
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1">
+            <CardTitle className="text-base">Hiring signal</CardTitle>
+            <CardDescription>
+              Hours the allocations demand against hours the team can supply at target utilisation.
+              The shortfall in people, priced at an annual CTC you choose — an input, not anybody&apos;s figure.
+            </CardDescription>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground" htmlFor="hire-ctc">Annual CTC to price with</label>
+            <input id="hire-ctc" type="number" min="0" step="100000" className="block h-8 w-36 rounded-md border border-input bg-transparent px-2 text-sm" value={ctc} onChange={(e) => setCtc(e.target.value)} />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0">
+        {!data ? (
+          <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="p-2 font-medium">Month</th>
+                <th className="p-2 text-right font-medium">Demand h</th>
+                <th className="p-2 text-right font-medium">Supply h</th>
+                <th className="p-2 text-right font-medium">Shortfall h</th>
+                <th className="p-2 text-right font-medium">FTE needed</th>
+                <th className="p-2 text-right font-medium">Monthly cost</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.months.map((m) => (
+                <tr key={m.period} className={Number(m.fte_needed) > 0 ? "font-medium" : ""}>
+                  <td className="p-2">{m.period}</td>
+                  <td className="p-2 text-right tabular-nums">{m.demand_hours}</td>
+                  <td className="p-2 text-right tabular-nums">{m.supply_hours}</td>
+                  <td className="p-2 text-right tabular-nums">{m.shortfall_hours}</td>
+                  <td className="p-2 text-right tabular-nums">{m.fte_needed}</td>
+                  <td className="p-2 text-right tabular-nums">{formatMoney(m.monthly_cost_at_ctc)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </CardContent>
     </Card>
   );

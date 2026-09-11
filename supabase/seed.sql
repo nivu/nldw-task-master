@@ -97,7 +97,7 @@ INSERT INTO holidays (date, name, created_by) VALUES
     ('2026-08-15', 'Independence Day',  'a0000000-0000-4000-8000-000000000001'),
     ('2026-10-02', 'Gandhi Jayanti',    'a0000000-0000-4000-8000-000000000001'),
     ('2026-11-08', 'Diwali',            'a0000000-0000-4000-8000-000000000001')
-ON CONFLICT (date) DO NOTHING;
+ON CONFLICT (date, location_id) DO NOTHING;
 
 -- ============================================================
 -- A few bookings so the calendar and team view are not empty on first run.

@@ -30,16 +30,19 @@ import { CATEGORY_LABEL } from "@/lib/api/types";
  * marking leave must "require no arithmetic from the person doing it".
  */
 
-const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
+const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff"];
 
 export function BookingDialog({
   day,
   balances,
+  compoffAvailable = "0",
   onClose,
   onSaved,
 }: {
   day: DayCell | null;
   balances: Balance[];
+  /** Spec 006 — comp-off draws on earned credits, not a monthly allowance. */
+  compoffAvailable?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -52,11 +55,14 @@ export function BookingDialog({
 
   if (!day) return null;
 
-  const remaining = balances.find((b) => b.category === category)?.remaining ?? "0";
-  // Q-07 — a reason is required for casual and sick, optional for WFH. The
-  // server enforces this; the form only mirrors it so the button state is
-  // honest before anyone presses it.
-  const reasonRequired = category !== "wfh";
+  const remaining =
+    category === "compoff"
+      ? compoffAvailable
+      : (balances.find((b) => b.category === category)?.remaining ?? "0");
+  // Q-07 — a reason is required for casual and sick, optional for WFH and
+  // comp-off. The server enforces this; the form only mirrors it so the
+  // button state is honest before anyone presses it.
+  const reasonRequired = category === "casual" || category === "sick";
   const canSubmit = !busy && (!reasonRequired || reason.trim().length > 0);
 
   async function save() {
