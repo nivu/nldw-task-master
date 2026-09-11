@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # able to act within seconds rather than minutes.
     AUTH_CACHE_SECONDS: int = 30
 
+    # Spec 004 §6. The address shown to a signed-in person for connecting an
+    # MCP client. Returned by the API, never baked into the web bundle. Empty
+    # means the Account page explains that MCP is not enabled here.
+    MCP_PUBLIC_URL: str = ""
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

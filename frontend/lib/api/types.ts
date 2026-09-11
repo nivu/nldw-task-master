@@ -458,3 +458,30 @@ export interface ResourcesTimeline {
   weeks: string[];
   people: { user_id: string; display_name: string; role: Role; weeks: ResourceWeek[] }[];
 }
+
+// ---------------------------------------------------------------------------
+// Personal access tokens — spec 004. Issued from the Account page so an MCP
+// client (Claude) can act as this person. The plaintext appears exactly once,
+// in the response that created it.
+// ---------------------------------------------------------------------------
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+}
+
+export interface TokenList {
+  /** Where to point an MCP client. Null when MCP is not enabled here. */
+  mcp_url: string | null;
+  tokens: ApiToken[];
+}
+
+export interface TokenCreated extends ApiToken {
+  token: string;
+}
