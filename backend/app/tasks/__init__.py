@@ -8,4 +8,5 @@ here or named ``tasks.py``. Import new task modules below.
 from app.tasks import (
     lock_sweep,  # noqa: F401
     notifications,  # noqa: F401
+    ops,  # noqa: F401
 )

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CompoffQueue, QuarterReviews, WeekSignoff } from "@/components/portal/team-ops";
 import { errorMessage, flagUnrecognised, getTeamConsumption, getTeamDay } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
 import type { PersonBalances, TeamDay, TeamMemberDay } from "@/lib/api/types";
@@ -206,6 +207,11 @@ export default function TeamPage() {
           </CardContent>
         </Card>
       </section>
+
+      {/* Spec 006 — the week-to-week work of leading people. */}
+      <WeekSignoff onError={setError} />
+      <CompoffQueue onError={setError} />
+      <QuarterReviews onError={setError} />
     </div>
   );
 }

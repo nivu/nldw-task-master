@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 
 import { BackfillPanel } from "@/components/portal/backfill-panel";
+import { ChecklistsPanel, LocationsPanel, NotificationsPanel } from "@/components/portal/admin-ops";
 import {
   addCtc,
   createUser,
@@ -22,6 +23,7 @@ import {
   removeCtc,
   listBackfills,
   listHolidays,
+  listLocations,
   listSettings,
   listUsers,
   setAllowance,
@@ -35,6 +37,7 @@ import type {
   Category,
   CtcList,
   Holiday,
+  Location,
   PortalUser,
   Role,
 } from "@/lib/api/types";
@@ -68,15 +71,17 @@ export default function AdminPage() {
     holidays: Holiday[];
     settings: AppSetting[];
     backfills: BackfillEntry[];
+    locations: Location[];
   }>(async () => {
-    const [users, allowances, holidays, settings, backfills] = await Promise.all([
+    const [users, allowances, holidays, settings, backfills, locations] = await Promise.all([
       listUsers(),
       listAllowances(),
       listHolidays(),
       listSettings(),
       listBackfills(),
+      listLocations(),
     ]);
-    return { users, allowances, holidays, settings, backfills };
+    return { users, allowances, holidays, settings, backfills, locations };
   }, []);
 
   const users = data?.users ?? [];
@@ -84,6 +89,7 @@ export default function AdminPage() {
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
   const backfills = data?.backfills ?? [];
+  const locations = data?.locations ?? [];
   const currency = String(
     settings.find((s) => s.key === "currency_code")?.value ?? "INR"
   ).replace(/"/g, "");
@@ -112,6 +118,8 @@ export default function AdminPage() {
           <TabsTrigger value="allowances">Allowances</TabsTrigger>
           <TabsTrigger value="holidays">Holidays</TabsTrigger>
           <TabsTrigger value="backfill">Backfill</TabsTrigger>
+          <TabsTrigger value="checklists">Checklists</TabsTrigger>
+          <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="policy">Policy</TabsTrigger>
         </TabsList>
 
@@ -126,6 +134,7 @@ export default function AdminPage() {
           />
           <UserTable
             users={users}
+            locations={locations}
             currency={currency}
             onChanged={reload}
             onError={setError}
@@ -179,12 +188,14 @@ export default function AdminPage() {
 
         <TabsContent value="holidays" className="space-y-4 pt-4">
           <HolidayForm
+            locations={locations}
             onDone={(message) => {
               setNotice(message);
               reload();
             }}
             onError={setError}
           />
+          <LocationsPanel locations={locations} onChanged={reload} onError={setError} />
           <Card>
             <CardContent className="divide-y p-0">
               {holidays.map((holiday) => (
@@ -192,7 +203,12 @@ export default function AdminPage() {
                   <span className="tabular-nums text-sm text-muted-foreground">
                     {holiday.date}
                   </span>
-                  <span className="flex-1 text-sm font-medium">{holiday.name}</span>
+                  <span className="flex-1 text-sm font-medium">
+                    {holiday.name}
+                    {holiday.location_name && (
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">{holiday.location_name} only</span>
+                    )}
+                  </span>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -224,6 +240,14 @@ export default function AdminPage() {
             }}
             onError={setError}
           />
+        </TabsContent>
+
+        <TabsContent value="checklists" className="space-y-4 pt-4">
+          <ChecklistsPanel people={users.filter((u) => u.is_active)} onError={setError} />
+        </TabsContent>
+
+        <TabsContent value="notifications" className="space-y-4 pt-4">
+          <NotificationsPanel onError={setError} />
         </TabsContent>
 
         <TabsContent value="policy" className="space-y-4 pt-4">
@@ -371,11 +395,13 @@ function NewUserForm({
 
 function UserTable({
   users,
+  locations,
   currency,
   onChanged,
   onError,
 }: {
   users: PortalUser[];
+  locations: Location[];
   currency: string;
   onChanged: () => void;
   onError: (message: string) => void;
@@ -400,6 +426,7 @@ function UserTable({
               <th className="p-3 font-medium">Name</th>
               <th className="p-3 font-medium">Role</th>
               <th className="p-3 font-medium">Approved by</th>
+              <th className="p-3 font-medium">Location</th>
               <th className="p-3 font-medium">CTC ({currency}/month)</th>
               <th className="p-3" />
             </tr>
@@ -441,6 +468,27 @@ function UserTable({
                     : "An admin"}
                 </td>
                 <td className="p-3">
+                  {/* Spec 006 FR-LOC-01 — which holidays apply to them. */}
+                  <select
+                    aria-label={`Location for ${user.display_name}`}
+                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    value={user.location_id ?? locations.find((l) => l.is_default)?.id ?? ""}
+                    disabled={!user.is_active}
+                    onChange={async (e) => {
+                      try {
+                        await updateUser(user.id, { location_id: e.target.value || null });
+                        onChanged();
+                      } catch (err) {
+                        onError(errorMessage(err));
+                      }
+                    }}
+                  >
+                    {locations.map((l) => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="p-3">
                   <button
                     type="button"
                     className="text-left tabular-nums underline-offset-2 hover:underline"
@@ -471,7 +519,7 @@ function UserTable({
               </tr>
               {ctcFor === user.id && (
                 <tr>
-                  <td colSpan={5} className="bg-muted/40 p-3">
+                  <td colSpan={6} className="bg-muted/40 p-3">
                     <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
                   </td>
                 </tr>
@@ -700,13 +748,15 @@ function AllowanceForm({
 }
 
 function HolidayForm({
+  locations,
   onDone,
   onError,
 }: {
+  locations: Location[];
   onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
-  const [form, setForm] = useState({ date: "", name: "" });
+  const [form, setForm] = useState({ date: "", name: "", location_id: "" });
   const [busy, setBusy] = useState(false);
 
   return (
@@ -725,7 +775,11 @@ function HolidayForm({
             event.preventDefault();
             setBusy(true);
             try {
-              const created = await declareHoliday(form);
+              const created = await declareHoliday({
+                date: form.date,
+                name: form.name,
+                location_id: form.location_id || null,
+              });
               // FR-HOL-05 — saying how many bookings were released matters:
               // the admin has just changed other people's plans.
               const released = created.released_bookings ?? 0;
@@ -736,7 +790,7 @@ function HolidayForm({
                     } released and the days returned.`
                   : `${form.name} declared.`
               );
-              setForm({ date: "", name: "" });
+              setForm({ date: "", name: "", location_id: "" });
             } catch (err) {
               onError(errorMessage(err));
             } finally {
@@ -763,6 +817,20 @@ function HolidayForm({
               placeholder="Independence Day"
               required
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="holiday-location">Applies to</Label>
+            <select
+              id="holiday-location"
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              value={form.location_id}
+              onChange={(e) => setForm({ ...form, location_id: e.target.value })}
+            >
+              <option value="">Everywhere</option>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>{l.name} only</option>
+              ))}
+            </select>
           </div>
           <Button type="submit" disabled={busy}>
             {busy ? "Declaring…" : "Declare"}

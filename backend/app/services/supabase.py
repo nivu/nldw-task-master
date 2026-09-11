@@ -375,7 +375,9 @@ def get_time_entry(entry_id: str) -> dict[str, Any] | None:
 # no grant on it at all (010_api_tokens.sql).
 # ---------------------------------------------------------------------------
 
-TOKEN_COLUMNS = "id, user_id, name, prefix, created_at, expires_at, last_used_at, revoked_at"
+TOKEN_COLUMNS = (
+    "id, user_id, name, prefix, created_at, expires_at, last_used_at, revoked_at, client_id"
+)
 
 
 def get_token_by_hash(token_hash: str) -> dict[str, Any] | None:
@@ -448,3 +450,253 @@ def get_cost_period(period_id: str) -> dict[str, Any] | None:
 
 def delete_cost_period(period_id: str) -> None:
     supabase.table("cost_periods").delete().eq("id", period_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# Spec 006 — locations, comp-off, sign-off, milestones, checklists, reviews,
+# OAuth. All backend-only tables (012_ops.sql).
+# ---------------------------------------------------------------------------
+
+
+def list_locations() -> list[dict[str, Any]]:
+    return supabase.table("locations").select("*").order("name").execute().data or []
+
+
+def insert_location(name: str) -> dict[str, Any]:
+    return supabase.table("locations").insert({"name": name}).execute().data[0]
+
+
+def default_location_id() -> str | None:
+    rows = supabase.table("locations").select("id").eq("is_default", True).limit(1).execute().data
+    return rows[0]["id"] if rows else None
+
+
+def list_holidays_for_location(
+    start: date | None, end: date | None, location_id: str | None
+) -> list[dict[str, Any]]:
+    """Holidays that apply everywhere plus those for one location (FR-LOC-02)."""
+    rows = list_holidays(start, end)
+    return [r for r in rows if r.get("location_id") in (None, location_id)]
+
+
+def list_compoff_credits(
+    *, user_ids: list[str] | None = None, statuses: list[str] | None = None
+) -> list[dict[str, Any]]:
+    query = supabase.table("compoff_credits").select("*")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if statuses:
+        query = query.in_("status", statuses)
+    return query.order("worked_on").execute().data or []
+
+
+def get_compoff_credit(credit_id: str) -> dict[str, Any] | None:
+    rows = supabase.table("compoff_credits").select("*").eq("id", credit_id).limit(1).execute().data
+    return rows[0] if rows else None
+
+
+def insert_compoff_credit(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("compoff_credits").insert(data).execute().data[0]
+
+
+def update_compoff_credit(credit_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("compoff_credits").update(data).eq("id", credit_id).execute().data[0]
+
+
+def list_confirmations(
+    *, user_ids: list[str] | None = None, week_start: date | None = None
+) -> list[dict[str, Any]]:
+    query = supabase.table("timesheet_confirmations").select("*")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if week_start is not None:
+        query = query.eq("week_start", week_start.isoformat())
+    return query.execute().data or []
+
+
+def upsert_confirmation(data: dict[str, Any]) -> dict[str, Any]:
+    return (
+        supabase.table("timesheet_confirmations")
+        .upsert(data, on_conflict="user_id,week_start")
+        .execute()
+        .data[0]
+    )
+
+
+def delete_confirmation(user_id: str, week_start: date) -> None:
+    supabase.table("timesheet_confirmations").delete().eq("user_id", user_id).eq(
+        "week_start", week_start.isoformat()
+    ).execute()
+
+
+def list_milestones(project_id: str | None = None) -> list[dict[str, Any]]:
+    query = supabase.table("project_milestones").select("*")
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    return query.order("due_on").execute().data or []
+
+
+def insert_milestone(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("project_milestones").insert(data).execute().data[0]
+
+
+def update_milestone(milestone_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    rows = supabase.table("project_milestones").update(data).eq("id", milestone_id).execute().data
+    return rows[0] if rows else None
+
+
+def delete_milestone(milestone_id: str) -> None:
+    supabase.table("project_milestones").delete().eq("id", milestone_id).execute()
+
+
+def list_checklist_templates(kind: str | None = None) -> list[dict[str, Any]]:
+    query = supabase.table("checklist_templates").select("*")
+    if kind:
+        query = query.eq("kind", kind)
+    return query.order("kind").order("position").execute().data or []
+
+
+def replace_checklist_templates(kind: str, labels: list[str]) -> None:
+    supabase.table("checklist_templates").delete().eq("kind", kind).execute()
+    if labels:
+        supabase.table("checklist_templates").insert(
+            [{"kind": kind, "position": i + 1, "label": label} for i, label in enumerate(labels)]
+        ).execute()
+
+
+def list_checklists() -> list[dict[str, Any]]:
+    return (
+        supabase.table("checklists").select("*").order("created_at", desc=True).execute().data or []
+    )
+
+
+def insert_checklist(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("checklists").insert(data).execute().data[0]
+
+
+def update_checklist(checklist_id: str, data: dict[str, Any]) -> None:
+    supabase.table("checklists").update(data).eq("id", checklist_id).execute()
+
+
+def list_checklist_items(checklist_ids: list[str]) -> list[dict[str, Any]]:
+    if not checklist_ids:
+        return []
+    return (
+        supabase.table("checklist_items")
+        .select("*")
+        .in_("checklist_id", checklist_ids)
+        .order("position")
+        .execute()
+        .data
+        or []
+    )
+
+
+def insert_checklist_items(rows: list[dict[str, Any]]) -> None:
+    if rows:
+        supabase.table("checklist_items").insert(rows).execute()
+
+
+def update_checklist_item(item_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    rows = supabase.table("checklist_items").update(data).eq("id", item_id).execute().data
+    return rows[0] if rows else None
+
+
+def get_review(user_id: str, quarter: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("reviews")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("quarter", quarter)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_reviews(user_ids: list[str], quarter: str) -> list[dict[str, Any]]:
+    if not user_ids:
+        return []
+    return (
+        supabase.table("reviews")
+        .select("*")
+        .in_("user_id", user_ids)
+        .eq("quarter", quarter)
+        .execute()
+        .data
+        or []
+    )
+
+
+def upsert_review(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("reviews").upsert(data, on_conflict="user_id,quarter").execute().data[0]
+
+
+def get_oauth_client(client_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("oauth_clients")
+        .select("*")
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def insert_oauth_client(data: dict[str, Any]) -> None:
+    supabase.table("oauth_clients").insert(data).execute()
+
+
+def insert_oauth_transaction(data: dict[str, Any]) -> None:
+    supabase.table("oauth_transactions").insert(data).execute()
+
+
+def pop_oauth_transaction(txn: str) -> dict[str, Any] | None:
+    rows = supabase.table("oauth_transactions").select("*").eq("txn", txn).limit(1).execute().data
+    if rows:
+        supabase.table("oauth_transactions").delete().eq("txn", txn).execute()
+    return rows[0] if rows else None
+
+
+def insert_oauth_code(data: dict[str, Any]) -> None:
+    supabase.table("oauth_codes").insert(data).execute()
+
+
+def pop_oauth_code(code: str) -> dict[str, Any] | None:
+    rows = supabase.table("oauth_codes").select("*").eq("code", code).limit(1).execute().data
+    if rows:
+        supabase.table("oauth_codes").delete().eq("code", code).execute()
+    return rows[0] if rows else None
+
+
+def insert_oauth_refresh(data: dict[str, Any]) -> None:
+    supabase.table("oauth_refresh_tokens").insert(data).execute()
+
+
+def get_oauth_refresh(token_hash: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("oauth_refresh_tokens")
+        .select("*")
+        .eq("token_hash", token_hash)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def revoke_oauth_refresh(token_hash: str, at: str) -> None:
+    supabase.table("oauth_refresh_tokens").update({"revoked_at": at}).eq(
+        "token_hash", token_hash
+    ).execute()
+
+
+def get_token(token_id: str) -> dict[str, Any] | None:
+    rows = supabase.table("api_tokens").select("*").eq("id", token_id).limit(1).execute().data
+    return rows[0] if rows else None

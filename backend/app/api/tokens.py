@@ -31,6 +31,8 @@ def _present(row: dict) -> dict:
         "expires_at": row["expires_at"],
         "last_used_at": row.get("last_used_at"),
         "revoked_at": row.get("revoked_at"),
+        # Spec 006 FR-OAUTH-03 — held by an OAuth client (claude.ai) or not.
+        "client_id": row.get("client_id"),
         "active": tokens.refusal(row) is None,
     }
 

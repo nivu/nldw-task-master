@@ -62,6 +62,10 @@ function SignIn() {
   // is read: this app uses the PKCE code flow, where Supabase returns errors
   // as query parameters to the callback route.
   const [reason] = useState<string | null>(searchParams.get("reason"));
+  // Spec 006 FR-OAUTH-02 — an OAuth consent page sends people here and needs
+  // them back afterwards. Only same-origin paths are honoured.
+  const wanted = searchParams.get("next") ?? "";
+  const next = wanted.startsWith("/") && !wanted.startsWith("//") ? wanted : "/calendar";
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
@@ -80,7 +84,7 @@ function SignIn() {
             </div>
           )}
 
-          <GoogleButton />
+          <GoogleButton next={next} />
 
           {PASSWORD_FALLBACK && <PasswordFallback />}
 

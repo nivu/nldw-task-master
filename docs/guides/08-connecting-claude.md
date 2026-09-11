@@ -11,7 +11,15 @@ did the team log this week?", "how is Project X tracking against budget?" —
 through a personal access token. Claude then acts **as you**, with exactly
 the access you have here and nothing more.
 
-## Getting a token
+## From claude.ai
+
+Add the portal as a custom connector using the address shown under Account →
+Connect Claude. claude.ai sends you to the portal, where you sign in with
+Google if you are not already, and asks you to **Allow** the connection. That
+issues a token on your behalf; it appears in your token list and can be
+revoked there, which ends the connection.
+
+## Getting a token (Claude Code and Claude Desktop)
 
 1. Open **Account** and find **Connect Claude**.
 2. Give the token a name that says where it will live, such as *Claude on my

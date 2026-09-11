@@ -28,6 +28,7 @@ const PROTECTED_ROUTES = [
   "/timesheet",
   "/analytics",
   "/projects",
+  "/review",
   "/team",
   "/approvals",
   "/admin",

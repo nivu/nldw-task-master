@@ -37,6 +37,20 @@ A day stays editable until the end of its week plus a week's grace. After that
 it is locked, and the page tells you when that happens. Everything you log
 before the lock can be changed freely.
 
+## Your lead signs off each week
+
+Each week, your lead confirms your timesheet once it looks complete. A
+confirmed week appears on client effort statements as such. If nobody confirms
+it by the time its edit window closes, it is confirmed automatically. If you
+have nothing logged by the evening, the portal reminds you on Slack.
+
+## Your quarter, in your words
+
+Under **Account → Your quarter** the portal shows your hours by project and
+every note you wrote in the quarter, and gives you a place to write it up for
+your lead: what went well, what you learned. Nobody scores it; your lead reads
+it and closes the quarter.
+
 ## Working on a leave day
 
 If you log hours on a day you booked as leave, the portal warns you but lets

@@ -48,6 +48,27 @@ person with no CTC for a date makes every figure for that date report as
 **incomplete**, never cheaper. Only managers and admins see CTC; the person
 never does, and it is never called salary.
 
+## Locations
+
+Under **Holidays**, add locations if the company works from more than one
+place. A holiday can apply everywhere or to one location; a person belongs to
+one location, set under People, and sees the holidays that apply to them.
+
+## Checklists
+
+**Checklists** holds onboarding and offboarding templates and the checklists
+started from them. Start one for a person; tick items off, give each an owner
+and a due date. Starting an offboarding checklist does not deactivate the
+account; that stays a separate action under People.
+
+## Notifications
+
+**Notifications** is where Slack is proved and the schedules can be run by
+hand: send yourself a test, run today's nudge, the Friday gaps, the Monday
+over-allocation note, the morning who-is-out post, or the leadership digest.
+Nothing sends until a Slack bot token is set on the server; the channel for
+the morning post and the nudge hour are settings under Policy.
+
 ## Allowances
 
 Set the monthly allowance per category. A row with no person is the company

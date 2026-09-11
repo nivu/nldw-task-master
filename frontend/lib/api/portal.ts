@@ -46,6 +46,20 @@ import type {
   CtcPeriod,
   Pnl,
   Timeline,
+  Bench,
+  Checklists,
+  CompoffClaim,
+  Hiring,
+  Location,
+  MilestoneList,
+  Milestone,
+  MyCompoff,
+  ProjectHealth,
+  Review,
+  Statement,
+  TeamReviews,
+  TeamWeek,
+  Utilisation,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -147,6 +161,7 @@ export const updateUser = (
     role: string;
     lead_id: string | null;
     is_active: boolean;
+    location_id: string | null;
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 
@@ -161,7 +176,7 @@ export const setAllowance = (input: {
 
 export const listHolidays = () => call<Holiday[]>("/admin/holidays");
 
-export const declareHoliday = (input: { date: string; name: string }) =>
+export const declareHoliday = (input: { date: string; name: string; location_id?: string | null }) =>
   call<Holiday>("/admin/holidays", { method: "POST", ...body(input) });
 
 export const deleteHoliday = (id: string) =>
@@ -328,3 +343,74 @@ export const getPnl = (start?: string, end?: string) =>
 
 export const getTimeline = (start?: string, end?: string) =>
   call<Timeline>(`/analytics/timeline${start ? `?start=${start}&end=${end ?? start}` : ""}`);
+
+// ---------------------------------------------------------------------------
+// Org operations — spec 006
+// ---------------------------------------------------------------------------
+
+export const getMyCompoff = () => call<MyCompoff>("/compoff");
+export const claimCompoff = (input: { worked_on: string; days: string; note: string | null }) =>
+  call<CompoffClaim>("/compoff", { method: "POST", ...body(input) });
+export const getTeamCompoff = () => call<CompoffClaim[]>("/compoff/team");
+export const decideCompoff = (id: string, approve: boolean, note?: string | null) =>
+  call<CompoffClaim>(`/compoff/${id}/decision`, { method: "POST", ...body({ approve, note: note ?? null }) });
+
+export const getTeamWeeks = (weekStart?: string) =>
+  call<TeamWeek>(`/team/timesheets${weekStart ? `?week_start=${weekStart}` : ""}`);
+export const confirmWeek = (userId: string, weekStart: string, note?: string | null) =>
+  call<{ status: string }>(`/team/timesheets/${userId}/${weekStart}/confirm`, { method: "POST", ...body({ note: note ?? null }) });
+export const reopenWeek = (userId: string, weekStart: string) =>
+  call<{ status: string }>(`/team/timesheets/${userId}/${weekStart}/confirm`, { method: "DELETE" });
+
+export const getMyReview = (quarter?: string) => call<Review>(`/me/review${quarter ? `?quarter=${quarter}` : ""}`);
+export const saveMyReview = (input: { quarter: string; summary: string; submit: boolean }) =>
+  call<Review>("/me/review", { method: "PUT", ...body(input) });
+export const getTeamReviews = (quarter?: string) =>
+  call<TeamReviews>(`/team/reviews${quarter ? `?quarter=${quarter}` : ""}`);
+export const closeReview = (userId: string, quarter: string) =>
+  call<{ status: string }>(`/team/reviews/${userId}/${quarter}/close`, { method: "POST" });
+
+export const getMyFeed = () => call<{ url: string }>("/me/feed");
+export const rotateMyFeed = () => call<{ url: string }>("/me/feed/rotate", { method: "POST" });
+
+export const getStatement = (projectId: string, period: string) =>
+  call<Statement>(`/analytics/projects/${projectId}/statement?period=${period}`);
+export const statementCsvPath = (projectId: string, period: string) =>
+  `/api/v1/analytics/projects/${projectId}/statement?period=${period}&format=csv`;
+export const getUtilisation = (start?: string, end?: string) =>
+  call<Utilisation>(`/analytics/utilisation${start ? `?start=${start}&end=${end ?? start}` : ""}`);
+export const getBench = (weeks = 8) => call<Bench>(`/analytics/bench?weeks=${weeks}`);
+export const getHiring = (months = 6, annualCtc = "1200000") =>
+  call<Hiring>(`/analytics/hiring?months=${months}&annual_ctc=${annualCtc}`);
+export const getProjectHealth = (projectId: string) => call<ProjectHealth>(`/analytics/projects/${projectId}/health`);
+export const getProjectsHealth = () =>
+  call<{ project_id: string; project_name: string; overall: "green" | "amber" | "red" }[]>("/analytics/health");
+
+export const listLocations = () => call<Location[]>("/admin/locations");
+export const addLocation = (name: string) => call<Location>("/admin/locations", { method: "POST", ...body({ name }) });
+
+export const listMilestones = (projectId: string) => call<MilestoneList>(`/admin/projects/${projectId}/milestones`);
+export const addMilestone = (projectId: string, input: { name: string; due_on: string; amount: string }) =>
+  call<Milestone>(`/admin/projects/${projectId}/milestones`, { method: "POST", ...body(input) });
+export const updateMilestone = (id: string, changes: { invoiced_on?: string; clear_invoiced?: boolean; name?: string; due_on?: string; amount?: string }) =>
+  call<Milestone>(`/admin/milestones/${id}`, { method: "PATCH", ...body(changes) });
+export const removeMilestone = (id: string) => call<{ status: string }>(`/admin/milestones/${id}`, { method: "DELETE" });
+
+export const getChecklists = () => call<Checklists>("/admin/checklists");
+export const setChecklistTemplate = (kind: "onboarding" | "offboarding", labels: string[]) =>
+  call<{ labels: string[] }>(`/admin/checklists/templates/${kind}`, { method: "PUT", ...body({ labels }) });
+export const startChecklist = (input: { user_id: string; kind: "onboarding" | "offboarding" }) =>
+  call<{ id: string }>("/admin/checklists", { method: "POST", ...body(input) });
+export const updateChecklistItem = (id: string, changes: { done?: boolean; owner_id?: string | null; due_on?: string | null }) =>
+  call<{ id: string }>(`/admin/checklist-items/${id}`, { method: "PATCH", ...body(changes) });
+export const closeChecklist = (id: string) => call<{ status: string }>(`/admin/checklists/${id}/close`, { method: "POST" });
+
+export const sendTestNotification = () =>
+  call<{ delivered: string[]; slack_configured: boolean }>("/admin/notifications/test", { method: "POST" });
+export const runNudge = (kind: "today" | "weekly_gaps" | "over_allocation" | "morning_post" | "digest") =>
+  call<Record<string, unknown>>("/admin/nudges/run", { method: "POST", ...body({ kind }) });
+
+export const getOauthTransaction = (txn: string) =>
+  call<{ client_name: string | null; scopes: string[] }>(`/oauth/transaction/${txn}`);
+export const approveOauth = (txn: string, approved: boolean) =>
+  call<{ redirect: string }>("/oauth/approve", { method: "POST", ...body({ txn, approved }) });

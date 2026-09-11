@@ -260,6 +260,28 @@ Account page says MCP is not enabled and issues no tokens. Verify:
 curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/mcp   # 401 without a token
 ```
 
+### Org operations (spec 006)
+
+- **Slack.** Set `SLACK_BOT_TOKEN` (scopes `chat:write`, `users:read.email`,
+  and `chat:write.public` or invite the bot to the channel) and
+  `SLACK_SIGNING_SECRET` on the api, worker and beat services. Then Admin →
+  Notifications → *Send me a test*. Set `slack_out_channel` under Admin →
+  Policy (e.g. `#general`) to turn on the morning who-is-out post.
+- **Schedules** need the `beat` service running: nudge at `nudge_hour` on
+  weekdays, gaps Friday 17:00, over-allocation Monday 09:00, morning post
+  09:00 weekdays, digest Monday 09:05, auto-confirm 00:15, comp-off lapse
+  00:20 (all Asia/Kolkata).
+- **OAuth for claude.ai** needs nothing beyond `MCP_PUBLIC_URL` and
+  `FRONTEND_URL` being correct on the api service: the issuer is the API
+  origin and the consent page is `FRONTEND_URL/auth/connect`. Verify:
+
+  ```bash
+  curl -s https://<railway-domain>/.well-known/oauth-authorization-server | head -c 200
+  ```
+
+- **Calendar feeds** use `FEED_SECRET` if set, otherwise a value derived from
+  the service key. Changing either invalidates every feed address at once.
+
 ### After the management layer (spec 003) is deployed
 
 Nothing in the new tier works until an admin does two things by hand, under

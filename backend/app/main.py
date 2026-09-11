@@ -199,6 +199,12 @@ def _mount_routers() -> None:
         # Spec 004 — personal access tokens for MCP clients.
         ("app.api.tokens", "router"),
     ]
+    # Spec 006 — org operations: several small routers in one module.
+    from app.api import ops
+
+    for router in ops.ROUTERS:
+        app.include_router(router, prefix="/api/v1")
+    logger.info("Mounted router: app.api.ops (%d routers)", len(ops.ROUTERS))
 
     for module_path, attr_name in router_modules:
         module = importlib.import_module(module_path)
@@ -224,6 +230,34 @@ def _mount_mcp() -> None:
         Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"], include_in_schema=False)
     )
     logger.info("Mounted MCP endpoint at /mcp")
+
+    # Spec 006 FR-OAUTH — the authorization server lives at the API's origin:
+    # /.well-known/oauth-authorization-server, /authorize, /token, /register,
+    # and the protected-resource metadata claude.ai discovers from the 401.
+    if settings.MCP_PUBLIC_URL:
+        from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+        from mcp.server.auth.settings import ClientRegistrationOptions
+        from pydantic import AnyHttpUrl
+
+        from app.services.oauth import SCOPES, provider
+
+        issuer = settings.MCP_PUBLIC_URL.rsplit("/mcp", 1)[0]
+        for route in create_auth_routes(
+            provider,
+            issuer_url=AnyHttpUrl(issuer),
+            client_registration_options=ClientRegistrationOptions(
+                enabled=True, valid_scopes=SCOPES, default_scopes=SCOPES
+            ),
+        ):
+            app.router.routes.append(route)
+        for route in create_protected_resource_routes(
+            resource_url=AnyHttpUrl(settings.MCP_PUBLIC_URL),
+            authorization_servers=[AnyHttpUrl(issuer)],
+            scopes_supported=SCOPES,
+            resource_name="Nunnari Employee Portal",
+        ):
+            app.router.routes.append(route)
+        logger.info("Mounted OAuth authorization server at %s", issuer)
 
 
 _mount_mcp()

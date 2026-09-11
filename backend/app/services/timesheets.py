@@ -259,7 +259,9 @@ def week_for(user_id: str, monday: date) -> dict[str, Any]:
 
     entries = db.list_time_entries(user_ids=[user_id], start=monday, end=sunday)
     projects = {p["id"]: p for p in db.list_projects(include_archived=True)}
-    holidays = holidays_between(monday, sunday)
+    from app.services.holidays import holidays_by_person
+
+    holidays = holidays_by_person([user_id], monday, sunday)[user_id]  # spec 006 FR-LOC-02
     leave = leave_days_for([user_id], monday, sunday).get(user_id, {})
 
     days = []

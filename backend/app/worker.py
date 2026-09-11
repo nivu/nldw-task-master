@@ -84,4 +84,30 @@ celery_app.conf.beat_schedule = {
         "task": "bookings.lock_sweep",
         "schedule": crontab(hour=0, minute=5),
     },
+    # Spec 006. Hourly on weekdays; the task fires only at `nudge_hour`.
+    "nudge-nothing-logged": {
+        "task": "ops.nudge_today",
+        "schedule": crontab(minute=0, day_of_week="mon-fri"),
+    },
+    "nudge-weekly-gaps": {
+        "task": "ops.nudge_weekly_gaps",
+        "schedule": crontab(hour=17, minute=0, day_of_week="fri"),
+    },
+    "nudge-over-allocation": {
+        "task": "ops.nudge_over_allocation",
+        "schedule": crontab(hour=9, minute=0, day_of_week="mon"),
+    },
+    "morning-out-post": {
+        "task": "ops.morning_post",
+        "schedule": crontab(hour=9, minute=0, day_of_week="mon-fri"),
+    },
+    "weekly-digest": {
+        "task": "ops.weekly_digest",
+        "schedule": crontab(hour=9, minute=5, day_of_week="mon"),
+    },
+    "auto-confirm-weeks": {
+        "task": "ops.auto_confirm_weeks",
+        "schedule": crontab(hour=0, minute=15),
+    },
+    "lapse-compoff": {"task": "ops.lapse_compoff", "schedule": crontab(hour=0, minute=20)},
 }

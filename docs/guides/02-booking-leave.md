@@ -15,6 +15,7 @@ Everything happens on the **Calendar**. Tap a day, choose what it is, confirm.
 | **Work from home** | Today or any future day | Yes |
 | **Casual leave** | Future days only — it must be requested before the day itself | Yes |
 | **Sick leave** | Today only — nobody knows they will be ill next Tuesday | Yes |
+| **Comp-off** | Any future day, once you have an approved comp-off credit | Yes |
 
 If you are unwell today, mark it as sick leave. If you try to mark casual leave
 for today, the portal will tell you to use sick leave instead.
@@ -62,4 +63,21 @@ see under **Admin → Policy**. Your yearly history is under **Account**.
 ## Holidays
 
 Company holidays are marked on the calendar and cannot be booked. They consume
-nobody's allowance.
+nobody's allowance. Some holidays apply to one location only; you see the ones
+for yours.
+
+## Comp-off
+
+Worked a weekend or a holiday? On the Calendar page, under **Comp-off**, claim
+the day back: the day you worked, full or half day, and a line about what for.
+Your lead approves or rejects it. An approved credit is valid for a limited
+time, shown on the card, and is booked like any other day, choosing the
+**Comp-off** category. It draws on the credit, not on an allowance. Withdrawing
+a comp-off day gives the credit back.
+
+## Your calendar app
+
+Under **Account → Leave in your calendar** is a private address. Add it to
+Google Calendar (Other calendars → From URL) and approved leave and holidays
+appear there, for the people you can see in the portal, categories only. Treat
+the address like a password; **Rotate** replaces it if it leaks.

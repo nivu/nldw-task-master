@@ -51,6 +51,19 @@ def send(message) -> bool:  # noqa: ANN001 - app.services.notify.Message, avoids
     return bool(response.get("ok"))
 
 
+def post_to_channel(channel: str, text: str) -> bool:
+    """Post plain mrkdwn text to a channel the bot is in — spec 006 FR-FEED-03."""
+    token = settings.SLACK_BOT_TOKEN.get_secret_value() if settings.SLACK_BOT_TOKEN else ""
+    if not token:
+        return False
+    response = _post("chat.postMessage", token, {"channel": channel, "text": text, "mrkdwn": True})
+    if not response.get("ok"):
+        logger.warning(
+            '{"event": "slack_channel_post_failed", "error": "%s"}', response.get("error")
+        )
+    return bool(response.get("ok"))
+
+
 def _blocks(message) -> list[dict]:  # noqa: ANN001
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*{message.subject}*"}},
