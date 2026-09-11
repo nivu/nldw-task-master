@@ -13,6 +13,7 @@ import {
   Clock,
   BarChart3,
   FolderKanban,
+  CircleHelp,
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -101,6 +102,9 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
                 {me.display_name}
               </span>
             )}
+            <Button variant="ghost" size="icon" aria-label="Help" render={<Link href="/help" />}>
+              <CircleHelp className="size-4" />
+            </Button>
             <ThemeToggle />
             <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
               <LogOut className="size-4" />

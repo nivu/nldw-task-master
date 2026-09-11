@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
@@ -87,6 +89,11 @@ function SignIn() {
             you are — it does not create an account. If Google works but the
             portal still turns you away, ask an admin to add the address you
             signed in with.
+          </p>
+          <p className="mt-3 text-xs">
+            <Link href="/help" className="text-muted-foreground underline underline-offset-2 hover:text-foreground">
+              How to use the portal
+            </Link>
           </p>
         </CardContent>
       </Card>

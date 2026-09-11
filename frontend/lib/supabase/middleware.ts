@@ -9,11 +9,12 @@ import { NextResponse, type NextRequest } from "next/server";
  * Prefixes that skip auth entirely. No token refresh is attempted, so these
  * stay fast and never redirect.
  *
- * FR-AUTH-01 requires authentication on every page except sign-in, so this
- * list holds exactly that one route. There is no public marketing page and no
- * signup route — accounts are created by an admin (FR-AUTH-02).
+ * FR-AUTH-01 requires authentication on every page except sign-in and the
+ * how-to guides under /help, which describe how screens work and carry no
+ * data. There is no public marketing page and no signup route — accounts are
+ * created by an admin (FR-AUTH-02).
  */
-const PUBLIC_ROUTES = ["/auth/"];
+const PUBLIC_ROUTES = ["/auth/", "/help"];
 
 /**
  * Prefixes that require a signed-in user.

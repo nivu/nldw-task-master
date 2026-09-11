@@ -171,6 +171,15 @@ recommendation; every delivery head can see every other project's margin and
 every person's cost rate. The consequence is recorded in the spec so it is
 never mistaken for an oversight.
 
+## The help guides
+
+`docs/guides/*.md` are the public how-to pages. `frontend/lib/help.ts` reads
+them at build time and `/help` serves them as static HTML, without sign-in
+(`/help` is in `PUBLIC_ROUTES`). Editing a guide is editing markdown; it ships
+with the next frontend deploy. Because they are public they describe how
+screens work and never who is on them or what anything costs — the e2e suite
+checks that no seeded name appears.
+
 ## Background work
 
 Celery over Redis. Two things run off the request path:

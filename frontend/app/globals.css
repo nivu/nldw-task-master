@@ -136,3 +136,48 @@
     letter-spacing: -0.025em;
   }
 }
+/* The public help guides — markdown rendered at build time (lib/help.ts). */
+.help-prose {
+  @apply max-w-3xl text-sm leading-6;
+}
+.help-prose h1 {
+  @apply mb-4 text-xl font-semibold;
+}
+.help-prose h2 {
+  @apply mt-8 mb-2 text-base font-semibold;
+}
+.help-prose h3 {
+  @apply mt-6 mb-1 text-sm font-semibold;
+}
+.help-prose p {
+  @apply my-3;
+}
+.help-prose ul,
+.help-prose ol {
+  @apply my-3 space-y-1 pl-6;
+}
+.help-prose ul {
+  @apply list-disc;
+}
+.help-prose ol {
+  @apply list-decimal;
+}
+.help-prose strong {
+  @apply font-semibold text-foreground;
+}
+.help-prose a {
+  @apply underline underline-offset-2;
+}
+.help-prose code {
+  @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+}
+.help-prose table {
+  @apply my-4 block w-full overflow-x-auto text-sm;
+}
+.help-prose th,
+.help-prose td {
+  @apply border-b px-3 py-2 text-left align-top;
+}
+.help-prose th {
+  @apply text-xs font-medium text-muted-foreground;
+}

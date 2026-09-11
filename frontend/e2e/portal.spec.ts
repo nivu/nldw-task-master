@@ -312,3 +312,23 @@ test.describe("the management layer (spec 003)", () => {
     await expect(page.getByLabel("Role for Sriram")).toHaveValue("manager");
   });
 });
+
+test.describe("the help guides", () => {
+  test("are readable without signing in and describe every role", async ({ page }) => {
+    await page.goto("/help");
+    await expect(page).toHaveURL(/\/help$/);
+    await expect(page.getByRole("heading", { name: /How to use the portal/ })).toBeVisible();
+
+    await page.getByRole("link", { name: "For managers" }).first().click();
+    await expect(page).toHaveURL(/\/help\/for-managers/);
+    await expect(page.getByRole("heading", { name: "For managers", level: 1 })).toBeVisible();
+    // Public, so it must describe screens and never data: no seeded name here.
+    await expect(page.locator("body")).not.toContainText(/Deepika|Devansh|Sriram|Vinita|Tarun/);
+  });
+
+  test("are reachable from the sign-in page", async ({ page }) => {
+    await page.goto("/auth/login");
+    await page.getByRole("link", { name: /How to use the portal/ }).click();
+    await expect(page).toHaveURL(/\/help/);
+  });
+});
