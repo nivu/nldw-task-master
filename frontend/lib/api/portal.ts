@@ -40,6 +40,8 @@ import type {
   PeopleFinancials,
   ProjectFinancials,
   ResourcesTimeline,
+  TokenCreated,
+  TokenList,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -289,3 +291,17 @@ export const createAllocation = (input: {
 
 export const deleteAllocation = (id: string) =>
   call<{ status: string }>(`/admin/allocations/${id}`, { method: "DELETE" });
+
+// ---------------------------------------------------------------------------
+// Personal access tokens — spec 004. Session-only routes: a token cannot
+// manage tokens (FR-TOK-04).
+// ---------------------------------------------------------------------------
+
+export const listTokens = () => call<TokenList>("/me/tokens");
+
+export const createToken = (name: string) =>
+  call<TokenCreated>("/me/tokens", { method: "POST", ...body({ name }) });
+
+export const revokeToken = (id: string) => call<ApiTokenLike>(`/me/tokens/${id}`, { method: "DELETE" });
+
+type ApiTokenLike = { id: string; revoked_at: string | null };

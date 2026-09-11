@@ -332,3 +332,33 @@ test.describe("the help guides", () => {
     await expect(page).toHaveURL(/\/help/);
   });
 });
+
+test.describe("connecting Claude (spec 004)", () => {
+  test("a token is issued from the Account page, shown once, and can be revoked", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/account");
+    await expect(page.getByText("Connect Claude")).toBeVisible();
+
+    // Unique per run: a failed earlier run leaves its token behind, and the
+    // assertions below must not be confused by it.
+    const tokenName = `e2e token ${Date.now()}`;
+    await page.fill("#token-name", tokenName);
+    await page.getByRole("button", { name: "Create token" }).click();
+    // FR-TOK-02 — the plaintext appears exactly once, with the warning.
+    await expect(page.getByText(/will not be shown again/i)).toBeVisible();
+    await expect(page.locator("code", { hasText: /^nunp_/ }).first()).toBeVisible();
+    await expect(page.getByText(/claude mcp add/)).toBeVisible();
+
+    await page.getByRole("button", { name: "I have saved it" }).click();
+    // The plaintext is gone; only the short display prefix remains in the list.
+    await expect(page.getByText(/will not be shown again/i)).toHaveCount(0);
+    await expect(page.getByText(/claude mcp add/)).toHaveCount(0);
+
+    // Revoke so the seeded account does not accumulate live tokens across runs.
+    const row = page.getByTestId("token-row").filter({ hasText: tokenName });
+    await expect(row).toHaveCount(1);
+    await row.getByRole("button", { name: "Revoke" }).click();
+    await expect(row).toHaveCount(0);
+    await expect(page.getByText(/revoked or expired token/)).toBeVisible();
+  });
+});

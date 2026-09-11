@@ -171,6 +171,31 @@ recommendation; every delivery head can see every other project's margin and
 every person's cost rate. The consequence is recorded in the spec so it is
 never mistaken for an oversight.
 
+## MCP — the portal as a tool server (spec 004)
+
+`app/mcp/server.py` mounts an MCP endpoint at `/mcp` on the same FastAPI
+process. Every tool is a thin wrapper that calls the matching API route
+**in-process** (httpx over an ASGI transport) with the caller's own bearer
+token, so authorisation, validation, error wording and request logging are
+the route's, verbatim. There is no second authorisation code path.
+
+Callers authenticate with a **personal access token** (`nunp_…`, spec 004
+FR-TOK). `deps.current_user` recognises the prefix and resolves it through
+`api_tokens` (hash only; 90-day expiry; revocable); everything after that is
+unchanged, including the deactivated-owner check. The token routes
+(`/me/tokens`) are guarded by `SessionDep`: a token cannot issue, list or
+revoke tokens, which is what bounds a leak. Every request logs `auth_via` as
+`session` or `token`.
+
+Two things are done to route answers before they reach the model: `reason`
+is withheld at any depth (FR-MCP-03), and nothing else. `test_mcp.py` fails
+if a route is added without a tool, or a write tool stops asking for
+confirmation.
+
+The MCP address shown on the Account page comes from `MCP_PUBLIC_URL` on
+the backend, returned to a signed-in person by the API; it is not in the web
+bundle.
+
 ## The help guides
 
 `docs/guides/*.md` are the public how-to pages. `frontend/lib/help.ts` reads

@@ -15,6 +15,7 @@ dependencies = [
     "email-validator",
     "supabase",
     "python-dotenv",
+    "mcp>=2.2.0",
 ]
 
 [tool.setuptools]

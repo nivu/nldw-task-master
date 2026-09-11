@@ -38,6 +38,18 @@ _celery_proc: subprocess.Popen | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Spec 004 — the MCP transport's session manager must run for the life of
+    # the process. A mounted sub-app's own lifespan is never invoked by
+    # Starlette, so it is driven from here.
+    from app.mcp.server import mcp
+
+    async with mcp.session_manager.run():
+        async with _worker_lifespan():
+            yield
+
+
+@asynccontextmanager
+async def _worker_lifespan():
     global _celery_proc
 
     if not settings.RUN_EMBEDDED_WORKER:
@@ -122,13 +134,17 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Respon
 
     # Constitution, Observability: log the authenticated user's ID and never
     # their personal data. request.state.user_id is set by the auth dependency.
+    # Spec 004 FR-TOK-07 — which channel: a browser session or a personal
+    # token (an MCP client). Same person either way; the log tells them apart.
     logger.info(
-        '{"method": "%s", "path": "%s", "status_code": %d, "duration_ms": %.2f, "user_id": "%s"}',
+        '{"method": "%s", "path": "%s", "status_code": %d, "duration_ms": %.2f, '
+        '"user_id": "%s", "auth_via": "%s"}',
         request.method,
         request.url.path,
         response.status_code,
         duration_ms,
         getattr(request.state, "user_id", "-"),
+        getattr(request.state, "auth_via", "-"),
     )
     return response
 
@@ -180,6 +196,8 @@ def _mount_routers() -> None:
         # Spec 002 — timesheets and analytics.
         ("app.api.timesheet", "router"),
         ("app.api.timesheet", "analytics"),
+        # Spec 004 — personal access tokens for MCP clients.
+        ("app.api.tokens", "router"),
     ]
 
     for module_path, attr_name in router_modules:
@@ -190,3 +208,22 @@ def _mount_routers() -> None:
 
 
 _mount_routers()
+
+
+# ---------------------------------------------------------------------------
+# Spec 004 — the MCP endpoint. Every tool calls the routes above in-process as
+# the token's owner; see app/mcp/server.py.
+# ---------------------------------------------------------------------------
+def _mount_mcp() -> None:
+    from starlette.routing import Route
+
+    from app.mcp.server import mcp_app
+
+    # A Route, not a Mount: a Mount answers the bare /mcp with a redirect.
+    app.router.routes.append(
+        Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"], include_in_schema=False)
+    )
+    logger.info("Mounted MCP endpoint at /mcp")
+
+
+_mount_mcp()

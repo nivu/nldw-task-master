@@ -27,6 +27,7 @@ from fastapi import Depends, Request
 
 from app.api.errors import ProblemDetail
 from app.config import settings
+from app.domain import tokens
 from app.domain.approval import Person
 from app.services import supabase as db
 
@@ -34,6 +35,15 @@ logger = logging.getLogger("nldw-task-master")
 
 _lock = threading.Lock()
 _token_cache: dict[str, tuple[float, str]] = {}
+# Personal tokens (spec 004) are cached apart from sessions so a revocation
+# can drop them all at once — FR-TOK-03 says "the next request", not "within
+# AUTH_CACHE_SECONDS", and clearing a dict is cheaper than being precise.
+_personal_cache: dict[str, tuple[float, str]] = {}
+
+
+def forget_personal_tokens() -> None:
+    with _lock:
+        _personal_cache.clear()
 
 
 class CurrentUser(Person):
@@ -115,6 +125,35 @@ def _verify(token: str) -> str:
     return user_id
 
 
+def verify_personal_token(token: str) -> str:
+    """Resolve a personal access token (spec 004) to its owner's id, or refuse.
+
+    Same cache as sessions, keyed by the hash so the plaintext is never held
+    in memory longer than the request. `last_used_at` is written on a cache
+    miss only — once every AUTH_CACHE_SECONDS per token, not once per call.
+    """
+    digest = tokens.hash_token(token)
+    now = time.monotonic()
+    with _lock:
+        cached = _personal_cache.get(digest)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    row = db.get_token_by_hash(digest)
+    if row is None:
+        raise ProblemDetail(401, "That token is not recognised.")
+    why = tokens.refusal(row)
+    if why:
+        raise ProblemDetail(401, why)
+
+    from datetime import UTC, datetime
+
+    db.touch_token(row["id"], datetime.now(UTC).isoformat())
+    with _lock:
+        _personal_cache[digest] = (now + settings.AUTH_CACHE_SECONDS, row["user_id"])
+    return row["user_id"]
+
+
 def current_user(request: Request) -> CurrentUser:
     """FR-AUTH-01 — every route depends on this.
 
@@ -123,7 +162,16 @@ def current_user(request: Request) -> CurrentUser:
     their history, and an unexpired token in that person's browser must stop
     working immediately rather than at expiry.
     """
-    user_id = _verify(_bearer_token(request))
+    bearer = _bearer_token(request)
+    if tokens.is_token(bearer):
+        # Spec 004. A personal token is the person, with every check below
+        # applied unchanged — and one more: FR-TOK-04, enforced by the token
+        # routes, needs to know which channel this request came through.
+        user_id = verify_personal_token(bearer)
+        request.state.auth_via = "token"
+    else:
+        user_id = _verify(bearer)
+        request.state.auth_via = "session"
     profile = db.get_profile(user_id)
 
     if profile is None:
@@ -176,3 +224,19 @@ def require_manager(user: CurrentUserDep) -> CurrentUser:
 LeadDep = Annotated[CurrentUser, Depends(require_lead)]
 ManagerDep = Annotated[CurrentUser, Depends(require_manager)]
 AdminDep = Annotated[CurrentUser, Depends(require_admin)]
+
+
+def require_session(user: CurrentUserDep, request: Request) -> CurrentUser:
+    """Guards the token routes — spec 004 FR-TOK-04.
+
+    A token must not be able to issue, list or revoke tokens. A leaked token
+    would otherwise be able to extend its own life indefinitely; confining
+    token management to a signed-in browser session means a leak is bounded by
+    the token's expiry and the owner's ability to see it in a list.
+    """
+    if getattr(request.state, "auth_via", "session") == "token":
+        raise ProblemDetail(403, "A token cannot manage tokens. Sign in to the portal to do that.")
+    return user
+
+
+SessionDep = Annotated[CurrentUser, Depends(require_session)]

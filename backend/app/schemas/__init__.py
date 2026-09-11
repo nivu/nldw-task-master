@@ -269,3 +269,11 @@ class AllocationIn(BaseModel):
     starts_on: date
     ends_on: date
     percent: Decimal = Field(gt=0, le=100)
+
+
+class TokenCreate(BaseModel):
+    """Spec 004 FR-TOK-01 — a name is required so a list of tokens is legible."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)

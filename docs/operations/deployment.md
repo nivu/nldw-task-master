@@ -250,6 +250,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<netlify-domain>/calendar   # 3
   running looks completely healthy until pending bookings start piling up.
 - The audit log has one `admin.bootstrapped` entry and nothing else.
 
+### MCP (spec 004)
+
+Set `MCP_PUBLIC_URL` on the Railway **api** service to the API's public
+address plus `/mcp`, e.g. `https://<railway-domain>/mcp`. Until it is set the
+Account page says MCP is not enabled and issues no tokens. Verify:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/mcp   # 401 without a token
+```
+
 ### After the management layer (spec 003) is deployed
 
 Nothing in the new tier works until an admin does two things by hand, under

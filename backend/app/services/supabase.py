@@ -368,3 +368,54 @@ def delete_time_entry(entry_id: str) -> None:
 def get_time_entry(entry_id: str) -> dict[str, Any] | None:
     response = supabase.table("time_entries").select("*").eq("id", entry_id).limit(1).execute()
     return response.data[0] if response.data else None
+
+
+# ---------------------------------------------------------------------------
+# Personal access tokens — spec 004. Backend-only table; the browser role has
+# no grant on it at all (010_api_tokens.sql).
+# ---------------------------------------------------------------------------
+
+TOKEN_COLUMNS = "id, user_id, name, prefix, created_at, expires_at, last_used_at, revoked_at"
+
+
+def get_token_by_hash(token_hash: str) -> dict[str, Any] | None:
+    response = (
+        supabase.table("api_tokens")
+        .select("id, user_id, expires_at, revoked_at")
+        .eq("token_hash", token_hash)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def list_tokens(user_id: str) -> list[dict[str, Any]]:
+    return (
+        supabase.table("api_tokens")
+        .select(TOKEN_COLUMNS)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+
+
+def insert_token(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("api_tokens").insert(data).execute().data[0]
+
+
+def revoke_token(token_id: str, user_id: str, at: str) -> dict[str, Any] | None:
+    """Revoke, scoped to the owner: a token id is not proof of ownership."""
+    response = (
+        supabase.table("api_tokens")
+        .update({"revoked_at": at})
+        .eq("id", token_id)
+        .eq("user_id", user_id)
+        .is_("revoked_at", "null")
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def touch_token(token_id: str, at: str) -> None:
+    supabase.table("api_tokens").update({"last_used_at": at}).eq("id", token_id).execute()
