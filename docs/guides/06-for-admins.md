@@ -1,6 +1,6 @@
 ---
 title: For admins
-summary: People, roles, cost rates, allowances, holidays, backfilling leave, and policy.
+summary: People, roles, CTC, allowances, holidays, backfilling leave, and policy.
 order: 6
 ---
 
@@ -78,5 +78,5 @@ reasons, and the currency used for money.
 ## Audit
 
 Every change made through the admin panel, every decision on a request, and
-every change to a cost rate or a project's revenue is recorded with who made it
+every CTC period added or removed, and every change to a project's revenue, is recorded with who made it
 and when.

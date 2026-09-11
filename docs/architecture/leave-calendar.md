@@ -171,13 +171,13 @@ months attribute it by logged hours, the current and future months by
 allocation; a person's monthly cost is their CTC pro-rated by covered working
 days. `/analytics/pnl` and `/analytics/timeline` are manager-tier.
 
-`cost_rate_hourly` is labelled *cost rate* on every screen and never *salary*.
+CTC is labelled *CTC* or *cost to company* on every screen and never *salary*.
 It is a fully-loaded cost the company attributes; it is not what anybody is
 paid, and the person it describes cannot see it.
 
 **Managers see every project** (003 Q-02). This was chosen against the
 recommendation; every delivery head can see every other project's margin and
-every person's cost rate. The consequence is recorded in the spec so it is
+every person's CTC. The consequence is recorded in the spec so it is
 never mistaken for an oversight.
 
 ## MCP — the portal as a tool server (spec 004)

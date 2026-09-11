@@ -269,11 +269,13 @@ Admin → People:
   and sees money; they still do not approve leave unless they are also
   somebody's approver. Until this is done nobody but the admin can create a
   project, and there is no Projects link in anybody's navigation.
-- Enter a **cost rate** for everybody who will log project hours. Every
-  project figure is marked *incomplete* until every person on it has one — a
-  missing rate is an unknown cost, not a free hour. Rates are captured onto
-  time entries as they are saved, so hours logged **before** a rate is set stay
-  unpriced; set rates before the first day people log time.
+- Record a **CTC period** (annual, with a start date; Admin → People → CTC)
+  for everybody who will log project hours, and set revenue plus at least
+  one phase on each project so monthly revenue exists. Every figure is
+  marked *incomplete* until every person on it has a CTC for the days in
+  question — a missing CTC is an unknown cost, not a free hour. CTC is
+  dated, so it can be entered for past months after the fact; nothing is
+  priced until it exists.
 
 Verify the guard, because it is the point of the release: signed in as a lead,
 `/projects` must show *Only a manager or admin can do that*, and the Effort

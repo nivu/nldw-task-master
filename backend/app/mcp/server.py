@@ -33,9 +33,17 @@ INSTRUCTIONS = """\
 Nunnari Employee Portal — leave, timesheets, projects and effort reporting.
 
 You act as the person whose token you were given, with exactly their access:
-a lead sees their reports, a manager sees projects and money, an admin sees
-everything. A refusal from a tool is the portal's answer for that person;
-do not try to route around it.
+a lead sees their reports, a manager sees projects and money (revenue, cost,
+monthly profit, the allocation timeline), an admin also manages people and
+CTC. A refusal from a tool is the portal's answer for that person; do not
+try to route around it.
+
+Money: a person's cost is their CTC (cost to company) in force on the day —
+dated periods, past and upcoming, set by an admin with set_ctc. Revenue is
+spread evenly over a project's phase timeline; past months use logged hours,
+the current and future months use allocations (marked "planned"). Any figure
+with complete=false is missing somebody's CTC or a project's timeline: say
+so when you quote it. Never rank people by cost or profit.
 
 Before calling any tool that changes something (book, withdraw, log, decide,
 create, update, remove, set), state exactly what will happen and get the
@@ -472,7 +480,8 @@ async def remove_allocation(ctx: Context, allocation_id: str) -> dict:
 
 @mcp.tool(annotations=READ)
 async def list_users(ctx: Context) -> list:
-    """ADMINS. Everyone, with role, approver, active flag and cost rate."""
+    """ADMINS. Everyone, with role, approver, active flag and the CTC in force
+    today (monthly). CTC history is under list_ctc; never present it as salary."""
     return await _api(ctx, "GET", "/admin/users")
 
 
@@ -494,8 +503,8 @@ async def create_user(
 @mcp.tool(annotations=WRITE)
 async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> dict:
     """ADMINS. Change a person. CONFIRM FIRST. changes may hold display_name,
-    role, lead_id, is_active (deactivate, never delete) and cost_rate_hourly
-    (a decimal string; the fully loaded hourly cost, never called salary)."""
+    role (user | lead | manager | admin), lead_id and is_active (deactivate,
+    never delete). CTC is not set here — use set_ctc, which is dated."""
     return await _api(ctx, "PATCH", f"/admin/users/{user_id}", body=changes)
 
 
