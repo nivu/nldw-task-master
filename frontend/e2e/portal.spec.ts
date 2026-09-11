@@ -37,6 +37,9 @@ test.describe("signing in", () => {
     // (NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN); production is Google-only per
     // FR-AUTH-08, where this test has nothing to assert against.
     await page.goto("/auth/login");
+    // The form is client-rendered: wait for it before deciding whether the
+    // password fallback exists, or a slow first paint reads as "off".
+    await page.waitForSelector("#email");
     if ((await page.locator("#password").count()) === 0) {
       test.skip(true, "password fallback is off — Google-only, as in production");
     }
