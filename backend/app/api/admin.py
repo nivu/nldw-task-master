@@ -6,7 +6,8 @@ audit log (FR-ADMIN-06). Vinita is the only person who reaches this.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Query
 
@@ -17,6 +18,7 @@ from app.schemas import (
     AllocationIn,
     AllowanceIn,
     BackfillIn,
+    CtcPeriodIn,
     HolidayIn,
     PhaseIn,
     ProjectIn,
@@ -27,6 +29,7 @@ from app.schemas import (
 )
 from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
+from app.services import pnl as pnl_service
 from app.services import supabase as db
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -39,6 +42,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/users")
 def list_users(admin: AdminDep) -> list[dict]:
+    today = today_in_company_tz()
+    rates = pnl_service.rate_book(today, today)
     return [
         {
             "id": row["id"],
@@ -47,11 +52,9 @@ def list_users(admin: AdminDep) -> list[dict]:
             "role": row["role"],
             "lead_id": row["lead_id"],
             "is_active": row["is_active"],
-            # FR-FIN-01 — admin sets it here. Spec 003 §9: "cost rate", never
-            # "salary"; the UI label must match.
-            "cost_rate_hourly": (
-                str(row["cost_rate_hourly"]) if row.get("cost_rate_hourly") is not None else None
-            ),
+            # Spec 005 — the CTC in force today, shown monthly. Set through
+            # the CTC routes below; never called salary.
+            "ctc_monthly_now": _m(rates.monthly_now(row["id"], today)),
         }
         for row in db.list_profiles()
     ]
@@ -153,9 +156,6 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if user_id == admin.id and changes.get("is_active") is False:
         raise ProblemDetail(422, "You cannot deactivate your own account.")
 
-    if "cost_rate_hourly" in changes and changes["cost_rate_hourly"] is not None:
-        changes["cost_rate_hourly"] = str(changes["cost_rate_hourly"])
-
     updated = db.update_profile(user_id, changes)
     audit.record(
         action="user.updated",
@@ -166,6 +166,119 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
         after=changes,
     )
     return {k: updated[k] for k in ("id", "email", "display_name", "role", "lead_id", "is_active")}
+
+
+# ---------------------------------------------------------------------------
+# CTC periods — spec 005 FR-CTC. Admin only: the most sensitive number here.
+# ---------------------------------------------------------------------------
+
+
+def _m(value: Decimal | None) -> str | None:
+    return None if value is None else str(value.quantize(Decimal("0.01")))
+
+
+def _present_period(row: dict) -> dict:
+    annual = Decimal(str(row["annual_ctc"]))
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "annual_ctc": _m(annual),
+        "monthly_ctc": _m(annual / Decimal("12")),
+        "starts_on": row["starts_on"],
+        "ends_on": row.get("ends_on"),
+        "created_at": row.get("created_at"),
+    }
+
+
+@router.get("/users/{user_id}/ctc")
+def list_ctc(user_id: str, admin: AdminDep) -> dict:
+    """Every CTC period for one person, oldest first, and the one in force today."""
+    if db.get_profile(user_id) is None:
+        raise ProblemDetail(404, "No such user.")
+    today = today_in_company_tz().isoformat()
+    rows = db.list_cost_periods(user_id)
+    current = next(
+        (
+            r
+            for r in rows
+            if r["starts_on"] <= today and (r.get("ends_on") is None or today <= r["ends_on"])
+        ),
+        None,
+    )
+    return {
+        "periods": [_present_period(r) for r in rows],
+        "current": _present_period(current) if current else None,
+    }
+
+
+@router.post("/users/{user_id}/ctc", status_code=201)
+def add_ctc(user_id: str, payload: CtcPeriodIn, admin: AdminDep) -> dict:
+    """Add a period — past, current or upcoming. FR-CTC-03: an open-ended
+    period that started earlier is closed the day before this one starts,
+    which is how "CTC changes next month" is entered. Any other overlap is
+    refused by the database (FR-CTC-02)."""
+    if db.get_profile(user_id) is None:
+        raise ProblemDetail(404, "No such user.")
+    if payload.ends_on is not None and payload.ends_on < payload.starts_on:
+        raise ProblemDetail(422, "The end date is before the start date.")
+
+    closed = None
+    for row in db.list_cost_periods(user_id):
+        if row.get("ends_on") is None and row["starts_on"] < payload.starts_on.isoformat():
+            closed = row
+            db.close_cost_period(row["id"], (payload.starts_on - timedelta(days=1)).isoformat())
+
+    try:
+        created = db.insert_cost_period(
+            {
+                "user_id": user_id,
+                "annual_ctc": str(payload.annual_ctc),
+                "starts_on": payload.starts_on.isoformat(),
+                "ends_on": payload.ends_on.isoformat() if payload.ends_on else None,
+                "created_by": admin.id,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        if closed is not None:
+            db.close_cost_period(closed["id"], None)  # type: ignore[arg-type]
+        if "cost_periods_no_overlap" in str(exc):
+            raise ProblemDetail(
+                422, "That overlaps an existing CTC period. Remove or shorten it first."
+            ) from exc
+        raise
+
+    audit.record(
+        action="ctc.added",
+        target_table="cost_periods",
+        target_id=created["id"],
+        actor_id=admin.id,
+        after={
+            "user_id": user_id,
+            "annual_ctc": str(payload.annual_ctc),
+            "starts_on": payload.starts_on.isoformat(),
+            "ends_on": payload.ends_on.isoformat() if payload.ends_on else None,
+            "closed_previous": closed["id"] if closed else None,
+        },
+    )
+    return _present_period(created)
+
+
+@router.delete("/ctc/{period_id}")
+def remove_ctc(period_id: str, admin: AdminDep) -> dict:
+    """Remove a period. Cost for the days it covered becomes unknown again —
+    the figures will say so — which is the honest outcome of deleting history."""
+    row = db.get_cost_period(period_id)
+    if row is None:
+        raise ProblemDetail(404, "No such CTC period.")
+    db.delete_cost_period(period_id)
+    audit.record(
+        action="ctc.removed",
+        target_table="cost_periods",
+        target_id=period_id,
+        actor_id=admin.id,
+        before={k: row.get(k) for k in ("user_id", "annual_ctc", "starts_on", "ends_on")},
+    )
+    return {"status": "removed"}
 
 
 # ---------------------------------------------------------------------------

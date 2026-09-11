@@ -172,10 +172,9 @@ export interface PortalUser {
   role: Role;
   lead_id: string | null;
   is_active: boolean;
-  /** Spec 003 FR-FIN-01 — a fully-loaded hourly COST the company attributes.
-   *  Only ever present in the admin's user list. Labelled "cost rate" on
-   *  every screen and never "salary" (spec 003 §9). */
-  cost_rate_hourly?: string | null;
+  /** Spec 005 — the CTC (cost to company) in force today, shown monthly.
+   *  Only in the admin's user list. Never labelled "salary". */
+  ctc_monthly_now?: string | null;
 }
 
 export interface Allowance {
@@ -433,7 +432,7 @@ export interface PeopleFinancials {
   people: {
     user_id: string;
     display_name: string;
-    current_cost_rate: string | null;
+    current_monthly_ctc: string | null;
     hours: string;
     cogs: string | null;
     attributed_revenue: string | null;
@@ -484,4 +483,81 @@ export interface TokenList {
 
 export interface TokenCreated extends ApiToken {
   token: string;
+}
+
+// ---------------------------------------------------------------------------
+// CTC, monthly profit and the timeline — spec 005. Manager and admin only.
+// ---------------------------------------------------------------------------
+
+export interface CtcPeriod {
+  id: string;
+  user_id: string;
+  annual_ctc: string;
+  monthly_ctc: string;
+  starts_on: string;
+  /** Null = until further notice. */
+  ends_on: string | null;
+  created_at: string | null;
+}
+
+export interface CtcList {
+  periods: CtcPeriod[];
+  current: CtcPeriod | null;
+}
+
+export interface PnlCell {
+  revenue: string;
+  cost: string | null;
+  profit: string | null;
+  profit_pct: string | null;
+  basis: "actual" | "planned";
+  complete: boolean;
+}
+
+export interface Pnl {
+  currency: string;
+  start: string;
+  end: string;
+  today: string;
+  months: {
+    period: string;
+    first: string;
+    last: string;
+    working_days: number;
+    basis: "actual" | "planned";
+  }[];
+  people: { user_id: string; display_name: string; cells: (PnlCell & { unrated_days: number })[] }[];
+  projects: {
+    project_id: string;
+    project_name: string;
+    is_archived: boolean;
+    has_timeline: boolean;
+    revenue: string | null;
+    cells: (PnlCell & { unattributed: boolean; no_timeline: boolean })[];
+  }[];
+  totals: (PnlCell & { unattributed: string })[];
+  unrated: { user_id: string; display_name: string }[];
+}
+
+export interface TimelineBar {
+  id: string;
+  project_id: string;
+  project_name: string;
+  colour: number;
+  starts_on: string;
+  ends_on: string;
+  percent: string;
+}
+
+export interface Timeline {
+  start: string;
+  end: string;
+  projects: { project_id: string; name: string; colour: number }[];
+  people: {
+    user_id: string;
+    display_name: string;
+    allocations: TimelineBar[];
+    peak_percent: string;
+    over: boolean;
+  }[];
 }

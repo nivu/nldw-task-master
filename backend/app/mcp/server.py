@@ -353,6 +353,25 @@ async def resources(ctx: Context, start: str | None = None, end: str | None = No
 
 
 @mcp.tool(annotations=READ)
+async def monthly_pnl(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
+    """MANAGERS AND ADMINS. Revenue, cost, profit and profit % per person and
+    per project, month by month (start/end as YYYY-MM; default 3 months back
+    to 5 ahead). Past months are actual, current and future are planned. A
+    cell with complete=false omits unrated days — say so when quoting it.
+    Sorted by name; never present as a ranking."""
+    return await _api(ctx, "GET", "/analytics/pnl", params={"start": start, "end": end})
+
+
+@mcp.tool(annotations=READ)
+async def allocation_timeline(
+    ctx: Context, start: str | None = None, end: str | None = None
+) -> dict:
+    """MANAGERS AND ADMINS. Who is allocated to what between two dates, as
+    bars per person with percent, plus who is over 100%."""
+    return await _api(ctx, "GET", "/analytics/timeline", params={"start": start, "end": end})
+
+
+@mcp.tool(annotations=READ)
 async def allocatable_people(ctx: Context) -> list:
     """MANAGERS AND ADMINS. Everyone who can be allocated — id and name only."""
     return await _api(ctx, "GET", "/analytics/people")
@@ -478,6 +497,36 @@ async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> di
     role, lead_id, is_active (deactivate, never delete) and cost_rate_hourly
     (a decimal string; the fully loaded hourly cost, never called salary)."""
     return await _api(ctx, "PATCH", f"/admin/users/{user_id}", body=changes)
+
+
+@mcp.tool(annotations=READ)
+async def list_ctc(ctx: Context, user_id: str) -> dict:
+    """ADMINS. A person's CTC (cost to company) history: every dated period and
+    the one in force today, shown annually and monthly. Never present this as
+    salary."""
+    return await _api(ctx, "GET", f"/admin/users/{user_id}/ctc")
+
+
+@mcp.tool(annotations=WRITE)
+async def set_ctc(
+    ctx: Context, user_id: str, annual_ctc: str, starts_on: str, ends_on: str | None = None
+) -> dict:
+    """ADMINS. Add a CTC period — past, current or upcoming. CONFIRM FIRST.
+    annual_ctc is a decimal string. An open-ended earlier period is closed the
+    day before starts_on, so "CTC changes next month" is one call."""
+    return await _api(
+        ctx,
+        "POST",
+        f"/admin/users/{user_id}/ctc",
+        body={"annual_ctc": annual_ctc, "starts_on": starts_on, "ends_on": ends_on},
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def remove_ctc(ctx: Context, period_id: str) -> dict:
+    """ADMINS. Remove a CTC period. CONFIRM FIRST. Cost for the days it
+    covered becomes unknown, and the figures will say so."""
+    return await _api(ctx, "DELETE", f"/admin/ctc/{period_id}")
 
 
 @mcp.tool(annotations=READ)

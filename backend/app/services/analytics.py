@@ -27,6 +27,7 @@ from typing import Any
 from app.domain import financials as fin
 from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
+from app.services import pnl as pnl_service
 from app.services import supabase as db
 from app.services.timesheets import holidays_between, leave_days_for
 
@@ -355,27 +356,32 @@ def _by_person(rows: list[dict], people: dict[str, str]) -> list[dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 
-def _efforts_for(entries: list[dict]) -> list[fin.Effort]:
-    """Time entries → efforts carrying the rate captured when they were logged.
+def _efforts_for(entries: list[dict], rates: pnl_service.RateBook) -> list[fin.Effort]:
+    """Time entries → efforts priced at the CTC in force on each entry's date.
 
-    Activity rows (no project) never reach here — every caller filters by
-    project — but the guard stays, because an activity row with a snapshot
-    would be a bug worth refusing rather than pricing.
+    Spec 005 §3.1 replaced 003's captured snapshot with a dated CTC history:
+    the rate is looked up from the period covering the entry's date, so a
+    raise next month prices next month's hours and nothing before them.
+    Activity rows (no project) never reach here.
     """
     out = []
     for e in entries:
         if not e.get("project_id"):
             continue
         hours = Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"]))
-        snap = e.get("cost_rate_snapshot")
         out.append(
             fin.Effort(
                 user_id=e["user_id"],
                 hours=hours,
-                rate=Decimal(str(snap)) if snap is not None else None,
+                rate=rates.hourly(e["user_id"], date.fromisoformat(e["date"])),
             )
         )
     return out
+
+
+def _rates_for(entries: list[dict]) -> pnl_service.RateBook:
+    days = [date.fromisoformat(e["date"]) for e in entries] or [today_in_company_tz()]
+    return pnl_service.rate_book(min(days), max(days))
 
 
 def _currency() -> str:
@@ -393,7 +399,7 @@ def project_financials(project_id: str) -> dict[str, Any]:
     entries = db.list_time_entries(project_id=project_id)
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
     revenue = Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
-    result = fin.project_financials(revenue, _efforts_for(entries))
+    result = fin.project_financials(revenue, _efforts_for(entries, _rates_for(entries)))
 
     return {
         "project_id": project_id,
@@ -417,7 +423,7 @@ def project_financials(project_id: str) -> dict[str, Any]:
                     "user_id": line.user_id,
                     "display_name": people.get(line.user_id, "—"),
                     "hours": str(line.hours),
-                    "cost_rate": _m(line.rate),
+                    "cost_rate": _m(fin.money(line.rate)) if line.rate is not None else None,
                     "cogs": _m(line.cogs),
                     "attributed_revenue": _m(line.attributed_revenue),
                 }
@@ -436,23 +442,23 @@ def people_financials() -> dict[str, Any]:
     """
     projects = db.list_projects(include_archived=True)
     people = {p["id"]: p for p in db.list_profiles()}
+    all_entries = [e for e in db.list_time_entries() if e.get("project_id")]
+    rates = _rates_for(all_entries)
+    today = today_in_company_tz()
 
     per_project = []
     for project in projects:
-        entries = db.list_time_entries(project_id=project["id"])
+        entries = [e for e in all_entries if e["project_id"] == project["id"]]
         revenue = Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
-        per_project.append(fin.project_financials(revenue, _efforts_for(entries)))
+        per_project.append(fin.project_financials(revenue, _efforts_for(entries, rates)))
 
     totals = fin.person_totals(per_project)
     rows = [
         {
             "user_id": t.user_id,
             "display_name": people.get(t.user_id, {}).get("display_name", "—"),
-            "current_cost_rate": _m(
-                Decimal(str(people[t.user_id]["cost_rate_hourly"]))
-                if t.user_id in people and people[t.user_id].get("cost_rate_hourly") is not None
-                else None
-            ),
+            # Spec 005 — the CTC in force today, monthly. Never called salary.
+            "current_monthly_ctc": _m(rates.monthly_now(t.user_id, today)),
             "hours": str(t.hours),
             "cogs": _m(t.cogs),
             "attributed_revenue": _m(t.attributed_revenue),
@@ -464,13 +470,13 @@ def people_financials() -> dict[str, Any]:
     return {
         "currency": _currency(),
         "people": sorted(rows, key=lambda r: r["display_name"]),
-        # People with a rate but no logged project hours still deserve a row so
-        # "who is unrated" can be answered from one screen.
+        # Active people with no CTC in force today — "who is unrated" from
+        # one screen. Unrated on a PAST date shows per project instead.
         "unrated": sorted(
             (
                 {"user_id": pid, "display_name": p["display_name"]}
                 for pid, p in people.items()
-                if p.get("is_active") and p.get("cost_rate_hourly") is None
+                if p.get("is_active") and rates.period_on(pid, today) is None
             ),
             key=lambda r: r["display_name"],
         ),

@@ -44,10 +44,10 @@ the hours. It counts as a logged day.
 Yes. The portal warns you and then saves it.
 
 **A figure on Effort says "incomplete".**
-Somebody on that project has no cost rate, so their hours cost an unknown
-amount. An admin sets cost rates under Admin → People.
+Somebody on that project has no CTC recorded for a day they worked, so their
+hours cost an unknown amount. An admin records CTC under Admin → People.
 
-**Where is my cost rate, or how much revenue I brought in?**
+**Where is my CTC, or how much revenue I brought in?**
 Not shown to you, deliberately. Those figures are for running projects, not
 for comparing people.
 

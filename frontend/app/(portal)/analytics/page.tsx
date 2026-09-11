@@ -15,19 +15,21 @@ import {
   getForecast,
   getMe,
   getPeopleFinancials,
+  getPnl,
   getProjectEffort,
   getProjectFinancials,
-  getResources,
+  getTimeline,
 } from "@/lib/api/portal";
 import type {
   Coverage,
   CurrentWork,
   Forecast,
   PeopleFinancials,
+  Pnl,
   Project,
   ProjectEffort,
   ProjectFinancials,
-  ResourcesTimeline,
+  Timeline,
 } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
@@ -427,9 +429,9 @@ function IncompleteNotice({
       </p>
       <p className="mt-1">
         {unrated.map((p) => p.display_name).join(", ")}{" "}
-        {unrated.length === 1 ? "has" : "have"} no cost rate, so their hours cost
-        an <strong>unknown</strong> amount — not nothing. An admin sets cost
-        rates under Admin → People.
+        {unrated.length === 1 ? "has" : "have"} no CTC recorded for some of these
+        days, so their time costs an <strong>unknown</strong> amount — not
+        nothing. An admin records CTC under Admin → People.
       </p>
     </div>
   );
@@ -452,8 +454,9 @@ function ProjectMoney({ projectId }: { projectId: string }) {
         <CardHeader>
           <CardTitle className="text-base">Money</CardTitle>
           <CardDescription>
-            Cost is hours × each person&apos;s cost rate as it was when the hours
-            were logged, so a rate change later never re-prices this project.
+            Cost is hours × each person&apos;s hourly cost from the CTC in force on
+            the day the hours were logged, so a CTC change later never re-prices
+            this project.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -549,6 +552,8 @@ function MoneyTab({
     <div className="space-y-3">
       <IncompleteNotice unrated={data.unrated} what="Some of these figures" />
 
+      <MonthlyProfit currency={c} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Per person, across projects</CardTitle>
@@ -619,110 +624,343 @@ function MoneyTab({
 }
 
 /**
- * FR-RES — who is on what, week by week, now and next.
+ * Spec 005 FR-PNL — revenue, cost and profit by month.
  *
- * A grid of people × weeks. Each cell is the week's peak allocation; over 100%
- * is red (FR-RES-02), under is left pale so free capacity is visible at a
- * glance (FR-RES-03), and approved leave is written in so a full fortnight
- * that is also a holiday reads as what it is (FR-RES-04).
+ * Past months are actual (logged hours), the current and future months are
+ * planned (allocations). Incompleteness is loud per cell: a person with no
+ * CTC for some of the month, or a project with revenue but no timeline, says
+ * so where the number would otherwise be quietly wrong.
  */
-function ResourcesTab() {
+function MonthlyProfit({ currency }: { currency: string }) {
   const [offset, setOffset] = useState(0);
   const range = (() => {
-    const start = new Date();
-    start.setDate(start.getDate() - 14 + offset * 7 * 8);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 7 * 8 - 1);
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    const now = new Date();
+    const s = new Date(now.getFullYear(), now.getMonth() - 3 + offset * 9, 1);
+    const e = new Date(now.getFullYear(), now.getMonth() + 5 + offset * 9, 1);
+    const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return { start: ym(s), end: ym(e) };
   })();
+  const { data, error } = useAsync<Pnl>(() => getPnl(range.start, range.end), [range.start, range.end]);
+  const [view, setView] = useState<"people" | "projects">("people");
 
-  const { data, error } = useAsync<ResourcesTimeline>(
-    () => getResources(range.start, range.end),
-    [range.start, range.end]
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const label = (period: string) =>
+    new Date(`${period}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+  const pct = (v: string | null) => (v === null ? "—" : `${Number(v).toFixed(0)}%`);
+  const amt = (v: string | null) => (v === null ? "?" : formatMoney(v));
+
+  const rows =
+    view === "people"
+      ? data.people.map((p) => ({ key: p.user_id, name: p.display_name, cells: p.cells, note: null as string | null }))
+      : data.projects
+          .filter((p) => !p.is_archived || p.cells.some((c) => Number(c.revenue) > 0))
+          .map((p) => ({
+            key: p.project_id,
+            name: p.project_name,
+            cells: p.cells,
+            note: p.revenue !== null && !p.has_timeline ? "no phases, so no monthly revenue" : null,
+          }));
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1">
+            <CardTitle className="text-base">By month</CardTitle>
+            <CardDescription>
+              Revenue, cost and profit. Months that have ended use logged hours;
+              the current month and the future use allocations and are marked planned.
+            </CardDescription>
+          </div>
+          <div className="flex gap-1">
+            <Button variant={view === "people" ? "secondary" : "outline"} size="sm" onClick={() => setView("people")}>
+              People
+            </Button>
+            <Button variant={view === "projects" ? "secondary" : "outline"} size="sm" onClick={() => setView("projects")}>
+              Projects
+            </Button>
+            <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier months">
+              <ChevronLeft className="size-4" />
+            </Button>
+            <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later months">
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 p-0">
+        {data.unrated.length > 0 && (
+          <div className="px-4 pt-1">
+            <IncompleteNotice unrated={data.unrated} what="Some months" />
+          </div>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="sticky left-0 bg-card p-2 font-medium">{view === "people" ? "Person" : "Project"}</th>
+                {data.months.map((m) => (
+                  <th key={m.period} className="p-2 text-right font-medium whitespace-nowrap">
+                    {label(m.period)}
+                    {m.basis === "planned" && (
+                      <span className="block text-[10px] font-normal">planned</span>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {rows.map((row) => (
+                <tr key={row.key}>
+                  <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">
+                    {row.name}
+                    {row.note && <span className="block text-[10px] font-normal text-muted-foreground">{row.note}</span>}
+                  </td>
+                  {row.cells.map((cell, i) => (
+                    <td
+                      key={i}
+                      className={cn(
+                        "p-2 text-right tabular-nums align-top",
+                        !cell.complete && "bg-amber-50 dark:bg-amber-950/30"
+                      )}
+                      title={`${currency} ${amt(cell.revenue)} revenue · ${amt(cell.cost)} cost${
+                        cell.complete ? "" : " · incomplete"
+                      }`}
+                    >
+                      <span className={cn("block font-medium", cell.profit !== null && Number(cell.profit) < 0 && "text-destructive")}>
+                        {pct(cell.profit_pct)}
+                      </span>
+                      <span className="block text-muted-foreground">{amt(cell.revenue)}</span>
+                      <span className="block text-muted-foreground">−{amt(cell.cost)}</span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              <tr className="border-t-2 font-medium">
+                <td className="sticky left-0 bg-card p-2">Total</td>
+                {data.totals.map((cell, i) => (
+                  <td key={i} className="p-2 text-right tabular-nums align-top">
+                    <span className="block">{pct(cell.profit_pct)}</span>
+                    <span className="block text-muted-foreground">{amt(cell.revenue)}</span>
+                    <span className="block text-muted-foreground">−{amt(cell.cost)}</span>
+                    {Number(cell.unattributed) > 0 && (
+                      <span className="block text-[10px] font-normal text-amber-700 dark:text-amber-300">
+                        {amt(cell.unattributed)} unattributed
+                      </span>
+                    )}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="px-4 pb-3 text-[11px] text-muted-foreground">
+          Each cell: profit %, then revenue, then cost. &ldquo;?&rdquo; means a
+          CTC is missing for some of the month. Sorted by name.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** One colour per project, stable within a response. */
+const PALETTE = [
+  "bg-sky-500/80 text-white",
+  "bg-emerald-500/80 text-white",
+  "bg-violet-500/80 text-white",
+  "bg-amber-500/85 text-black",
+  "bg-rose-500/80 text-white",
+  "bg-teal-500/80 text-white",
+  "bg-indigo-500/80 text-white",
+  "bg-orange-500/85 text-black",
+  "bg-fuchsia-500/80 text-white",
+  "bg-lime-500/85 text-black",
+];
+
+/**
+ * Spec 005 FR-TL — the timeline matrix.
+ *
+ * People as rows, months (or weeks) as columns, each allocation a bar from
+ * its start to its end. Height is the percent: 100% fills the row, two 50%
+ * bars stack. Bars are positioned by date arithmetic against the visible
+ * range, so a bar that begins before the range is clipped at the left edge
+ * rather than lost.
+ */
+function ResourcesTab() {
+  const [unit, setUnit] = useState<"month" | "week">("month");
+  const [offset, setOffset] = useState(0);
+
+  const range = (() => {
+    const now = new Date();
+    if (unit === "month") {
+      const s = new Date(now.getFullYear(), now.getMonth() + offset * 6, 1);
+      const e = new Date(now.getFullYear(), now.getMonth() + offset * 6 + 6, 0);
+      return { start: s, end: e };
+    }
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7) + offset * 8 * 7);
+    const e = new Date(monday);
+    e.setDate(monday.getDate() + 8 * 7 - 1);
+    return { start: monday, end: e };
+  })();
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+  const { data, error } = useAsync<Timeline>(
+    () => getTimeline(iso(range.start), iso(range.end)),
+    [unit, offset]
   );
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const week = (iso: string) =>
-    new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const dayMs = 86400000;
+  const rangeStart = new Date(`${data.start}T00:00:00`).getTime();
+  const rangeEnd = new Date(`${data.end}T00:00:00`).getTime() + dayMs;
+  const span = rangeEnd - rangeStart;
+
+  // Column boundaries.
+  const columns: { label: string; left: number; width: number }[] = [];
+  if (unit === "month") {
+    let cursor = new Date(range.start);
+    while (cursor <= range.end) {
+      const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      const left = (cursor.getTime() - rangeStart) / span;
+      const right = Math.min(next.getTime(), rangeEnd) - rangeStart;
+      columns.push({
+        label: cursor.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }),
+        left: left * 100,
+        width: (right / span - left) * 100,
+      });
+      cursor = next;
+    }
+  } else {
+    let cursor = new Date(range.start);
+    while (cursor <= range.end) {
+      const next = new Date(cursor);
+      next.setDate(cursor.getDate() + 7);
+      columns.push({
+        label: cursor.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+        left: ((cursor.getTime() - rangeStart) / span) * 100,
+        width: (7 * dayMs / span) * 100,
+      });
+      cursor = next;
+    }
+  }
+
+  const ROW = 44; // px for 100%
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1">
             <CardTitle className="text-base">Who is on what</CardTitle>
             <CardDescription>
-              Peak allocation per week. Red is over 100%; pale is free capacity;
-              leave is counted in days.
+              One bar per allocation, coloured by project. A full-height bar is
+              100% of the person; half-height is 50%. Over 100% overflows and is flagged.
             </CardDescription>
           </div>
-          <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier">
-            <ChevronLeft className="size-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later">
-            <ChevronRight className="size-4" />
-          </Button>
+          <div className="flex gap-1">
+            <Button variant={unit === "month" ? "secondary" : "outline"} size="sm" onClick={() => { setUnit("month"); setOffset(0); }}>
+              Months
+            </Button>
+            <Button variant={unit === "week" ? "secondary" : "outline"} size="sm" onClick={() => { setUnit("week"); setOffset(0); }}>
+              Weeks
+            </Button>
+            <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier">
+              <ChevronLeft className="size-4" />
+            </Button>
+            <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later">
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
         </div>
       </CardHeader>
-      <CardContent className="overflow-x-auto p-0">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="sticky left-0 bg-card p-2 font-medium">Person</th>
-              {data.weeks.map((w) => (
-                <th key={w} className="p-2 text-center font-medium whitespace-nowrap">
-                  {week(w)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {data.people.map((person) => (
-              <tr key={person.user_id}>
-                <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">
-                  {person.display_name}
-                </td>
-                {person.weeks.map((cell) => {
-                  const pct = Number(cell.allocated_pct);
-                  const title = [
-                    ...cell.projects.map((p) => `${p.project_name} ${p.percent}%`),
-                    Number(cell.leave_days) > 0 ? `${cell.leave_days}d leave` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ");
-                  return (
-                    <td key={cell.week_start} className="p-1">
-                      <div
-                        title={title || "Unallocated"}
-                        className={cn(
-                          "rounded px-1.5 py-1 text-center tabular-nums",
-                          cell.working_days === 0
-                            ? "text-muted-foreground"
-                            : cell.over
-                              ? "bg-destructive/15 font-medium text-destructive"
-                              : pct >= 100
-                                ? "bg-muted font-medium"
-                                : pct > 0
-                                  ? "bg-muted/50"
-                                  : "text-muted-foreground"
-                        )}
-                      >
-                        {cell.working_days === 0 ? "—" : `${pct}%`}
-                        {Number(cell.leave_days) > 0 && (
-                          <span className="block text-[10px] font-normal text-muted-foreground">
-                            {cell.leave_days}d leave
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
+      <CardContent className="space-y-3 p-0">
+        {data.projects.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-4 text-xs">
+            {data.projects.map((p) => (
+              <span key={p.project_id} className={cn("rounded px-2 py-0.5", PALETTE[p.colour % PALETTE.length])}>
+                {p.name}
+              </span>
             ))}
-          </tbody>
-        </table>
+          </div>
+        )}
+        <div className="overflow-x-auto">
+          <div className="min-w-[720px]">
+            {/* Header */}
+            <div className="flex border-b text-xs text-muted-foreground">
+              <div className="w-36 shrink-0 p-2 font-medium">Person</div>
+              <div className="relative h-8 flex-1">
+                {columns.map((c, i) => (
+                  <div
+                    key={i}
+                    className="absolute top-0 h-full border-l px-1 py-2 whitespace-nowrap overflow-hidden"
+                    style={{ left: `${c.left}%`, width: `${c.width}%` }}
+                  >
+                    {c.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Rows */}
+            {data.people.map((person) => {
+              // Stack bars: each bar occupies a vertical slice proportional
+              // to its percent, in order; the row grows past 100% when over.
+              let top = 0;
+              const bars = person.allocations.map((bar) => {
+                const s = Math.max(new Date(`${bar.starts_on}T00:00:00`).getTime(), rangeStart);
+                const e = Math.min(new Date(`${bar.ends_on}T00:00:00`).getTime() + dayMs, rangeEnd);
+                const height = (Number(bar.percent) / 100) * ROW;
+                const placed = { ...bar, left: ((s - rangeStart) / span) * 100, width: ((e - s) / span) * 100, top, height };
+                top += height;
+                return placed;
+              });
+              const rowHeight = Math.max(ROW, top);
+              return (
+                <div key={person.user_id} className={cn("flex border-b", person.over && "bg-destructive/5")}>
+                  <div className="w-36 shrink-0 p-2 text-sm font-medium whitespace-nowrap">
+                    {person.display_name}
+                    {person.over && (
+                      <span className="block text-[10px] font-normal text-destructive">
+                        peaks at {person.peak_percent}%
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative flex-1" style={{ height: rowHeight + 8 }}>
+                    {columns.map((c, i) => (
+                      <div key={i} className="absolute top-0 h-full border-l border-border/60" style={{ left: `${c.left}%` }} />
+                    ))}
+                    {bars.map((bar) => (
+                      <div
+                        key={bar.id}
+                        title={`${bar.project_name} · ${bar.percent}% · ${bar.starts_on} → ${bar.ends_on}`}
+                        className={cn(
+                          "absolute overflow-hidden rounded px-1.5 text-[11px] leading-tight whitespace-nowrap",
+                          PALETTE[bar.colour % PALETTE.length]
+                        )}
+                        style={{
+                          left: `${bar.left}%`,
+                          width: `calc(${bar.width}% - 2px)`,
+                          top: bar.top + 4,
+                          height: Math.max(bar.height - 2, 12),
+                          lineHeight: `${Math.max(bar.height - 2, 12)}px`,
+                        }}
+                      >
+                        {bar.project_name} {bar.percent}%
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            {data.people.every((p) => p.allocations.length === 0) && (
+              <p className="p-4 text-sm text-muted-foreground">Nobody is allocated in this range.</p>
+            )}
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

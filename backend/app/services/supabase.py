@@ -419,3 +419,32 @@ def revoke_token(token_id: str, user_id: str, at: str) -> dict[str, Any] | None:
 
 def touch_token(token_id: str, at: str) -> None:
     supabase.table("api_tokens").update({"last_used_at": at}).eq("id", token_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# CTC periods — spec 005. Backend-only table (011_cost_periods.sql).
+# ---------------------------------------------------------------------------
+
+
+def list_cost_periods(user_id: str | None = None) -> list[dict[str, Any]]:
+    query = supabase.table("cost_periods").select("*")
+    if user_id is not None:
+        query = query.eq("user_id", user_id)
+    return query.order("starts_on").execute().data or []
+
+
+def insert_cost_period(data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("cost_periods").insert(data).execute().data[0]
+
+
+def close_cost_period(period_id: str, ends_on: str) -> None:
+    supabase.table("cost_periods").update({"ends_on": ends_on}).eq("id", period_id).execute()
+
+
+def get_cost_period(period_id: str) -> dict[str, Any] | None:
+    response = supabase.table("cost_periods").select("*").eq("id", period_id).limit(1).execute()
+    return response.data[0] if response.data else None
+
+
+def delete_cost_period(period_id: str) -> None:
+    supabase.table("cost_periods").delete().eq("id", period_id).execute()

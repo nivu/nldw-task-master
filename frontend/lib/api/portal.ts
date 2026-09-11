@@ -42,6 +42,10 @@ import type {
   ResourcesTimeline,
   TokenCreated,
   TokenList,
+  CtcList,
+  CtcPeriod,
+  Pnl,
+  Timeline,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -143,7 +147,6 @@ export const updateUser = (
     role: string;
     lead_id: string | null;
     is_active: boolean;
-    cost_rate_hourly: string | null;
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 
@@ -305,3 +308,23 @@ export const createToken = (name: string) =>
 export const revokeToken = (id: string) => call<ApiTokenLike>(`/me/tokens/${id}`, { method: "DELETE" });
 
 type ApiTokenLike = { id: string; revoked_at: string | null };
+
+// ---------------------------------------------------------------------------
+// CTC, monthly profit and the timeline — spec 005
+// ---------------------------------------------------------------------------
+
+export const listCtc = (userId: string) => call<CtcList>(`/admin/users/${userId}/ctc`);
+
+export const addCtc = (
+  userId: string,
+  input: { annual_ctc: string; starts_on: string; ends_on: string | null }
+) => call<CtcPeriod>(`/admin/users/${userId}/ctc`, { method: "POST", ...body(input) });
+
+export const removeCtc = (periodId: string) =>
+  call<{ status: string }>(`/admin/ctc/${periodId}`, { method: "DELETE" });
+
+export const getPnl = (start?: string, end?: string) =>
+  call<Pnl>(`/analytics/pnl${start ? `?start=${start}&end=${end ?? start}` : ""}`);
+
+export const getTimeline = (start?: string, end?: string) =>
+  call<Timeline>(`/analytics/timeline${start ? `?start=${start}&end=${end ?? start}` : ""}`);

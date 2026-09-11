@@ -304,12 +304,27 @@ test.describe("the management layer (spec 003)", () => {
     await expect(page.getByText("activity").first()).toBeVisible();
   });
 
-  test("the admin labels the rate as a cost rate, never salary", async ({ page }) => {
+  test("the admin records CTC as dated periods, never salary (spec 005)", async ({ page }) => {
     await signIn(page, PEOPLE.admin);
     await page.goto("/admin");
-    await expect(page.getByText(/Cost rate/).first()).toBeVisible();
+    await expect(page.getByText(/CTC \(/).first()).toBeVisible();
     await expect(page.locator("body")).not.toContainText(/salary|rate of pay/i);
     await expect(page.getByLabel("Role for Sriram")).toHaveValue("manager");
+    await page.getByLabel("CTC for Tarun").click();
+    await expect(page.getByText(/Annual CTC/)).toBeVisible();
+    await expect(page.getByText(/until further notice/i).first()).toBeVisible();
+  });
+
+  test("a manager sees the monthly profit table and the timeline (spec 005)", async ({ page }) => {
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/analytics");
+    await page.getByRole("tab", { name: "Money" }).click();
+    await expect(page.getByText("By month")).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: /planned/ }).first()).toBeVisible();
+    await page.getByRole("tab", { name: "Resources" }).click();
+    await expect(page.getByText("Who is on what")).toBeVisible();
+    await page.getByRole("button", { name: "Weeks" }).click();
+    await expect(page.getByRole("button", { name: "Months" })).toBeVisible();
   });
 });
 
