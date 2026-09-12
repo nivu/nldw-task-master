@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/components/portal/projects-panel";
 import { useYearFrame, YearFrameControl } from "@/components/shared/year-frame";
+import { BarsByMonth, LinesByPerson, MoneyByMonth, ProgressBars } from "@/components/shared/charts";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAnalyticsProjects,
@@ -210,6 +211,19 @@ export default function AnalyticsPage() {
                   Nobody is allocated to anything yet.
                 </p>
               )}
+              {data.forecast.projects.length > 0 && (
+                <div className="p-4">
+                  <ProgressBars
+                    rows={data.forecast.projects.map((p, i) => ({
+                      name: p.project_name,
+                      value: Number(p.capacity_hours),
+                      max: null,
+                      colour: ["#0ea5e9", "#10b981", "#8b5cf6", "#f59e0b", "#f43f5e", "#14b8a6"][i % 6],
+                    }))}
+                    formatValue={(v) => `${v}h`}
+                  />
+                </div>
+              )}
               {data.forecast.projects.map((project) => (
                 <div key={project.project_id} className="space-y-1 p-3">
                   <div className="flex items-center gap-2">
@@ -286,6 +300,17 @@ export default function AnalyticsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-y p-0">
+              <div className="p-4">
+                <ProgressBars
+                  rows={data.coverage.people.map((p) => ({
+                    name: p.display_name,
+                    value: p.logged_days,
+                    max: p.expected_days,
+                    colour: p.logged_days >= p.expected_days ? "#10b981" : "#0ea5e9",
+                  }))}
+                  formatValue={(v, max) => `${v}/${max ?? "—"} days`}
+                />
+              </div>
               {data.coverage.people.map((person) => (
                 <div key={person.user_id} className="flex items-center gap-3 p-3 text-sm">
                   <span className="flex-1 font-medium">{person.display_name}</span>
@@ -387,6 +412,22 @@ function ProjectDetail({
       {/* Spec 003 FR-FIN-04 — money, only for the manager tier. A separate
           request behind a separate guard, so the effort view above never
           carries a figure it must not. */}
+      {data.phases.length > 0 && (
+        <Card>
+          <CardContent className="p-4">
+            <ProgressBars
+              rows={data.phases.map((phase) => ({
+                name: phase.label ?? phase.phase,
+                value: Number(phase.logged_hours ?? 0),
+                max: phase.budget_hours ? Number(phase.budget_hours) : null,
+                hint: phase.budget_hours ? undefined : "no budget",
+              }))}
+              formatValue={(v, max) => (max === null ? `${v}h` : `${v} / ${max}h`)}
+            />
+          </CardContent>
+        </Card>
+      )}
+
       {financials && <HealthBlock projectId={projectId} />}
       {financials && <ProjectMoney projectId={projectId} />}
 
@@ -727,6 +768,18 @@ function MonthlyProfit({ currency }: { currency: string }) {
             <IncompleteNotice unrated={data.unrated} what="Some months" />
           </div>
         )}
+        <div className="px-2">
+          <MoneyByMonth
+            currency={currency}
+            rows={data.months.map((m, i) => ({
+              period: m.period,
+              revenue: Number(data.totals[i].revenue),
+              cost: data.totals[i].cost === null ? null : Number(data.totals[i].cost),
+              profit_pct: data.totals[i].profit_pct === null ? null : Number(data.totals[i].profit_pct),
+              planned: m.basis === "planned",
+            }))}
+          />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
@@ -1035,7 +1088,23 @@ function HealthBlock({ projectId }: { projectId: string }) {
           so the colour can be checked.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3 sm:grid-cols-3">
+      <CardContent className="space-y-3">
+        {(() => {
+          const burn = data.dimensions.find((d) => d.key === "burn");
+          const burnPct = burn?.inputs.burn_pct != null ? Number(burn.inputs.burn_pct) : null;
+          const elapsed = burn?.inputs.elapsed_pct != null ? Number(burn.inputs.elapsed_pct) : null;
+          if (burnPct === null && elapsed === null) return null;
+          return (
+            <ProgressBars
+              rows={[
+                { name: "Budget used", value: burnPct ?? 0, max: 100, colour: "#f59e0b" },
+                { name: "Timeline elapsed", value: elapsed ?? 0, max: 100, colour: "#0ea5e9" },
+              ]}
+              formatValue={(v) => `${v}%`}
+            />
+          );
+        })()}
+        <div className="grid gap-3 sm:grid-cols-3">
         {data.dimensions.map((d) => (
           <div key={d.key} className="rounded-md border p-3 text-sm">
             <p className="flex items-center gap-2 font-medium capitalize">
@@ -1052,6 +1121,7 @@ function HealthBlock({ projectId }: { projectId: string }) {
             </dl>
           </div>
         ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -1081,6 +1151,16 @@ function UtilisationTab() {
         </div>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
+        <div className="px-2 pt-2">
+          <LinesByPerson
+            months={months}
+            target={Number(data.target_pct)}
+            series={data.people.map((p) => ({
+              name: p.display_name,
+              values: p.months.map((m) => (m.utilisation_pct === null ? null : Number(m.utilisation_pct))),
+            }))}
+          />
+        </div>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
@@ -1189,6 +1269,16 @@ function HiringCard() {
         {!data ? (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         ) : (
+          <>
+          <div className="px-2 pt-2">
+            <BarsByMonth
+              months={data.months.map((m) => m.period)}
+              series={[
+                { name: "Demand", values: data.months.map((m) => Number(m.demand_hours)) },
+                { name: "Supply at target", values: data.months.map((m) => Number(m.supply_hours)) },
+              ]}
+            />
+          </div>
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
@@ -1213,6 +1303,7 @@ function HiringCard() {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </CardContent>
     </Card>

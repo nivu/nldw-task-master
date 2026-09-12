@@ -10,6 +10,14 @@ import { getCalendar } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
 import type { CalendarMonth, Category, DayCell, MyCompoff } from "@/lib/api/types";
 import { CompoffCard } from "@/components/portal/compoff-card";
+import { Ring } from "@/components/shared/charts";
+
+const RING_COLOUR: Record<Category, string> = {
+  wfh: "#0ea5e9",
+  casual: "#8b5cf6",
+  sick: "#f43f5e",
+  compoff: "#10b981",
+};
 import { getMyCompoff } from "@/lib/api/portal";
 import { CATEGORY_LABEL, CATEGORY_SHORT } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
@@ -78,15 +86,20 @@ export default function CalendarPage() {
       <div className="grid grid-cols-3 gap-3">
         {data.balances.map((balance) => (
           <Card key={balance.category}>
-            <CardContent className="p-3">
-              <p className="text-xs text-muted-foreground">
-                {CATEGORY_LABEL[balance.category]}
-              </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">{balance.remaining}</p>
-              <p className="text-xs text-muted-foreground">
-                {balance.used} used of {balance.allowance}
-                {balance.opening !== "0.0" && ` · ${balance.opening} carried in`}
-              </p>
+            <CardContent className="flex items-center gap-3 p-3">
+              <Ring
+                used={Number(balance.used)}
+                total={Number(balance.opening) + Number(balance.allowance)}
+                label={CATEGORY_LABEL[balance.category]}
+                colour={RING_COLOUR[balance.category]}
+                size={56}
+              />
+              <div className="ml-auto text-right">
+                <p className="text-2xl font-semibold tabular-nums">{balance.remaining}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  left{balance.opening !== "0.0" && ` · ${balance.opening} carried in`}
+                </p>
+              </div>
             </CardContent>
           </Card>
         ))}

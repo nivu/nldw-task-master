@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { useYearFrame, YearFrameControl } from "@/components/shared/year-frame";
+import { StackedByMonth } from "@/components/shared/charts";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,12 @@ import { useAsync } from "@/lib/use-async";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
+const HISTORY_COLOUR: Record<Category, string> = {
+  wfh: "#0ea5e9",
+  casual: "#8b5cf6",
+  sick: "#f43f5e",
+  compoff: "#10b981",
+};
 
 /**
  * The person's own account — FR-BAL-08.
@@ -103,6 +110,14 @@ export default function AccountPage() {
             </div>
           </CardHeader>
           <CardContent className="overflow-x-auto">
+            <StackedByMonth
+              months={Object.keys(history.months)}
+              series={CATEGORIES.map((c) => ({
+                name: CATEGORY_LABEL[c],
+                values: Object.values(history.months).map((days) => Number(days[c] ?? 0)),
+                colour: HISTORY_COLOUR[c],
+              }))}
+            />
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
