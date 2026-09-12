@@ -14,3 +14,13 @@
   [headers.values]
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
+
+# The help guides are prerendered from docs/guides at build time. Without this
+# Netlify's durable cache can keep an old copy across deploys; revalidating on
+# every request costs nothing for static HTML and means a guide edit is live
+# the moment its deploy finishes.
+[[headers]]
+  for = "/help/*"
+  [headers.values]
+    Netlify-CDN-Cache-Control = "public, max-age=0, must-revalidate"
+    Cache-Control = "public, max-age=0, must-revalidate"

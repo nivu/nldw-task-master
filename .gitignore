@@ -89,3 +89,6 @@ next-env.d.ts
 
 # Local Netlify folder
 .netlify
+
+# Rendered from docs/guides at build time (frontend/scripts/build-guides.mjs)
+frontend/lib/help-content.generated.json

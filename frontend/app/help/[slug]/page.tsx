@@ -1,4 +1,8 @@
 import type { Metadata } from "next";
+
+// Re-rendered on the host at most once a minute, so a deploy's new guide text
+// is served within a minute even where a CDN kept an older copy.
+export const revalidate = 60;
 import { notFound } from "next/navigation";
 
 import { getGuide, listGuides } from "@/lib/help";
