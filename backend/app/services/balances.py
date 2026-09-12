@@ -114,8 +114,13 @@ def remaining_for(
 
 def year_history_for(user_id: str, year: str) -> dict[str, dict[str, str]]:
     """FR-BAL-08 — this person's consumption across a calendar year."""
+    return history_for(user_id, f"{year}-01", f"{year}-12")
+
+
+def history_for(user_id: str, start: str, end: str) -> dict[str, dict[str, str]]:
+    """Consumption per month over any frame — calendar or financial year."""
     entries = _consumption_for(user_id)
-    history = ledger.year_history(entries, year, CATEGORIES)
+    history = ledger.range_history(entries, start, end, CATEGORIES)
     return {
         period: {category: str(days) for category, days in per_category.items()}
         for period, per_category in history.items()

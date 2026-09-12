@@ -144,6 +144,16 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-DIGEST-01 | Monday 09:00 to every manager and admin: last week's coverage, who is over-allocated this week, margin to date per active project, people with no CTC, bench. Setting `digest_enabled`. |
 | FR-DIGEST-02 | An admin can run it now. |
 
+## Y. Year frames — FR-YEAR
+
+Added 12 September 2026 after the first release of this spec.
+
+| ID | Requirement |
+|---|---|
+| FR-YEAR-01 | Every month-based view — monthly profit, the resources timeline in months, utilisation, the hiring signal, and a person's leave history — MUST show a whole year at a time, switchable between the **calendar year** (January to December) and the **financial year** (April to March), with the year steppable. |
+| FR-YEAR-02 | The choice MUST be remembered on the device and shared by every such view, so switching once carries everywhere. |
+| FR-YEAR-03 | The APIs take explicit month ranges (`start`/`end` as YYYY-MM); no endpoint assumes a calendar year. |
+
 ---
 
 ## 14. Data model (new)

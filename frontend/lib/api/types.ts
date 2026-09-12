@@ -208,6 +208,9 @@ export interface AuditEntry {
 
 export interface YearHistory {
   year: string;
+  /** YYYY-MM — a calendar year, or a financial year from April (spec 006). */
+  start: string;
+  end: string;
   months: Record<string, Record<Category, string>>;
 }
 

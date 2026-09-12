@@ -436,3 +436,19 @@ test.describe("org operations (spec 006)", () => {
     await expect(page).toHaveURL(/\/auth\/login\?next=/);
   });
 });
+
+test.describe("year frames (spec 006 FR-YEAR)", () => {
+  test("the financial year runs April to March and is remembered across views", async ({ page }) => {
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/analytics");
+    await page.getByRole("tab", { name: "Utilisation" }).click();
+    await page.getByRole("button", { name: "Financial year" }).first().click();
+    await expect(page.getByText(/Utilisation · FY \d{4}–\d{2}/)).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: /^Apr/ }).first()).toBeVisible();
+    // The choice carries to another month-based view on the same device.
+    await page.goto("/account");
+    await expect(page.getByText(/Your FY \d{4}–\d{2}/)).toBeVisible();
+    await page.getByRole("button", { name: "Calendar year" }).click();
+    await expect(page.getByText(/Your \d{4}$/)).toBeVisible();
+  });
+});

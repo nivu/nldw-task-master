@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/components/portal/projects-panel";
+import { useYearFrame, YearFrameControl } from "@/components/shared/year-frame";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAnalyticsProjects,
@@ -673,15 +674,9 @@ function MoneyTab({
  * so where the number would otherwise be quietly wrong.
  */
 function MonthlyProfit({ currency }: { currency: string }) {
-  const [offset, setOffset] = useState(0);
-  const range = (() => {
-    const now = new Date();
-    const s = new Date(now.getFullYear(), now.getMonth() - 3 + offset * 9, 1);
-    const e = new Date(now.getFullYear(), now.getMonth() + 5 + offset * 9, 1);
-    const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    return { start: ym(s), end: ym(e) };
-  })();
-  const { data, error } = useAsync<Pnl>(() => getPnl(range.start, range.end), [range.start, range.end]);
+  // Spec 006 §Y — a full calendar or financial year, remembered on this device.
+  const frame = useYearFrame();
+  const { data, error } = useAsync<Pnl>(() => getPnl(frame.start, frame.end), [frame.start, frame.end]);
   const [view, setView] = useState<"people" | "projects">("people");
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
@@ -709,25 +704,20 @@ function MonthlyProfit({ currency }: { currency: string }) {
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1">
-            <CardTitle className="text-base">By month</CardTitle>
+            <CardTitle className="text-base">By month · {frame.label}</CardTitle>
             <CardDescription>
               Revenue, cost and profit. Months that have ended use logged hours;
               the current month and the future use allocations and are marked planned.
             </CardDescription>
           </div>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
             <Button variant={view === "people" ? "secondary" : "outline"} size="sm" onClick={() => setView("people")}>
               People
             </Button>
             <Button variant={view === "projects" ? "secondary" : "outline"} size="sm" onClick={() => setView("projects")}>
               Projects
             </Button>
-            <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier months">
-              <ChevronLeft className="size-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later months">
-              <ChevronRight className="size-4" />
-            </Button>
+            <YearFrameControl frame={frame} />
           </div>
         </div>
       </CardHeader>
@@ -832,13 +822,15 @@ const PALETTE = [
 function ResourcesTab() {
   const [unit, setUnit] = useState<"month" | "week">("month");
   const [offset, setOffset] = useState(0);
+  // Spec 006 §Y — the months view is a whole calendar or financial year.
+  const frame = useYearFrame();
 
   const range = (() => {
     const now = new Date();
     if (unit === "month") {
-      const s = new Date(now.getFullYear(), now.getMonth() + offset * 6, 1);
-      const e = new Date(now.getFullYear(), now.getMonth() + offset * 6 + 6, 0);
-      return { start: s, end: e };
+      const [sy, sm] = frame.start.split("-").map(Number);
+      const [ey, em] = frame.end.split("-").map(Number);
+      return { start: new Date(sy, sm - 1, 1), end: new Date(ey, em, 0) };
     }
     const monday = new Date(now);
     monday.setDate(now.getDate() - ((now.getDay() + 6) % 7) + offset * 8 * 7);
@@ -850,7 +842,7 @@ function ResourcesTab() {
 
   const { data, error } = useAsync<Timeline>(
     () => getTimeline(iso(range.start), iso(range.end)),
-    [unit, offset]
+    [unit, offset, frame.start, frame.end]
   );
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
@@ -910,12 +902,18 @@ function ResourcesTab() {
             <Button variant={unit === "week" ? "secondary" : "outline"} size="sm" onClick={() => { setUnit("week"); setOffset(0); }}>
               Weeks
             </Button>
-            <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier">
-              <ChevronLeft className="size-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later">
-              <ChevronRight className="size-4" />
-            </Button>
+            {unit === "month" ? (
+              <YearFrameControl frame={frame} />
+            ) : (
+              <>
+                <Button variant="outline" size="icon" onClick={() => setOffset(offset - 1)} aria-label="Earlier">
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <Button variant="outline" size="icon" onClick={() => setOffset(offset + 1)} aria-label="Later">
+                  <ChevronRight className="size-4" />
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -1061,7 +1059,8 @@ function HealthBlock({ projectId }: { projectId: string }) {
 
 /** FR-UTIL — billable against capacity, per person per month. Sorted by name. */
 function UtilisationTab() {
-  const { data, error } = useAsync<Utilisation>(() => getUtilisation(), []);
+  const frame = useYearFrame();
+  const { data, error } = useAsync<Utilisation>(() => getUtilisation(frame.start, frame.end), [frame.start, frame.end]);
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
   const months = data.people[0]?.months.map((m) => m.period) ?? [];
@@ -1069,12 +1068,17 @@ function UtilisationTab() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Utilisation</CardTitle>
-        <CardDescription>
-          Billable hours (projects with a client) as a share of capacity, which is working days less
-          approved leave. Target {data.target_pct}%. Internal projects and activities such as learning
-          are shown but not billable.
-        </CardDescription>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1">
+            <CardTitle className="text-base">Utilisation · {frame.label}</CardTitle>
+            <CardDescription>
+              Billable hours (projects with a client) as a share of capacity, which is working days less
+              approved leave. Target {data.target_pct}%. Internal projects and activities such as learning
+              are shown but not billable.
+            </CardDescription>
+          </div>
+          <YearFrameControl frame={frame} />
+        </div>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
         <table className="w-full text-xs">
@@ -1160,19 +1164,21 @@ function BenchTab() {
 /** FR-HIRE — demand against supply, and what the gap would cost to hire. */
 function HiringCard() {
   const [ctc, setCtc] = useState("1200000");
-  const { data, error } = useAsync<Hiring>(() => getHiring(6, ctc || "0"), [ctc]);
+  const frame = useYearFrame();
+  const { data, error } = useAsync<Hiring>(() => getHiring(12, ctc || "0", frame.start), [ctc, frame.start]);
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   return (
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex-1">
-            <CardTitle className="text-base">Hiring signal</CardTitle>
+            <CardTitle className="text-base">Hiring signal · {frame.label}</CardTitle>
             <CardDescription>
               Hours the allocations demand against hours the team can supply at target utilisation.
               The shortfall in people, priced at an annual CTC you choose — an input, not anybody&apos;s figure.
             </CardDescription>
           </div>
+          <YearFrameControl frame={frame} />
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground" htmlFor="hire-ctc">Annual CTC to price with</label>
             <input id="hire-ctc" type="number" min="0" step="100000" className="block h-8 w-36 rounded-md border border-input bg-transparent px-2 text-sm" value={ctc} onChange={(e) => setCtc(e.target.value)} />

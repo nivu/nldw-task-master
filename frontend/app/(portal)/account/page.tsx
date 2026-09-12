@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { useYearFrame, YearFrameControl } from "@/components/shared/year-frame";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,11 +40,16 @@ export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [history, setHistory] = useState<YearHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Spec 006 §Y — calendar year or financial year, remembered on this device.
+  const frame = useYearFrame();
 
   useEffect(() => {
     getMe().then(setMe).catch((err) => setError(errorMessage(err)));
-    getHistory().then(setHistory).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    getHistory({ start: frame.start, end: frame.end }).then(setHistory).catch(() => undefined);
+  }, [frame.start, frame.end]);
 
   return (
     <div className="space-y-6">
@@ -87,8 +94,13 @@ export default function AccountPage() {
       {history && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Your {history.year}</CardTitle>
-            <CardDescription>Days taken, month by month.</CardDescription>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex-1">
+                <CardTitle className="text-base">Your {frame.label}</CardTitle>
+                <CardDescription>Days taken, month by month.</CardDescription>
+              </div>
+              <YearFrameControl frame={frame} />
+            </div>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -112,6 +124,7 @@ export default function AccountPage() {
                       <td className="py-2">
                         {new Date(`${period}-01T00:00:00`).toLocaleDateString("en-GB", {
                           month: "long",
+                          year: frame.mode === "financial" ? "2-digit" : undefined,
                         })}
                       </td>
                       {CATEGORIES.map((category) => (

@@ -221,3 +221,15 @@ def year_history(
         period: {category: consumed(entries, period, category) for category in categories}
         for period in months
     }
+
+
+def range_history(
+    entries: Iterable[Consumption], start: str, end: str, categories: Iterable[str]
+) -> dict[str, dict[str, Decimal]]:
+    """`year_history` over any run of months (spec 006 year frames)."""
+    categories = list(categories)
+    entries = list(entries)
+    return {
+        period: {category: consumed(entries, period, category) for category in categories}
+        for period in periods_between(start, end)
+    }

@@ -14,6 +14,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.domain import ledger
 from app.domain.ledger import (
     POOLING,
     ROLLING,
@@ -210,3 +211,14 @@ def test_balance_is_always_opening_plus_allowance_minus_used(policy):
 
     result = balance_for(grants, entries, "2026-09", "casual", policy=policy)
     assert result.remaining == result.opening + result.allowance - result.used
+
+
+def test_periods_between_spans_a_financial_year():
+    months = ledger.periods_between("2026-04", "2027-03")
+    assert months[0] == "2026-04" and months[-1] == "2027-03" and len(months) == 12
+
+
+def test_range_history_has_every_month_even_when_empty():
+    history = ledger.range_history([], "2026-04", "2026-06", ["casual"])
+    assert list(history) == ["2026-04", "2026-05", "2026-06"]
+    assert history["2026-05"]["casual"] == Decimal("0")

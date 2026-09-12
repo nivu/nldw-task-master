@@ -139,9 +139,12 @@ def bench(weeks: int = 8) -> dict[str, Any]:
     }
 
 
-def hiring(months: int, annual_ctc: Decimal) -> dict[str, Any]:
+def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[str, Any]:
     today = today_in_company_tz()
     this = today.replace(day=1)
+    if start:
+        sy, sm = (int(x) for x in start.split("-"))
+        this = date(sy, sm, 1)
     periods = []
     cursor = this
     for _ in range(max(1, min(months, 24))):

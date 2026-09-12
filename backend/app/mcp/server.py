@@ -161,9 +161,13 @@ async def my_balances(ctx: Context, period: str | None = None) -> list:
 
 
 @mcp.tool(annotations=READ)
-async def my_history(ctx: Context, year: str | None = None) -> dict:
-    """Days taken per category, month by month, for a year (default this year)."""
-    return await _api(ctx, "GET", "/me/history", params={"year": year})
+async def my_history(
+    ctx: Context, year: str | None = None, start: str | None = None, end: str | None = None
+) -> dict:
+    """Days taken per category, month by month. Frame a calendar year with
+    `year`, or any run of months with start/end (YYYY-MM) — e.g. a financial
+    year April to March."""
+    return await _api(ctx, "GET", "/me/history", params={"year": year, "start": start, "end": end})
 
 
 # ---------------------------------------------------------------------------
@@ -780,12 +784,17 @@ async def bench(ctx: Context, weeks: int = 8) -> dict:
 
 
 @mcp.tool(annotations=READ)
-async def hiring_signal(ctx: Context, months: int = 6, annual_ctc: str = "1200000") -> dict:
+async def hiring_signal(
+    ctx: Context, months: int = 6, annual_ctc: str = "1200000", start: str | None = None
+) -> dict:
     """MANAGERS AND ADMINS. Demand from allocations against supply at target
     utilisation, FTE needed per month, and their monthly cost at the given
     annual CTC (an input, not anybody's figure)."""
     return await _api(
-        ctx, "GET", "/analytics/hiring", params={"months": months, "annual_ctc": annual_ctc}
+        ctx,
+        "GET",
+        "/analytics/hiring",
+        params={"months": months, "annual_ctc": annual_ctc, "start": start},
     )
 
 

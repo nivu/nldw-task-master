@@ -345,9 +345,11 @@ def hiring_signal(
     user: ManagerDep,
     months: int = Query(default=6, ge=1, le=24),
     annual_ctc: Decimal = Query(default=Decimal("1200000"), ge=0),
+    start: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
 ) -> dict:
-    """Demand against supply, FTE needed and their cost at a given CTC (FR-HIRE)."""
-    return utilisation.hiring(months, annual_ctc)
+    """Demand against supply, FTE needed and their cost at a given CTC (FR-HIRE).
+    `start` (YYYY-MM) frames the months from there instead of from today."""
+    return utilisation.hiring(months, annual_ctc, start)
 
 
 @analytics.get("/projects/{project_id}/health")

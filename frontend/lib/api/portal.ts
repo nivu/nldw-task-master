@@ -98,8 +98,8 @@ export const getCalendar = (period?: string) =>
 export const getBalances = (period?: string) =>
   call<Balance[]>(`/me/balances${period ? `?period=${period}` : ""}`);
 
-export const getHistory = (year?: string) =>
-  call<YearHistory>(`/me/history${year ? `?year=${year}` : ""}`);
+export const getHistory = (range?: { start: string; end: string }) =>
+  call<YearHistory>(`/me/history${range ? `?start=${range.start}&end=${range.end}` : ""}`);
 
 // ---------------------------------------------------------------------------
 // Bookings
@@ -380,8 +380,8 @@ export const statementCsvPath = (projectId: string, period: string) =>
 export const getUtilisation = (start?: string, end?: string) =>
   call<Utilisation>(`/analytics/utilisation${start ? `?start=${start}&end=${end ?? start}` : ""}`);
 export const getBench = (weeks = 8) => call<Bench>(`/analytics/bench?weeks=${weeks}`);
-export const getHiring = (months = 6, annualCtc = "1200000") =>
-  call<Hiring>(`/analytics/hiring?months=${months}&annual_ctc=${annualCtc}`);
+export const getHiring = (months = 6, annualCtc = "1200000", start?: string) =>
+  call<Hiring>(`/analytics/hiring?months=${months}&annual_ctc=${annualCtc}${start ? `&start=${start}` : ""}`);
 export const getProjectHealth = (projectId: string) => call<ProjectHealth>(`/analytics/projects/${projectId}/health`);
 export const getProjectsHealth = () =>
   call<{ project_id: string; project_name: string; overall: "green" | "amber" | "red" }[]>("/analytics/health");

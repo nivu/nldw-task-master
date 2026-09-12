@@ -150,7 +150,21 @@ def my_balances(
 def my_history(
     user: CurrentUserDep,
     year: str = Query(default="", pattern=r"(^\d{4}$)|^$"),
+    start: str = Query(default="", pattern=f"({PERIOD_PATTERN})|^$"),
+    end: str = Query(default="", pattern=f"({PERIOD_PATTERN})|^$"),
 ) -> dict:
-    """FR-BAL-08 — consumption across a calendar year."""
+    """FR-BAL-08 — consumption month by month.
+
+    `year` frames a calendar year; `start`/`end` (YYYY-MM) frame anything
+    else, such as a financial year from April to March (spec 006 §Y).
+    """
+    if start and end:
+        months = balances.history_for(user.id, start, end)
+        return {"year": start[:4], "start": start, "end": end, "months": months}
     resolved = year or str(today_in_company_tz().year)
-    return {"year": resolved, "months": balances.year_history_for(user.id, resolved)}
+    return {
+        "year": resolved,
+        "start": f"{resolved}-01",
+        "end": f"{resolved}-12",
+        "months": balances.year_history_for(user.id, resolved),
+    }

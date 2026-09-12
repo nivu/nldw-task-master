@@ -98,6 +98,13 @@ no monthly revenue until a phase is set. A person's monthly cost is their CTC
 for that month. A cell marked *incomplete* is missing somebody's CTC for some
 of its days.
 
+Every month-based view — By month, the timeline in months, Utilisation and the
+hiring signal — shows a whole year at a time. Switch between **Calendar year**
+(January to December) and **Financial year** (April to March) with the buttons
+on the view and step through years with the arrows; the choice is remembered
+on your device and applies to every such view, including your own leave
+history under Account.
+
 **Resources** is the timeline: people as rows, months as columns, switchable
 to weeks. Each allocation is a bar from its start to its end, coloured by
 project and labelled with its name. A full-height bar is 100% of the person;
