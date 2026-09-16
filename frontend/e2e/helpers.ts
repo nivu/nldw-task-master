@@ -43,7 +43,7 @@ export async function signIn(page: Page, email: string) {
   await page.fill("#email", email);
   await page.fill("#password", PASSWORD);
   await page.click('button[type="submit"]');
-  // FR-CAL-01 — the calendar is the primary view after sign-in.
+  // Sign-in lands on the calendar (FR-CAL-01); Home is one tap away.
   await page.waitForURL("**/calendar");
   await expect(page.getByText(/Work from home/).first()).toBeVisible();
 }

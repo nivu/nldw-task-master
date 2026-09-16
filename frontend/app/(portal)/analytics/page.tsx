@@ -45,6 +45,7 @@ import type {
 } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
+import { isoDate, isoMonth } from "@/lib/dates";
 
 /**
  * Effort analytics — spec 002 §5.4.
@@ -399,7 +400,7 @@ function ProjectDetail({
           {financials && (
             <p className="text-xs">
               <Link
-                href={`/analytics/statement?project=${projectId}&period=${new Date().toISOString().slice(0, 7)}`}
+                href={`/analytics/statement?project=${projectId}&period=${isoMonth(new Date())}`}
                 className="underline underline-offset-2"
               >
                 Effort statement for this month →
@@ -891,7 +892,7 @@ function ResourcesTab() {
     e.setDate(monday.getDate() + 8 * 7 - 1);
     return { start: monday, end: e };
   })();
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const iso = isoDate;
 
   const { data, error } = useAsync<Timeline>(
     () => getTimeline(iso(range.start), iso(range.end)),

@@ -154,6 +154,17 @@ Added 12 September 2026 after the first release of this spec.
 | FR-YEAR-02 | The choice MUST be remembered on the device and shared by every such view, so switching once carries everywhere. |
 | FR-YEAR-03 | The APIs take explicit month ranges (`start`/`end` as YYYY-MM); no endpoint assumes a calendar year. |
 
+## H. Home — FR-HOME
+
+Added 17 September 2026.
+
+| ID | Requirement |
+|---|---|
+| FR-HOME-01 | Signing in lands on **Home**: what needs the person today — whether today is logged, this week's hours as a bar per day, balances, comp-off, pending requests, what is coming up. |
+| FR-HOME-02 | Leads also see approvals and comp-off claims waiting, gaps this week, who is out today. Managers also see project health, over-allocation and bench. Admins also see open checklists and whether Slack is connected. Each block links to the page that does the work; Home does none itself. |
+| FR-HOME-03 | One API call (`/me/home`), gated by the same capabilities as the navigation; every summarised route still re-checks the role. Nothing on Home ranks people. |
+| FR-HOME-04 | On a phone the bottom bar holds the four everyday links and a *More* menu for the rest, so nothing is squeezed illegibly. |
+
 ---
 
 ## 14. Data model (new)

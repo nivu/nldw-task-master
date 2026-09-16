@@ -26,6 +26,7 @@ The navigation shows only what your role can use:
 
 | Link | Who sees it | What it is for |
 |---|---|---|
+| **Home** | Everyone | What needs you today: log today, your week, balances; for leads and managers, what is waiting |
 | **Calendar** | Everyone | Book leave and work-from-home days, see your balances |
 | **Time** | Everyone | Log the hours you worked each day |
 | **Team** | Leads, managers, admins | Who is in, out or working from home today |
@@ -35,7 +36,7 @@ The navigation shows only what your role can use:
 | **Admin** | Admins | People, allowances, holidays, policy |
 | **Account** | Everyone | Your details, yearly history, calendar feed, Claude tokens, your quarter |
 
-On a phone the same links sit along the bottom of the screen.
+On a phone the four everyday links sit along the bottom of the screen and **More** opens the rest.
 
 ## Roles in one line each
 

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CompoffQueue, QuarterReviews, WeekSignoff } from "@/components/portal/team-ops";
 import { errorMessage, flagUnrecognised, getTeamConsumption, getTeamDay } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
@@ -72,12 +73,23 @@ export default function TeamPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      <h1 className="font-heading text-lg font-semibold">Team</h1>
+
+      <Tabs defaultValue="today">
+        <TabsList className="max-w-full overflow-x-auto">
+          <TabsTrigger value="today">Today</TabsTrigger>
+          <TabsTrigger value="weeks">Weeks</TabsTrigger>
+          <TabsTrigger value="compoff">Comp-off</TabsTrigger>
+          <TabsTrigger value="reviews">Reviews</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="today" className="space-y-6 pt-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-heading text-lg font-semibold">
+          <h2 className="font-heading text-base font-semibold">
             {isToday ? "Today" : pretty}
-          </h1>
+          </h2>
           <p className="text-sm text-muted-foreground">
             {isToday && `${pretty} · `}
             {teamDay.holiday
@@ -208,10 +220,19 @@ export default function TeamPage() {
         </Card>
       </section>
 
-      {/* Spec 006 — the week-to-week work of leading people. */}
-      <WeekSignoff onError={setError} />
-      <CompoffQueue onError={setError} />
-      <QuarterReviews onError={setError} />
+        </TabsContent>
+
+        {/* Spec 006 — the week-to-week work of leading people. */}
+        <TabsContent value="weeks" className="pt-4">
+          <WeekSignoff onError={setError} />
+        </TabsContent>
+        <TabsContent value="compoff" className="pt-4">
+          <CompoffQueue onError={setError} />
+        </TabsContent>
+        <TabsContent value="reviews" className="pt-4">
+          <QuarterReviews onError={setError} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

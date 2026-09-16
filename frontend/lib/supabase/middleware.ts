@@ -24,6 +24,7 @@ const PUBLIC_ROUTES = ["/auth/", "/help"];
  * unauthenticated visitor must be stopped here rather than bounced twice.
  */
 const PROTECTED_ROUTES = [
+  "/home",
   "/calendar",
   "/timesheet",
   "/analytics",

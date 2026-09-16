@@ -263,7 +263,9 @@ test.describe("authorisation", () => {
 test.describe("the management layer (spec 003)", () => {
   test("a manager runs projects and sees money", async ({ page }) => {
     await signIn(page, PEOPLE.manager);
-    // Header nav on desktop, bottom bar on a phone — whichever is visible.
+    // Header nav on desktop; on a phone the link lives under the More menu.
+    const more = page.getByRole("button", { name: "More" });
+    if (await more.isVisible()) await more.click();
     await expect(page.getByRole("link", { name: "Projects" }).first()).toBeVisible();
     // FR-ROLE-03 — but not the admin panel.
     await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
@@ -397,8 +399,11 @@ test.describe("org operations (spec 006)", () => {
   test("a lead signs off weeks and sees comp-off claims and reviews", async ({ page }) => {
     await signIn(page, PEOPLE.lead);
     await page.goto("/team");
+    await page.getByRole("tab", { name: "Weeks" }).click();
     await expect(page.getByText("Weekly sign-off")).toBeVisible();
+    await page.getByRole("tab", { name: "Comp-off" }).click();
     await expect(page.getByText("Comp-off claims")).toBeVisible();
+    await page.getByRole("tab", { name: "Reviews" }).click();
     await expect(page.getByText(/Quarter in review/)).toBeVisible();
   });
 
@@ -450,5 +455,48 @@ test.describe("year frames (spec 006 FR-YEAR)", () => {
     await expect(page.getByText(/Your FY \d{4}–\d{2}/)).toBeVisible();
     await page.getByRole("button", { name: "Calendar year" }).click();
     await expect(page.getByText(/Your \d{4}$/)).toBeVisible();
+  });
+});
+
+test.describe("home and navigation", () => {
+  test("Home answers what needs me today, per role", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/home");
+    await expect(page.getByText(/Good (morning|afternoon|evening)/)).toBeVisible();
+    await expect(page.getByText("This week")).toBeVisible();
+    await expect(page.getByText("Your balances")).toBeVisible();
+    await expect(page.getByText("Your team")).toHaveCount(0);
+
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/home");
+    await expect(page.getByText("Your team")).toBeVisible();
+    await expect(page.getByText(/waiting for you|Nothing waiting/).first()).toBeVisible();
+
+    await signIn(page, PEOPLE.admin);
+    await page.goto("/home");
+    await expect(page.getByText("Health")).toBeVisible();
+    await expect(page.getByText(/Slack is (not )?connected/)).toBeVisible();
+  });
+
+  test("the root lands on Home", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/home$/);
+  });
+
+  test("the timesheet shows the week around the day", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/timesheet");
+    await expect(page.getByRole("button", { name: /^(Mo|Tu|We|Th|Fr|Sa|Su) \d\d/ }).first()).toBeVisible();
+  });
+
+  test("the team page is tabbed", async ({ page }) => {
+    await signIn(page, PEOPLE.lead);
+    await page.goto("/team");
+    for (const tab of ["Today", "Weeks", "Comp-off", "Reviews"]) {
+      await expect(page.getByRole("tab", { name: tab })).toBeVisible();
+    }
+    await page.getByRole("tab", { name: "Weeks" }).click();
+    await expect(page.getByText("Weekly sign-off")).toBeVisible();
   });
 });

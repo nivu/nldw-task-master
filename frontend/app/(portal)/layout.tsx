@@ -14,6 +14,9 @@ import {
   BarChart3,
   FolderKanban,
   CircleHelp,
+  Home,
+  MoreHorizontal,
+  X,
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -33,6 +36,7 @@ import { cn } from "@/lib/utils";
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [failed, setFailed] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -59,6 +63,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   // Only the links this person can actually use. The server re-checks every
   // one of these routes regardless — hiding a link is tidiness, not security.
   const links = [
+    { href: "/home", label: "Home", icon: Home, show: true },
     { href: "/calendar", label: "Calendar", icon: CalendarDays, show: true },
     { href: "/timesheet", label: "Time", icon: Clock, show: true },
     { href: "/team", label: "Team", icon: Users, show: me?.capabilities.team_view },
@@ -75,7 +80,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex w-full max-w-5xl items-center gap-4 px-4 py-3">
-          <Link href="/calendar" className="font-heading text-sm font-semibold">
+          <Link href="/home" className="font-heading text-sm font-semibold">
             Nunnari Portal
           </Link>
 
@@ -125,13 +130,38 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
         {children}
       </main>
 
+      {/* Phone: the four everyday links, and a More sheet for the rest, so
+          eight items are never squeezed into 400px. */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-background sm:hidden">
+        {moreOpen && (
+          <div className="border-b p-2">
+            <div className="grid grid-cols-3 gap-1">
+              {links.slice(4).map(({ href, label, icon: Icon }) => (
+                <Link
+                  key={href}
+                  href={href}
+                  onClick={() => setMoreOpen(false)}
+                  className={cn(
+                    "flex flex-col items-center gap-0.5 rounded-md py-2 text-[11px]",
+                    pathname === href ? "bg-muted text-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  <Icon className="size-5" />
+                  {label}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex">
-          {links.map(({ href, label, icon: Icon }) => (
+          {links.slice(0, 4).map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
               href={href}
-              onClick={() => router.prefetch?.(href)}
+              onClick={() => {
+                setMoreOpen(false);
+                router.prefetch?.(href);
+              }}
               className={cn(
                 "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px]",
                 pathname === href ? "text-foreground" : "text-muted-foreground"
@@ -141,6 +171,20 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
               {label}
             </Link>
           ))}
+          {links.length > 4 && (
+            <button
+              type="button"
+              onClick={() => setMoreOpen((o) => !o)}
+              aria-expanded={moreOpen}
+              className={cn(
+                "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px]",
+                moreOpen || links.slice(4).some((l) => l.href === pathname) ? "text-foreground" : "text-muted-foreground"
+              )}
+            >
+              {moreOpen ? <X className="size-5" /> : <MoreHorizontal className="size-5" />}
+              More
+            </button>
+          )}
         </div>
       </nav>
     </div>

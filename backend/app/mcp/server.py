@@ -146,6 +146,15 @@ async def whoami(ctx: Context) -> dict:
 
 
 @mcp.tool(annotations=READ)
+async def home(ctx: Context) -> dict:
+    """What needs the person today, in one call: today's booking, balances,
+    comp-off, this week's hours, pending requests; for leads, approvals and
+    gaps; for managers, project health, over-allocation and bench; for
+    admins, open checklists. Good first call after whoami."""
+    return await _api(ctx, "GET", "/me/home")
+
+
+@mcp.tool(annotations=READ)
 async def my_calendar(ctx: Context, period: str | None = None) -> dict:
     """The person's own calendar for one month (period YYYY-MM, default this
     month): each day with whether it is bookable, any booking on it and its

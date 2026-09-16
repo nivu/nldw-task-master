@@ -22,9 +22,10 @@ import {
 import type { AllocatablePerson, AllocationRow, MilestoneList, Phase, Project } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { PHASE_LABEL } from "@/lib/api/types";
+import { isoDate } from "@/lib/dates";
 
 const PHASES: Phase[] = ["pre", "delivery", "support"];
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => isoDate(new Date());
 
 /**
  * Projects, phases and allocations — spec 002 §5.1, §5.2.

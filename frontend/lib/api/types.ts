@@ -750,3 +750,43 @@ export interface Checklists {
   templates: { onboarding: string[]; offboarding: string[] };
   checklists: Checklist[];
 }
+
+// ---------------------------------------------------------------------------
+// Home — spec 006 FR-HOME. One call, blocks gated by capability.
+// ---------------------------------------------------------------------------
+
+export interface HomeSummary {
+  today: string;
+  display_name: string;
+  mine: {
+    today: { category: Category; label: string; status: BookingStatus; duration: string } | null;
+    balances: Balance[];
+    compoff_available: string;
+    pending_requests: number;
+    upcoming: { date: string; label: string; status: BookingStatus }[];
+    week: {
+      week_start: string;
+      total: string;
+      days: { date: string; total: string; is_today: boolean; holiday: boolean; on_leave: string | null; locked: boolean }[];
+    };
+    logged_today: boolean;
+  };
+  lead?: {
+    reports: number;
+    approvals_waiting: number;
+    compoff_claims_waiting: number;
+    out_today: { display_name: string; label: string; duration: string }[];
+    gaps_this_week: { display_name: string; missing: number }[];
+  };
+  manager?: {
+    health: { project_id: string; project_name: string; overall: Rag }[];
+    over_allocated: { display_name: string; peak_percent: string }[];
+    bench: string[];
+    unrated: string[];
+  };
+  admin?: {
+    open_checklists: { display_name: string; kind: string; done: number; total: number }[];
+    slack_configured: boolean;
+    slack_out_channel: string;
+  };
+}

@@ -9,6 +9,7 @@ import { getStatement, statementCsvPath } from "@/lib/api/portal";
 import type { Statement } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { createClient } from "@/lib/supabase/client";
+import { isoMonth } from "@/lib/dates";
 
 /**
  * A client-ready effort statement — spec 006 FR-STMT.
@@ -27,7 +28,7 @@ export default function StatementPage() {
 function StatementView() {
   const params = useSearchParams();
   const projectId = params.get("project") ?? "";
-  const period = params.get("period") ?? new Date().toISOString().slice(0, 7);
+  const period = params.get("period") ?? isoMonth(new Date());
   const { data, error } = useAsync<Statement>(() => getStatement(projectId, period), [projectId, period]);
 
   async function downloadCsv() {

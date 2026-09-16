@@ -60,6 +60,7 @@ import type {
   TeamReviews,
   TeamWeek,
   Utilisation,
+  HomeSummary,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -91,6 +92,8 @@ function body(payload: unknown): RequestInit {
 // ---------------------------------------------------------------------------
 
 export const getMe = () => call<Me>("/me");
+
+export const getHome = () => call<HomeSummary>("/me/home");
 
 export const getCalendar = (period?: string) =>
   call<CalendarMonth>(`/me/calendar${period ? `?period=${period}` : ""}`);

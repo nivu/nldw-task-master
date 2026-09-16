@@ -19,6 +19,7 @@ import {
 import type { CompoffClaim, TeamReviews, TeamWeek } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
+import { isoDate } from "@/lib/dates";
 
 /** Spec 006 FR-SIGN — a lead confirms each report's week. */
 export function WeekSignoff({ onError }: { onError: (m: string) => void }) {
@@ -27,7 +28,7 @@ export function WeekSignoff({ onError }: { onError: (m: string) => void }) {
     const now = new Date();
     const d = new Date(now);
     d.setDate(now.getDate() - ((now.getDay() + 6) % 7) + offset * 7);
-    return d.toISOString().slice(0, 10);
+    return isoDate(d);
   })();
   const { data, reload } = useAsync<TeamWeek>(() => getTeamWeeks(monday), [monday]);
 

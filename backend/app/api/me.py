@@ -55,6 +55,18 @@ def whoami(user: CurrentUserDep) -> dict:
     }
 
 
+@router.get("/home")
+def my_home(user: CurrentUserDep) -> dict:
+    """Everything the Home page shows, in one call — spec 006 FR-HOME.
+
+    The blocks are gated by the same capabilities the navigation uses; every
+    route they summarise still re-checks the role on its own.
+    """
+    from app.services import home
+
+    return home.summary(user)
+
+
 @router.get("/calendar")
 def my_calendar(
     user: CurrentUserDep,

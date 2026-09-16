@@ -43,6 +43,7 @@ import type {
 } from "@/lib/api/types";
 import { formatMoney } from "@/components/portal/projects-panel";
 import { CATEGORY_LABEL } from "@/lib/api/types";
+import { isoMonth } from "@/lib/dates";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
 // Spec 003 FR-ROLE-01. Only an admin assigns these (FR-ROLE-06).
@@ -53,7 +54,7 @@ const ROLE_LABEL: Record<Role, string> = {
   manager: "Manager",
   admin: "Admin",
 };
-const currentPeriod = () => new Date().toISOString().slice(0, 7);
+const currentPeriod = () => isoMonth(new Date());
 
 /**
  * The admin panel — FR-ADMIN, FR-HOL, FR-AUTH-03/06.

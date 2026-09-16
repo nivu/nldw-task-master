@@ -9,10 +9,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { errorMessage, getTimesheetDay, saveTimesheetDay } from "@/lib/api/portal";
-import type { Activity, TimesheetDay } from "@/lib/api/types";
+import { errorMessage, getTimesheetDay, getTimesheetWeek, saveTimesheetDay } from "@/lib/api/portal";
+import type { Activity, TimesheetDay, TimesheetWeek } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
+import { isoDate } from "@/lib/dates";
 
 /**
  * Log a day — spec 002 §5.3.
@@ -67,7 +68,60 @@ export default function TimesheetPage() {
   // seeds its state from the freshly-loaded entries. The alternative — an
   // effect that copies props into state — causes the cascading render the
   // React compiler rejects, and silently carries edits across days.
-  return <DayForm key={data.date} data={data} onPick={setDay} onSaved={reload} />;
+  return (
+    <div className="space-y-4">
+      <WeekStrip day={data.date} today={data.today} onPick={setDay} version={data.total} />
+      <DayForm key={data.date} data={data} onPick={setDay} onSaved={reload} />
+    </div>
+  );
+}
+
+/**
+ * The week around the selected day, one bar per day, tap to jump. Context
+ * for "did I log Tuesday?" without leaving the page. `version` changes when
+ * the day is saved, so the strip refreshes.
+ */
+function WeekStrip({ day, today, onPick, version }: { day: string; today: string; onPick: (d: string) => void; version: string }) {
+  const monday = (() => {
+    const d = new Date(`${day}T00:00:00`);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return isoDate(d);
+  })();
+  const { data } = useAsync<TimesheetWeek>(() => getTimesheetWeek(monday), [monday, version]);
+  if (!data) return <div className="h-16" />;
+  const max = Math.max(8, ...data.days.map((d) => Number(d.total)));
+  return (
+    <div className="flex items-end gap-1.5">
+      {data.days.map((d) => {
+        const h = Number(d.total);
+        const selected = d.date === day;
+        const future = d.date > today;
+        return (
+          <button
+            key={d.date}
+            type="button"
+            disabled={future}
+            onClick={() => onPick(d.date)}
+            title={`${d.date}: ${h}h${d.holiday ? " · holiday" : ""}${d.on_leave ? ` · ${d.on_leave}` : ""}`}
+            className={cn("flex flex-1 flex-col items-center gap-1 rounded-md p-1", selected && "bg-muted", future && "opacity-40")}
+          >
+            <div className="flex h-10 w-full items-end rounded bg-muted/60">
+              <div
+                className={cn("w-full rounded", d.holiday || d.on_leave ? "bg-muted-foreground/30" : d.locked ? "bg-sky-300 dark:bg-sky-800" : "bg-sky-500")}
+                style={{ height: `${Math.max(h > 0 ? 8 : 0, (h / max) * 100)}%` }}
+              />
+            </div>
+            <span className={cn("text-[11px] tabular-nums", d.is_today ? "font-semibold" : "text-muted-foreground")}>
+              {new Date(`${d.date}T00:00:00`).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)} {d.date.slice(8)}
+            </span>
+          </button>
+        );
+      })}
+      <div className="w-12 shrink-0 text-right text-xs text-muted-foreground">
+        <span className="block text-sm font-semibold tabular-nums text-foreground">{data.total}</span>h
+      </div>
+    </div>
+  );
 }
 
 function DayForm({
@@ -106,7 +160,7 @@ function DayForm({
   function shiftDay(delta: number) {
     const next = new Date(`${data.date}T00:00:00`);
     next.setDate(next.getDate() + delta);
-    onPick(next.toISOString().slice(0, 10));
+    onPick(isoDate(next));
   }
 
   function update(key: string, patch: Partial<Line>) {
