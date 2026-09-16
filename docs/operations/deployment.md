@@ -143,8 +143,16 @@ netlify init          # or `netlify link` for an existing site
 netlify env:set NEXT_PUBLIC_SUPABASE_URL      "https://<ref>.supabase.co"
 netlify env:set NEXT_PUBLIC_SUPABASE_ANON_KEY "<anon-key>"
 netlify env:set BACKEND_URL                   "https://<railway-domain>"
-netlify deploy --build --prod
+netlify deploy --build --prod --skip-functions-cache
 ```
+
+> **Always pass `--skip-functions-cache`.** Without it the CLI may print
+> "Deploying functions from cache" and reuse the previous Next.js server
+> function — the thing that holds middleware, every page and the help guides —
+> while uploading only static assets. The deploy then reports "live" and
+> production quietly keeps the old code (seen 17 September 2026: a new route
+> 404'd and a help page stayed stale). After deploying, request a route only
+> the new build knows; anonymous, it must 307 to sign-in, not 404.
 
 > **`netlify deploy --build` builds LOCALLY, using `frontend/.env`.** It is not
 > a CI build. Any development-only value in that file ships straight into the
@@ -154,7 +162,7 @@ netlify deploy --build --prod
 > Netlify **and** overridden on the build command:
 >
 > ```bash
-> NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=false netlify deploy --build --prod
+> NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=false netlify deploy --build --prod --skip-functions-cache
 > ```
 >
 > A shell variable wins over `.env`; the Netlify value alone does not, because
