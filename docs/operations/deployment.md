@@ -268,6 +268,21 @@ Account page says MCP is not enabled and issues no tokens. Verify:
 curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/mcp   # 401 without a token
 ```
 
+### Custom domain
+
+The portal is served at `https://tva.nunnarilabs.com` (added in Netlify domain
+management, 29 September 2026); the `*.netlify.app` address keeps working.
+Three places must know a frontend address, and all three must change together
+when it does:
+
+- Supabase Auth `site_url` and the redirect allow-list (`supabase/config.toml`,
+  `[auth]`). Google sign-in returns to `<origin>/auth/callback`; an origin that
+  is not listed is sent to `site_url` instead, so people land on the wrong
+  domain signed out.
+- `FRONTEND_URL` on the Railway api, worker and beat services: links in Slack
+  messages and the OAuth consent page for claude.ai.
+- Nothing in Google Cloud: Google redirects to Supabase, not to the portal.
+
 ### Org operations (spec 006)
 
 - **Slack.** Set `SLACK_BOT_TOKEN` (scopes `chat:write`, `users:read.email`,
