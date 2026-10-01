@@ -117,6 +117,29 @@ class TestRevenueByMonth:
             date(2026, 4, 1),
         )
 
+    def test_revenue_window_leaves_out_spillover(self):
+        assert pnl.revenue_window(
+            [
+                ("delivery", date(2026, 4, 1), date(2026, 9, 30)),
+                ("spillover", date(2026, 10, 1), date(2026, 12, 31)),
+            ]
+        ) == (date(2026, 4, 1), date(2026, 9, 30))
+
+    def test_no_revenue_in_spillover_months(self):
+        window = pnl.revenue_window(
+            [
+                ("delivery", date(2026, 4, 1), date(2026, 9, 30)),
+                ("spillover", date(2026, 10, 1), date(2026, 12, 31)),
+            ]
+        )
+        assert (
+            pnl.month_revenue(D("3600000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS)
+            == 0
+        )
+
+    def test_only_spillover_has_no_revenue_timeline(self):
+        assert pnl.revenue_window([("spillover", date(2026, 10, 1), date(2026, 12, 31))]) is None
+
 
 class TestShares:
     def test_fractions_of_the_total(self):

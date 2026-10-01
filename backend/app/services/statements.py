@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain import pnl
+from app.domain import timesheets as rules
 from app.services import supabase as db
 from app.services.confirmations import monday_of
 
@@ -23,7 +24,7 @@ def statement(project_id: str, period: str) -> dict[str, Any] | None:
     entries = [e for e in db.list_time_entries(project_id=project_id, start=first, end=last)]
     names = {p["id"]: p["display_name"] for p in db.list_profiles()}
     phases = {ph["id"]: ph for ph in db.list_phases(project_id)}
-    labels = {"pre": "Pre-project", "delivery": "Delivery", "support": "Post-delivery support"}
+    labels = rules.PHASE_LABELS
 
     days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
     by_person: dict[str, dict[str, Decimal]] = defaultdict(

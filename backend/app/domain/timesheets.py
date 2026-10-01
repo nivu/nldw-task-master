@@ -19,11 +19,12 @@ from app.domain.calendar import is_weekend, today_in_company_tz
 
 ZERO = Decimal("0.00")
 
-PHASES = ("pre", "delivery", "support")
+PHASES = ("pre", "delivery", "support", "spillover")
 PHASE_LABELS = {
     "pre": "Pre-project",
     "delivery": "Delivery",
     "support": "Post-delivery support",
+    "spillover": "Spill-over",
 }
 
 #: Q-06 default. A sanity check against a mistyped 80, not a position on

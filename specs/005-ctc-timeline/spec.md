@@ -75,6 +75,9 @@ so and names them.
 ### 3.2 Revenue by month (Q-01)
 
 A project's **timeline** is its earliest phase start to its latest phase end.
+A `spillover` phase is left out: it is unpaid overrun, so revenue stays in
+the months that were sold. Cost in spill-over months still counts. Project
+health's elapsed time uses every phase, spill-over included.
 Its revenue is spread evenly over the working days of that timeline; a month's
 share is revenue × (working days of the timeline inside the month ÷ working
 days of the whole timeline). A project with revenue but no phases has no

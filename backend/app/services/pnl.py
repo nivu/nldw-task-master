@@ -139,11 +139,11 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     windows: dict[str, tuple[date, date] | None] = {}
     for project in projects:
         mine = [
-            (date.fromisoformat(ph["starts_on"]), date.fromisoformat(ph["ends_on"]))
+            (ph["phase"], date.fromisoformat(ph["starts_on"]), date.fromisoformat(ph["ends_on"]))
             for ph in phases
             if ph["project_id"] == project["id"]
         ]
-        windows[project["id"]] = pnl.project_window(mine)
+        windows[project["id"]] = pnl.revenue_window(mine)
 
     month_meta = []
     person_cells: dict[str, list[dict]] = {p["id"]: [] for p in people}

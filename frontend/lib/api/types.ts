@@ -238,12 +238,13 @@ export const CATEGORY_SHORT: Record<Category, string> = {
 // floats. The UI formats them and never does arithmetic on them.
 // ---------------------------------------------------------------------------
 
-export type Phase = "pre" | "delivery" | "support";
+export type Phase = "pre" | "delivery" | "support" | "spillover";
 
 export const PHASE_LABEL: Record<Phase, string> = {
   pre: "Pre-project",
   delivery: "Delivery",
   support: "Post-delivery support",
+  spillover: "Spill-over",
 };
 
 /** Spec 003 FR-ACT-02 — the fixed set of non-project activities. */

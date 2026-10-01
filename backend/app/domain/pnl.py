@@ -163,6 +163,12 @@ def project_window(phases: list[tuple[date, date]]) -> tuple[date, date] | None:
     return min(p[0] for p in phases), max(p[1] for p in phases)
 
 
+def revenue_window(phases: list[tuple[str, date, date]]) -> tuple[date, date] | None:
+    """The timeline revenue is spread over: every phase except spill-over,
+    which is unpaid overrun. `phases` is (phase, starts_on, ends_on)."""
+    return project_window([(s, e) for phase, s, e in phases if phase != "spillover"])
+
+
 def month_revenue(
     revenue: Decimal | None,
     window: tuple[date, date] | None,

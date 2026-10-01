@@ -193,7 +193,7 @@ class SettingUpdate(BaseModel):
 # Timesheets — spec 002
 # ---------------------------------------------------------------------------
 
-Phase = Literal["pre", "delivery", "support"]
+Phase = Literal["pre", "delivery", "support", "spillover"]
 
 
 Activity = Literal["learning", "internal", "admin", "other"]

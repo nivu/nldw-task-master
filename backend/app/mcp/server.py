@@ -437,7 +437,7 @@ async def set_project_phase(
     ends_on: str,
     budget_hours: str | None = None,
 ) -> dict:
-    """MANAGERS AND ADMINS. Set or replace a phase (pre | delivery | support)
+    """MANAGERS AND ADMINS. Set or replace a phase (pre | delivery | support | spillover)
     with dates and an optional hours budget. CONFIRM FIRST."""
     return await _api(
         ctx,

@@ -67,18 +67,23 @@ A named piece of work with a client or internal owner, and a lifecycle made of
 
 ### 3.2 Phase
 
-Every project has up to three phases, each with its own start and end date:
+Every project has up to four phases, each with its own start and end date:
 
 | Phase | What it covers |
 |---|---|
 | `pre` | Pre-project work — scoping, estimation, pitching, setup |
 | `delivery` | The project timeline proper |
 | `support` | Post-delivery support |
+| `spillover` | Delivery work that overran the agreed timeline, unpaid |
 
 Effort is logged against a phase, not merely a project. Without that split,
 "we spent 400 hours on this" cannot distinguish a project that overran from one
 that has been in unbudgeted support for a year — which is precisely the
 distinction a budget conversation turns on.
+
+`spillover` makes the overrun explicit: people stay allocated and log against
+it, their cost counts, and the project's revenue is not spread into it (spec
+005 §3.2).
 
 ### 3.3 Allocation
 
@@ -163,7 +168,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | ID | Requirement |
 |---|---|
 | FR-PROJ-01 | An admin MUST be able to create a project with a name and a client or owner. |
-| FR-PROJ-02 | A project MUST support three optional phases — `pre`, `delivery`, `support` — each with a start and an end date. |
+| FR-PROJ-02 | A project MUST support four optional phases — `pre`, `delivery`, `support`, `spillover` — each with a start and an end date. |
 | FR-PROJ-03 | Phase dates MUST be editable, and a change MUST NOT invalidate time already logged. |
 | FR-PROJ-04 | A project MUST be archivable without deleting its history. |
 | FR-PROJ-05 | Only an admin MAY create or edit a project. |
@@ -239,7 +244,7 @@ This feature shares its people, its roles, its audit log and its timezone with
 
 ```
 projects        id, name, client, is_archived, created_at
-project_phases  id, project_id, phase(pre|delivery|support),
+project_phases  id, project_id, phase(pre|delivery|support|spillover),
                 starts_on, ends_on, budget_hours
 allocations     id, project_id, user_id, starts_on, ends_on,
                 percent numeric(5,2), created_by

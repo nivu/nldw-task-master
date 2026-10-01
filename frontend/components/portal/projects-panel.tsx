@@ -24,7 +24,7 @@ import { useAsync } from "@/lib/use-async";
 import { PHASE_LABEL } from "@/lib/api/types";
 import { isoDate } from "@/lib/dates";
 
-const PHASES: Phase[] = ["pre", "delivery", "support"];
+const PHASES: Phase[] = ["pre", "delivery", "support", "spillover"];
 const today = () => isoDate(new Date());
 
 /**
