@@ -40,15 +40,17 @@ const today = () => isoDate(new Date());
  * does, and a product that cannot record it cannot warn about it either.
  *
  * Spec 003 opens this to managers (FR-ROLE-02) and adds revenue (FR-FIN-02).
- * Revenue is money, so this panel is only ever rendered for the manager tier;
- * `people` is the name-and-id list from /analytics/people, because a manager
- * cannot reach the user directory (FR-ROLE-03) and does not need to.
+ * Revenue is money, so it and milestones render only when `showMoney`; leads
+ * (FR-ROLE-07/08) get the rest. `people` is the name-and-id list from
+ * /analytics/people for a manager, or the lead's own reports, because neither
+ * can reach the user directory (FR-ROLE-03) and does not need to.
  */
 export function ProjectsPanel({
   projects,
   allocations,
   people,
   currency,
+  showMoney,
   onDone,
   onError,
 }: {
@@ -56,6 +58,7 @@ export function ProjectsPanel({
   allocations: AllocationRow[];
   people: AllocatablePerson[];
   currency: string;
+  showMoney: boolean;
   onDone: (message: string) => void;
   onError: (message: string) => void;
 }) {
@@ -86,7 +89,7 @@ export function ProjectsPanel({
                 await createProject({
                   name,
                   client: client.trim() || null,
-                  revenue: revenue.trim() || null,
+                  ...(showMoney ? { revenue: revenue.trim() || null } : {}),
                 });
                 onDone(`Added ${name}.`);
                 setName("");
@@ -112,21 +115,23 @@ export function ProjectsPanel({
                 placeholder="Internal"
               />
             </div>
-            <div className="space-y-1.5">
-              {/* FR-FIN-02 — contract value or internal budget. What it is
-                  worth, not what it costs; COGS is derived from hours. */}
-              <Label htmlFor="prevenue">Revenue ({currency})</Label>
-              <Input
-                id="prevenue"
-                type="number"
-                min="0"
-                step="1000"
-                className="w-36"
-                value={revenue}
-                onChange={(e) => setRevenue(e.target.value)}
-                placeholder="optional"
-              />
-            </div>
+            {showMoney && (
+              <div className="space-y-1.5">
+                {/* FR-FIN-02 — contract value or internal budget. What it is
+                    worth, not what it costs; COGS is derived from hours. */}
+                <Label htmlFor="prevenue">Revenue ({currency})</Label>
+                <Input
+                  id="prevenue"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  className="w-36"
+                  value={revenue}
+                  onChange={(e) => setRevenue(e.target.value)}
+                  placeholder="optional"
+                />
+              </div>
+            )}
             <Button type="submit" disabled={busy || !name.trim()}>
               {busy ? "Adding…" : "Add"}
             </Button>
@@ -143,18 +148,24 @@ export function ProjectsPanel({
                 {project.client ?? "Internal"}
               </span>
               {project.is_archived && <Badge variant="outline">archived</Badge>}
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {project.revenue !== null && project.revenue !== undefined
-                  ? `${currency} ${formatMoney(project.revenue)}`
-                  : "no revenue set"}
-              </span>
+              {showMoney && (
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {project.revenue !== null && project.revenue !== undefined
+                    ? `${currency} ${formatMoney(project.revenue)}`
+                    : "no revenue set"}
+                </span>
+              )}
               <div className="ml-auto flex gap-1">
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setExpanded(expanded === project.id ? null : project.id)}
                 >
-                  {expanded === project.id ? "Hide" : "Phases, people & revenue"}
+                  {expanded === project.id
+                    ? "Hide"
+                    : showMoney
+                      ? "Phases, people & revenue"
+                      : "Phases & people"}
                 </Button>
                 <Button
                   variant="ghost"
@@ -188,14 +199,18 @@ export function ProjectsPanel({
 
             {expanded === project.id && (
               <div className="space-y-4 border-t pt-3">
-                <RevenueForm
-                  project={project}
-                  currency={currency}
-                  onDone={onDone}
-                  onError={onError}
-                />
+                {showMoney && (
+                  <RevenueForm
+                    project={project}
+                    currency={currency}
+                    onDone={onDone}
+                    onError={onError}
+                  />
+                )}
                 <PhaseForm project={project} onDone={onDone} onError={onError} />
-                <MilestonesForm project={project} currency={currency} onError={onError} />
+                {showMoney && (
+                  <MilestonesForm project={project} currency={currency} onError={onError} />
+                )}
                 <AllocationForm
                   project={project}
                   people={people}

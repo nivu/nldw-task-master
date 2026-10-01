@@ -297,6 +297,13 @@ def over_allocations(
     return flagged
 
 
+def may_allocate(*, actor_id: str, actor_is_manager: bool, person_lead_id: str | None) -> bool:
+    """Whether someone may allocate or deallocate a person — spec 003
+    FR-ROLE-02, FR-ROLE-08. Managers and admins: anyone. A lead: only the
+    people whose `lead_id` is theirs."""
+    return actor_is_manager or person_lead_id == actor_id
+
+
 # ---------------------------------------------------------------------------
 
 

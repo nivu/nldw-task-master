@@ -171,7 +171,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | FR-PROJ-02 | A project MUST support four optional phases — `pre`, `delivery`, `support`, `spillover` — each with a start and an end date. |
 | FR-PROJ-03 | Phase dates MUST be editable, and a change MUST NOT invalidate time already logged. |
 | FR-PROJ-04 | A project MUST be archivable without deleting its history. |
-| FR-PROJ-05 | Only an admin MAY create or edit a project. |
+| FR-PROJ-05 | Only an admin MAY create or edit a project. *Superseded by spec 003 FR-ROLE-02 and FR-ROLE-07: managers and leads may too.* |
 
 ### 5.2 Allocation — FR-ALLOC
 

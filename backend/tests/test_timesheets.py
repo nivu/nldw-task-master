@@ -25,6 +25,7 @@ from app.domain.timesheets import (
     entry_locks_on,
     is_locked,
     leave_warning,
+    may_allocate,
     over_allocations,
     overlap,
     phase_for,
@@ -287,3 +288,18 @@ class TestPhaseResolution:
 def test_overlap_of_two_ranges():
     assert overlap(MON, FRI, date(2026, 9, 10), NEXT_MON) == (date(2026, 9, 10), FRI)
     assert overlap(MON, FRI, NEXT_MON, date(2026, 9, 20)) is None
+
+
+class TestMayAllocate:
+    def test_a_lead_may_allocate_their_own_report(self):
+        assert may_allocate(actor_id="lead", actor_is_manager=False, person_lead_id="lead")
+
+    def test_a_lead_may_not_allocate_someone_elses_report(self):
+        assert not may_allocate(actor_id="lead", actor_is_manager=False, person_lead_id="other")
+
+    def test_a_lead_may_not_allocate_someone_with_no_lead(self):
+        assert not may_allocate(actor_id="lead", actor_is_manager=False, person_lead_id=None)
+
+    def test_a_manager_may_allocate_anyone(self):
+        assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id="other")
+        assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id=None)

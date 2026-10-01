@@ -284,6 +284,9 @@ export const updateProject = (
 /** Who can be allocated — name and id only, so a manager needs no /admin/users. */
 export const listAllocatablePeople = () => call<AllocatablePerson[]>("/analytics/people");
 
+/** A lead's own reports — the only people a lead may allocate (spec 003 FR-ROLE-08). */
+export const listMyReports = () => call<AllocatablePerson[]>("/team/reports");
+
 // Money and resourcing — manager and admin only (spec 003 FR-FIN-07, FR-RES).
 export const getProjectFinancials = (projectId: string) =>
   call<ProjectFinancials>(`/analytics/projects/${projectId}/financials`);

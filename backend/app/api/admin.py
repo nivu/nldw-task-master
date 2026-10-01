@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import AdminDep, ManagerDep
+from app.api.deps import AdminDep, LeadDep, ManagerDep
 from app.api.errors import ProblemDetail
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
@@ -27,6 +27,7 @@ from app.schemas import (
     UserCreate,
     UserUpdate,
 )
+from app.domain import timesheets as rules
 from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
 from app.services import pnl as pnl_service
@@ -651,16 +652,17 @@ def upcoming_holidays(admin: AdminDep) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Projects, phases and allocations — spec 002 §5.1, §5.2; spec 003 FR-ROLE-02
 #
-# Manager OR admin (spec 003 lifted 002's FR-PROJ-05 admin-only rule). Every
-# mutation writes to the append-only audit log. Everything ABOVE this line in
-# the file stays admin-only: people, allowances, holidays, settings, backfill
-# (FR-ROLE-03). The split is a section boundary on purpose — a role swap that
+# Lead, manager or admin (spec 003 lifted 002's FR-PROJ-05 admin-only rule;
+# FR-ROLE-07/08 opened it to leads). A lead never sets or sees revenue and
+# allocates only their own reports. Every mutation writes to the append-only
+# audit log. Everything ABOVE this line in the file stays admin-only: people,
+# allowances, holidays, settings, backfill (FR-ROLE-03). The split is a section boundary on purpose — a role swap that
 # touched the whole file would hand managers the user directory.
 # ---------------------------------------------------------------------------
 
 
 @router.get("/projects")
-def list_projects(manager: ManagerDep) -> list[dict]:
+def list_projects(user: LeadDep) -> list[dict]:
     projects = db.list_projects(include_archived=True)
     phases: dict[str, list[dict]] = {}
     for phase in db.list_phases():
@@ -675,25 +677,30 @@ def list_projects(manager: ManagerDep) -> list[dict]:
                 else None,
             }
         )
-    return [
-        {
-            "id": p["id"],
-            "name": p["name"],
-            "client": p.get("client"),
-            "is_archived": p["is_archived"],
-            # Money — FR-FIN-02. Safe here only because every route in this
-            # section is ManagerDep; the analytics routes a lead can reach
-            # never select it.
-            "revenue": str(p["revenue"]) if p.get("revenue") is not None else None,
-            "phases": phases.get(p["id"], []),
-        }
-        for p in projects
-    ]
+    return [_present_project(p, user, phases.get(p["id"], [])) for p in projects]
+
+
+def _present_project(row: dict, user, phases: list[dict] | None = None) -> dict:  # noqa: ANN001
+    """Money — FR-FIN-02. Revenue goes to managers and admins only; a lead
+    gets the project without the key (FR-ROLE-07)."""
+    out = {
+        "id": row["id"],
+        "name": row["name"],
+        "client": row.get("client"),
+        "is_archived": row["is_archived"],
+    }
+    if user.is_manager:
+        out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
+    if phases is not None:
+        out["phases"] = phases
+    return out
 
 
 @router.post("/projects", status_code=201)
-def create_project(payload: ProjectIn, manager: ManagerDep) -> dict:
-    """FR-PROJ-01."""
+def create_project(payload: ProjectIn, user: LeadDep) -> dict:
+    """FR-PROJ-01, FR-ROLE-07."""
+    if payload.revenue is not None and not user.is_manager:
+        raise ProblemDetail(403, "Only a manager or admin can set revenue.")
     if any(
         p["name"].strip().lower() == payload.name.strip().lower()
         for p in db.list_projects(include_archived=True)
@@ -705,32 +712,25 @@ def create_project(payload: ProjectIn, manager: ManagerDep) -> dict:
             "name": payload.name.strip(),
             "client": (payload.client or "").strip() or None,
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
-            "created_by": manager.id,
+            "created_by": user.id,
         }
     )
     audit.record(
         action="project.created",
         target_table="projects",
         target_id=row["id"],
-        actor_id=manager.id,
+        actor_id=user.id,
         after={
             "name": row["name"],
             "client": row.get("client"),
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
         },
     )
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "client": row.get("client"),
-        "is_archived": row["is_archived"],
-        "revenue": str(row["revenue"]) if row.get("revenue") is not None else None,
-        "phases": [],
-    }
+    return _present_project(row, user, [])
 
 
 @router.patch("/projects/{project_id}")
-def update_project(project_id: str, payload: ProjectUpdate, manager: ManagerDep) -> dict:
+def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> dict:
     """FR-PROJ-04 — archiving is the only removal.
 
     Effort logged against a finished project is exactly the history the
@@ -743,6 +743,8 @@ def update_project(project_id: str, payload: ProjectUpdate, manager: ManagerDep)
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
+    if "revenue" in changes and not user.is_manager:
+        raise ProblemDetail(403, "Only a manager or admin can set revenue.")
     if "revenue" in changes and changes["revenue"] is not None:
         changes["revenue"] = str(changes["revenue"])
 
@@ -751,21 +753,15 @@ def update_project(project_id: str, payload: ProjectUpdate, manager: ManagerDep)
         action="project.updated",
         target_table="projects",
         target_id=project_id,
-        actor_id=manager.id,
+        actor_id=user.id,
         before={k: existing.get(k) for k in changes},
         after=changes,
     )
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "client": row.get("client"),
-        "is_archived": row["is_archived"],
-        "revenue": str(row["revenue"]) if row.get("revenue") is not None else None,
-    }
+    return _present_project(row, user)
 
 
 @router.put("/projects/{project_id}/phases")
-def set_phase(project_id: str, payload: PhaseIn, manager: ManagerDep) -> dict:
+def set_phase(project_id: str, payload: PhaseIn, user: LeadDep) -> dict:
     """FR-PROJ-02/03.
 
     Moving a phase's dates does NOT re-file existing time entries. Each entry
@@ -792,7 +788,7 @@ def set_phase(project_id: str, payload: PhaseIn, manager: ManagerDep) -> dict:
         action="project.phase_set",
         target_table="project_phases",
         target_id=row["id"],
-        actor_id=manager.id,
+        actor_id=user.id,
         after={
             "project_id": project_id,
             "phase": payload.phase,
@@ -811,8 +807,14 @@ def set_phase(project_id: str, payload: PhaseIn, manager: ManagerDep) -> dict:
 
 
 @router.get("/allocations")
-def list_allocations(manager: ManagerDep) -> list[dict]:
+def list_allocations(user: LeadDep) -> list[dict]:
+    """A lead sees only their reports' allocations — FR-ROLE-08."""
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    user_ids = (
+        None
+        if user.is_manager
+        else [p["id"] for p in db.list_reports(user.id, active_only=False)]
+    )
     projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
     return [
         {
@@ -825,12 +827,12 @@ def list_allocations(manager: ManagerDep) -> list[dict]:
             "ends_on": a["ends_on"],
             "percent": str(a["percent"]),
         }
-        for a in db.list_allocations()
+        for a in db.list_allocations(user_ids=user_ids)
     ]
 
 
 @router.post("/allocations", status_code=201)
-def create_allocation(payload: AllocationIn, manager: ManagerDep) -> dict:
+def create_allocation(payload: AllocationIn, user: LeadDep) -> dict:
     """FR-ALLOC-01/02/03.
 
     Concurrent allocations past 100% are permitted and reported, not refused
@@ -839,8 +841,13 @@ def create_allocation(payload: AllocationIn, manager: ManagerDep) -> dict:
     """
     if db.get_project(payload.project_id) is None:
         raise ProblemDetail(404, "No such project.")
-    if db.get_profile(payload.user_id) is None:
+    person = db.get_profile(payload.user_id)
+    if person is None:
         raise ProblemDetail(404, "No such person.")
+    if not rules.may_allocate(
+        actor_id=user.id, actor_is_manager=user.is_manager, person_lead_id=person.get("lead_id")
+    ):
+        raise ProblemDetail(403, "A lead can only allocate their own reports.")
     if payload.ends_on < payload.starts_on:
         raise ProblemDetail(422, "An allocation cannot end before it starts.")
 
@@ -851,14 +858,14 @@ def create_allocation(payload: AllocationIn, manager: ManagerDep) -> dict:
             "starts_on": payload.starts_on.isoformat(),
             "ends_on": payload.ends_on.isoformat(),
             "percent": str(payload.percent),
-            "created_by": manager.id,
+            "created_by": user.id,
         }
     )
     audit.record(
         action="allocation.created",
         target_table="allocations",
         target_id=row["id"],
-        actor_id=manager.id,
+        actor_id=user.id,
         after={
             "project_id": payload.project_id,
             "user_id": payload.user_id,
@@ -871,18 +878,22 @@ def create_allocation(payload: AllocationIn, manager: ManagerDep) -> dict:
 
 
 @router.delete("/allocations/{allocation_id}")
-def remove_allocation(allocation_id: str, manager: ManagerDep) -> dict:
+def remove_allocation(allocation_id: str, user: LeadDep) -> dict:
     """FR-ALLOC-05 — removing intent never removes recorded fact.
 
     Time already logged against the project stays. An allocation says what was
     planned; a time entry says what happened, and deleting the plan must not
     erase the history.
     """
+    if not user.is_manager:
+        mine = [p["id"] for p in db.list_reports(user.id, active_only=False)]
+        if allocation_id not in {a["id"] for a in db.list_allocations(user_ids=mine)}:
+            raise ProblemDetail(403, "A lead can only remove their own reports' allocations.")
     db.delete_allocation(allocation_id)
     audit.record(
         action="allocation.deleted",
         target_table="allocations",
         target_id=allocation_id,
-        actor_id=manager.id,
+        actor_id=user.id,
     )
     return {"status": "deleted"}

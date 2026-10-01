@@ -34,7 +34,7 @@ export interface Me {
   capabilities: {
     team_view: boolean;
     admin_panel: boolean;
-    /** Spec 003 — the manager tier: runs projects, sees money. */
+    /** Spec 003 — leads, managers and admins run projects (FR-ROLE-07). */
     manage_projects: boolean;
     financials: boolean;
   };
@@ -327,7 +327,7 @@ export interface Project {
   is_archived: boolean;
   phases?: ProjectPhase[];
   logged_hours?: string;
-  /** Spec 003 FR-FIN-02 — present only on manager/admin routes. */
+  /** Spec 003 FR-FIN-02 — present only for managers and admins. */
   revenue?: string | null;
 }
 

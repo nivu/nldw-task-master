@@ -123,6 +123,8 @@ Keywords follow RFC 2119.
 | FR-ROLE-04 | A manager MUST NOT be able to approve or reject leave unless they are the person's `lead_id`. |
 | FR-ROLE-05 | A manager MUST see all projects, all allocations and all effort analytics (§8, Q-02). |
 | FR-ROLE-06 | Only an admin MAY assign or change roles. |
+| FR-ROLE-07 | A lead MUST be able to create, edit and archive any project and set its phases and budgets, but MUST NOT set or see revenue or milestones. |
+| FR-ROLE-08 | A lead MUST be able to allocate and deallocate their own reports, and MUST see only their reports' allocations. |
 
 ### 5.2 Financials — FR-FIN
 

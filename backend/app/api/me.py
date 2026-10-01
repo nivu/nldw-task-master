@@ -47,9 +47,9 @@ def whoami(user: CurrentUserDep) -> dict:
         "capabilities": {
             "team_view": user.is_lead,
             "admin_panel": user.is_admin,
-            # Spec 003. Both are the manager tier: run projects, see money.
+            # Spec 003. Leads run projects (FR-ROLE-07); money is manager tier.
             # Hints for navigation only — every route re-checks server-side.
-            "manage_projects": user.is_manager,
+            "manage_projects": user.is_lead,
             "financials": user.is_manager,
         },
     }

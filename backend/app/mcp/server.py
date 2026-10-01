@@ -33,7 +33,8 @@ INSTRUCTIONS = """\
 Nunnari Employee Portal — leave, timesheets, projects and effort reporting.
 
 You act as the person whose token you were given, with exactly their access:
-a lead sees their reports, a manager sees projects and money (revenue, cost,
+a lead sees their reports and runs projects (no money; allocates only their
+reports), a manager sees projects and money (revenue, cost,
 monthly profit, the allocation timeline), an admin also manages people and
 CTC. A refusal from a tool is the portal's answer for that person; do not
 try to route around it.
@@ -399,13 +400,14 @@ async def allocatable_people(ctx: Context) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Projects and allocations — managers and admins (spec 002 / 003)
+# Projects and allocations — leads, managers and admins (spec 002 / 003)
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool(annotations=READ)
 async def list_projects(ctx: Context) -> list:
-    """MANAGERS AND ADMINS. Every project with phases and revenue."""
+    """LEADS, MANAGERS AND ADMINS. Every project with phases; revenue only for
+    managers and admins."""
     return await _api(ctx, "GET", "/admin/projects")
 
 
@@ -413,8 +415,9 @@ async def list_projects(ctx: Context) -> list:
 async def create_project(
     ctx: Context, name: str, client: str | None = None, revenue: str | None = None
 ) -> dict:
-    """MANAGERS AND ADMINS. Create a project. CONFIRM FIRST. Revenue is the
-    contract value or internal budget, as a decimal string, optional."""
+    """LEADS, MANAGERS AND ADMINS. Create a project. CONFIRM FIRST. Revenue is
+    the contract value or internal budget, as a decimal string, optional;
+    only a manager or admin may set it."""
     return await _api(
         ctx, "POST", "/admin/projects", body={"name": name, "client": client, "revenue": revenue}
     )
@@ -422,9 +425,9 @@ async def create_project(
 
 @mcp.tool(annotations=WRITE)
 async def update_project(ctx: Context, project_id: str, changes: dict[str, Any]) -> dict:
-    """MANAGERS AND ADMINS. Change a project. CONFIRM FIRST. changes may hold
-    name, client, revenue (decimal string) and is_archived (archive, never
-    delete)."""
+    """LEADS, MANAGERS AND ADMINS. Change a project. CONFIRM FIRST. changes may
+    hold name, client, revenue (decimal string; managers and admins only) and
+    is_archived (archive, never delete)."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 
 
@@ -437,7 +440,7 @@ async def set_project_phase(
     ends_on: str,
     budget_hours: str | None = None,
 ) -> dict:
-    """MANAGERS AND ADMINS. Set or replace a phase (pre | delivery | support | spillover)
+    """LEADS, MANAGERS AND ADMINS. Set or replace a phase (pre | delivery | support | spillover)
     with dates and an optional hours budget. CONFIRM FIRST."""
     return await _api(
         ctx,
@@ -454,7 +457,8 @@ async def set_project_phase(
 
 @mcp.tool(annotations=READ)
 async def list_allocations(ctx: Context) -> list:
-    """MANAGERS AND ADMINS. Every allocation: who, which project, dates, percent."""
+    """LEADS, MANAGERS AND ADMINS. Every allocation: who, which project, dates,
+    percent. A lead sees only their reports'."""
     return await _api(ctx, "GET", "/admin/allocations")
 
 
@@ -462,9 +466,9 @@ async def list_allocations(ctx: Context) -> list:
 async def allocate(
     ctx: Context, project_id: str, user_id: str, starts_on: str, ends_on: str, percent: str
 ) -> dict:
-    """MANAGERS AND ADMINS. Allocate a person to a project for a date range at
-    a percent of their capacity. CONFIRM FIRST. Over 100% is recorded and
-    flagged, not refused."""
+    """LEADS, MANAGERS AND ADMINS. Allocate a person to a project for a date
+    range at a percent of their capacity. CONFIRM FIRST. A lead may allocate
+    only their own reports. Over 100% is recorded and flagged, not refused."""
     return await _api(
         ctx,
         "POST",
@@ -481,8 +485,8 @@ async def allocate(
 
 @mcp.tool(annotations=DESTRUCTIVE)
 async def remove_allocation(ctx: Context, allocation_id: str) -> dict:
-    """MANAGERS AND ADMINS. Remove an allocation. CONFIRM FIRST. Hours already
-    logged are kept."""
+    """LEADS, MANAGERS AND ADMINS. Remove an allocation. CONFIRM FIRST. A lead
+    may remove only their own reports'. Hours already logged are kept."""
     return await _api(ctx, "DELETE", f"/admin/allocations/{allocation_id}")
 
 
