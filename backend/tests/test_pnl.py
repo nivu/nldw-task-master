@@ -195,3 +195,31 @@ class TestSumCells:
         total = pnl.sum_cells([], "actual")
         assert (total.revenue, total.cost, total.complete) == (0, 0, True)
 
+
+class TestHolidaySpan:
+    def test_covers_every_project_timeline_beyond_the_range(self):
+        assert pnl.holiday_span(
+            date(2026, 10, 1),
+            date(2026, 10, 31),
+            [(date(2026, 6, 8), date(2026, 11, 6)), None, (date(2026, 4, 1), date(2026, 9, 30))],
+        ) == (date(2026, 4, 1), date(2026, 11, 6))
+
+    def test_is_the_range_when_no_timeline_reaches_outside_it(self):
+        assert pnl.holiday_span(date(2026, 10, 1), date(2026, 10, 31), [None]) == (
+            date(2026, 10, 1),
+            date(2026, 10, 31),
+        )
+
+    def test_month_revenue_is_the_same_whatever_the_range(self):
+        # A holiday in September must reduce October's share even when only
+        # October is on screen — the bug this span exists to prevent.
+        window = (date(2026, 9, 1), date(2026, 10, 30))
+        september_holiday = {date(2026, 9, 15)}
+        october = pnl.month_revenue(
+            D("1000000"), window, date(2026, 10, 1), date(2026, 10, 31), september_holiday
+        )
+        without = pnl.month_revenue(
+            D("1000000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS
+        )
+        assert october != without
+

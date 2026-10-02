@@ -163,6 +163,23 @@ def project_window(phases: list[tuple[date, date]]) -> tuple[date, date] | None:
     return min(p[0] for p in phases), max(p[1] for p in phases)
 
 
+def holiday_span(
+    first: date, last: date, windows: list[tuple[date, date] | None]
+) -> tuple[date, date]:
+    """The dates whose holidays a monthly report needs — spec 005 §3.2.
+
+    A month's revenue share divides by the working days of the project's
+    WHOLE timeline, so holidays must be known across every timeline, not
+    just the months on screen; otherwise the same month's revenue changes
+    with the range a person happens to view.
+    """
+    spans = [w for w in windows if w is not None]
+    return (
+        min([first] + [w[0] for w in spans]),
+        max([last] + [w[1] for w in spans]),
+    )
+
+
 def revenue_window(phases: list[tuple[str, date, date]]) -> tuple[date, date] | None:
     """The timeline revenue is spread over: every phase except spill-over,
     which is unpaid overrun. `phases` is (phase, starts_on, ends_on)."""

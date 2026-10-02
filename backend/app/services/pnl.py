@@ -145,6 +145,9 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
             if ph["project_id"] == project["id"]
         ]
         windows[project["id"]] = pnl.revenue_window(mine)
+    revenue_holidays = holidays_between(
+        *pnl.holiday_span(range_first, range_last, list(windows.values()))
+    )
 
     month_meta = []
     person_cells: dict[str, list[dict]] = {p["id"]: [] for p in people}
@@ -188,7 +191,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                     ZERO,
                 )
             else:
-                rev_m = pnl.month_revenue(revenue, windows[pid], first, last, holidays)
+                rev_m = pnl.month_revenue(revenue, windows[pid], first, last, revenue_holidays)
 
             # Weights for attribution — hours (actual) or allocation-days (planned).
             weights: dict[str, Decimal] = defaultdict(lambda: ZERO)
