@@ -125,6 +125,7 @@ Per project, per month: revenue as §3.2; cost = Σ over people of (hours × hou
 | FR-PNL-01 | Per person and per project, per month over a chosen range: revenue, cost, profit, profit %, and whether the month is actual or planned. |
 | FR-PNL-02 | Incompleteness MUST be loud: a person unrated for any day in the month, or a project with revenue but no timeline, is flagged on that cell and named. |
 | FR-PNL-03 | Per-person tables sort by name. No column sorts by money. |
+| FR-PNL-04 | The monthly table MUST also total revenue, cost and profit per project category (`002` FR-PROJ-06), and project lists MUST group by category. A category total is incomplete if any project in it is. |
 
 ### 4.3 Timeline — FR-TL
 

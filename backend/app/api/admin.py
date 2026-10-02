@@ -688,6 +688,7 @@ def _present_project(row: dict, user, phases: list[dict] | None = None) -> dict:
         "name": row["name"],
         "client": row.get("client"),
         "is_archived": row["is_archived"],
+        "category": row.get("category", "client"),
     }
     if user.is_manager:
         out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
@@ -712,6 +713,7 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "name": payload.name.strip(),
             "client": (payload.client or "").strip() or None,
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
+            "category": payload.category,
             "created_by": user.id,
         }
     )
@@ -724,6 +726,7 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "name": row["name"],
             "client": row.get("client"),
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
+            "category": payload.category,
         },
     )
     return _present_project(row, user, [])
@@ -741,6 +744,8 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
         raise ProblemDetail(404, "No such project.")
 
     changes = payload.model_dump(exclude_unset=True)
+    if changes.get("category", "") is None:
+        del changes["category"]  # a category cannot be cleared, only changed
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
     if "revenue" in changes and not user.is_manager:

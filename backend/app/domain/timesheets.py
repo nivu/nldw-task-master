@@ -27,6 +27,15 @@ PHASE_LABELS = {
     "spillover": "Spill-over",
 }
 
+# Spec 002 FR-PROJ-06 — what kind of work a project is. Order is report order.
+PROJECT_CATEGORIES = ("client", "poc", "product", "internal")
+PROJECT_CATEGORY_LABELS = {
+    "client": "Paid client engagement",
+    "poc": "Client POC / general",
+    "product": "Nunnari product development",
+    "internal": "Internal tools / applications / website",
+}
+
 #: Q-06 default. A sanity check against a mistyped 80, not a position on
 #: overwork. Overridable via `app_settings.max_hours_per_day`.
 DEFAULT_MAX_HOURS_PER_DAY = Decimal("16")

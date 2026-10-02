@@ -167,3 +167,31 @@ class TestCell:
         today = date(2026, 9, 12)
         assert pnl.basis_for(date(2026, 8, 1), date(2026, 8, 31), today) == "actual"
         assert pnl.basis_for(date(2026, 9, 1), date(2026, 9, 30), today) == "planned"
+
+
+class TestSumCells:
+    def test_adds_revenue_and_cost(self):
+        total = pnl.sum_cells(
+            [
+                pnl.Cell(revenue=D("100"), cost=D("40"), basis="actual", complete=True),
+                pnl.Cell(revenue=D("0"), cost=D("25"), basis="actual", complete=True),
+            ],
+            "actual",
+        )
+        assert (total.revenue, total.cost, total.complete) == (D("100"), D("65"), True)
+
+    def test_unknown_cost_makes_the_total_unknown_and_incomplete(self):
+        total = pnl.sum_cells(
+            [
+                pnl.Cell(revenue=D("100"), cost=D("40"), basis="planned", complete=True),
+                pnl.Cell(revenue=D("10"), cost=None, basis="planned", complete=False),
+            ],
+            "planned",
+        )
+        assert total.cost is None
+        assert not total.complete
+
+    def test_an_empty_category_is_zero_and_complete(self):
+        total = pnl.sum_cells([], "actual")
+        assert (total.revenue, total.cost, total.complete) == (0, 0, True)
+

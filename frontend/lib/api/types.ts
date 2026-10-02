@@ -247,6 +247,18 @@ export const PHASE_LABEL: Record<Phase, string> = {
   spillover: "Spill-over",
 };
 
+/** Spec 002 FR-PROJ-06 — what kind of work a project is, in report order. */
+export type ProjectCategory = "client" | "poc" | "product" | "internal";
+
+export const PROJECT_CATEGORIES: ProjectCategory[] = ["client", "poc", "product", "internal"];
+
+export const PROJECT_CATEGORY_LABEL: Record<ProjectCategory, string> = {
+  client: "Paid client engagement",
+  poc: "Client POC / general",
+  product: "Nunnari product development",
+  internal: "Internal tools / applications / website",
+};
+
 /** Spec 003 FR-ACT-02 — the fixed set of non-project activities. */
 export type Activity = "learning" | "internal" | "admin" | "other";
 
@@ -325,6 +337,7 @@ export interface Project {
   name: string;
   client: string | null;
   is_archived: boolean;
+  category?: ProjectCategory;
   phases?: ProjectPhase[];
   logged_hours?: string;
   /** Spec 003 FR-FIN-02 — present only for managers and admins. */
@@ -545,10 +558,13 @@ export interface Pnl {
     project_id: string;
     project_name: string;
     is_archived: boolean;
+    category: ProjectCategory;
     has_timeline: boolean;
     revenue: string | null;
     cells: (PnlCell & { unattributed: boolean; no_timeline: boolean })[];
   }[];
+  /** Spec 005 FR-PNL-04 — totals per project category, in fixed order. */
+  categories: { category: ProjectCategory; label: string; cells: PnlCell[] }[];
   totals: (PnlCell & { unattributed: string })[];
   unrated: { user_id: string; display_name: string }[];
 }

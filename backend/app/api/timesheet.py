@@ -135,6 +135,7 @@ def project_list(user: LeadDep) -> list[dict]:
             "name": p["name"],
             "client": p.get("client"),
             "is_archived": p["is_archived"],
+            "category": p.get("category", "client"),
             "logged_hours": str(totals.get(p["id"], Decimal("0"))),
         }
         for p in projects

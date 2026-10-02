@@ -31,6 +31,7 @@ import type {
   Forecast,
   Phase,
   Project,
+  ProjectCategory,
   ProjectEffort,
   ProjectPhase,
   TimesheetDay,
@@ -273,12 +274,23 @@ export const getCurrentWork = (days = 7) => call<CurrentWork[]>(`/analytics/curr
 // manager tier.
 export const listProjects = () => call<Project[]>("/admin/projects");
 
-export const createProject = (input: { name: string; client: string | null; revenue?: string | null }) =>
+export const createProject = (input: {
+  name: string;
+  client: string | null;
+  revenue?: string | null;
+  category?: ProjectCategory;
+}) =>
   call<Project>("/admin/projects", { method: "POST", ...body(input) });
 
 export const updateProject = (
   id: string,
-  changes: { is_archived?: boolean; name?: string; client?: string | null; revenue?: string | null }
+  changes: {
+    is_archived?: boolean;
+    name?: string;
+    client?: string | null;
+    revenue?: string | null;
+    category?: ProjectCategory;
+  }
 ) => call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
 
 /** Who can be allocated — name and id only, so a manager needs no /admin/users. */

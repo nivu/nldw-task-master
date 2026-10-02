@@ -19,9 +19,16 @@ import {
   updateMilestone,
   updateProject,
 } from "@/lib/api/portal";
-import type { AllocatablePerson, AllocationRow, MilestoneList, Phase, Project } from "@/lib/api/types";
+import type {
+  AllocatablePerson,
+  AllocationRow,
+  MilestoneList,
+  Phase,
+  Project,
+  ProjectCategory,
+} from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
-import { PHASE_LABEL } from "@/lib/api/types";
+import { PHASE_LABEL, PROJECT_CATEGORIES, PROJECT_CATEGORY_LABEL } from "@/lib/api/types";
 import { isoDate } from "@/lib/dates";
 
 const PHASES: Phase[] = ["pre", "delivery", "support", "spillover"];
@@ -65,6 +72,7 @@ export function ProjectsPanel({
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
   const [revenue, setRevenue] = useState("");
+  const [category, setCategory] = useState<ProjectCategory>("client");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -89,12 +97,14 @@ export function ProjectsPanel({
                 await createProject({
                   name,
                   client: client.trim() || null,
+                  category,
                   ...(showMoney ? { revenue: revenue.trim() || null } : {}),
                 });
                 onDone(`Added ${name}.`);
                 setName("");
                 setClient("");
                 setRevenue("");
+                setCategory("client");
               } catch (err) {
                 onError(errorMessage(err));
               } finally {
@@ -114,6 +124,21 @@ export function ProjectsPanel({
                 onChange={(e) => setClient(e.target.value)}
                 placeholder="Internal"
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pcategory">Category</Label>
+              <select
+                id="pcategory"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={category}
+                onChange={(e) => setCategory(e.target.value as ProjectCategory)}
+              >
+                {PROJECT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {PROJECT_CATEGORY_LABEL[c]}
+                  </option>
+                ))}
+              </select>
             </div>
             {showMoney && (
               <div className="space-y-1.5">
@@ -139,90 +164,122 @@ export function ProjectsPanel({
         </CardContent>
       </Card>
 
-      {projects.map((project) => (
-        <Card key={project.id} className={project.is_archived ? "opacity-60" : undefined}>
-          <CardContent className="space-y-3 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">{project.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {project.client ?? "Internal"}
-              </span>
-              {project.is_archived && <Badge variant="outline">archived</Badge>}
-              {showMoney && (
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {project.revenue !== null && project.revenue !== undefined
-                    ? `${currency} ${formatMoney(project.revenue)}`
-                    : "no revenue set"}
-                </span>
-              )}
-              <div className="ml-auto flex gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setExpanded(expanded === project.id ? null : project.id)}
-                >
-                  {expanded === project.id
-                    ? "Hide"
-                    : showMoney
-                      ? "Phases, people & revenue"
-                      : "Phases & people"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      await updateProject(project.id, { is_archived: !project.is_archived });
-                      onDone(
-                        `${project.name} ${project.is_archived ? "restored" : "archived"}.`
-                      );
-                    } catch (err) {
-                      onError(errorMessage(err));
-                    }
-                  }}
-                >
-                  {project.is_archived ? "Restore" : "Archive"}
-                </Button>
-              </div>
-            </div>
+      {/* Spec 005 FR-PNL-04 — grouped by category, in fixed order. */}
+      {PROJECT_CATEGORIES.map((cat) => {
+        const inCategory = projects.filter((p) => (p.category ?? "client") === cat);
+        if (inCategory.length === 0) return null;
+        return (
+          <div key={cat} className="space-y-2">
+            <h2 className="pt-2 text-sm font-semibold text-muted-foreground">
+              {PROJECT_CATEGORY_LABEL[cat]}
+            </h2>
+            {inCategory.map((project) => (
+              <Card key={project.id} className={project.is_archived ? "opacity-60" : undefined}>
+                <CardContent className="space-y-3 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium">{project.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {project.client ?? "Internal"}
+                    </span>
+                    {project.is_archived && <Badge variant="outline">archived</Badge>}
+                    <select
+                      aria-label={`Category of ${project.name}`}
+                      className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
+                      value={project.category ?? "client"}
+                      onChange={async (e) => {
+                        const next = e.target.value as ProjectCategory;
+                        try {
+                          await updateProject(project.id, { category: next });
+                          onDone(`${project.name} is now ${PROJECT_CATEGORY_LABEL[next]}.`);
+                        } catch (err) {
+                          onError(errorMessage(err));
+                        }
+                      }}
+                    >
+                      {PROJECT_CATEGORIES.map((c) => (
+                        <option key={c} value={c}>
+                          {PROJECT_CATEGORY_LABEL[c]}
+                        </option>
+                      ))}
+                    </select>
+                    {showMoney && (
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {project.revenue !== null && project.revenue !== undefined
+                          ? `${currency} ${formatMoney(project.revenue)}`
+                          : "no revenue set"}
+                      </span>
+                    )}
+                    <div className="ml-auto flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setExpanded(expanded === project.id ? null : project.id)}
+                      >
+                        {expanded === project.id
+                          ? "Hide"
+                          : showMoney
+                            ? "Phases, people & revenue"
+                            : "Phases & people"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await updateProject(project.id, { is_archived: !project.is_archived });
+                            onDone(
+                              `${project.name} ${project.is_archived ? "restored" : "archived"}.`
+                            );
+                          } catch (err) {
+                            onError(errorMessage(err));
+                          }
+                        }}
+                      >
+                        {project.is_archived ? "Restore" : "Archive"}
+                      </Button>
+                    </div>
+                  </div>
 
-            {(project.phases ?? []).length > 0 && (
-              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                {(project.phases ?? []).map((phase) => (
-                  <span key={phase.id} className="rounded bg-muted px-2 py-1">
-                    {PHASE_LABEL[phase.phase]}: {phase.starts_on} → {phase.ends_on}
-                    {phase.budget_hours && ` · ${phase.budget_hours}h`}
-                  </span>
-                ))}
-              </div>
-            )}
+                  {(project.phases ?? []).length > 0 && (
+                    <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      {(project.phases ?? []).map((phase) => (
+                        <span key={phase.id} className="rounded bg-muted px-2 py-1">
+                          {PHASE_LABEL[phase.phase]}: {phase.starts_on} → {phase.ends_on}
+                          {phase.budget_hours && ` · ${phase.budget_hours}h`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
-            {expanded === project.id && (
-              <div className="space-y-4 border-t pt-3">
-                {showMoney && (
-                  <RevenueForm
-                    project={project}
-                    currency={currency}
-                    onDone={onDone}
-                    onError={onError}
-                  />
-                )}
-                <PhaseForm project={project} onDone={onDone} onError={onError} />
-                {showMoney && (
-                  <MilestonesForm project={project} currency={currency} onError={onError} />
-                )}
-                <AllocationForm
-                  project={project}
-                  people={people}
-                  allocations={allocations.filter((a) => a.project_id === project.id)}
-                  onDone={onDone}
-                  onError={onError}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      ))}
+                  {expanded === project.id && (
+                    <div className="space-y-4 border-t pt-3">
+                      {showMoney && (
+                        <RevenueForm
+                          project={project}
+                          currency={currency}
+                          onDone={onDone}
+                          onError={onError}
+                        />
+                      )}
+                      <PhaseForm project={project} onDone={onDone} onError={onError} />
+                      {showMoney && (
+                        <MilestonesForm project={project} currency={currency} onError={onError} />
+                      )}
+                      <AllocationForm
+                        project={project}
+                        people={people}
+                        allocations={allocations.filter((a) => a.project_id === project.id)}
+                        onDone={onDone}
+                        onError={onError}
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

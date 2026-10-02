@@ -38,11 +38,13 @@ import type {
   Forecast,
   PeopleFinancials,
   Pnl,
+  PnlCell,
   Project,
   ProjectEffort,
   ProjectFinancials,
   Timeline,
 } from "@/lib/api/types";
+import { PROJECT_CATEGORIES, PROJECT_CATEGORY_LABEL } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 import { isoDate, isoMonth } from "@/lib/dates";
@@ -69,6 +71,15 @@ import { isoDate, isoMonth } from "@/lib/dates";
  * behind them is guarded again server-side (FR-FIN-07): a lead who edits the
  * DOM to reveal the tab gets a refusal, not a number.
  */
+/** Spec 005 FR-PNL-04 — project lists group by category, in fixed order. */
+function byCategory<T extends { category?: Project["category"] }>(items: T[]) {
+  return PROJECT_CATEGORIES.map((category) => ({
+    category,
+    label: PROJECT_CATEGORY_LABEL[category],
+    items: items.filter((i) => (i.category ?? "client") === category),
+  })).filter((g) => g.items.length > 0);
+}
+
 export default function AnalyticsPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
 
@@ -138,22 +149,29 @@ export default function AnalyticsPage() {
                     No projects yet. A manager or admin adds them under Projects.
                   </p>
                 )}
-                {data.projects.map((project) => (
-                  <button
-                    key={project.id}
-                    onClick={() => setProjectId(project.id)}
-                    className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/60"
-                  >
-                    <span className="flex-1">
-                      <span className="text-sm font-medium">{project.name}</span>
-                      {project.client && (
-                        <span className="block text-xs text-muted-foreground">{project.client}</span>
-                      )}
-                    </span>
-                    {project.is_archived && <Badge variant="outline">archived</Badge>}
-                    {data.health[project.id] && <RagDot colour={data.health[project.id]} />}
-                    <span className="tabular-nums text-sm">{project.logged_hours}h</span>
-                  </button>
+                {byCategory(data.projects).map((group) => (
+                  <div key={group.category} className="divide-y">
+                    <p className="bg-muted/40 px-3 py-2 text-xs font-semibold text-muted-foreground">
+                      {group.label}
+                    </p>
+                    {group.items.map((project) => (
+                      <button
+                        key={project.id}
+                        onClick={() => setProjectId(project.id)}
+                        className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/60"
+                      >
+                        <span className="flex-1">
+                          <span className="text-sm font-medium">{project.name}</span>
+                          {project.client && (
+                            <span className="block text-xs text-muted-foreground">{project.client}</span>
+                          )}
+                        </span>
+                        {project.is_archived && <Badge variant="outline">archived</Badge>}
+                        {data.health[project.id] && <RagDot colour={data.health[project.id]} />}
+                        <span className="tabular-nums text-sm">{project.logged_hours}h</span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </CardContent>
             </Card>
@@ -688,18 +706,25 @@ function MoneyTab({
           <CardDescription>Open a project for its revenue, cost and margin.</CardDescription>
         </CardHeader>
         <CardContent className="divide-y p-0">
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              onClick={() => onOpenProject(project.id)}
-              className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/60"
-            >
-              <span className="flex-1 text-sm font-medium">{project.name}</span>
-              {project.is_archived && <Badge variant="outline">archived</Badge>}
-              <span className="tabular-nums text-sm text-muted-foreground">
-                {project.logged_hours}h
-              </span>
-            </button>
+          {byCategory(projects).map((group) => (
+            <div key={group.category} className="divide-y">
+              <p className="bg-muted/40 px-3 py-2 text-xs font-semibold text-muted-foreground">
+                {group.label}
+              </p>
+              {group.items.map((project) => (
+                <button
+                  key={project.id}
+                  onClick={() => onOpenProject(project.id)}
+                  className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/60"
+                >
+                  <span className="flex-1 text-sm font-medium">{project.name}</span>
+                  {project.is_archived && <Badge variant="outline">archived</Badge>}
+                  <span className="tabular-nums text-sm text-muted-foreground">
+                    {project.logged_hours}h
+                  </span>
+                </button>
+              ))}
+            </div>
           ))}
         </CardContent>
       </Card>
@@ -719,7 +744,7 @@ function MonthlyProfit({ currency }: { currency: string }) {
   // Spec 006 §Y — a full calendar or financial year, remembered on this device.
   const frame = useYearFrame();
   const { data, error } = useAsync<Pnl>(() => getPnl(frame.start, frame.end), [frame.start, frame.end]);
-  const [view, setView] = useState<"people" | "projects">("people");
+  const [view, setView] = useState<"people" | "projects" | "categories">("people");
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -729,17 +754,31 @@ function MonthlyProfit({ currency }: { currency: string }) {
   const pct = (v: string | null) => (v === null ? "—" : `${Number(v).toFixed(0)}%`);
   const amt = (v: string | null) => (v === null ? "?" : formatMoney(v));
 
-  const rows =
+  type Row = { key: string; name: string; cells: PnlCell[]; note: string | null; heading?: boolean };
+  const visibleProjects = data.projects.filter(
+    (p) => !p.is_archived || p.cells.some((c) => Number(c.revenue) > 0)
+  );
+  const rows: Row[] =
     view === "people"
-      ? data.people.map((p) => ({ key: p.user_id, name: p.display_name, cells: p.cells, note: null as string | null }))
-      : data.projects
-          .filter((p) => !p.is_archived || p.cells.some((c) => Number(c.revenue) > 0))
-          .map((p) => ({
-            key: p.project_id,
-            name: p.project_name,
-            cells: p.cells,
-            note: p.revenue !== null && !p.has_timeline ? "no phases, so no monthly revenue" : null,
-          }));
+      ? data.people.map((p) => ({ key: p.user_id, name: p.display_name, cells: p.cells, note: null }))
+      : view === "categories"
+        ? data.categories.map((c) => ({ key: c.category, name: c.label, cells: c.cells, note: null }))
+        : // Spec 005 FR-PNL-04 — projects grouped under their category's total.
+          byCategory(visibleProjects).flatMap((group) => [
+            {
+              key: `cat-${group.category}`,
+              name: group.label,
+              cells: data.categories.find((c) => c.category === group.category)?.cells ?? [],
+              note: null,
+              heading: true,
+            },
+            ...group.items.map((p) => ({
+              key: p.project_id,
+              name: p.project_name,
+              cells: p.cells as PnlCell[],
+              note: p.revenue !== null && !p.has_timeline ? "no phases, so no monthly revenue" : null,
+            })),
+          ]);
 
   return (
     <Card>
@@ -758,6 +797,13 @@ function MonthlyProfit({ currency }: { currency: string }) {
             </Button>
             <Button variant={view === "projects" ? "secondary" : "outline"} size="sm" onClick={() => setView("projects")}>
               Projects
+            </Button>
+            <Button
+              variant={view === "categories" ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setView("categories")}
+            >
+              Categories
             </Button>
             <YearFrameControl frame={frame} />
           </div>
@@ -785,7 +831,9 @@ function MonthlyProfit({ currency }: { currency: string }) {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
-                <th className="sticky left-0 bg-card p-2 font-medium">{view === "people" ? "Person" : "Project"}</th>
+                <th className="sticky left-0 bg-card p-2 font-medium">
+                  {view === "people" ? "Person" : view === "categories" ? "Category" : "Project"}
+                </th>
                 {data.months.map((m) => (
                   <th key={m.period} className="p-2 text-right font-medium whitespace-nowrap">
                     {label(m.period)}
@@ -798,8 +846,13 @@ function MonthlyProfit({ currency }: { currency: string }) {
             </thead>
             <tbody className="divide-y">
               {rows.map((row) => (
-                <tr key={row.key}>
-                  <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">
+                <tr key={row.key} className={cn(row.heading && "bg-muted/40")}>
+                  <td
+                    className={cn(
+                      "sticky left-0 p-2 font-medium whitespace-nowrap",
+                      row.heading ? "bg-muted/40 font-semibold" : "bg-card"
+                    )}
+                  >
                     {row.name}
                     {row.note && <span className="block text-[10px] font-normal text-muted-foreground">{row.note}</span>}
                   </td>

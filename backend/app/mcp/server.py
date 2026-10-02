@@ -376,8 +376,8 @@ async def resources(ctx: Context, start: str | None = None, end: str | None = No
 
 @mcp.tool(annotations=READ)
 async def monthly_pnl(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
-    """MANAGERS AND ADMINS. Revenue, cost, profit and profit % per person and
-    per project, month by month (start/end as YYYY-MM; default 3 months back
+    """MANAGERS AND ADMINS. Revenue, cost, profit and profit % per person, per
+    project and per project category, month by month (start/end as YYYY-MM; default 3 months back
     to 5 ahead). Past months are actual, current and future are planned. A
     cell with complete=false omits unrated days — say so when quoting it.
     Sorted by name; never present as a ranking."""
@@ -406,28 +406,38 @@ async def allocatable_people(ctx: Context) -> list:
 
 @mcp.tool(annotations=READ)
 async def list_projects(ctx: Context) -> list:
-    """LEADS, MANAGERS AND ADMINS. Every project with phases; revenue only for
-    managers and admins."""
+    """LEADS, MANAGERS AND ADMINS. Every project with its category and phases;
+    revenue only for managers and admins."""
     return await _api(ctx, "GET", "/admin/projects")
 
 
 @mcp.tool(annotations=WRITE)
 async def create_project(
-    ctx: Context, name: str, client: str | None = None, revenue: str | None = None
+    ctx: Context,
+    name: str,
+    client: str | None = None,
+    revenue: str | None = None,
+    category: str = "client",
 ) -> dict:
     """LEADS, MANAGERS AND ADMINS. Create a project. CONFIRM FIRST. Revenue is
     the contract value or internal budget, as a decimal string, optional;
-    only a manager or admin may set it."""
+    only a manager or admin may set it. category: client (paid client
+    engagement, default) | poc (client POC or general) | product (Nunnari
+    product development) | internal (internal tools, applications, website)."""
     return await _api(
-        ctx, "POST", "/admin/projects", body={"name": name, "client": client, "revenue": revenue}
+        ctx,
+        "POST",
+        "/admin/projects",
+        body={"name": name, "client": client, "revenue": revenue, "category": category},
     )
 
 
 @mcp.tool(annotations=WRITE)
 async def update_project(ctx: Context, project_id: str, changes: dict[str, Any]) -> dict:
     """LEADS, MANAGERS AND ADMINS. Change a project. CONFIRM FIRST. changes may
-    hold name, client, revenue (decimal string; managers and admins only) and
-    is_archived (archive, never delete)."""
+    hold name, client, revenue (decimal string; managers and admins only),
+    category (client | poc | product | internal) and is_archived (archive,
+    never delete)."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 
 

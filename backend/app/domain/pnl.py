@@ -203,6 +203,20 @@ def shares(weights: dict[str, Decimal]) -> dict[str, Decimal]:
 # ---------------------------------------------------------------------------
 
 
+def sum_cells(cells: list["Cell"], basis: str) -> "Cell":
+    """Total of several cells for one month — spec 005 FR-PNL-04. Cost is
+    unknown if any cost is; complete only if every cell is."""
+    cost: Decimal | None = ZERO
+    for c in cells:
+        cost = None if (cost is None or c.cost is None) else cost + c.cost
+    return Cell(
+        revenue=sum((c.revenue for c in cells), ZERO),
+        cost=cost,
+        basis=basis,
+        complete=all(c.complete for c in cells),
+    )
+
+
 @dataclass(frozen=True)
 class Cell:
     revenue: Decimal

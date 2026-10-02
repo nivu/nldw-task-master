@@ -194,6 +194,7 @@ class SettingUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 Phase = Literal["pre", "delivery", "support", "spillover"]
+ProjectCategory = Literal["client", "poc", "product", "internal"]
 
 
 Activity = Literal["learning", "internal", "admin", "other"]
@@ -237,6 +238,7 @@ class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     client: str | None = Field(default=None, max_length=160)
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
+    category: ProjectCategory = "client"
 
 
 class ProjectUpdate(BaseModel):
@@ -246,6 +248,7 @@ class ProjectUpdate(BaseModel):
     client: str | None = Field(default=None, max_length=160)
     is_archived: bool | None = None
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
+    category: ProjectCategory | None = None
 
 
 class PhaseIn(BaseModel):

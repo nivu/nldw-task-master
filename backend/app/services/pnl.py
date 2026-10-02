@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain import pnl
+from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
 from app.services import supabase as db
 from app.services.timesheets import holidays_between
@@ -148,6 +149,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     month_meta = []
     person_cells: dict[str, list[dict]] = {p["id"]: [] for p in people}
     project_cells: dict[str, list[dict]] = {p["id"]: [] for p in projects}
+    category_cells: dict[str, list[dict]] = {c: [] for c in rules.PROJECT_CATEGORIES}
     totals = []
     unrated_ids: set[str] = set()
 
@@ -167,6 +169,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
 
         person_revenue: dict[str, Decimal] = defaultdict(lambda: ZERO)
         unattributed_total = ZERO
+        by_category: dict[str, list[pnl.Cell]] = defaultdict(list)
 
         for project in projects:
             pid = project["id"]
@@ -251,12 +254,18 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                 and (revenue is None or windows[pid] is not None)
                 and not unattributed,
             )
+            by_category[project.get("category", "client")].append(cell)
             project_cells[pid].append(
                 {
                     **cell.as_dict(),
                     "unattributed": unattributed,
                     "no_timeline": revenue is not None and windows[pid] is None and not mine,
                 }
+            )
+
+        for category in rules.PROJECT_CATEGORIES:
+            category_cells[category].append(
+                pnl.sum_cells(by_category[category], basis).as_dict()
             )
 
         total_revenue = unattributed_total
@@ -307,6 +316,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                     "project_id": p["id"],
                     "project_name": p["name"],
                     "is_archived": p["is_archived"],
+                    "category": p.get("category", "client"),
                     "has_timeline": windows[p["id"]] is not None,
                     "revenue": str(p["revenue"]) if p.get("revenue") is not None else None,
                     # Spec 006 FR-MILE-03 — milestones that do not add up.
@@ -317,6 +327,15 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
             ),
             key=lambda r: r["project_name"],
         ),
+        # Spec 005 FR-PNL-04 — fixed category order, never sorted by money.
+        "categories": [
+            {
+                "category": c,
+                "label": rules.PROJECT_CATEGORY_LABELS[c],
+                "cells": category_cells[c],
+            }
+            for c in rules.PROJECT_CATEGORIES
+        ],
         "totals": totals,
         "unrated": sorted(
             ({"user_id": uid, "display_name": names.get(uid, "—")} for uid in unrated_ids),
