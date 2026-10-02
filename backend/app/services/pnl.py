@@ -286,7 +286,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                 complete=mc.complete,
             )
             person_cells[uid].append(
-                {**cell.as_dict(), "unrated_days": mc.working_days - mc.covered_days}
+                {**cell.as_dict(), "unrated_days": mc.missing_days}
             )
             total_revenue += cell.revenue
             if cost is None:

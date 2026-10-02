@@ -64,12 +64,27 @@ class TestMonthCost:
         assert c.cost == D("100000") * 11 / 22 + D("200000") * 11 / 22
         assert c.complete
 
-    def test_a_gap_is_incomplete_and_named_by_the_caller(self):
+    def test_a_gap_between_periods_is_incomplete_and_named_by_the_caller(self):
+        before = period("1200000", date(2026, 1, 1), date(2026, 9, 10))  # 8 working days
+        after = period("1200000", date(2026, 9, 21))  # 8 working days
+        c = pnl.month_cost([before, after], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS)
+        assert not c.complete and not c.unknown
+        assert c.missing_days == 6
+
+    def test_days_before_joining_are_not_missing(self):
+        # Joined mid-month: the first half is before they worked here.
         c = pnl.month_cost(
             [period("1200000", date(2026, 9, 16))], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS
         )
-        assert not c.complete and not c.unknown
-        assert c.covered_days == 11
+        assert c.complete and not c.unknown
+        assert c.covered_days == 11 and c.missing_days == 0
+
+    def test_a_month_wholly_before_joining_costs_nothing_and_is_complete(self):
+        c = pnl.month_cost(
+            [period("780000", date(2026, 10, 1))], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS
+        )
+        assert c.complete and not c.unknown
+        assert c.cost == 0
 
     def test_no_period_at_all_is_unknown(self):
         c = pnl.month_cost([], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS)

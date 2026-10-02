@@ -123,15 +123,23 @@ class MonthCost:
     cost: Decimal  # what the covered days cost
     covered_days: int
     working_days: int
+    # Working days on or after the person's first CTC period. Days before it
+    # are before they joined: they cost nothing and are not missing a CTC.
+    # With no period at all, every working day is expected.
+    expected_days: int
+
+    @property
+    def missing_days(self) -> int:
+        return self.expected_days - self.covered_days
 
     @property
     def complete(self) -> bool:
-        return self.working_days > 0 and self.covered_days == self.working_days
+        return self.working_days > 0 and self.covered_days == self.expected_days
 
     @property
     def unknown(self) -> bool:
-        """No period covers any working day — cost is unknown, never zero."""
-        return self.working_days > 0 and self.covered_days == 0
+        """No period covers any expected day — cost is unknown, never zero."""
+        return self.expected_days > 0 and self.covered_days == 0
 
 
 def month_cost(periods: list[Period], first: date, last: date, holidays: set[date]) -> MonthCost:
@@ -148,7 +156,13 @@ def month_cost(periods: list[Period], first: date, last: date, holidays: set[dat
         covered += days
         if total_days:
             cost += period.monthly * Decimal(days) / Decimal(total_days)
-    return MonthCost(cost=cost, covered_days=covered, working_days=total_days)
+    expected = total_days
+    if periods:
+        joined = min(p.starts_on for p in periods)
+        expected = working_days(max(first, joined), last, holidays) if joined <= last else 0
+    return MonthCost(
+        cost=cost, covered_days=covered, working_days=total_days, expected_days=expected
+    )
 
 
 # ---------------------------------------------------------------------------
