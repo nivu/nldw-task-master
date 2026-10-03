@@ -23,9 +23,14 @@ logged; it only stops them signing in.
 ### Roles
 
 - **User** — own leave and time.
-- **Lead** — also approves leave for their reports.
-- **Manager** — also creates projects, allocates people, and sees cost and
+- **Lead** — also approves leave for their reports, and runs projects for
+  them: creates projects, sets phases and categories, allocates their own
+  reports. Never sees money.
+- **Manager** — also sets revenue, allocates anyone, and sees cost and
   margin. Managers see every project.
+
+A lead's team is everyone whose **approver** is set to them under People. A
+lead with nobody assigned has an empty team and cannot allocate anyone.
 - **Admin** — everything.
 
 Only an admin can change a role.
@@ -45,7 +50,10 @@ person's history holds their past, current and upcoming figures at once:
 Every project is costed at the CTC in force on the day each hour was logged,
 and every future month is planned at the CTC in force on those days. A
 person with no CTC for a date makes every figure for that date report as
-**incomplete**, never cheaper. Only managers and admins see CTC; the person
+**incomplete**, never cheaper. Days before a person's first CTC period are
+before they joined: they cost nothing and are not flagged. For someone the
+company does not pay — a partner's staff, an unpaid intern — record a CTC of
+0 so their figures read complete. Only managers and admins see CTC; the person
 never does, and it is never called salary.
 
 ## Locations

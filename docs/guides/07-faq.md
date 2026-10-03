@@ -46,6 +46,7 @@ Yes. The portal warns you and then saves it.
 **A figure on Effort says "incomplete".**
 Somebody on that project has no CTC recorded for a day they worked, so their
 hours cost an unknown amount. An admin records CTC under Admin → People.
+Months before someone's first CTC do not count — they had not joined yet.
 
 **Where is my CTC, or how much revenue I brought in?**
 Not shown to you, deliberately. Those figures are for running projects, not

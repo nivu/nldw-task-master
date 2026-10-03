@@ -63,6 +63,15 @@ sits beside the hours behind it. Read it, talk about it, then **Close** it. It
 is their words about their work. There is no rating, no score, and nothing is
 compared across people.
 
+## Projects
+
+**Projects** is open to you too. You can create a project, give it a category
+and phases, archive it, and allocate **your own reports** to it — the people
+whose approver you are. Someone outside your team is allocated by a manager or
+admin. You see only your reports' allocations, and you never see or set
+revenue or milestones; that is the manager's side of a project. See *For
+managers* for how phases and categories work.
+
 ## Effort
 
 **Effort** shows where your reports' hours are going: per project, what people

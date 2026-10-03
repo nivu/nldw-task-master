@@ -146,7 +146,7 @@ export default function AnalyticsPage() {
               <CardContent className="divide-y p-0">
                 {data.projects.length === 0 && (
                   <p className="p-4 text-sm text-muted-foreground">
-                    No projects yet. A manager or admin adds them under Projects.
+                    No projects yet. A lead, manager or admin adds them under Projects.
                   </p>
                 )}
                 {byCategory(data.projects).map((group) => (

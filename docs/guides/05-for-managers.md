@@ -13,19 +13,38 @@ reading what they cost.
 A manager does not approve leave unless they are also somebody's approver, and
 does not manage people, allowances or holidays. Those are admin jobs.
 
+Leads use the same **Projects** page without the money: they can create
+projects, set phases and categories, and allocate their own reports, but
+never see or set revenue or milestones.
+
 ## Projects
 
-**Projects** lists every project. To add one, give it a name, a client
-(leave blank for internal work) and, if known, its **revenue** — the contract
-value or the internal budget in the company's currency.
+**Projects** lists every project, grouped by category. To add one, give it a
+name, a client (leave blank for internal work), a **category** and, if known,
+its **revenue** — the contract value or the internal budget in the company's
+currency.
+
+The category says what kind of work the project is, and every report groups
+by it:
+
+- **Paid client engagement** — the default.
+- **Client POC / general** — trials and general work for a client.
+- **Nunnari product development** — our own products.
+- **Internal tools / applications / website**.
+
+Change a project's category from the dropdown beside its name.
 
 Open **Phases, people & revenue** on a project to:
 
 - **Set revenue** later, or change it. Every change is recorded.
-- **Set a phase** — *Pre-project*, *Delivery* or *Post-delivery support* — with
-  dates and, optionally, a budget in hours. Hours logged inside a phase's dates
-  count against that phase, so a delivery that overran can be told apart from
-  a year of unbudgeted support.
+- **Set a phase** — *Pre-project*, *Delivery*, *Post-delivery support* or
+  *Spill-over* — with dates and, optionally, a budget in hours. Hours logged
+  inside a phase's dates count against that phase, so a delivery that overran
+  can be told apart from a year of unbudgeted support.
+- **Spill-over** is delivery work that ran past the agreed timeline, unpaid.
+  People stay allocated and log against it and their cost counts, but the
+  project's revenue is **not** spread into it — so the overrun shows as lost
+  profit, and the months that were sold keep their revenue.
 - **Allocate** a person for a date range at a percentage of their capacity.
   Fifty percent means half of their working days in that range, after
   weekends, holidays and approved leave are taken out.
@@ -90,13 +109,16 @@ marked **incomplete** and the portal names who. Their hours are an unknown
 cost, not a free one. Ask an admin to record the CTC.
 
 **Money → By month** lays revenue, cost and profit out month by month, per
-person and per project. Months that have ended use the hours people logged;
+person, per project (grouped under each category's total) and per
+**category**. Months that have ended use the hours people logged;
 the current month and the future use allocations, and are marked *planned*.
-A project's revenue is spread evenly over its timeline, from its first phase
-start to its last phase end, so a project with revenue but no phases shows
-no monthly revenue until a phase is set. A person's monthly cost is their CTC
-for that month. A cell marked *incomplete* is missing somebody's CTC for some
-of its days.
+A project's revenue is spread evenly over the working days of its timeline,
+from its first phase start to its last phase end, leaving out any spill-over
+phase. A project with revenue but no phases shows no monthly revenue until a
+phase is set. A month's share is the same whichever range of months you are
+looking at. A person's monthly cost is their CTC for that month; months before
+their first CTC are before they joined and cost nothing. A cell marked
+*incomplete* is missing somebody's CTC for some of its days.
 
 Every month-based view — By month, the timeline in months, Utilisation and the
 hiring signal — shows a whole year at a time. Switch between **Calendar year**
