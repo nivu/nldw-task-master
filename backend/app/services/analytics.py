@@ -180,6 +180,10 @@ def forecast(start: date, end: date) -> dict[str, Any]:
     raw calendar days tells you a team of three has sixty days next month while
     two of them are away for a fortnight, and the plan built on it is wrong
     before anybody starts.
+
+    Tentative projects (spec 002 FR-PROJ-07) are included and marked;
+    `over_allocated` counts confirmed allocations only, and
+    `over_with_tentative` the same with the pipeline added.
     """
     allocations = db.list_allocations()
     if not allocations:
@@ -188,6 +192,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
             "end": end.isoformat(),
             "projects": [],
             "over_allocated": [],
+            "over_with_tentative": [],
         }
 
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
@@ -202,6 +207,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
     for allocation in allocations:
         a_start = date.fromisoformat(allocation["starts_on"])
         a_end = date.fromisoformat(allocation["ends_on"])
+        tentative = rules.is_tentative(projects.get(allocation["project_id"], {}))
         typed.append(
             rules.Allocation(
                 user_id=allocation["user_id"],
@@ -209,6 +215,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
                 starts_on=a_start,
                 ends_on=a_end,
                 percent=Decimal(str(allocation["percent"])),
+                tentative=tentative,
             )
         )
 
@@ -228,6 +235,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
             {
                 "project_id": allocation["project_id"],
                 "project_name": projects.get(allocation["project_id"], {}).get("name", "—"),
+                "tentative": tentative,
                 "capacity_hours": ZERO,
                 "people": [],
             },
@@ -242,10 +250,24 @@ def forecast(start: date, end: date) -> dict[str, Any]:
             }
         )
 
-    flagged = rules.over_allocations(typed, start, end)
-    # Collapsed to a run per person: an admin needs "Sriram is over-allocated
-    # for three weeks", not sixty rows saying the same thing once per day.
-    over = {}
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "projects": [
+            {**bucket, "capacity_hours": str(bucket["capacity_hours"])}
+            for bucket in sorted(per_project.values(), key=lambda b: b["project_name"])
+        ],
+        "over_allocated": _runs(rules.over_allocations(typed, start, end), people),
+        "over_with_tentative": _runs(
+            rules.over_allocations(typed, start, end, include_tentative=True), people
+        ),
+    }
+
+
+def _runs(flagged: list[tuple[str, date, Decimal]], people: dict[str, str]) -> list[dict]:
+    """Collapsed to a run per person: an admin needs "Sriram is over-allocated
+    for three weeks", not sixty rows saying the same thing once per day."""
+    over: dict[str, dict] = {}
     for user_id, day, total in flagged:
         entry = over.setdefault(
             user_id,
@@ -262,16 +284,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
         entry["last"] = day.isoformat()
         if Decimal(entry["peak_percent"]) < total:
             entry["peak_percent"] = str(total)
-
-    return {
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "projects": [
-            {**bucket, "capacity_hours": str(bucket["capacity_hours"])}
-            for bucket in sorted(per_project.values(), key=lambda b: b["project_name"])
-        ],
-        "over_allocated": sorted(over.values(), key=lambda o: o["display_name"]),
-    }
+    return sorted(over.values(), key=lambda o: o["display_name"])
 
 
 def current_work(user_ids: list[str], *, days: int = 7) -> list[dict[str, Any]]:
@@ -504,10 +517,16 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
     happen — "Sriram is on Acme until the end of the month" — and a day grid
     over a quarter is unreadable. Over-allocation is still computed daily
     (FR-ALLOC-04) and the week reports its peak.
+
+    Tentative allocations (spec 002 FR-PROJ-07) are listed and marked, but
+    `allocated_pct` and `over` count confirmed work only; `with_tentative_pct`
+    and `over_with_tentative` add the pipeline.
     """
     people = [p for p in db.list_profiles(active_only=True)]
     allocations = db.list_allocations()
-    projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
+    rows_by_id = {p["id"]: p for p in db.list_projects(include_archived=True)}
+    projects = {pid: p["name"] for pid, p in rows_by_id.items()}
+    tentative_ids = {pid for pid, p in rows_by_id.items() if rules.is_tentative(p)}
     holidays = holidays_between(start, end)
     leave = leave_days_for([p["id"] for p in people], start, end)
 
@@ -528,6 +547,7 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
             sunday = monday + timedelta(days=6)
             segments: dict[str, Decimal] = {}
             peak = ZERO
+            peak_all = ZERO
             working = 0
             leave_days = ZERO
             day = monday
@@ -536,6 +556,7 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
                     working += 1
                     leave_days += min(my_leave.get(day, ZERO), Decimal("1"))
                     total = ZERO
+                    total_all = ZERO
                     for a in mine:
                         if (
                             date.fromisoformat(a["starts_on"])
@@ -543,17 +564,22 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
                             <= date.fromisoformat(a["ends_on"])
                         ):
                             pct = Decimal(str(a["percent"]))
-                            total += pct
+                            total_all += pct
+                            if a["project_id"] not in tentative_ids:
+                                total += pct
                             segments[a["project_id"]] = max(
                                 segments.get(a["project_id"], ZERO), pct
                             )
                     peak = max(peak, total)
+                    peak_all = max(peak_all, total_all)
                 day += timedelta(days=1)
             cells.append(
                 {
                     "week_start": monday.isoformat(),
                     "allocated_pct": str(peak),
                     "over": peak > Decimal("100"),
+                    "with_tentative_pct": str(peak_all),
+                    "over_with_tentative": peak_all > Decimal("100"),
                     "leave_days": str(leave_days),
                     "working_days": working,
                     "projects": [
@@ -561,6 +587,7 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
                             "project_id": pid,
                             "project_name": projects.get(pid, "—"),
                             "percent": str(pct),
+                            "tentative": pid in tentative_ids,
                         }
                         for pid, pct in sorted(
                             segments.items(), key=lambda kv: projects.get(kv[0], "")

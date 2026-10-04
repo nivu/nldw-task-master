@@ -126,6 +126,7 @@ Per project, per month: revenue as §3.2; cost = Σ over people of (hours × hou
 | FR-PNL-02 | Incompleteness MUST be loud: a person unrated for any day in the month, or a project with revenue but no timeline, is flagged on that cell and named. Days before a person's first CTC period are before they joined, and days after their last CTC period has ended (it has an end date and no later period follows) are after they left: either way they cost nothing and are not unrated. A gap between two periods is still unrated. A person with no CTC period at all is unrated for every day. A person since deactivated still appears in, and counts towards, any month their CTC periods cover. If a deactivated person's CTC has no end date, it is treated as ending the day before today — they cost nothing in any later month — and every month it covers up to then is flagged incomplete and they are named, because the day they left is unknown. Giving the period its real end date clears the flag. |
 | FR-PNL-03 | Per-person tables sort by name. No column sorts by money. |
 | FR-PNL-04 | The monthly table MUST also total revenue, cost and profit per project category (`002` FR-PROJ-06), and project lists MUST group by category. A category total is incomplete if any project in it is. |
+| FR-PNL-05 | A tentative project (`002` FR-PROJ-07) MUST be left out of the project rows, the category totals, per-person attributed revenue and the company totals, and its people's unrated days out of the confirmed unrated list. Its figures MUST instead appear in a separate block labelled pipeline: per tentative project and per month, revenue and the planned cost of the people allocated to it, and the month's pipeline totals with probability-weighted revenue (revenue × probability / 100). A month's weighted revenue is unknown, not zero, if a tentative project with revenue that month has no probability. The pipeline cost is already inside the people's cost (they are paid anyway) and MUST NOT be added to any total. |
 
 ### 4.3 Timeline — FR-TL
 
@@ -135,6 +136,7 @@ Per project, per month: revenue as §3.2; cost = Σ over people of (hours × hou
 | FR-TL-02 | Each allocation is a bar from its start to its end, labelled with the project, one colour per project. |
 | FR-TL-03 | A bar's height is its percent of the person; 100% fills the row, two 50% bars stack. Over 100% overflows visibly and is flagged. |
 | FR-TL-04 | Manager and admin only. |
+| FR-TL-05 | A bar on a tentative project (`002` FR-PROJ-07) MUST look distinct (faded, dashed) and be left out of the over-100% flag; a person over 100% only with tentative work is noted separately. |
 
 ---
 

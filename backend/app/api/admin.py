@@ -721,6 +721,9 @@ def _present_project(row: dict, user, phases: list[dict] | None = None) -> dict:
         "client": row.get("client"),
         "is_archived": row["is_archived"],
         "category": row.get("category", "client"),
+        # Spec 002 FR-PROJ-07 — pipeline, and the chance it is won. Not money.
+        "status": row.get("status", "confirmed"),
+        "probability": row.get("probability"),
     }
     if user.is_manager:
         out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
@@ -746,6 +749,8 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "client": (payload.client or "").strip() or None,
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
             "category": payload.category,
+            "status": payload.status,
+            "probability": payload.probability,
             "created_by": user.id,
         }
     )
@@ -759,6 +764,8 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "client": row.get("client"),
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
             "category": payload.category,
+            "status": payload.status,
+            "probability": payload.probability,
         },
     )
     return _present_project(row, user, [])
@@ -778,6 +785,8 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
     changes = payload.model_dump(exclude_unset=True)
     if changes.get("category", "") is None:
         del changes["category"]  # a category cannot be cleared, only changed
+    if changes.get("status", "") is None:
+        del changes["status"]  # nor a status; probability can be cleared
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
     if "revenue" in changes and not user.is_manager:

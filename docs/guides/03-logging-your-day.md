@@ -15,7 +15,8 @@ under a minute, at the end of the day, on a phone.
 2. Under **Projects**, tap the project you worked on. Projects you are
    allocated to are listed; you may also log against a project you are not
    allocated to, and it is simply marked *not allocated*. An archived project
-   is not offered.
+   is not offered, and neither is a *tentative* one — work that is planned but
+   not yet won.
 3. Under **Not for a project**, tap **Learning**, **Internal work**, **Admin**
    or **Other** for time that was not client work.
 4. For each line, write **What did you do?** — one or two sentences. This is

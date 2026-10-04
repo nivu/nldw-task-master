@@ -98,11 +98,13 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
 
     # Projects to offer: the ones allocated for this date, plus any already
     # logged (so an entry made before an allocation ended stays editable).
-    # An archived project is offered only when already logged (FR-PROJ-04).
+    # An archived or tentative project is offered only when already logged
+    # (FR-PROJ-04, FR-PROJ-07).
     offered_ids = {
         a["project_id"]
         for a in allocations
         if not projects.get(a["project_id"], {}).get("is_archived")
+        and not rules.is_tentative(projects.get(a["project_id"], {}))
     } | {e["project_id"] for e in entries if e.get("project_id")}
 
     booking = db.find_booking_on(user_id, day, sorted(CONSUMING_STATES))
@@ -208,6 +210,14 @@ def save_day(
         problem = rules.archived_entry_refusal(
             project_name=known[entry.project_id]["name"],
             is_archived=known[entry.project_id]["is_archived"],
+            already_logged=entry.key in existing,
+        )
+        if problem:
+            raise TimesheetRefused(problem)
+        # FR-PROJ-07 — no time on work not yet won.
+        problem = rules.tentative_entry_refusal(
+            project_name=known[entry.project_id]["name"],
+            is_tentative=rules.is_tentative(known[entry.project_id]),
             already_logged=entry.key in existing,
         )
         if problem:

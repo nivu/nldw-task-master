@@ -27,6 +27,7 @@ import type {
   Phase,
   Project,
   ProjectCategory,
+  ProjectStatus,
 } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { PHASE_LABEL, PROJECT_CATEGORIES, PROJECT_CATEGORY_LABEL } from "@/lib/api/types";
@@ -46,6 +47,10 @@ const today = () => isoDate(new Date());
  * An allocation over 100% is recorded and then reported, not refused
  * (FR-ALLOC-04). Over-allocating somebody mid-crunch is a real thing a manager
  * does, and a product that cannot record it cannot warn about it either.
+ *
+ * A tentative project (FR-PROJ-07) is pipeline — planned, not yet won. It takes
+ * phases, revenue and allocations so the work can be pencilled in, but no
+ * time, and its money stays out of the confirmed profit.
  *
  * Spec 003 opens this to managers (FR-ROLE-02) and adds revenue (FR-FIN-02).
  * Revenue is money, so it and milestones render only when `showMoney`; leads
@@ -74,6 +79,8 @@ export function ProjectsPanel({
   const [client, setClient] = useState("");
   const [revenue, setRevenue] = useState("");
   const [category, setCategory] = useState<ProjectCategory>("client");
+  const [status, setStatus] = useState<ProjectStatus>("confirmed");
+  const [probability, setProbability] = useState("");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -99,6 +106,9 @@ export function ProjectsPanel({
                   name,
                   client: client.trim() || null,
                   category,
+                  status,
+                  probability:
+                    status === "tentative" && probability.trim() ? Number(probability) : null,
                   ...(showMoney ? { revenue: revenue.trim() || null } : {}),
                 });
                 onDone(`Added ${name}.`);
@@ -106,6 +116,8 @@ export function ProjectsPanel({
                 setClient("");
                 setRevenue("");
                 setCategory("client");
+                setStatus("confirmed");
+                setProbability("");
               } catch (err) {
                 onError(errorMessage(err));
               } finally {
@@ -141,6 +153,34 @@ export function ProjectsPanel({
                 ))}
               </select>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pstatus">Status</Label>
+              <select
+                id="pstatus"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as ProjectStatus)}
+              >
+                <option value="confirmed">Confirmed</option>
+                <option value="tentative">Tentative (pipeline)</option>
+              </select>
+            </div>
+            {status === "tentative" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="pprobability">Chance of winning (%)</Label>
+                <Input
+                  id="pprobability"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                  className="w-28"
+                  value={probability}
+                  onChange={(e) => setProbability(e.target.value)}
+                  placeholder="optional"
+                />
+              </div>
+            )}
             {showMoney && (
               <div className="space-y-1.5">
                 {/* FR-FIN-02 — contract value or internal budget. What it is
@@ -175,7 +215,16 @@ export function ProjectsPanel({
               {PROJECT_CATEGORY_LABEL[cat]}
             </h2>
             {inCategory.map((project) => (
-              <Card key={project.id} className={project.is_archived ? "opacity-60" : undefined}>
+              <Card
+                key={project.id}
+                className={
+                  project.is_archived
+                    ? "opacity-60"
+                    : project.status === "tentative"
+                      ? "border-dashed"
+                      : undefined
+                }
+              >
                 <CardContent className="space-y-3 p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium">{project.name}</span>
@@ -183,6 +232,15 @@ export function ProjectsPanel({
                       {project.client ?? "Internal"}
                     </span>
                     {project.is_archived && <Badge variant="outline">archived</Badge>}
+                    {project.status === "tentative" && (
+                      <Badge variant="outline" className="border-dashed">
+                        Tentative
+                        {project.probability !== null && project.probability !== undefined
+                          ? ` · ${project.probability}%`
+                          : ""}
+                      </Badge>
+                    )}
+                    <StatusControl project={project} onDone={onDone} onError={onError} />
                     <select
                       aria-label={`Category of ${project.name}`}
                       className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
@@ -282,6 +340,81 @@ export function ProjectsPanel({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * FR-PROJ-07 — confirmed or tentative, and for a tentative project the chance
+ * it is won. Not money, so leads set it too. Confirming a won project is the
+ * same dropdown.
+ */
+function StatusControl({
+  project,
+  onDone,
+  onError,
+}: {
+  project: Project;
+  onDone: (m: string) => void;
+  onError: (m: string) => void;
+}) {
+  const status = project.status ?? "confirmed";
+  const [probability, setProbability] = useState(
+    project.probability !== null && project.probability !== undefined
+      ? String(project.probability)
+      : ""
+  );
+
+  return (
+    <>
+      <select
+        aria-label={`Status of ${project.name}`}
+        className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
+        value={status}
+        onChange={async (e) => {
+          const next = e.target.value as ProjectStatus;
+          try {
+            await updateProject(project.id, { status: next });
+            onDone(`${project.name} is now ${next}.`);
+          } catch (err) {
+            onError(errorMessage(err));
+          }
+        }}
+      >
+        <option value="confirmed">Confirmed</option>
+        <option value="tentative">Tentative</option>
+      </select>
+      {status === "tentative" && (
+        <form
+          className="flex items-center gap-1"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            try {
+              await updateProject(project.id, {
+                probability: probability.trim() ? Number(probability) : null,
+              });
+              onDone(`Chance of winning ${project.name} set.`);
+            } catch (err) {
+              onError(errorMessage(err));
+            }
+          }}
+        >
+          <Input
+            aria-label={`Chance of winning ${project.name} (%)`}
+            type="number"
+            min="0"
+            max="100"
+            step="5"
+            className="h-7 w-20 text-xs"
+            value={probability}
+            onChange={(e) => setProbability(e.target.value)}
+            placeholder="%"
+          />
+          <Button type="submit" variant="ghost" size="sm" className="h-7">
+            Set %
+          </Button>
+        </form>
+      )}
+    </>
   );
 }
 
@@ -644,6 +777,7 @@ function AllocationForm({
                 <span className="text-muted-foreground">
                   {allocation.display_name} @{allocation.percent}% · {allocation.starts_on} →{" "}
                   {allocation.ends_on}
+                  {project.status === "tentative" && " · tentative"}
                 </span>
                 {/* FR-ALLOC-06 — dates and percent are editable; the edit is audited. */}
                 <Button
