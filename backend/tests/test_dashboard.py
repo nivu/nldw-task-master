@@ -136,6 +136,7 @@ def _summary(**overrides) -> dict:
     base = {
         "money": {
             "currency": "INR",
+            "breakdown": True,
             "incomplete": {"unrated": [], "no_timeline": []},
             "unattributed": [],
         },
@@ -198,6 +199,12 @@ class TestAttention:
         assert alert["severity"] == "medium"
         assert "Acme (INR 50000.00 planned cost this month)" in alert["detail"]
         assert "Beta (cost unknown — incomplete)" in alert["detail"]
+
+    def test_spillover_is_not_costed_without_the_breakdown(self):
+        s = _summary(delivery__spillover=[{"project_name": "Acme", "cost": None}])
+        s["money"]["breakdown"] = False
+        (alert,) = dash.attention(s)
+        assert alert["detail"] == "In an unpaid spill-over phase: Acme."
 
     @pytest.mark.parametrize(("ratio", "alerts"), [("0.79", 1), ("0.80", 0), (None, 0)])
     def test_coverage_below_80_percent(self, ratio, alerts):

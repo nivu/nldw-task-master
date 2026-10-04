@@ -94,9 +94,14 @@ the change if they try it another way. Every grant and revoke is in the
 audit log. Who the owner is was set when the dashboard was installed and
 cannot be changed from the portal.
 
+The owner grants access from this admin page, so the owner needs to stay an
+active admin. Only the owner can change the owner's role or deactivate them;
+the portal refuses any other admin who tries.
+
 Access opens the dashboard only. The pages its figures link to (Effort,
 Projects, Approvals, Admin) keep their usual rules, so someone with
-dashboard access but no manager role sees the summary, not the breakdown.
+dashboard access but no manager role sees the summary, not the breakdown:
+company totals, but no money per category or per project.
 
 ## Locations
 

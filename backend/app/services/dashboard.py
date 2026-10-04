@@ -6,7 +6,8 @@ profit (spec 005), coverage (`002` FR-ANALYTICS-05), utilisation, health and
 invoicing (spec 006). Nothing here re-derives money; it picks months out of
 what those services return and hands the judgements to `domain/dashboard.py`.
 
-Who may call it is decided by the route (`DashboardDep`), never here.
+Who may call it is decided by the route (`DashboardDep`), never here; how
+much money it breaks down is the caller's role (FR-DASH-12).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from app.domain import dashboard as rules
 from app.domain import pnl
 from app.domain import timesheets as ts
 from app.domain import utilisation as calc
-from app.domain.calendar import today_in_company_tz
+from app.domain.calendar import is_weekend, today_in_company_tz
 from app.domain.invoicing import OVERDUE, PAYMENT_OVERDUE
 from app.domain.rules import OCCUPYING_STATES
 from app.services import analytics, settings_store, utilisation
@@ -45,7 +46,10 @@ def _trend_months(today: date) -> list[tuple[int, int]]:
     return pnl.months_between(first, today.replace(day=1))
 
 
-def summary() -> dict[str, Any]:
+def summary(breakdown: bool) -> dict[str, Any]:
+    """`breakdown` — the viewer is a manager or admin. Without it, money stays
+    at company level: per-category and per-project cost come from a handful of
+    people's CTC, which nobody below manager sees (`deps.require_manager`)."""
     today = today_in_company_tz()
     months = _trend_months(today)
     periods = [_period(y, m) for y, m in months]
@@ -70,6 +74,8 @@ def summary() -> dict[str, Any]:
     claims = db.list_compoff_credits(user_ids=active_ids, statuses=["pending"])
     today_block = {
         "date": today.isoformat(),
+        # The Team page's rule: on a weekend or holiday the counts say nothing.
+        "is_weekend": is_weekend(today),
         "holiday": holiday["name"] if holiday else None,
         "status": rules.day_status(active_ids, today_bookings),
         "pending_approvals": len(pending),
@@ -123,11 +129,13 @@ def summary() -> dict[str, Any]:
     project_cells = {p["project_id"]: p for p in report["projects"]}
     money = {
         "currency": currency,
+        "breakdown": breakdown,
         "this_month": _month(now),
         "last_month": _month(prev),
         "categories": [
             {"category": c["category"], "label": c["label"], **c["cells"][now]}
             for c in report["categories"]
+            if breakdown
         ],
         # FR-PNL-05 — pipeline, never profit: outside every figure above.
         "pipeline": {
@@ -218,8 +226,8 @@ def summary() -> dict[str, Any]:
                     "project_name": names.get(pid, "—"),
                     "starts_on": phase["starts_on"],
                     "ends_on": phase["ends_on"],
-                    "cost": cell["cost"],
-                    "revenue": cell["revenue"],
+                    "cost": cell["cost"] if breakdown else None,
+                    "revenue": cell["revenue"] if breakdown else None,
                     "complete": cell["complete"],
                 }
             )
@@ -240,10 +248,15 @@ def summary() -> dict[str, Any]:
         else {"people": [], "target_pct": str(utilisation.target())}
     )
     month_util = []
-    for i in range(len(months)):
+    for i, (_, last) in enumerate(month_windows):
         billable = sum((Decimal(p["months"][i]["billable"]) for p in util["people"]), ZERO)
         capacity = sum((Decimal(p["months"][i]["capacity"]) for p in util["people"]), ZERO)
-        pct = calc.pct(billable, capacity)
+        # FR-DASH-07 — as coverage: nobody logged before the portal, so null.
+        pct = (
+            None
+            if portal_start is not None and last < portal_start
+            else calc.pct(billable, capacity)
+        )
         month_util.append(
             {
                 "billable": str(billable),

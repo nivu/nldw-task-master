@@ -98,7 +98,7 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <MoneyCard money={d.money} />
         <CashCard cash={d.cash} />
-        <DeliveryCard delivery={d.delivery} currency={c} />
+        <DeliveryCard delivery={d.delivery} currency={c} breakdown={d.money.breakdown} />
         <PeopleCard people={d.people} />
       </div>
 
@@ -267,16 +267,21 @@ function TodayCard({ today }: { today: DashboardSummary["today"] }) {
         <CardDescription>{s.people} active people, company-wide.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Stat label="In" value={String(s.present)} />
-          <Stat label="Working from home" value={String(s.wfh)} />
-          <Stat
-            label="On leave"
-            value={String(away.reduce((sum, [, n]) => sum + n, 0))}
-            hint={away.map(([cat, n]) => `${CATEGORY_LABEL[cat] ?? cat} ${n}`).join(" · ") || undefined}
-          />
-          <Stat label="Unrecognised" value={String(s.unrecognised)} warn={s.unrecognised > 0} />
-        </div>
+        {/* The Team page's rule: nobody is "in" on a weekend or a holiday. */}
+        {today.holiday || today.is_weekend ? (
+          <p className="text-sm text-muted-foreground">{today.holiday ?? "Weekend"}</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat label="In" value={String(s.present)} />
+            <Stat label="Working from home" value={String(s.wfh)} />
+            <Stat
+              label="On leave"
+              value={String(away.reduce((sum, [, n]) => sum + n, 0))}
+              hint={away.map(([cat, n]) => `${CATEGORY_LABEL[cat] ?? cat} ${n}`).join(" · ") || undefined}
+            />
+            <Stat label="Unrecognised" value={String(s.unrecognised)} warn={s.unrecognised > 0} />
+          </div>
+        )}
         <Link href="/approvals" className="flex items-center gap-2 text-sm hover:underline">
           <span className="flex-1">
             <span className="font-medium tabular-nums">{today.pending_approvals}</span> leave request
@@ -423,7 +428,15 @@ function CashCard({ cash }: { cash: DashboardSummary["cash"] }) {
   );
 }
 
-function DeliveryCard({ delivery, currency }: { delivery: DashboardSummary["delivery"]; currency: string }) {
+function DeliveryCard({
+  delivery,
+  currency,
+  breakdown,
+}: {
+  delivery: DashboardSummary["delivery"];
+  currency: string;
+  breakdown: boolean;
+}) {
   const flagged = [...delivery.red.map((p) => ({ ...p, rag: "red" as Rag })), ...delivery.amber.map((p) => ({ ...p, rag: "amber" as Rag }))];
   return (
     <Card>
@@ -457,12 +470,19 @@ function DeliveryCard({ delivery, currency }: { delivery: DashboardSummary["deli
         {delivery.spillover.length > 0 && (
           <div>
             <p className="text-xs font-medium">In spill-over (unpaid)</p>
-            {delivery.spillover.map((s) => (
-              <p key={s.project_id} className={cn("text-xs", !s.complete && "text-amber-700 dark:text-amber-300")}>
-                {s.project_name}: {amount(currency, s.cost, s.complete)} planned cost this month, {amount(currency, s.revenue)} revenue
-                {!s.complete && " · incomplete"}
-              </p>
-            ))}
+            {delivery.spillover.map((s) =>
+              // FR-DASH-12 — below manager, named but not costed.
+              breakdown ? (
+                <p key={s.project_id} className={cn("text-xs", !s.complete && "text-amber-700 dark:text-amber-300")}>
+                  {s.project_name}: {amount(currency, s.cost, s.complete)} planned cost this month, {amount(currency, s.revenue)} revenue
+                  {!s.complete && " · incomplete"}
+                </p>
+              ) : (
+                <p key={s.project_id} className="text-xs">
+                  {s.project_name}
+                </p>
+              )
+            )}
           </div>
         )}
         {delivery.burn_over_80.length > 0 && (

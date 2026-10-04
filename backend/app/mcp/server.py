@@ -984,8 +984,9 @@ async def ceo_dashboard(ctx: Context) -> dict:
     unallocated people and allocations ending, twelve months of trend, and a
     list of alerts by severity. Refused unless the person is the owner or the
     owner has granted them dashboard access — whatever their role, admins
-    included. Figures with complete=false are missing a CTC or a timeline: say
-    so when quoting them. Pipeline is never profit."""
+    included. Per-category and per-project money is left out unless the person
+    is also a manager or admin. Figures with complete=false are missing a CTC
+    or a timeline: say so when quoting them. Pipeline is never profit."""
     return await _api(ctx, "GET", "/dashboard/summary")
 
 

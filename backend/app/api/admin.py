@@ -177,6 +177,12 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
         if changes["dashboard_access"] is None:
             raise ProblemDetail(422, "Dashboard access is either granted or not.")
 
+    # FR-DASH-03 — the owner grants through this admin route, so another admin
+    # demoting or deactivating the owner would leave every grant beyond recall.
+    if existing.get("is_owner") is True and not admin.is_owner:
+        if any(k in changes and changes[k] != existing.get(k) for k in ("role", "is_active")):
+            raise ProblemDetail(403, "Only the owner can change the owner's role or status.")
+
     if changes.get("lead_id") == user_id:
         raise ProblemDetail(422, "Somebody cannot be their own lead.")
 

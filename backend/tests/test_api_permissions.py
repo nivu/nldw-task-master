@@ -1109,6 +1109,75 @@ class TestDashboardAccess:
         assert r.status_code == 422
         assert inserted == []
 
+    @pytest.mark.parametrize("body", [{"role": "user"}, {"role": "manager"}, {"is_active": False}])
+    def test_another_admin_cannot_demote_or_deactivate_the_owner(self, as_, fake, body):
+        r = as_("u-admin").patch(f"{API}/users/u-owner", json=body)
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Only the owner can change the owner's role or status."
+        assert fake.profiles["u-owner"]["role"] == "admin"
+        assert fake.profiles["u-owner"]["is_active"] is True
+        assert fake.audit == []
+
+    def test_another_admin_may_still_edit_the_owners_other_details(self, as_, fake):
+        body = {"display_name": "Renamed", "role": "admin", "is_active": True}
+        r = as_("u-admin").patch(f"{API}/users/u-owner", json=body)
+        assert r.status_code == 200
+        assert fake.profiles["u-owner"]["display_name"] == "Renamed"
+
+    def _spillover_today(self, monkeypatch):
+        from app.domain.calendar import today_in_company_tz
+
+        today = today_in_company_tz().isoformat()
+        phase = {
+            "id": "ph-spill",
+            "project_id": "p-live",
+            "phase": "spillover",
+            "starts_on": today,
+            "ends_on": today,
+            "budget_hours": None,
+        }
+        monkeypatch.setattr(
+            db,
+            "list_phases",
+            lambda project_id=None: [phase] if project_id in (None, "p-live") else [],
+        )
+
+    def test_below_manager_money_stays_at_company_level(self, as_, fake, monkeypatch):
+        self._spillover_today(monkeypatch)
+        body = as_("u-trusted").get(self.PATH).json()
+        assert body["money"]["breakdown"] is False
+        assert body["money"]["categories"] == []
+        (spill,) = body["delivery"]["spillover"]
+        assert (spill["cost"], spill["revenue"]) == (None, None)
+        assert {"revenue", "cost", "profit"} <= body["money"]["this_month"].keys()
+
+    def test_a_manager_sees_the_breakdown(self, as_, fake, monkeypatch):
+        self._spillover_today(monkeypatch)
+        body = as_("u-owner").get(self.PATH).json()
+        assert body["money"]["breakdown"] is True
+        assert body["money"]["categories"] != []
+        (spill,) = body["delivery"]["spillover"]
+        assert spill["revenue"] is not None
+
+    def test_no_utilisation_before_the_portal_start(self, as_, fake, monkeypatch):
+        from app.domain.calendar import today_in_company_tz
+        from app.services import settings_store
+
+        start = today_in_company_tz().replace(day=1)
+        monkeypatch.setattr(settings_store, "portal_start_date", lambda: start)
+        trends = as_("u-owner").get(self.PATH).json()["trends"]
+        assert [t["utilisation_pct"] for t in trends[:-1]] == [None] * 11
+        assert trends[-1]["utilisation_pct"] is not None
+
+    @pytest.mark.parametrize(
+        ("day", "weekend"), [(date(2026, 10, 10), True), (date(2026, 10, 9), False)]
+    )
+    def test_today_says_whether_it_is_a_weekend(self, as_, fake, monkeypatch, day, weekend):
+        from app.services import dashboard as dashboard_service
+
+        monkeypatch.setattr(dashboard_service, "today_in_company_tz", lambda: day)
+        assert as_("u-owner").get(self.PATH).json()["today"]["is_weekend"] is weekend
+
     def test_admin_list_shows_the_flags_read_only(self, as_, fake):
         users = {u["id"]: u for u in as_("u-admin").get(f"{API}/users").json()}
         assert users["u-owner"]["is_owner"] is True

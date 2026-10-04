@@ -22,7 +22,7 @@ There are no passwords to remember or share.
 
 ## What you will see
 
-The navigation shows only what your role can use:
+The navigation shows only what your role, or the owner's authorisation, lets you use:
 
 | Link | Who sees it | What it is for |
 |---|---|---|

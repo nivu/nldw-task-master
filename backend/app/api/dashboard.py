@@ -20,4 +20,4 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 def summary(user: DashboardDep) -> dict:
     """Today, data health, money, cash, delivery, people, twelve months of
     trend and what needs attention — FR-DASH-04..09."""
-    return dashboard.summary()
+    return dashboard.summary(breakdown=user.is_manager)

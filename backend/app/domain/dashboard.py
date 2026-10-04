@@ -194,8 +194,11 @@ def attention(summary: dict[str, Any]) -> list[dict[str, str]]:
 
     spill = summary["delivery"]["spillover"]
     if spill:
+        # FR-DASH-12 — below manager, the projects are named but not costed.
         lines = [
-            f"{p['project_name']} ({currency} {p['cost']} planned cost this month)"
+            p["project_name"]
+            if not summary["money"]["breakdown"]
+            else f"{p['project_name']} ({currency} {p['cost']} planned cost this month)"
             if p["cost"] is not None
             else f"{p['project_name']} (cost unknown — incomplete)"
             for p in spill

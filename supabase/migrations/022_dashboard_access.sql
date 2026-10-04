@@ -12,6 +12,10 @@
 -- revoke it, through Admin → People; the owner sees the dashboard without it.
 -- Both start false, which is what every existing row means.
 --
+-- At most one owner: the partial unique index refuses a second. On a database
+-- with no profile for the owner's email (a fresh build), nobody is owner and
+-- the dashboard is refused to everyone until a migration names one.
+--
 -- No column grant to `authenticated`: the browser never reads profiles
 -- directly (all reads go through the backend proxy), as with 015 and 019.
 -- There is no profiles update policy (004), so neither column is writable
@@ -23,3 +27,5 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS dashboard_access boolean NOT NULL 
 UPDATE profiles
 SET is_owner = true, dashboard_access = true
 WHERE lower(email) = 'navaneeth@nunnarilabs.com';
+
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_one_owner ON profiles (is_owner) WHERE is_owner;

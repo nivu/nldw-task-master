@@ -53,6 +53,8 @@ Everything you can do in the portal, and nothing you cannot:
   including profit by month and the allocation timeline.
 - If you are an admin: people, roles, CTC periods, allowances, holidays,
   backfill and policy.
+- If the owner has authorised you, whatever your role: the company dashboard
+  (`ceo_dashboard`).
 
 Before anything is changed, Claude is instructed to show you exactly what it
 is about to do and wait for your yes. If it does not, say no and tell an

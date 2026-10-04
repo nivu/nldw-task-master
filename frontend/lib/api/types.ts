@@ -960,6 +960,7 @@ export interface DashboardAlert {
 export interface DashboardSummary {
   today: {
     date: string;
+    is_weekend: boolean;
     holiday: string | null;
     status: {
       people: number;
@@ -980,6 +981,8 @@ export interface DashboardSummary {
   };
   money: {
     currency: string;
+    /** FR-DASH-12 — false below manager: no categories, no per-project money. */
+    breakdown: boolean;
     this_month: PnlCell & { period: string; unattributed: string };
     last_month: PnlCell & { period: string; unattributed: string };
     categories: (PnlCell & { category: ProjectCategory; label: string })[];
@@ -1007,7 +1010,7 @@ export interface DashboardSummary {
       starts_on: string;
       ends_on: string;
       cost: string | null;
-      revenue: string;
+      revenue: string | null;
       complete: boolean;
     }[];
     burn_over_80: { project_id: string; project_name: string; burn_pct: string; logged_hours: string; budget_hours: string }[];
