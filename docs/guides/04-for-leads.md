@@ -71,11 +71,13 @@ compared across people.
 and phases, archive it, and allocate **your own reports** to it — the people
 whose approver you are, and edit or remove those allocations. Someone outside
 your team is allocated by a manager or admin. An archived project takes no new
-allocations, and an allocation on it can be shortened but not extended. The
+allocations, and an allocation on it can be shortened but not extended. You
+can also mark a project **tentative** — planned but not yet won — with its
+chance of winning, and confirm it once it is won. The
 allocation list shows only your reports' allocations (the capacity
 forecast under **Effort** shows everyone's), and you never see or set
 revenue or milestones; that is the manager's side of a project. See *For
-managers* for how phases and categories work.
+managers* for how phases, categories and tentative projects work.
 
 A project can name its **lead** — the person who leads it. You can set it
 when you add a project or change it from the *Lead* dropdown beside the

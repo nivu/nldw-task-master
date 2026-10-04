@@ -327,6 +327,32 @@ class Cell:
         }
 
 
+# ---------------------------------------------------------------------------
+# Pipeline — FR-PNL-05
+# ---------------------------------------------------------------------------
+
+
+def weighted_revenue(revenue: Decimal, probability: int | None) -> Decimal | None:
+    """A tentative project's revenue × its probability of being won. No
+    probability is an unknown weight, not a zero one — unless there is no
+    revenue to weigh."""
+    if revenue == 0:
+        return ZERO
+    if probability is None:
+        return None
+    return revenue * Decimal(probability) / Decimal("100")
+
+
+def sum_pipeline(lines: list[tuple[Cell, int | None]], basis: str) -> tuple[Cell, Decimal | None]:
+    """One month's pipeline: the tentative projects' cells summed, and their
+    probability-weighted revenue — unknown if any line's weight is."""
+    weighted: Decimal | None = ZERO
+    for cell, probability in lines:
+        w = weighted_revenue(cell.revenue, probability)
+        weighted = None if (weighted is None or w is None) else weighted + w
+    return sum_cells([cell for cell, _ in lines], basis), weighted
+
+
 def basis_for(first: date, last: date, today: date) -> str:
     """Past months are actual; the current and future months are planned (Q-05)."""
     return "actual" if last < today.replace(day=1) else "planned"

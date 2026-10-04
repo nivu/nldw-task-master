@@ -487,3 +487,51 @@ class TestPeopleDates:
         r = as_("u-admin").patch(f"{API}/users/u-mine", json={"left_on": "2026-10-01"})
         assert r.status_code == 422
         assert "left_on" not in fake.profiles["u-mine"]
+
+
+class TestTentativeProject:
+    """Spec 002 FR-PROJ-08 — status and probability are not money, so a lead
+    who runs projects may set them; a tentative project still takes
+    allocations."""
+
+    def test_lead_can_create_a_tentative_project_with_a_probability(self, as_, fake):
+        body = {"name": "FluxBooks", "status": "tentative", "probability": 40}
+        r = as_("u-lead").post(f"{API}/projects", json=body)
+        assert r.status_code == 201
+        assert r.json()["status"] == "tentative"
+        assert r.json()["probability"] == 40
+        assert "revenue" not in r.json()
+        assert fake.audit[-1]["after"]["status"] == "tentative"
+
+    def test_a_new_project_is_confirmed_by_default(self, as_, fake):
+        r = as_("u-lead").post(f"{API}/projects", json={"name": "New"})
+        assert r.json()["status"] == "confirmed"
+        assert r.json()["probability"] is None
+
+    def test_lead_can_confirm_a_tentative_project(self, as_, fake):
+        fake.projects["p-live"].update(status="tentative", probability=60)
+        r = as_("u-lead").patch(f"{API}/projects/p-live", json={"status": "confirmed"})
+        assert r.status_code == 200
+        assert fake.projects["p-live"]["status"] == "confirmed"
+        assert fake.audit[-1]["before"] == {"status": "tentative"}
+
+    @pytest.mark.parametrize("body", [{"status": "maybe"}, {"probability": 101}, {"probability": -1}])
+    def test_malformed_values_are_refused(self, as_, fake, body):
+        r = as_("u-manager").patch(f"{API}/projects/p-live", json=body)
+        assert r.status_code == 422
+        assert fake.audit == []
+
+    def test_a_status_cannot_be_cleared(self, as_, fake):
+        r = as_("u-manager").patch(f"{API}/projects/p-live", json={"status": None})
+        assert r.status_code == 422
+
+    def test_a_tentative_project_takes_allocations(self, as_, fake):
+        fake.projects["p-live"]["status"] = "tentative"
+        body = {"project_id": "p-live", "user_id": "u-mine", "percent": "40", **OCT}
+        r = as_("u-lead").post(f"{API}/allocations", json=body)
+        assert r.status_code == 201
+
+    def test_plain_user_cannot_change_status(self, as_, fake):
+        r = as_("u-mine").patch(f"{API}/projects/p-live", json={"status": "tentative"})
+        assert r.status_code == 403
+        assert "status" not in fake.projects["p-live"]

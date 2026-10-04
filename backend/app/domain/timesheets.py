@@ -37,6 +37,13 @@ PROJECT_CATEGORY_LABELS = {
     "internal": "Internal tools / applications / website",
 }
 
+
+def is_tentative(project: dict) -> bool:
+    """Spec 002 FR-PROJ-08 — pipeline: planned, not yet won. A row without a
+    status predates migration 020 and is confirmed."""
+    return project.get("status", "confirmed") == "tentative"
+
+
 #: Q-06 default. A sanity check against a mistyped 80, not a position on
 #: overwork. Overridable via `app_settings.max_hours_per_day`.
 DEFAULT_MAX_HOURS_PER_DAY = Decimal("16")
@@ -417,10 +424,12 @@ class Allocation:
     starts_on: date
     ends_on: date
     percent: Decimal
+    # Spec 002 FR-PROJ-08 — on a tentative project: planned, not promised.
+    tentative: bool = False
 
 
 def over_allocations(
-    allocations: list[Allocation], start: date, end: date
+    allocations: list[Allocation], start: date, end: date, *, include_tentative: bool = False
 ) -> list[tuple[str, date, Decimal]]:
     """Days where somebody's concurrent allocations exceed 100% — FR-ALLOC-04.
 
@@ -428,12 +437,17 @@ def over_allocations(
     allocation because that is the question worth answering: "on which days is
     this person promised to more work than exists", not "which two rows
     overlap".
+
+    Tentative allocations are left out unless `include_tentative` (FR-PROJ-08):
+    work not yet won does not over-commit anybody, but a manager pencilling
+    it in still wants to see who it would.
     """
     flagged: list[tuple[str, date, Decimal]] = []
-    users = {a.user_id for a in allocations}
+    counted = [a for a in allocations if include_tentative or not a.tentative]
+    users = {a.user_id for a in counted}
 
     for user_id in sorted(users):
-        mine = [a for a in allocations if a.user_id == user_id]
+        mine = [a for a in counted if a.user_id == user_id]
         day = start
         while day <= end:
             if not is_weekend(day):
@@ -495,6 +509,17 @@ def archived_entry_refusal(
     """
     if is_archived and not already_logged:
         return f"{project_name} is archived."
+    return None
+
+
+def tentative_entry_refusal(
+    *, project_name: str, is_tentative: bool, already_logged: bool
+) -> str | None:
+    """FR-PROJ-08 — a tentative project takes no time entries: nobody works on
+    work that has not been won. As with archiving, a line already logged that
+    day (before the project was made tentative) stays saveable."""
+    if is_tentative and not already_logged:
+        return f"{project_name} is tentative."
     return None
 
 

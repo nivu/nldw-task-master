@@ -90,11 +90,17 @@ def monthly(user_ids: list[str], start: str, end: str) -> dict[str, Any]:
 
 
 def bench(weeks: int = 8) -> dict[str, Any]:
+    """FR-UTIL-03. Bench is judged on confirmed allocations: someone pencilled
+    in on a tentative project (spec 002 FR-PROJ-08) is still free until it is
+    won. `with_tentative_pct` shows the week with the pipeline added."""
     today = today_in_company_tz()
     monday = today - timedelta(days=today.weekday())
     starts = [monday + timedelta(weeks=n) for n in range(weeks)]
     people = sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
     allocations = db.list_allocations()
+    tentative_ids = {
+        p["id"] for p in db.list_projects(include_archived=True) if rules.is_tentative(p)
+    }
     threshold = bench_threshold()
 
     rows = []
@@ -104,25 +110,33 @@ def bench(weeks: int = 8) -> dict[str, Any]:
         for start in starts:
             end = start + timedelta(days=6)
             peak = ZERO
+            peak_all = ZERO
             day = start
             while day <= end:
                 if not is_weekend(day):
+                    on = [
+                        a
+                        for a in mine
+                        if date.fromisoformat(a["starts_on"])
+                        <= day
+                        <= date.fromisoformat(a["ends_on"])
+                    ]
                     total = sum(
                         (
                             Decimal(str(a["percent"]))
-                            for a in mine
-                            if date.fromisoformat(a["starts_on"])
-                            <= day
-                            <= date.fromisoformat(a["ends_on"])
+                            for a in on
+                            if a["project_id"] not in tentative_ids
                         ),
                         ZERO,
                     )
                     peak = max(peak, total)
+                    peak_all = max(peak_all, sum((Decimal(str(a["percent"])) for a in on), ZERO))
                 day += timedelta(days=1)
             cells.append(
                 {
                     "week_start": start.isoformat(),
                     "allocated_pct": str(peak),
+                    "with_tentative_pct": str(peak_all),
                     "bench": peak < threshold,
                 }
             )

@@ -183,6 +183,10 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     category_cells: dict[str, list[dict]] = {c: [] for c in rules.PROJECT_CATEGORIES}
     totals = []
     unrated_ids: set[str] = set()
+    # Spec 005 FR-PNL-05 — tentative projects are pipeline, kept apart from
+    # every confirmed figure: their rows, totals and unrated people.
+    pipeline_totals = []
+    pipeline_unrated: set[str] = set()
 
     for year, month in months:
         first, last = pnl.month_bounds(year, month)
@@ -201,9 +205,12 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
         person_revenue: dict[str, Decimal] = defaultdict(lambda: ZERO)
         unattributed_total = ZERO
         by_category: dict[str, list[pnl.Cell]] = defaultdict(list)
+        pipeline_lines: list[tuple[pnl.Cell, int | None]] = []
 
         for project in projects:
             pid = project["id"]
+            tentative = rules.is_tentative(project)
+            unrated = pipeline_unrated if tentative else unrated_ids
             revenue = (
                 Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
             )
@@ -236,7 +243,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                     rate = rates.hourly(e["user_id"], day)
                     if rate is None:
                         cost_m = None
-                        unrated_ids.add(e["user_id"])
+                        unrated.add(e["user_id"])
                     elif cost_m is not None:
                         cost_m += hours * rate
             else:
@@ -259,14 +266,15 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                             daily = rates.daily(a["user_id"], day)
                             if daily is None:
                                 cost_m = None
-                                unrated_ids.add(a["user_id"])
+                                unrated.add(a["user_id"])
                             elif cost_m is not None:
                                 cost_m += share * daily
                         day += timedelta(days=1)
 
             shares = pnl.shares(dict(weights))
             unattributed = False
-            if rev_m is not None and rev_m > 0:
+            # Pipeline revenue is nobody's yet and in no total (FR-PNL-05).
+            if not tentative and rev_m is not None and rev_m > 0:
                 if shares:
                     for uid, fraction in shares.items():
                         person_revenue[uid] += rev_m * fraction
@@ -285,7 +293,10 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                 and (revenue is None or windows[pid] is not None)
                 and not unattributed,
             )
-            by_category[project.get("category", "client")].append(cell)
+            if tentative:
+                pipeline_lines.append((cell, project.get("probability")))
+            else:
+                by_category[project.get("category", "client")].append(cell)
             project_cells[pid].append(
                 {
                     **cell.as_dict(),
@@ -332,6 +343,8 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
             complete=total_cost is not None,
         )
         totals.append({**total.as_dict(), "unattributed": str(pnl.money(unattributed_total))})
+        pipeline_cell, weighted = pnl.sum_pipeline(pipeline_lines, basis)
+        pipeline_totals.append({**pipeline_cell.as_dict(), "weighted_revenue": _m(weighted)})
 
     return {
         "currency": _currency(),
@@ -358,9 +371,37 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                     "cells": project_cells[p["id"]],
                 }
                 for p in projects
+                if not rules.is_tentative(p)
             ),
             key=lambda r: r["project_name"],
         ),
+        # Spec 005 FR-PNL-05 — tentative projects, outside every figure above.
+        # `cost` is the planned cost of the people pencilled in: they are paid
+        # anyway, so it is already inside the people's cost, never added to it.
+        "pipeline": {
+            "label": "Pipeline — tentative, not in the totals",
+            "projects": sorted(
+                (
+                    {
+                        "project_id": p["id"],
+                        "project_name": p["name"],
+                        "category": p.get("category", "client"),
+                        "probability": p.get("probability"),
+                        "has_timeline": windows[p["id"]] is not None,
+                        "revenue": str(p["revenue"]) if p.get("revenue") is not None else None,
+                        "cells": project_cells[p["id"]],
+                    }
+                    for p in projects
+                    if rules.is_tentative(p)
+                ),
+                key=lambda r: r["project_name"],
+            ),
+            "totals": pipeline_totals,
+            "unrated": sorted(
+                ({"user_id": uid, "display_name": names.get(uid, "—")} for uid in pipeline_unrated),
+                key=lambda r: r["display_name"],
+            ),
+        },
         # Spec 005 FR-PNL-04 — fixed category order, never sorted by money.
         "categories": [
             {
@@ -385,7 +426,11 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
 
 def timeline(start: date, end: date) -> dict[str, Any]:
     """Who is on what, as bars. The frontend lays them out; this returns the
-    allocations that touch the range, with one colour index per project."""
+    allocations that touch the range, with one colour index per project.
+
+    A bar on a tentative project is marked `tentative` (spec 002 FR-PROJ-08)
+    and left out of `peak_percent` and `over`; `over_with_tentative` says
+    whether the person would be over 100% if the pipeline were won."""
     people = sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
     projects = {p["id"]: p for p in db.list_projects(include_archived=True)}
     allocations = db.list_allocations()
@@ -395,7 +440,9 @@ def timeline(start: date, end: date) -> dict[str, Any]:
     for person in people:
         bars = []
         peak = ZERO
+        peak_all = ZERO
         daily: dict[date, Decimal] = defaultdict(lambda: ZERO)
+        daily_all: dict[date, Decimal] = defaultdict(lambda: ZERO)
         for a in allocations:
             if a["user_id"] != person["id"]:
                 continue
@@ -406,6 +453,7 @@ def timeline(start: date, end: date) -> dict[str, Any]:
             if a["project_id"] not in touched:
                 touched[a["project_id"]] = len(touched)
             pct = Decimal(str(a["percent"]))
+            tentative = rules.is_tentative(projects.get(a["project_id"], {}))
             bars.append(
                 {
                     "id": a["id"],
@@ -415,13 +463,17 @@ def timeline(start: date, end: date) -> dict[str, Any]:
                     "starts_on": a["starts_on"],
                     "ends_on": a["ends_on"],
                     "percent": str(pct),
+                    "tentative": tentative,
                 }
             )
             window = pnl.overlap(a_start, a_end, start, end)
             day = window[0]
             while day <= window[1]:
-                daily[day] += pct
-                peak = max(peak, daily[day])
+                daily_all[day] += pct
+                peak_all = max(peak_all, daily_all[day])
+                if not tentative:
+                    daily[day] += pct
+                    peak = max(peak, daily[day])
                 day += timedelta(days=1)
         rows.append(
             {
@@ -430,6 +482,8 @@ def timeline(start: date, end: date) -> dict[str, Any]:
                 "allocations": sorted(bars, key=lambda b: (b["starts_on"], b["project_name"])),
                 "peak_percent": str(peak),
                 "over": peak > HUNDRED,
+                "peak_with_tentative": str(peak_all),
+                "over_with_tentative": peak_all > HUNDRED,
             }
         )
 
@@ -442,6 +496,7 @@ def timeline(start: date, end: date) -> dict[str, Any]:
                     "project_id": pid,
                     "name": projects.get(pid, {}).get("name", "—"),
                     "colour": colour,
+                    "tentative": rules.is_tentative(projects.get(pid, {})),
                 }
                 for pid, colour in touched.items()
             ),
@@ -449,6 +504,10 @@ def timeline(start: date, end: date) -> dict[str, Any]:
         ),
         "people": rows,
     }
+
+
+def _m(value: Decimal | None) -> str | None:
+    return None if value is None else str(pnl.money(value))
 
 
 def _milestone_summary(project: dict, milestones: list[dict]) -> dict[str, str | None]:

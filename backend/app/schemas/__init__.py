@@ -206,6 +206,7 @@ class SettingUpdate(BaseModel):
 
 Phase = Literal["pre", "delivery", "support", "spillover"]
 ProjectCategory = Literal["client", "poc", "product", "internal"]
+ProjectStatus = Literal["confirmed", "tentative"]
 
 
 Activity = Literal["learning", "internal", "admin", "other"]
@@ -251,6 +252,9 @@ class ProjectIn(BaseModel):
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
     category: ProjectCategory = "client"
     lead_id: str | None = None  # spec 002 FR-PROJ-07 — who leads it
+    # Spec 002 FR-PROJ-08 — pipeline work not yet won, and the chance it is.
+    status: ProjectStatus = "confirmed"
+    probability: int | None = Field(default=None, ge=0, le=100)
 
 
 class ProjectUpdate(BaseModel):
@@ -262,6 +266,8 @@ class ProjectUpdate(BaseModel):
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
     category: ProjectCategory | None = None
     lead_id: str | None = None  # FR-PROJ-07; null clears it
+    status: ProjectStatus | None = None
+    probability: int | None = Field(default=None, ge=0, le=100)
 
 
 class PhaseIn(BaseModel):

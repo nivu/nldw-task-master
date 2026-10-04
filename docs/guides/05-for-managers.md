@@ -69,6 +69,31 @@ takes nothing new: it cannot be allocated, an allocation on it can be
 shortened but not extended, and it is no longer offered on the Time page, so
 no new hours can be logged against it. Everything already recorded stays.
 
+### Tentative projects (pipeline)
+
+Work that is coming but not yet won — *"a new project for the FluxBooks team
+after 6 November"* — can be planned before it is signed. Set a project's
+**Status** to **Tentative** when you add it, or from the dropdown beside its
+name, and give its **chance of winning** as a percentage. Leads can do this
+too; neither is money. A tentative project shows a dashed **Tentative** badge.
+
+A tentative project can have phases, revenue and allocations, so you can
+pencil people in. It is not offered on the Time page and takes no hours —
+nobody works on work that has not been won. Everywhere allocations show, its
+allocations are marked *tentative*:
+
+- **Forecast** marks its capacity tentative. *Promised to more work than
+  exists* counts confirmed work only; a separate card lists anyone who would
+  be over 100% if the pipeline were won.
+- **Resources** draws its bars faded and dashed, and leaves them out of the
+  over-100% flag; a person over only with tentative work is noted.
+- **Bench** judges free capacity on confirmed work, and shows the figure with
+  the pipeline pencilled in beneath it.
+
+Its money is kept out of every profit figure — see *By month* below. When the
+work is won, set the status to **Confirmed**: from then on it counts like any
+other project and hours can be logged against it.
+
 ### Milestones
 
 Under the same panel, add **milestones**: a name, a due date and an amount, and
@@ -138,6 +163,15 @@ are after they left — both cost nothing. Someone who has left still appears in
 the months they were paid. A cell marked
 *incomplete* is missing somebody's CTC for some of its days.
 
+Tentative projects are in none of those rows or totals. Below the table, a
+separate **Pipeline** block lists each tentative project with its chance of
+winning and, per month, its revenue and the planned cost of the people
+pencilled in, then the month's pipeline total with **weighted** revenue —
+revenue times the chance of winning. A month shows *? weighted* when a
+tentative project in it has no chance of winning set. The pipeline cost is
+already part of those people's cost above, since they are paid anyway, so it
+is never added to the totals.
+
 Every month-based view — By month, the timeline in months, Utilisation and the
 hiring signal — shows a whole year at a time. Switch between **Calendar year**
 (January to December) and **Financial year** (April to March) with the buttons
@@ -149,7 +183,8 @@ history under Account.
 to weeks. Each allocation is a bar from its start to its end, coloured by
 project and labelled with its name. A full-height bar is 100% of the person;
 two half-height bars are two 50% allocations. Anything over 100% overflows
-and is flagged. Use the arrows to move through time.
+and is flagged. Bars on tentative projects are faded and dashed and are not
+counted in that flag. Use the arrows to move through time.
 
 ## What the numbers are not
 

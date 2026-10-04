@@ -266,6 +266,9 @@ export const PROJECT_CATEGORY_LABEL: Record<ProjectCategory, string> = {
   internal: "Internal tools / applications / website",
 };
 
+/** Spec 002 FR-PROJ-08 — `tentative` is pipeline: planned, not yet won. */
+export type ProjectStatus = "confirmed" | "tentative";
+
 /** Spec 003 FR-ACT-02 — the fixed set of non-project activities. */
 export type Activity = "learning" | "internal" | "admin" | "other";
 
@@ -348,6 +351,9 @@ export interface Project {
   /** Spec 002 FR-PROJ-07 — who leads it; a label, not a permission. */
   lead_id?: string | null;
   lead_name?: string | null;
+  status?: ProjectStatus;
+  /** 0–100, the chance a tentative project is won. Not money. */
+  probability?: number | null;
   phases?: ProjectPhase[];
   logged_hours?: string;
   /** Spec 003 FR-FIN-02 — present only for managers and admins. */
@@ -393,17 +399,23 @@ export interface Forecast {
   projects: {
     project_id: string;
     project_name: string;
+    tentative: boolean;
     capacity_hours: string;
     people: { user_id: string; display_name: string; percent: string; hours: string }[];
   }[];
-  over_allocated: {
-    user_id: string;
-    display_name: string;
-    days: number;
-    first: string;
-    last: string;
-    peak_percent: string;
-  }[];
+  /** Confirmed allocations only (FR-PROJ-08). */
+  over_allocated: OverAllocation[];
+  /** The same with tentative allocations added. */
+  over_with_tentative: OverAllocation[];
+}
+
+export interface OverAllocation {
+  user_id: string;
+  display_name: string;
+  days: number;
+  first: string;
+  last: string;
+  peak_percent: string;
 }
 
 export interface CurrentWork {
@@ -481,9 +493,11 @@ export interface ResourceWeek {
   week_start: string;
   allocated_pct: string;
   over: boolean;
+  with_tentative_pct: string;
+  over_with_tentative: boolean;
   leave_days: string;
   working_days: number;
-  projects: { project_id: string; project_name: string; percent: string }[];
+  projects: { project_id: string; project_name: string; percent: string; tentative: boolean }[];
 }
 
 export interface ResourcesTimeline {
@@ -579,6 +593,22 @@ export interface Pnl {
   categories: { category: ProjectCategory; label: string; cells: PnlCell[] }[];
   totals: (PnlCell & { unattributed: string })[];
   unrated: { user_id: string; display_name: string }[];
+  /** Spec 005 FR-PNL-05 — tentative projects, in none of the figures above. */
+  pipeline: {
+    label: string;
+    projects: {
+      project_id: string;
+      project_name: string;
+      category: ProjectCategory;
+      probability: number | null;
+      has_timeline: boolean;
+      revenue: string | null;
+      cells: (PnlCell & { unattributed: boolean; no_timeline: boolean })[];
+    }[];
+    /** Null weighted_revenue: a project in the month has no probability. */
+    totals: (PnlCell & { weighted_revenue: string | null })[];
+    unrated: { user_id: string; display_name: string }[];
+  };
 }
 
 export interface TimelineBar {
@@ -589,18 +619,22 @@ export interface TimelineBar {
   starts_on: string;
   ends_on: string;
   percent: string;
+  tentative: boolean;
 }
 
 export interface Timeline {
   start: string;
   end: string;
-  projects: { project_id: string; name: string; colour: number }[];
+  projects: { project_id: string; name: string; colour: number; tentative: boolean }[];
   people: {
     user_id: string;
     display_name: string;
     allocations: TimelineBar[];
+    /** Confirmed allocations only; the *_with_tentative pair adds the pipeline. */
     peak_percent: string;
     over: boolean;
+    peak_with_tentative: string;
+    over_with_tentative: boolean;
   }[];
 }
 
@@ -707,7 +741,12 @@ export interface Bench {
   people: {
     user_id: string;
     display_name: string;
-    weeks: { week_start: string; allocated_pct: string; bench: boolean }[];
+    weeks: {
+      week_start: string;
+      allocated_pct: string;
+      with_tentative_pct: string;
+      bench: boolean;
+    }[];
     bench_weeks: number;
   }[];
 }

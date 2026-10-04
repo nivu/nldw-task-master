@@ -240,7 +240,7 @@ export default function AnalyticsPage() {
                 <div className="p-4">
                   <ProgressBars
                     rows={data.forecast.projects.map((p, i) => ({
-                      name: p.project_name,
+                      name: p.tentative ? `${p.project_name} (tentative)` : p.project_name,
                       value: Number(p.capacity_hours),
                       max: null,
                       colour: ["#0ea5e9", "#10b981", "#8b5cf6", "#f59e0b", "#f43f5e", "#14b8a6"][i % 6],
@@ -253,6 +253,12 @@ export default function AnalyticsPage() {
                 <div key={project.project_id} className="space-y-1 p-3">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{project.project_name}</span>
+                    {/* Spec 002 FR-PROJ-08 — pipeline, not yet won. */}
+                    {project.tentative && (
+                      <Badge variant="outline" className="border-dashed">
+                        tentative
+                      </Badge>
+                    )}
                     <span className="ml-auto tabular-nums text-sm">
                       {project.capacity_hours}h
                     </span>
@@ -290,6 +296,38 @@ export default function AnalyticsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* FR-PROJ-08 — who the pipeline would over-commit if it were won. */}
+          {(() => {
+            const confirmed = new Set(data.forecast.over_allocated.map((p) => p.user_id));
+            const extra = data.forecast.over_with_tentative.filter(
+              (p) => !confirmed.has(p.user_id)
+            );
+            if (extra.length === 0) return null;
+            return (
+              <Card className="border-dashed">
+                <CardHeader>
+                  <CardTitle className="text-base">Over 100% if the pipeline is won</CardTitle>
+                  <CardDescription>
+                    Counting tentative projects too. Not a problem yet — nothing
+                    here has been won.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="divide-y p-0">
+                  {extra.map((person) => (
+                    <div key={person.user_id} className="p-3 text-sm">
+                      <span className="font-medium">{person.display_name}</span>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        — {person.days} day{person.days === 1 ? "" : "s"} from {person.first} to{" "}
+                        {person.last}, peaking at {person.peak_percent}%
+                      </span>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            );
+          })()}
         </TabsContent>
 
         <TabsContent value="utilisation" className="space-y-3 pt-4">
@@ -904,8 +942,95 @@ function MonthlyProfit({ currency }: { currency: string }) {
           Each cell: profit %, then revenue, then cost. &ldquo;?&rdquo; means a
           CTC is missing for some of the month. Sorted by name.
         </p>
+        {data.pipeline.projects.length > 0 && (
+          <PipelineBlock data={data} currency={currency} label={label} amt={amt} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Spec 005 FR-PNL-05 — tentative projects, kept apart from every figure above.
+ * Weighted is revenue × the chance of winning. The cost is the planned cost of
+ * the people pencilled in; they are paid anyway, so it is already inside the
+ * people's cost above and must never be added to it.
+ */
+function PipelineBlock({
+  data,
+  currency,
+  label,
+  amt,
+}: {
+  data: Pnl;
+  currency: string;
+  label: (period: string) => string;
+  amt: (v: string | null) => string;
+}) {
+  return (
+    <div className="space-y-2 border-t border-dashed pt-3">
+      <div className="px-4">
+        <p className="text-sm font-medium">{data.pipeline.label}</p>
+        <p className="text-xs text-muted-foreground">
+          Planned work not yet won. Each cell: revenue, then weighted by the
+          chance of winning, then the planned cost of the people pencilled in
+          (already inside their cost above). None of it is in the totals.
+        </p>
+      </div>
+      {data.pipeline.unrated.length > 0 && (
+        <div className="px-4">
+          <IncompleteNotice unrated={data.pipeline.unrated} what="Some pipeline months" />
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="sticky left-0 bg-card p-2 font-medium">Tentative project</th>
+              {data.months.map((m) => (
+                <th key={m.period} className="p-2 text-right font-medium whitespace-nowrap">
+                  {label(m.period)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.pipeline.projects.map((p) => (
+              <tr key={p.project_id} className="text-muted-foreground">
+                <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap text-foreground">
+                  {p.project_name}
+                  <span className="block text-[10px] font-normal text-muted-foreground">
+                    {p.probability === null ? "no chance of winning set" : `${p.probability}% chance`}
+                  </span>
+                </td>
+                {p.cells.map((cell, i) => (
+                  <td
+                    key={i}
+                    className="p-2 text-right tabular-nums align-top"
+                    title={`${currency} ${amt(cell.revenue)} revenue · ${amt(cell.cost)} cost`}
+                  >
+                    <span className="block">{amt(cell.revenue)}</span>
+                    <span className="block">−{amt(cell.cost)}</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+            <tr className="border-t-2 font-medium">
+              <td className="sticky left-0 bg-card p-2">Pipeline</td>
+              {data.pipeline.totals.map((cell, i) => (
+                <td key={i} className="p-2 text-right tabular-nums align-top">
+                  <span className="block">{amt(cell.revenue)}</span>
+                  <span className="block text-muted-foreground">
+                    {cell.weighted_revenue === null ? "? weighted" : `${amt(cell.weighted_revenue)} weighted`}
+                  </span>
+                  <span className="block text-muted-foreground">−{amt(cell.cost)}</span>
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -922,6 +1047,9 @@ const PALETTE = [
   "bg-fuchsia-500/80 text-white",
   "bg-lime-500/85 text-black",
 ];
+
+/** Spec 002 FR-PROJ-08 — a tentative allocation: pencilled in, not promised. */
+const TENTATIVE_BAR = "opacity-50 border border-dashed border-foreground/70";
 
 /**
  * Spec 005 FR-TL — the timeline matrix.
@@ -1006,6 +1134,8 @@ function ResourcesTab() {
             <CardDescription>
               One bar per allocation, coloured by project. A full-height bar is
               100% of the person; half-height is 50%. Over 100% overflows and is flagged.
+              Faded, dashed bars are tentative projects — pipeline, not yet won,
+              and not counted in the flag.
             </CardDescription>
           </div>
           <div className="flex gap-1">
@@ -1034,8 +1164,16 @@ function ResourcesTab() {
         {data.projects.length > 0 && (
           <div className="flex flex-wrap gap-2 px-4 text-xs">
             {data.projects.map((p) => (
-              <span key={p.project_id} className={cn("rounded px-2 py-0.5", PALETTE[p.colour % PALETTE.length])}>
+              <span
+                key={p.project_id}
+                className={cn(
+                  "rounded px-2 py-0.5",
+                  PALETTE[p.colour % PALETTE.length],
+                  p.tentative && TENTATIVE_BAR
+                )}
+              >
                 {p.name}
+                {p.tentative && " (tentative)"}
               </span>
             ))}
           </div>
@@ -1080,6 +1218,11 @@ function ResourcesTab() {
                         peaks at {person.peak_percent}%
                       </span>
                     )}
+                    {!person.over && person.over_with_tentative && (
+                      <span className="block text-[10px] font-normal text-muted-foreground">
+                        {person.peak_with_tentative}% with pipeline
+                      </span>
+                    )}
                   </div>
                   <div className="relative flex-1" style={{ height: rowHeight + 8 }}>
                     {columns.map((c, i) => (
@@ -1088,10 +1231,11 @@ function ResourcesTab() {
                     {bars.map((bar) => (
                       <div
                         key={bar.id}
-                        title={`${bar.project_name} · ${bar.percent}% · ${bar.starts_on} → ${bar.ends_on}`}
+                        title={`${bar.project_name}${bar.tentative ? " (tentative)" : ""} · ${bar.percent}% · ${bar.starts_on} → ${bar.ends_on}`}
                         className={cn(
                           "absolute overflow-hidden rounded px-1.5 text-[11px] leading-tight whitespace-nowrap",
-                          PALETTE[bar.colour % PALETTE.length]
+                          PALETTE[bar.colour % PALETTE.length],
+                          bar.tentative && TENTATIVE_BAR
                         )}
                         style={{
                           left: `${bar.left}%`,
@@ -1265,7 +1409,8 @@ function BenchTab() {
         <CardTitle className="text-base">Bench</CardTitle>
         <CardDescription>
           Allocated percent per week for the next eight weeks. Under {data.threshold_pct}% is bench —
-          capacity that could take new work.
+          capacity that could take new work. Tentative projects do not count
+          towards it; where they would change the week, the figure with them is shown below.
         </CardDescription>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
@@ -1289,6 +1434,10 @@ function BenchTab() {
                   <td key={w.week_start} className="p-1">
                     <div className={cn("rounded px-1.5 py-1 text-center tabular-nums", w.bench ? "bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200" : "bg-muted")}>
                       {w.allocated_pct}%
+                      {/* FR-PROJ-08 — with tentative work pencilled in. */}
+                      {Number(w.with_tentative_pct) !== Number(w.allocated_pct) && (
+                        <span className="block text-[10px] opacity-70">{w.with_tentative_pct}% w/ pipeline</span>
+                      )}
                     </div>
                   </td>
                 ))}

@@ -32,6 +32,7 @@ import type {
   Phase,
   Project,
   ProjectCategory,
+  ProjectStatus,
   ProjectEffort,
   ProjectPhase,
   TimesheetDay,
@@ -284,6 +285,8 @@ export const createProject = (input: {
   revenue?: string | null;
   category?: ProjectCategory;
   lead_id?: string | null;
+  status?: ProjectStatus;
+  probability?: number | null;
 }) =>
   call<Project>("/admin/projects", { method: "POST", ...body(input) });
 
@@ -296,6 +299,8 @@ export const updateProject = (
     revenue?: string | null;
     category?: ProjectCategory;
     lead_id?: string | null;
+    status?: ProjectStatus;
+    probability?: number | null;
   }
 ) => call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
 

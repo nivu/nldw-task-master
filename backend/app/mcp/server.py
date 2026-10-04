@@ -43,6 +43,12 @@ Projects have a category: client (paid client engagement), poc (client POC
 or general), product (Nunnari product development) or internal (internal
 tools, applications, website). Reports group and total by it.
 
+A project's status is confirmed (won) or tentative (pipeline: planned, not yet
+won, with an optional probability 0-100). A tentative project can have phases,
+revenue and allocations, takes no time entries, and is left out of every
+confirmed profit figure; monthly_pnl reports it separately as pipeline.
+Allocations to it are marked tentative wherever they appear.
+
 Money: a person's cost is their CTC (cost to company) in force on the day —
 dated periods, past and upcoming, set by an admin with set_ctc; months before
 someone's first CTC are before they joined, and months after their last CTC
@@ -357,7 +363,9 @@ async def coverage(ctx: Context, start: str | None = None, end: str | None = Non
 async def forecast(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
     """Capacity implied by allocations, net of weekends, holidays and leave,
     and who is over-allocated (default the next 90 days). Covers every
-    allocation in the company, for leads too; no money."""
+    allocation in the company, for leads too; no money. Tentative projects
+    are included and marked tentative; over_allocated counts confirmed
+    allocations only, over_with_tentative adds the pipeline."""
     return await _api(ctx, "GET", "/analytics/forecast", params={"start": start, "end": end})
 
 
@@ -386,7 +394,9 @@ async def people_financials(ctx: Context) -> dict:
 @mcp.tool(annotations=READ)
 async def resources(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
     """MANAGERS AND ADMINS. Week-by-week allocation per person, over-allocation
-    flags and leave days (default two weeks back to 90 days ahead)."""
+    flags and leave days (default two weeks back to 90 days ahead).
+    allocated_pct and over count confirmed work; with_tentative_pct and
+    over_with_tentative add tentative projects, which are marked."""
     return await _api(ctx, "GET", "/analytics/resources", params={"start": start, "end": end})
 
 
@@ -396,7 +406,11 @@ async def monthly_pnl(ctx: Context, start: str | None = None, end: str | None = 
     project and per project category, month by month (start/end as YYYY-MM; default 3 months back
     to 5 ahead). Past months are actual, current and future are planned. A
     cell with complete=false omits unrated days — say so when quoting it.
-    Sorted by name; never present as a ranking."""
+    Sorted by name; never present as a ranking. Tentative projects are NOT in
+    the people, projects, categories or totals: they are in `pipeline`, per
+    project and per month, with revenue, cost and weighted_revenue (revenue ×
+    probability/100; null if a project lacks a probability). Always call
+    pipeline figures pipeline, never profit."""
     return await _api(ctx, "GET", "/analytics/pnl", params={"start": start, "end": end})
 
 
@@ -405,7 +419,9 @@ async def allocation_timeline(
     ctx: Context, start: str | None = None, end: str | None = None
 ) -> dict:
     """MANAGERS AND ADMINS. Who is allocated to what between two dates, as
-    bars per person with percent, plus who is over 100%."""
+    bars per person with percent, plus who is over 100%. Bars on tentative
+    (pipeline) projects are marked tentative and left out of peak_percent and
+    over; peak_with_tentative and over_with_tentative include them."""
     return await _api(ctx, "GET", "/analytics/timeline", params={"start": start, "end": end})
 
 
@@ -422,9 +438,9 @@ async def allocatable_people(ctx: Context) -> list:
 
 @mcp.tool(annotations=READ)
 async def list_projects(ctx: Context) -> list:
-    """LEADS, MANAGERS AND ADMINS. Every project with its category, phases and
-    lead (lead_id, lead_name — who leads it, or null); revenue only for
-    managers and admins."""
+    """LEADS, MANAGERS AND ADMINS. Every project with its category, status
+    (confirmed | tentative), probability, phases and lead (lead_id, lead_name
+    — who leads it, or null); revenue only for managers and admins."""
     return await _api(ctx, "GET", "/admin/projects")
 
 
@@ -436,6 +452,8 @@ async def create_project(
     revenue: str | None = None,
     category: str = "client",
     lead_id: str | None = None,
+    status: str = "confirmed",
+    probability: int | None = None,
 ) -> dict:
     """LEADS, MANAGERS AND ADMINS. Create a project. CONFIRM FIRST. Revenue is
     the contract value or internal budget, as a decimal string, optional;
@@ -443,7 +461,10 @@ async def create_project(
     engagement, default) | poc (client POC or general) | product (Nunnari
     product development) | internal (internal tools, applications, website).
     lead_id: the user id of the person who leads it, optional; must be an
-    active person. It is a label and grants no access."""
+    active person. It is a label and grants no access.
+    status: confirmed (default) | tentative — pipeline work not yet won, which
+    can be planned and allocated but takes no time entries and stays out of
+    profit. probability: 0-100, the chance a tentative project is won."""
     return await _api(
         ctx,
         "POST",
@@ -454,6 +475,8 @@ async def create_project(
             "revenue": revenue,
             "category": category,
             "lead_id": lead_id,
+            "status": status,
+            "probability": probability,
         },
     )
 
@@ -463,8 +486,9 @@ async def update_project(ctx: Context, project_id: str, changes: dict[str, Any])
     """LEADS, MANAGERS AND ADMINS. Change a project. CONFIRM FIRST. changes may
     hold name, client, revenue (decimal string; managers and admins only),
     category (client | poc | product | internal), lead_id (the user id of an
-    active person who leads it; null clears it) and is_archived (archive,
-    never delete)."""
+    active person who leads it; null clears it), status (confirmed |
+    tentative — set confirmed when the work is won), probability (0-100 or
+    null) and is_archived (archive, never delete)."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 
 
@@ -892,7 +916,8 @@ async def utilisation(ctx: Context, start: str | None = None, end: str | None = 
 @mcp.tool(annotations=READ)
 async def bench(ctx: Context, weeks: int = 8) -> dict:
     """MANAGERS AND ADMINS. Allocated percent per person for the coming
-    weeks, flagging weeks under the bench threshold."""
+    weeks, flagging weeks under the bench threshold. Bench counts confirmed
+    work only; with_tentative_pct adds tentative (pipeline) projects."""
     return await _api(ctx, "GET", "/analytics/bench", params={"weeks": weeks})
 
 
