@@ -371,6 +371,10 @@ class MilestoneUpdate(BaseModel):
     amount: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
     invoiced_on: date | None = None
     clear_invoiced: bool = False
+    # FR-MILE-05. An empty invoice_number clears it; clear_paid unmarks payment.
+    invoice_number: str | None = Field(default=None, max_length=80)
+    paid_on: date | None = None
+    clear_paid: bool = False
 
 
 class ChecklistStart(BaseModel):

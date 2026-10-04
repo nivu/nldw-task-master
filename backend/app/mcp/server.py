@@ -920,8 +920,20 @@ async def add_milestone(ctx: Context, project_id: str, name: str, due_on: str, a
 @mcp.tool(annotations=WRITE)
 async def update_milestone(ctx: Context, milestone_id: str, changes: dict[str, Any]) -> dict:
     """MANAGERS AND ADMINS. Change a milestone (name, due_on, amount,
-    invoiced_on, or clear_invoiced=true). CONFIRM FIRST."""
+    invoiced_on, invoice_number ("" clears it), paid_on, clear_invoiced=true or
+    clear_paid=true). CONFIRM FIRST. A milestone is paid only once invoiced, on
+    or after its invoice date."""
     return await _api(ctx, "PATCH", f"/admin/milestones/{milestone_id}", body=changes)
+
+
+@mcp.tool(annotations=READ)
+async def list_invoices(ctx: Context, status: str | None = None) -> dict:
+    """MANAGERS AND ADMINS. Every milestone on every project with its invoice
+    status — upcoming, due (within 7 days), overdue (past due, not invoiced),
+    invoiced, payment_overdue (unpaid past the payment terms) or paid — days
+    overdue, and totals: receivable, overdue receivable, due in the next 30
+    days, paid this month. status filters the list, not the totals."""
+    return await _api(ctx, "GET", "/analytics/invoices", params={"status": status})
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

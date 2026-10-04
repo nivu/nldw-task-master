@@ -21,6 +21,7 @@ import {
   getUtilisation,
   getCurrentWork,
   getForecast,
+  getInvoices,
   getMe,
   getPeopleFinancials,
   getPnl,
@@ -36,6 +37,8 @@ import type {
   Utilisation,
   CurrentWork,
   Forecast,
+  Invoices,
+  InvoiceStatus,
   PeopleFinancials,
   Pnl,
   PnlCell,
@@ -44,7 +47,12 @@ import type {
   ProjectFinancials,
   Timeline,
 } from "@/lib/api/types";
-import { PROJECT_CATEGORIES, PROJECT_CATEGORY_LABEL } from "@/lib/api/types";
+import {
+  INVOICE_STATUSES,
+  INVOICE_STATUS_LABEL,
+  PROJECT_CATEGORIES,
+  PROJECT_CATEGORY_LABEL,
+} from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 import { isoDate, isoMonth } from "@/lib/dates";
@@ -656,6 +664,8 @@ function MoneyTab({
 
       <MonthlyProfit currency={c} />
 
+      <InvoicesCard onOpenProject={onOpenProject} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Per person, across projects</CardTitle>
@@ -729,6 +739,122 @@ function MoneyTab({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+const INVOICE_BADGE: Record<InvoiceStatus, string> = {
+  upcoming: "border-border text-muted-foreground",
+  due: "bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200",
+  overdue: "bg-destructive/10 text-destructive dark:bg-destructive/20",
+  invoiced: "bg-secondary text-secondary-foreground",
+  payment_overdue: "bg-destructive/10 text-destructive dark:bg-destructive/20",
+  paid: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200",
+};
+
+/**
+ * Spec 006 FR-MILE-07 — every milestone on every project, where it stands and
+ * what is owed. Overdue means past its due date and not invoiced; payment
+ * overdue means invoiced and unpaid past the payment terms. The totals are
+ * over everything, whichever status the list is filtered to.
+ */
+function InvoicesCard({ onOpenProject }: { onOpenProject: (id: string) => void }) {
+  const { data, error } = useAsync<Invoices>(() => getInvoices(), []);
+  const [status, setStatus] = useState<InvoiceStatus | "all">("all");
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const c = data.currency;
+  const count = (s: InvoiceStatus) => data.invoices.filter((i) => i.status === s).length;
+  const rows = status === "all" ? data.invoices : data.invoices.filter((i) => i.status === status);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Invoices</CardTitle>
+        <CardDescription>
+          Every milestone across projects. An invoice is payment overdue once it is unpaid{" "}
+          {data.payment_terms_days} days after its invoice date. Record invoice numbers and
+          payments on the project, under Projects.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 p-0">
+        <div className="grid grid-cols-2 gap-3 px-4 sm:grid-cols-4">
+          <Figure label="Receivable" value={money(c, data.totals.receivable)} />
+          <Figure label="Overdue receivable" value={money(c, data.totals.overdue_receivable)} />
+          <Figure label="Due next 30 days" value={money(c, data.totals.due_next_30_days)} />
+          <Figure label="Paid this month" value={money(c, data.totals.paid_this_month)} />
+        </div>
+        <div className="flex flex-wrap gap-1 px-4">
+          <Button variant={status === "all" ? "secondary" : "outline"} size="sm" onClick={() => setStatus("all")}>
+            All ({data.invoices.length})
+          </Button>
+          {INVOICE_STATUSES.map((s) => (
+            <Button key={s} variant={status === s ? "secondary" : "outline"} size="sm" onClick={() => setStatus(s)}>
+              {INVOICE_STATUS_LABEL[s]} ({count(s)})
+            </Button>
+          ))}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-muted-foreground">
+                <th className="p-3 font-medium">Project</th>
+                <th className="p-3 font-medium">Milestone</th>
+                <th className="p-3 text-right font-medium">Amount</th>
+                <th className="p-3 font-medium">Due</th>
+                <th className="p-3 font-medium">Invoice</th>
+                <th className="p-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="p-4 text-muted-foreground">
+                    {data.invoices.length === 0 ? "No milestones yet. Add them on a project, under Projects." : "None with this status."}
+                  </td>
+                </tr>
+              )}
+              {rows.map((i) => (
+                <tr key={i.id}>
+                  <td className="p-3">
+                    <button onClick={() => onOpenProject(i.project_id)} className="text-left font-medium hover:underline">
+                      {i.project_name}
+                    </button>
+                    {i.client && <span className="block text-xs text-muted-foreground">{i.client}</span>}
+                  </td>
+                  <td className="p-3">{i.name}</td>
+                  <td className="p-3 text-right tabular-nums whitespace-nowrap">{money(c, i.amount)}</td>
+                  <td className="p-3 tabular-nums whitespace-nowrap">{i.due_on}</td>
+                  <td className="p-3 text-xs whitespace-nowrap">
+                    {i.invoiced_on ? (
+                      <>
+                        {i.invoice_number ?? "No number"}
+                        <span className="block text-muted-foreground">
+                          {i.invoiced_on}
+                          {i.paid_on ? ` · paid ${i.paid_on}` : i.payment_due_on ? ` · pay by ${i.payment_due_on}` : ""}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="p-3 whitespace-nowrap">
+                    <Badge variant="outline" className={INVOICE_BADGE[i.status]}>
+                      {INVOICE_STATUS_LABEL[i.status]}
+                    </Badge>
+                    {i.days_overdue > 0 && (
+                      <span className="block text-xs text-muted-foreground">
+                        {i.days_overdue} day{i.days_overdue === 1 ? "" : "s"} late
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

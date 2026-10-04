@@ -54,6 +54,7 @@ import type {
   Location,
   MilestoneList,
   Milestone,
+  Invoices,
   MyCompoff,
   ProjectHealth,
   Review,
@@ -420,9 +421,21 @@ export const addLocation = (name: string) => call<Location>("/admin/locations", 
 export const listMilestones = (projectId: string) => call<MilestoneList>(`/admin/projects/${projectId}/milestones`);
 export const addMilestone = (projectId: string, input: { name: string; due_on: string; amount: string }) =>
   call<Milestone>(`/admin/projects/${projectId}/milestones`, { method: "POST", ...body(input) });
-export const updateMilestone = (id: string, changes: { invoiced_on?: string; clear_invoiced?: boolean; name?: string; due_on?: string; amount?: string }) =>
-  call<Milestone>(`/admin/milestones/${id}`, { method: "PATCH", ...body(changes) });
+export const updateMilestone = (
+  id: string,
+  changes: {
+    invoiced_on?: string;
+    clear_invoiced?: boolean;
+    invoice_number?: string;
+    paid_on?: string;
+    clear_paid?: boolean;
+    name?: string;
+    due_on?: string;
+    amount?: string;
+  }
+) => call<Milestone>(`/admin/milestones/${id}`, { method: "PATCH", ...body(changes) });
 export const removeMilestone = (id: string) => call<{ status: string }>(`/admin/milestones/${id}`, { method: "DELETE" });
+export const getInvoices = () => call<Invoices>("/analytics/invoices");
 
 export const getChecklists = () => call<Checklists>("/admin/checklists");
 export const setChecklistTemplate = (kind: "onboarding" | "offboarding", labels: string[]) =>

@@ -128,3 +128,15 @@ def portal_start_date() -> date | None:
         # into the table must not take coverage and nudges down with it.
         logger.warning('{"event": "setting_invalid", "key": "portal_start_date"}')
         return None
+
+
+def invoice_payment_terms_days() -> int:
+    """`006` FR-MILE-06 — days a client has to pay an invoice before it is
+    payment overdue."""
+    try:
+        return int(get("invoice_payment_terms_days", 30))
+    except (TypeError, ValueError):
+        # A bad value typed straight into the table must not take the
+        # invoices view down with it.
+        logger.warning('{"event": "setting_invalid", "key": "invoice_payment_terms_days"}')
+        return 30
