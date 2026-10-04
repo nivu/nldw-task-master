@@ -21,6 +21,7 @@ from app.schemas import (
     AllowanceIn,
     BackfillIn,
     CtcPeriodIn,
+    HolidayBulkIn,
     HolidayIn,
     PhaseIn,
     ProjectIn,
@@ -29,6 +30,7 @@ from app.schemas import (
     UserCreate,
     UserUpdate,
 )
+from app.domain import holidays as holiday_rules
 from app.domain import timesheets as rules
 from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
@@ -425,40 +427,71 @@ def declare_holiday(payload: HolidayIn, admin: AdminDep) -> dict:
     (FR-HOL-06). Doing it silently would leave someone's casual leave charged
     for a day the whole company had off.
     """
-    clash = [
-        h
-        for h in db.list_holidays(payload.date, payload.date)
-        if h.get("location_id") in (None, payload.location_id) or payload.location_id is None
-    ]
-    if clash:
+    if holiday_rules.clash(
+        db.list_holidays(payload.date, payload.date), payload.date, payload.location_id
+    ):
         raise ProblemDetail(409, f"{payload.date.isoformat()} is already a holiday.")
     if payload.location_id and not any(
         loc["id"] == payload.location_id for loc in db.list_locations()
     ):
         raise ProblemDetail(422, "No such location.")
+    return _declare(payload.date, payload.name, payload.location_id, admin.id)
 
+
+@router.post("/holidays/bulk")
+def declare_holidays(payload: HolidayBulkIn, admin: AdminDep) -> dict:
+    """Spec 001 FR-HOL-08 — a list of holidays, each declared exactly as one.
+
+    Every location is checked before anything is written, so a typo refuses
+    the whole list rather than half of it. Dates already declared for that
+    location are skipped and reported, never renamed. The rest go through
+    `_declare`, so bookings on those days are released and people told just as
+    for a single holiday (FR-HOL-05/06).
+    """
+    known = {loc["id"] for loc in db.list_locations()}
+    for n, entry in enumerate(payload.holidays, start=1):
+        if entry.location_id and entry.location_id not in known:
+            raise ProblemDetail(422, f"Holiday {n} ({entry.name}): no such location.")
+
+    days = [entry.date for entry in payload.holidays]
+    declare, skipped = holiday_rules.plan_bulk(
+        [entry.model_dump() for entry in payload.holidays],
+        db.list_holidays(min(days), max(days)),
+    )
+    created = [
+        _declare(entry["date"], entry["name"], entry["location_id"], admin.id) for entry in declare
+    ]
+    return {
+        "created": created,
+        "skipped": skipped,
+        "released_bookings": sum(c["released_bookings"] for c in created),
+    }
+
+
+def _declare(day: date, name: str, location_id: str | None, actor_id: str) -> dict:
+    """Write one holiday, release what it overlaps, audit it — FR-HOL-05/06."""
     row = db.insert_holiday(
         {
-            "date": payload.date.isoformat(),
-            "name": payload.name,
-            "created_by": admin.id,
-            "location_id": payload.location_id,
+            "date": day.isoformat(),
+            "name": name,
+            "created_by": actor_id,
+            "location_id": location_id,
         }
     )
     released = booking_service.release_for_holiday(
-        day=payload.date,
-        holiday_name=payload.name,
-        actor_id=admin.id,
-        location_id=payload.location_id,
+        day=day,
+        holiday_name=name,
+        actor_id=actor_id,
+        location_id=location_id,
     )
     audit.record(
         action="holiday.declared",
         target_table="holidays",
         target_id=row["id"],
-        actor_id=admin.id,
+        actor_id=actor_id,
         after={
-            "date": payload.date.isoformat(),
-            "name": payload.name,
+            "date": day.isoformat(),
+            "name": name,
             "released_bookings": len(released),
         },
     )

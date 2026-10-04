@@ -714,6 +714,18 @@ async def declare_holiday(ctx: Context, day: str, name: str) -> dict:
 
 
 @mcp.tool(annotations=WRITE)
+async def declare_holidays(ctx: Context, holidays: list[dict]) -> dict:
+    """ADMINS. Declare up to 100 holidays at once. holidays: a list of {date
+    (YYYY-MM-DD), name, location_id (optional; leave out for everywhere — see
+    list_locations)}. CONFIRM FIRST: read the list back, and say that anybody
+    who had booked any of those days has their booking released, gets the days
+    back and is told. Dates already a holiday for that location are skipped
+    and listed under skipped, not renamed. An unknown location refuses the
+    whole list."""
+    return await _api(ctx, "POST", "/admin/holidays/bulk", body={"holidays": holidays})
+
+
+@mcp.tool(annotations=WRITE)
 async def rename_holiday(ctx: Context, holiday_id: str, name: str) -> dict:
     """ADMINS. Rename a holiday. CONFIRM FIRST."""
     return await _api(ctx, "PATCH", f"/admin/holidays/{holiday_id}", body={"name": name})

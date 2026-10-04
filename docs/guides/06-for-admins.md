@@ -114,6 +114,22 @@ Declare a holiday with a date and a name. Anyone who had booked that day gets
 their days back and is told. Holidays cannot be booked and consume nobody's
 allowance.
 
+To add a year's calendar at once, use **Paste a list**: one holiday per line,
+the date first and then the name, written either way:
+
+```
+2026-10-20 Ayudha Puja
+20/10/2026, Ayudha Puja
+```
+
+Choose where the list applies (everywhere or one location). Before anything is
+saved you see every line as it was read; a line that cannot be read is marked
+with the reason and must be fixed or removed first. Dates that are already a
+holiday there are skipped, not renamed, and listed as skipped afterwards.
+Every holiday in the list is declared exactly as if you had added it on its
+own, so anyone who had booked one of those days gets their days back and is
+told. Up to 100 lines at a time.
+
 ## Backfill
 
 Days lock at the end of the day they apply to. **Backfill** is the one place a

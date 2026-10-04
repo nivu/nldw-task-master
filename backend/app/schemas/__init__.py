@@ -101,6 +101,15 @@ class HolidayIn(BaseModel):
     location_id: str | None = None
 
 
+class HolidayBulkIn(BaseModel):
+    """Spec 001 FR-HOL-08 — several holidays at once, each declared as one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A year's calendar is a few dozen lines; 100 is headroom.
+    holidays: list[HolidayIn] = Field(min_length=1, max_length=100)
+
+
 class HolidayOut(BaseModel):
     id: str
     date: date

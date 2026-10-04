@@ -168,6 +168,13 @@ export interface Holiday {
   location_name?: string | null;
 }
 
+/** Spec 001 FR-HOL-08 — what a pasted list of holidays did. */
+export interface HolidayBulkResult {
+  created: Holiday[];
+  skipped: { date: string; name: string; location_id: string | null; reason: string }[];
+  released_bookings: number;
+}
+
 export interface PortalUser {
   id: string;
   email: string;

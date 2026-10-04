@@ -243,6 +243,7 @@ its primary users. The gate stays *"an admin created your account"*
 | FR-HOL-05 | Declaring a holiday on a date where bookings already exist MUST release those bookings and return their cost to the affected users' allowances. |
 | FR-HOL-06 | Affected users MUST be notified when FR-HOL-05 releases one of their bookings. |
 | FR-HOL-07 | Only an admin MUST be able to modify the holiday calendar. |
+| FR-HOL-08 | An admin MUST be able to declare up to 100 holidays in one request. Each MUST be declared exactly as FR-HOL-01/05/06 declare one (releasing bookings and telling those affected); a date already a holiday for that location, or repeated earlier in the same list, MUST be skipped and reported rather than changed; an unknown location MUST refuse the whole list before anything is written. The admin MUST see how each pasted line was read, and that bookings on those days will be released, before submitting. |
 
 ### 5.7 Admin panel — FR-ADMIN
 
