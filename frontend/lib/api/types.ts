@@ -788,6 +788,8 @@ export interface Milestone {
   due_on: string;
   amount: string;
   invoiced_on: string | null;
+  invoice_number: string | null;
+  paid_on: string | null;
 }
 
 export interface MilestoneList {
@@ -796,6 +798,52 @@ export interface MilestoneList {
   invoiced: string;
   revenue: string | null;
   gap: string | null;
+}
+
+/** Spec 006 FR-MILE-06 — where a milestone stands between agreed and banked. */
+export type InvoiceStatus = "upcoming" | "due" | "overdue" | "invoiced" | "payment_overdue" | "paid";
+
+export const INVOICE_STATUSES: InvoiceStatus[] = ["overdue", "due", "upcoming", "invoiced", "payment_overdue", "paid"];
+
+export const INVOICE_STATUS_LABEL: Record<InvoiceStatus, string> = {
+  upcoming: "Upcoming",
+  due: "Due",
+  overdue: "Overdue",
+  invoiced: "Invoiced",
+  payment_overdue: "Payment overdue",
+  paid: "Paid",
+};
+
+export interface InvoiceRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  client: string | null;
+  category: ProjectCategory | null;
+  is_archived: boolean;
+  name: string;
+  amount: string;
+  due_on: string;
+  invoice_number: string | null;
+  invoiced_on: string | null;
+  payment_due_on: string | null;
+  paid_on: string | null;
+  status: InvoiceStatus;
+  days_overdue: number;
+}
+
+/** Spec 006 FR-MILE-07 — every milestone, and what is owed. */
+export interface Invoices {
+  currency: string;
+  today: string;
+  payment_terms_days: number;
+  totals: {
+    receivable: string;
+    overdue_receivable: string;
+    due_next_30_days: string;
+    paid_this_month: string;
+  };
+  invoices: InvoiceRow[];
 }
 
 export interface ChecklistItem {

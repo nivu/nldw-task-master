@@ -102,6 +102,30 @@ revenue follows them instead of being spread evenly over the timeline. If the
 milestones do not add up to the project's revenue, the panel and the monthly
 table say so.
 
+Each milestone also tracks its invoice. Type the **invoice number** beside it
+and choose **Mark invoiced** (dated today), then **Mark paid** when the client
+pays. A milestone can only be paid once it has been invoiced.
+
+### Invoices
+
+**Effort → Money → Invoices** lists every milestone on every project with its
+status:
+
+- **Upcoming** — due more than a week from now.
+- **Due** — due today or within the next 7 days. Time to send the invoice.
+- **Overdue** — past its due date and still not invoiced.
+- **Invoiced** — sent, and still inside the payment terms.
+- **Payment overdue** — invoiced and unpaid for longer than the payment terms
+  (30 days unless an admin changes the `invoice_payment_terms_days` setting).
+- **Paid**.
+
+Overdue rows say how many days late they are. Filter by status with the
+buttons above the table. Four totals sit at the top, over every milestone
+whatever the filter: **receivable** (invoiced, not yet paid), **overdue
+receivable** (the part of it past the payment terms), **due next 30 days**
+(not yet invoiced) and **paid this month**. Tentative projects are left out
+until they are confirmed: work not yet won bills nobody. Leads never see this.
+
 ## Project health
 
 Every project on the Effort page carries a colour. Open it to see three

@@ -87,6 +87,10 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-MILE-02 | When a project has milestones, its monthly revenue is the milestones due that month; otherwise the even spread of `005` §3.2 (Q-02). |
 | FR-MILE-03 | If milestones do not sum to the project's revenue, the project and the monthly table say so. |
 | FR-MILE-04 | Cash view: invoiced vs due, per month. |
+| FR-MILE-05 | A milestone also carries its invoice number and the date the client paid it. It can be marked paid only once invoiced, and not before its invoice date; un-invoicing a paid milestone is refused unless the payment is cleared with it. |
+| FR-MILE-06 | Each milestone has an invoice status as of today: **paid** if paid; else **payment overdue** if invoiced more than `invoice_payment_terms_days` (30) days ago, **invoiced** if within them; else **overdue** if its due date has passed, **due** if it falls today or within 7 days, **upcoming** otherwise. Days overdue count from the due date (not invoiced) or from the end of the payment terms (invoiced). |
+| FR-MILE-07 | Invoices view: every milestone on every project, archived included and tentative (`002` FR-PROJ-08) left out, with project, client, amount, due date, invoice number, invoice and payment dates, status and days overdue, filterable by status; and totals over all of them — receivable (invoiced, not paid), overdue receivable (payment overdue), due in the next 30 days (not yet invoiced) and paid this calendar month. |
+| FR-MILE-08 | Milestones, invoices and their totals are money: managers and admins only. A lead or user is refused (403). |
 
 ## 7. Hiring signal — FR-HIRE
 
@@ -178,7 +182,7 @@ holidays              + location_id → locations (NULL = everywhere)
 bookings.category     + 'compoff'
 compoff_credits         user_id, worked_on, days, note, status, expires_on, booking_id, decided_by/at, decision_note
 timesheet_confirmations user_id, week_start, status confirmed|auto, confirmed_by/at, note
-project_milestones      project_id, name, due_on, amount, invoiced_on
+project_milestones      project_id, name, due_on, amount, invoiced_on, invoice_number, paid_on (paid_on needs invoiced_on)
 checklist_templates     kind, position, label
 checklists              user_id, kind, created_by/at, closed_at
 checklist_items         checklist_id, position, label, owner_id, due_on, done_at, done_by
@@ -188,7 +192,8 @@ oauth_codes             code, client_id, user_id, code_challenge, redirect_uri, 
 oauth_refresh_tokens    token_hash, client_id, user_id, api_token_id, expires_at, revoked_at
 api_tokens            + client_id (NULL for tokens a person issued by hand)
 app_settings          + utilisation_target, bench_threshold, nudge_hour, nudges_enabled,
-                        slack_out_channel, compoff_valid_days, digest_enabled
+                        slack_out_channel, compoff_valid_days, digest_enabled,
+                        invoice_payment_terms_days
 ```
 
 All new tables: RLS on, no browser grants. Backend only.

@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse, Response
 from app.api.deps import AdminDep, CurrentUserDep, LeadDep, ManagerDep, SessionDep
 from app.api.errors import ProblemDetail
 from app.config import settings
+from app.domain import invoicing as invoice_rules
 from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person
 from app.domain.calendar import today_in_company_tz
@@ -33,6 +34,7 @@ from app.services import checklists as checklist_service
 from app.services import compoff as compoff_service
 from app.services import feeds as feed_service
 from app.services import health as health_service
+from app.services import invoicing as invoice_service
 from app.services import reviews as review_service
 from app.services import supabase as db
 from app.services import timesheets as timesheet_service
@@ -382,6 +384,19 @@ def all_health(user: ManagerDep) -> list[dict]:
     return health_service.all_projects_health()
 
 
+@analytics.get("/invoices")
+def invoices(
+    user: ManagerDep,
+    status: str | None = Query(
+        default=None, pattern="^(" + "|".join(invoice_rules.STATUSES) + ")$"
+    ),
+) -> dict:
+    """Every milestone on every project with where it stands — upcoming, due,
+    overdue, invoiced, payment overdue, paid — and what is owed (FR-MILE-07).
+    Money, so managers and admins only."""
+    return invoice_service.listing(status)
+
+
 # ---------------------------------------------------------------------------
 # Admin — locations, milestones, checklists, notifications
 # ---------------------------------------------------------------------------
@@ -418,7 +433,16 @@ def add_location(payload: LocationIn, admin_user: AdminDep) -> dict:
 def _present_milestone(row: dict) -> dict:
     return {
         k: (str(row[k]) if k == "amount" else row.get(k))
-        for k in ("id", "project_id", "name", "due_on", "amount", "invoiced_on")
+        for k in (
+            "id",
+            "project_id",
+            "name",
+            "due_on",
+            "amount",
+            "invoiced_on",
+            "invoice_number",
+            "paid_on",
+        )
     }
 
 
@@ -466,16 +490,33 @@ def add_milestone(project_id: str, payload: MilestoneIn, manager: ManagerDep) ->
 @admin.patch("/milestones/{milestone_id}")
 def update_milestone(milestone_id: str, payload: MilestoneUpdate, manager: ManagerDep) -> dict:
     changes = {
-        k: v for k, v in payload.model_dump(exclude_none=True).items() if k != "clear_invoiced"
+        k: v
+        for k, v in payload.model_dump(exclude_none=True).items()
+        if k not in ("clear_invoiced", "clear_paid")
     }
     if "due_on" in changes:
         changes["due_on"] = changes["due_on"].isoformat()
     if "invoiced_on" in changes:
         changes["invoiced_on"] = changes["invoiced_on"].isoformat()
+    if "paid_on" in changes:
+        changes["paid_on"] = changes["paid_on"].isoformat()
     if "amount" in changes:
         changes["amount"] = str(changes["amount"])
+    if "invoice_number" in changes:
+        changes["invoice_number"] = changes["invoice_number"].strip() or None
     if payload.clear_invoiced:
         changes["invoiced_on"] = None
+    if payload.clear_paid:
+        changes["paid_on"] = None
+    existing = db.get_milestone(milestone_id)
+    if existing is None:
+        raise ProblemDetail(404, "No such milestone.")
+    # FR-MILE-05 — judged on the row as it would be after the change, so
+    # un-invoicing a paid milestone is refused as well as paying an unbilled one.
+    after = {**existing, **changes}
+    problem = invoice_rules.check_payment(after.get("invoiced_on"), after.get("paid_on"))
+    if problem:
+        raise ProblemDetail(422, problem)
     row = db.update_milestone(milestone_id, changes)
     if row is None:
         raise ProblemDetail(404, "No such milestone.")

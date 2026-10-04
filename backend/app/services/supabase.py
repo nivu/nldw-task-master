@@ -549,6 +549,11 @@ def list_milestones(project_id: str | None = None) -> list[dict[str, Any]]:
     return query.order("due_on").execute().data or []
 
 
+def get_milestone(milestone_id: str) -> dict[str, Any] | None:
+    rows = supabase.table("project_milestones").select("*").eq("id", milestone_id).execute().data
+    return rows[0] if rows else None
+
+
 def insert_milestone(data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("project_milestones").insert(data).execute().data[0]
 

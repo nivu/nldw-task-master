@@ -23,6 +23,7 @@ import {
 import type {
   AllocatablePerson,
   AllocationRow,
+  Milestone,
   MilestoneList,
   Phase,
   Project,
@@ -623,45 +624,7 @@ function MilestonesForm({
       {data && data.milestones.length > 0 && (
         <div className="space-y-1 text-xs">
           {data.milestones.map((m) => (
-            <div key={m.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{m.name}</span>
-              <span className="tabular-nums text-muted-foreground">{m.due_on}</span>
-              <span className="tabular-nums">{currency} {formatMoney(m.amount)}</span>
-              {m.invoiced_on ? (
-                <Badge variant="secondary">invoiced {m.invoiced_on}</Badge>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6"
-                  onClick={async () => {
-                    try {
-                      await updateMilestone(m.id, { invoiced_on: today() });
-                      reload();
-                    } catch (err) {
-                      onError(errorMessage(err));
-                    }
-                  }}
-                >
-                  Mark invoiced
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6"
-                onClick={async () => {
-                  try {
-                    await removeMilestone(m.id);
-                    reload();
-                  } catch (err) {
-                    onError(errorMessage(err));
-                  }
-                }}
-              >
-                Remove
-              </Button>
-            </div>
+            <MilestoneRow key={m.id} milestone={m} currency={currency} onChange={reload} onError={onError} />
           ))}
           <p className="text-muted-foreground">
             Milestones {currency} {formatMoney(data.total)} · invoiced {formatMoney(data.invoiced)}
@@ -673,6 +636,97 @@ function MilestonesForm({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One milestone through its invoice life — spec 006 FR-MILE-05: invoiced with
+ * its invoice number, then paid. The server refuses a payment before the
+ * invoice, so "Mark paid" only appears once there is one.
+ */
+function MilestoneRow({
+  milestone: m,
+  currency,
+  onChange,
+  onError,
+}: {
+  milestone: Milestone;
+  currency: string;
+  onChange: () => void;
+  onError: (m: string) => void;
+}) {
+  const [invoiceNumber, setInvoiceNumber] = useState(m.invoice_number ?? "");
+  const [busy, setBusy] = useState(false);
+
+  async function update(changes: Parameters<typeof updateMilestone>[1]) {
+    setBusy(true);
+    try {
+      await updateMilestone(m.id, changes);
+      onChange();
+    } catch (err) {
+      onError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="font-medium">{m.name}</span>
+      <span className="tabular-nums text-muted-foreground">{m.due_on}</span>
+      <span className="tabular-nums">{currency} {formatMoney(m.amount)}</span>
+      {m.invoiced_on && <Badge variant="secondary">invoiced {m.invoiced_on}</Badge>}
+      {m.paid_on && <Badge variant="secondary">paid {m.paid_on}</Badge>}
+      {!m.paid_on && (
+        <Input
+          value={invoiceNumber}
+          onChange={(e) => setInvoiceNumber(e.target.value)}
+          placeholder="Invoice no."
+          maxLength={80}
+          className="h-6 w-28 text-xs"
+        />
+      )}
+      {m.paid_on && m.invoice_number && <span className="text-muted-foreground">{m.invoice_number}</span>}
+      {m.invoiced_on && !m.paid_on && invoiceNumber.trim() !== (m.invoice_number ?? "") && (
+        <Button variant="ghost" size="sm" className="h-6" disabled={busy} onClick={() => update({ invoice_number: invoiceNumber })}>
+          Save number
+        </Button>
+      )}
+      {!m.invoiced_on && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6"
+          disabled={busy}
+          onClick={() =>
+            update({ invoiced_on: today(), ...(invoiceNumber.trim() ? { invoice_number: invoiceNumber } : {}) })
+          }
+        >
+          Mark invoiced
+        </Button>
+      )}
+      {m.invoiced_on && !m.paid_on && (
+        <Button variant="ghost" size="sm" className="h-6" disabled={busy} onClick={() => update({ paid_on: today() })}>
+          Mark paid
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6"
+        disabled={busy}
+        onClick={async () => {
+          try {
+            await removeMilestone(m.id);
+            onChange();
+          } catch (err) {
+            onError(errorMessage(err));
+          }
+        }}
+      >
+        Remove
+      </Button>
     </div>
   );
 }

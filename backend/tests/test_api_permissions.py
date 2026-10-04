@@ -12,6 +12,8 @@ touch.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -32,8 +34,8 @@ PEOPLE = {
 
 
 class FakeDb:
-    """Just enough of app.services.supabase for /admin/projects, /admin/allocations
-    and /admin/holidays."""
+    """Just enough of app.services.supabase for /admin/projects, /admin/allocations,
+    /admin/holidays, /admin/milestones and /analytics/invoices."""
 
     def __init__(self) -> None:
         self.profiles = {
@@ -73,6 +75,28 @@ class FakeDb:
         self.holidays = [
             {"id": "h-diwali", "date": "2026-11-08", "name": "Diwali", "location_id": None}
         ]
+        self.milestones = {
+            "m-billed": {
+                "id": "m-billed",
+                "project_id": "p-live",
+                "name": "Kickoff",
+                "due_on": "2026-09-01",
+                "amount": "40000",
+                "invoiced_on": "2026-09-01",
+                "invoice_number": None,
+                "paid_on": None,
+            },
+            "m-unbilled": {
+                "id": "m-unbilled",
+                "project_id": "p-live",
+                "name": "Delivery",
+                "due_on": "2026-12-01",
+                "amount": "80000",
+                "invoiced_on": None,
+                "invoice_number": None,
+                "paid_on": None,
+            },
+        }
         self.audit: list[dict] = []
 
     @staticmethod
@@ -182,6 +206,26 @@ class FakeDb:
 
     def list_locations(self):
         return [{"id": "loc-chennai", "name": "Chennai"}]
+
+    # Milestones
+    def list_milestones(self, project_id=None):
+        return [
+            dict(m)
+            for m in self.milestones.values()
+            if project_id is None or m["project_id"] == project_id
+        ]
+
+    def get_milestone(self, milestone_id):
+        row = self.milestones.get(milestone_id)
+        return dict(row) if row else None
+
+    def update_milestone(self, milestone_id, data):
+        self.milestones[milestone_id].update(data)
+        return dict(self.milestones[milestone_id])
+
+    # Settings — none stored, so every read takes its default.
+    def list_settings(self):
+        return []
 
     # Audit
     def insert_audit(self, entry):
@@ -631,3 +675,94 @@ class TestBulkHolidays:
         r = as_("u-admin").post(f"{API}/holidays/bulk", json={"holidays": holidays})
         assert r.status_code == 422
         assert len(fake.holidays) == 1
+
+
+class TestInvoices:
+    """Spec 006 FR-MILE-05..08 — the invoicing tracker is money: managers and
+    admins only, and a payment cannot precede its invoice."""
+
+    @pytest.fixture(autouse=True)
+    def _today(self, monkeypatch):
+        from app.services import invoicing, settings_store
+
+        settings_store.invalidate()
+        monkeypatch.setattr(invoicing, "today_in_company_tz", lambda: date(2026, 10, 15))
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-mine"])
+    def test_lead_and_user_are_refused(self, as_, fake, who):
+        r = as_(who).get("/api/v1/analytics/invoices")
+        assert r.status_code == 403
+
+    @pytest.mark.parametrize("who", ["u-manager", "u-admin"])
+    def test_manager_and_admin_see_every_milestone(self, as_, fake, who):
+        r = as_(who).get("/api/v1/analytics/invoices")
+        assert r.status_code == 200
+        body = r.json()
+        rows = {i["id"]: i for i in body["invoices"]}
+        assert rows["m-billed"]["status"] == "payment_overdue"
+        assert rows["m-billed"]["days_overdue"] == 14
+        assert rows["m-billed"]["client"] == "Acme"
+        assert rows["m-unbilled"]["status"] == "upcoming"
+        assert body["payment_terms_days"] == 30
+        assert body["totals"]["receivable"] == "40000"
+
+    def test_status_filters_the_list_not_the_totals(self, as_, fake):
+        r = as_("u-manager").get("/api/v1/analytics/invoices?status=upcoming")
+        assert [i["id"] for i in r.json()["invoices"]] == ["m-unbilled"]
+        assert r.json()["totals"]["receivable"] == "40000"
+
+    def test_unknown_status_is_refused(self, as_, fake):
+        r = as_("u-manager").get("/api/v1/analytics/invoices?status=lost")
+        assert r.status_code == 422
+
+    def test_a_tentative_project_bills_nobody(self, as_, fake):
+        fake.projects["p-live"]["status"] = "tentative"
+        r = as_("u-manager").get("/api/v1/analytics/invoices")
+        assert r.json()["invoices"] == []
+        assert r.json()["totals"]["receivable"] == "0"
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-mine"])
+    def test_lead_cannot_mark_a_milestone_paid(self, as_, fake, who):
+        r = as_(who).patch(f"{API}/milestones/m-billed", json={"paid_on": "2026-10-10"})
+        assert r.status_code == 403
+        assert fake.milestones["m-billed"]["paid_on"] is None
+
+    def test_manager_records_invoice_number_and_payment(self, as_, fake):
+        r = as_("u-manager").patch(
+            f"{API}/milestones/m-billed",
+            json={"invoice_number": " INV-042 ", "paid_on": "2026-10-10"},
+        )
+        assert r.status_code == 200
+        assert r.json()["invoice_number"] == "INV-042"
+        assert r.json()["paid_on"] == "2026-10-10"
+        assert fake.audit[-1]["action"] == "milestone.updated"
+
+    def test_empty_invoice_number_clears_it(self, as_, fake):
+        fake.milestones["m-billed"]["invoice_number"] = "INV-1"
+        r = as_("u-manager").patch(f"{API}/milestones/m-billed", json={"invoice_number": ""})
+        assert r.status_code == 200
+        assert fake.milestones["m-billed"]["invoice_number"] is None
+
+    def test_paying_an_uninvoiced_milestone_is_refused(self, as_, fake):
+        r = as_("u-manager").patch(f"{API}/milestones/m-unbilled", json={"paid_on": "2026-10-10"})
+        assert r.status_code == 422
+        assert fake.milestones["m-unbilled"]["paid_on"] is None
+        assert fake.audit == []
+
+    def test_paying_before_the_invoice_date_is_refused(self, as_, fake):
+        r = as_("u-manager").patch(f"{API}/milestones/m-billed", json={"paid_on": "2026-08-31"})
+        assert r.status_code == 422
+
+    def test_uninvoicing_a_paid_milestone_is_refused(self, as_, fake):
+        fake.milestones["m-billed"]["paid_on"] = "2026-10-01"
+        r = as_("u-manager").patch(f"{API}/milestones/m-billed", json={"clear_invoiced": True})
+        assert r.status_code == 422
+        assert fake.milestones["m-billed"]["invoiced_on"] == "2026-09-01"
+
+    def test_clearing_both_together_is_allowed(self, as_, fake):
+        fake.milestones["m-billed"]["paid_on"] = "2026-10-01"
+        r = as_("u-manager").patch(
+            f"{API}/milestones/m-billed", json={"clear_invoiced": True, "clear_paid": True}
+        )
+        assert r.status_code == 200
+        assert fake.milestones["m-billed"]["paid_on"] is None

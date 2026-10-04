@@ -148,8 +148,13 @@ reasons, and the currency used for money.
 **portal_start_date** is the day the company started logging time in the
 portal, for example `2026-10-01`. Days before it are never counted as missing
 — not in coverage, the nudges, the Friday gaps or weekly sign-off. Empty means
-no start date. Settings are changed through Claude (`update_setting`), not on
-this page.
+no start date.
+
+**invoice_payment_terms_days** (30) is how many days a client has to pay an
+invoice. An invoice still unpaid that many days after its invoice date shows
+as **payment overdue** on the managers' Invoices list.
+
+Settings are changed through Claude (`update_setting`), not on this page.
 
 ## Audit
 
