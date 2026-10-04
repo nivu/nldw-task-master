@@ -66,7 +66,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 
 | ID | Requirement |
 |---|---|
-| FR-UTIL-01 | Per person per month: billable hours (projects with a client), internal project hours, activity hours, capacity hours (working days × 8, less approved leave), utilisation = billable ÷ capacity. Q-04. |
+| FR-UTIL-01 | Per person per month: billable hours (projects with a client), internal project hours, activity hours, capacity hours (working days × the person's contracted hours a day — 8 full time, `005` FR-CTC-06 — less approved leave), utilisation = billable ÷ capacity. Q-04. |
 | FR-UTIL-02 | Target utilisation is a setting (`utilisation_target`, 80). Below target is shown, never ranked. |
 | FR-UTIL-03 | Bench: per person per week for the next N weeks, allocated %; under `bench_threshold` (60) is bench. Manager tier. |
 | FR-UTIL-04 | Leads see utilisation for their reports; managers everyone. |

@@ -64,6 +64,7 @@ class FakeDb:
             "a-theirs": self._alloc("a-theirs", "u-theirs", "p-live"),
             "a-archived": self._alloc("a-archived", "u-mine", "p-archived"),
         }
+        self.cost_periods: dict[str, dict] = {}
         self.audit: list[dict] = []
 
     @staticmethod
@@ -132,6 +133,22 @@ class FakeDb:
 
     def delete_allocation(self, allocation_id):
         del self.allocations[allocation_id]
+
+    # CTC periods
+    def list_cost_periods(self, user_id=None):
+        return [
+            dict(r)
+            for r in self.cost_periods.values()
+            if user_id is None or r["user_id"] == user_id
+        ]
+
+    def insert_cost_period(self, data):
+        row = {"id": f"c-{len(self.cost_periods)}", **data}
+        self.cost_periods[row["id"]] = row
+        return dict(row)
+
+    def close_cost_period(self, period_id, ends_on):
+        self.cost_periods[period_id]["ends_on"] = ends_on
 
     # Audit
     def insert_audit(self, entry):
@@ -341,3 +358,39 @@ class TestAllocationEditValidation:
         assert entry["action"] == "allocation.updated"
         assert entry["before"]["starts_on"] == "2026-10-01"
         assert entry["after"]["percent"] == "25"
+
+
+class TestContractedHours:
+    """Spec 005 FR-CTC-06 — the hours a CTC period pays for. Admin only, like
+    every CTC write (FR-CTC-01)."""
+
+    CTC = {"annual_ctc": "600000", "starts_on": "2026-10-01"}
+
+    def test_admin_records_part_time_hours(self, as_, fake):
+        r = as_("u-admin").post(
+            f"{API}/users/u-mine/ctc", json={**self.CTC, "hours_per_week": "10"}
+        )
+        assert r.status_code == 201
+        assert r.json()["hours_per_week"] == "10.0"
+        assert fake.audit[-1]["after"]["hours_per_week"] == "10"
+
+    def test_hours_default_to_full_time(self, as_, fake):
+        r = as_("u-admin").post(f"{API}/users/u-mine/ctc", json=self.CTC)
+        assert r.status_code == 201
+        assert r.json()["hours_per_week"] == "40.0"
+        listed = as_("u-admin").get(f"{API}/users/u-mine/ctc").json()
+        assert listed["periods"][0]["hours_per_week"] == "40.0"
+
+    @pytest.mark.parametrize("hours", ["0", "-5", "60.5", "10.25"])
+    def test_out_of_range_hours_are_refused(self, as_, fake, hours):
+        r = as_("u-admin").post(
+            f"{API}/users/u-mine/ctc", json={**self.CTC, "hours_per_week": hours}
+        )
+        assert r.status_code == 422
+        assert fake.cost_periods == {}
+
+    @pytest.mark.parametrize("who", ["u-manager", "u-lead", "u-mine"])
+    def test_only_an_admin_may_set_them(self, as_, fake, who):
+        r = as_(who).post(f"{API}/users/u-mine/ctc", json={**self.CTC, "hours_per_week": "10"})
+        assert r.status_code == 403
+        assert fake.cost_periods == {}

@@ -51,6 +51,12 @@ person's history holds their past, current and upcoming figures at once:
   before.
 - To record history, add periods with both dates.
 - A wrong period is removed and re-added; periods are never edited in place.
+- **Hours / week** says how many hours the CTC pays for: 40 is full time
+  (the default), 10 is a contractor on ten hours a week. A part-timer's
+  logged hours are costed at their real hourly rate, and their capacity,
+  forecast and utilisation shrink to match. An allocation percent is a share
+  of their own hours, so 100% of a 10-hour person is 10 hours a week. Going
+  part-time is a new period, like any other CTC change.
 
 Every project is costed at the CTC in force on the day each hour was logged,
 and every future month is planned at the CTC in force on those days. A

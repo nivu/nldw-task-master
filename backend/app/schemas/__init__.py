@@ -306,6 +306,8 @@ class CtcPeriodIn(BaseModel):
     annual_ctc: Decimal = Field(ge=0, le=1_000_000_000)
     starts_on: date
     ends_on: date | None = None
+    # FR-CTC-06 — the hours a week this CTC pays for. 40 = full time.
+    hours_per_week: Decimal = Field(default=Decimal("40"), gt=0, le=60, decimal_places=1)
 
 
 # ---------------------------------------------------------------------------

@@ -58,10 +58,10 @@ name, and a person never sees their own.
 
 | Term | Meaning |
 |---|---|
-| **CTC period** | `annual_ctc` for a person from `starts_on` to `ends_on` (null = until further notice). Entered annually (Q-03), shown monthly. |
+| **CTC period** | `annual_ctc` for a person from `starts_on` to `ends_on` (null = until further notice), and the `hours_per_week` it pays for (default 40 = full time; FR-CTC-06). Entered annually (Q-03), shown monthly. |
 | **Monthly CTC** | annual ÷ 12 |
 | **Daily cost** on a working day in month M | monthly CTC ÷ working days in M |
-| **Hourly cost** in M | daily cost ÷ 8 |
+| **Hourly cost** in M | daily cost ÷ (hours_per_week ÷ 5) — 8 for full time |
 | **COGS** of a project | Σ over entries: hours × hourly cost of the CTC period covering the entry's date |
 
 `profiles.cost_rate_hourly` and `time_entries.cost_rate_snapshot` are
@@ -117,6 +117,7 @@ Per project, per month: revenue as §3.2; cost = Σ over people of (hours × hou
 | FR-CTC-03 | Adding a period that starts inside an open-ended one MUST close the open one the day before — that is how "CTC changes next month" is entered. |
 | FR-CTC-04 | Every add and remove MUST be audited. |
 | FR-CTC-05 | CTC and every figure derived from it MUST be visible to managers and admins only (`003` FR-FIN-07). The browser role MUST have no access to the table. |
+| FR-CTC-06 | Each CTC period MUST carry the hours a week it pays for (above 0, at most 60; default 40 = full time). Hourly cost MUST be monthly CTC ÷ (working days in the month × hours_per_week ÷ 5), so a part-timer's logged hours are costed at their real rate. Daily cost is unchanged: an allocation percent is a share of that person's own contracted hours, so planned cost (percent × daily cost) is already right. Capacity, forecast hours, utilisation and the hiring signal's supply and demand MUST use each person's contracted hours on the day (hours_per_week ÷ 5 per working day); a day no period covers counts as full time. Bench stays a percent of the person's own capacity and so needs no change; a hire in the hiring signal is a full-time FTE. |
 
 ### 4.2 Monthly profit — FR-PNL
 
@@ -146,6 +147,8 @@ cost_periods   id uuid PK
                annual_ctc numeric(14,2) ≥ 0
                starts_on date NOT NULL
                ends_on date NULL                  -- until further notice
+               hours_per_week numeric(4,1) NOT NULL DEFAULT 40
+                                  CHECK (> 0 AND ≤ 60)  -- FR-CTC-06
                EXCLUDE (user_id =, daterange &&)  -- FR-CTC-02
                created_by, created_at
 ```

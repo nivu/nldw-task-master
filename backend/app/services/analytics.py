@@ -195,6 +195,8 @@ def forecast(start: date, end: date) -> dict[str, Any]:
     holidays = holidays_between(start, end)
     user_ids = sorted({a["user_id"] for a in allocations})
     leave = leave_days_for(user_ids, start, end)
+    # Spec 005 FR-CTC-06 — 100% of a part-timer is their contracted hours.
+    hours_for = pnl_service.contracted_hours()
 
     per_project: dict[str, dict[str, Any]] = {}
     typed: list[rules.Allocation] = []
@@ -222,6 +224,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
             window[1],
             holidays=holidays,
             leave_days=leave.get(allocation["user_id"], {}),
+            hours_on=hours_for(allocation["user_id"]),
         )
         bucket = per_project.setdefault(
             allocation["project_id"],

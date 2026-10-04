@@ -31,7 +31,9 @@ from app.domain.calendar import is_weekend
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
 MONTHS_PER_YEAR = Decimal("12")
-HOURS_PER_WORKING_DAY = Decimal("8")
+#: Full time, and what a period with no hours given means — FR-CTC-06.
+FULL_TIME_HOURS_PER_WEEK = Decimal("40")
+WORKING_DAYS_PER_WEEK = Decimal("5")
 
 
 def money(value: Decimal | None) -> Decimal | None:
@@ -90,10 +92,17 @@ class Period:
     annual_ctc: Decimal
     starts_on: date
     ends_on: date | None  # None = until further notice
+    # FR-CTC-06: the hours this CTC pays for. Part-time is a change of
+    # contract, so it belongs to the period, not the person.
+    hours_per_week: Decimal = FULL_TIME_HOURS_PER_WEEK
 
     @property
     def monthly(self) -> Decimal:
         return self.annual_ctc / MONTHS_PER_YEAR
+
+    @property
+    def hours_per_day(self) -> Decimal:
+        return self.hours_per_week / WORKING_DAYS_PER_WEEK
 
     def covers(self, day: date) -> bool:
         return self.starts_on <= day and (self.ends_on is None or day <= self.ends_on)
@@ -104,6 +113,15 @@ def period_on(periods: list[Period], day: date) -> Period | None:
         if period.covers(day):
             return period
     return None
+
+
+def contracted_hours_on(periods: list[Period], day: date) -> Decimal:
+    """Hours a working day of this person is — FR-CTC-06. Full time on a day
+    no period covers: an unknown CTC is not evidence of a part-time contract."""
+    period = period_on(periods, day)
+    if period is None:
+        return FULL_TIME_HOURS_PER_WEEK / WORKING_DAYS_PER_WEEK
+    return period.hours_per_day
 
 
 def paid_between(periods: list[Period], first: date, last: date) -> bool:
@@ -138,8 +156,12 @@ def daily_cost(period: Period, month_working_days: int) -> Decimal | None:
 
 
 def hourly_cost(period: Period, month_working_days: int) -> Decimal | None:
+    """The day's cost over the hours the period pays for — FR-CTC-06. Someone
+    on 10 h a week costs four times as much per hour as their CTC spread over
+    a full-time month would say. The daily cost is unchanged: an allocation
+    percent is a share of the person's own contracted capacity."""
     daily = daily_cost(period, month_working_days)
-    return None if daily is None else daily / HOURS_PER_WORKING_DAY
+    return None if daily is None else daily / period.hours_per_day
 
 
 @dataclass(frozen=True)

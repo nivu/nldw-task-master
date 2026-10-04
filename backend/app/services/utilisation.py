@@ -13,6 +13,7 @@ from app.domain.calendar import is_weekend, today_in_company_tz
 from app.services import settings_store
 from app.services import supabase as db
 from app.services.holidays import holidays_by_person
+from app.services.pnl import contracted_hours
 from app.services.timesheets import leave_days_for
 
 ZERO = Decimal("0")
@@ -42,6 +43,7 @@ def monthly(user_ids: list[str], start: str, end: str) -> dict[str, Any]:
     entries = db.list_time_entries(user_ids=user_ids, start=first, end=last)
     leave = leave_days_for(user_ids, first, last)
     holidays = holidays_by_person(user_ids, first, last)
+    hours_for = contracted_hours()
     goal = target()
 
     rows = []
@@ -63,13 +65,13 @@ def monthly(user_ids: list[str], start: str, end: str) -> dict[str, Any]:
                     billable += hours
                 else:
                     internal += hours
-            capacity = calc.capacity_hours(
-                rules.working_days(
-                    m_first,
-                    m_last,
-                    holidays=holidays.get(uid, set()),
-                    leave_days=leave.get(uid, {}),
-                )
+            # Spec 005 FR-CTC-06 — measured against the hours they are paid for.
+            capacity = rules.available_hours(
+                m_first,
+                m_last,
+                holidays=holidays.get(uid, set()),
+                leave_days=leave.get(uid, {}),
+                hours_on=hours_for(uid),
             )
             cells.append(
                 {
@@ -158,6 +160,7 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
     allocations = db.list_allocations()
     leave = leave_days_for(user_ids, first, last)
     holidays = holidays_by_person(user_ids, first, last)
+    hours_for = contracted_hours()
     goal = target() / HUNDRED
 
     out = []
@@ -172,9 +175,19 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
                 holidays=holidays.get(person["id"], set()),
                 leave_days=leave.get(person["id"], {}),
             )
-            hours = calc.capacity_hours(wd)
-            per_person.append(hours)
-            supply += hours * goal
+            # A hire is full time, so an FTE stays full-time hours; supply is
+            # what each person is contracted for (spec 005 FR-CTC-06).
+            per_person.append(calc.capacity_hours(wd))
+            supply += (
+                rules.available_hours(
+                    m_first,
+                    m_last,
+                    holidays=holidays.get(person["id"], set()),
+                    leave_days=leave.get(person["id"], {}),
+                    hours_on=hours_for(person["id"]),
+                )
+                * goal
+            )
         demand = ZERO
         for a in allocations:
             window = pnl.overlap(
@@ -185,10 +198,13 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
             )
             if window is None:
                 continue
-            wd = rules.working_days(
-                window[0], window[1], holidays=holidays.get(a["user_id"], set())
+            hours = rules.available_hours(
+                window[0],
+                window[1],
+                holidays=holidays.get(a["user_id"], set()),
+                hours_on=hours_for(a["user_id"]),
             )
-            demand += calc.capacity_hours(wd) * Decimal(str(a["percent"])) / HUNDRED
+            demand += hours * Decimal(str(a["percent"])) / HUNDRED
         typical = (
             (sum(per_person, ZERO) / Decimal(len(per_person)))
             if per_person

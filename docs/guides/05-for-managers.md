@@ -92,7 +92,8 @@ flags weeks under the threshold as free capacity. **Hiring signal**, on the
 same tab, compares the hours the allocations demand with what the team can
 supply at target utilisation, month by month, and prices the shortfall in
 people at an annual CTC you type in. It is a planning number, not anybody's
-figure.
+figure. Supply and demand count each person's contracted hours, so a
+part-timer adds their hours, not a full-time week; a hire is priced full time.
 
 ## Effort, with money
 
@@ -103,7 +104,9 @@ Managers see two extra tabs on **Effort**.
 
 - **Cost** is hours × that person's hourly cost, derived from the CTC in
   force on the day the hours were logged. A CTC change next month prices
-  next month's hours and nothing before them.
+  next month's hours and nothing before them. The hourly cost uses the hours
+  a week that CTC pays for, so a contractor on 10 hours a week costs four
+  times as much an hour as the same CTC would for someone full time.
 - **Margin** is revenue minus cost.
 - **Attributed revenue** shares a project's revenue among the people on it in
   proportion to their hours. It says what a person's time went into, not what

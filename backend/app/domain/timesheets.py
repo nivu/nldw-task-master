@@ -11,6 +11,7 @@ thousands of rows.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -44,7 +45,8 @@ DEFAULT_MAX_HOURS_PER_DAY = Decimal("16")
 #: editable. Overridable via `app_settings.timesheet_grace_days`.
 DEFAULT_GRACE_DAYS = 7
 
-#: A full working day, used to turn an allocation percentage into hours.
+#: A full-time working day, used to turn an allocation percentage into hours
+#: for anyone not contracted for fewer (spec 005 FR-CTC-06).
 HOURS_PER_WORKING_DAY = Decimal("8")
 
 #: Spec 003 FR-ACT-02 — time that is real work but belongs to no project. A
@@ -305,6 +307,32 @@ def working_days(
     return total
 
 
+def available_hours(
+    start: date,
+    end: date,
+    *,
+    holidays: set[date],
+    leave_days: dict[date, Decimal] | None = None,
+    hours_on: Callable[[date], Decimal] | None = None,
+) -> Decimal:
+    """`working_days`, in hours: each available day weighted by the hours the
+    person is contracted for that day — spec 005 FR-CTC-06.
+
+    `hours_on` gives a day's contracted hours (2 for someone on 10 h a week);
+    None means full time throughout. A part-timer counted at 8 h a day looks
+    like four times the capacity they are, and the plan built on it is wrong.
+    """
+    leave_days = leave_days or {}
+    total = ZERO
+    day = start
+    while day <= end:
+        if not is_weekend(day) and day not in holidays:
+            share = Decimal("1") - min(leave_days.get(day, ZERO), Decimal("1"))
+            total += share * (HOURS_PER_WORKING_DAY if hours_on is None else hours_on(day))
+        day += timedelta(days=1)
+    return total
+
+
 def allocated_hours(
     percent: Decimal,
     start: date,
@@ -312,15 +340,17 @@ def allocated_hours(
     *,
     holidays: set[date],
     leave_days: dict[date, Decimal] | None = None,
-    hours_per_day: Decimal = HOURS_PER_WORKING_DAY,
+    hours_on: Callable[[date], Decimal] | None = None,
 ) -> Decimal:
     """What an allocation implies, in hours, over a date range.
 
     Q-02: a percentage of *capacity*, not of the calendar — so it shrinks when
-    somebody is on leave without anybody adjusting the allocation.
+    somebody is on leave without anybody adjusting the allocation. Capacity is
+    the person's contracted hours (FR-CTC-06), so 100% of a 10 h-a-week
+    contractor is 10 hours a week, not 40.
     """
-    days = working_days(start, end, holidays=holidays, leave_days=leave_days)
-    return (days * hours_per_day * percent / Decimal("100")).quantize(Decimal("0.01"))
+    hours = available_hours(start, end, holidays=holidays, leave_days=leave_days, hours_on=hours_on)
+    return (hours * percent / Decimal("100")).quantize(Decimal("0.01"))
 
 
 def overlap(a_start: date, a_end: date, b_start: date, b_end: date) -> tuple[date, date] | None:

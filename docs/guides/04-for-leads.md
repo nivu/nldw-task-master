@@ -88,6 +88,8 @@ half-filled timesheet are not roughly right; they are lower than reality.
 
 **Utilisation** shows billable hours (projects with a client) against capacity
 per person per month, with the target the company has set. It is for spotting
-someone stuck on internal work, not for ranking anyone.
+someone stuck on internal work, not for ranking anyone. Capacity, here and in
+the forecast, is the hours a person is contracted for, so a part-timer's is
+smaller; an allocation percent is a share of their own hours.
 
 Leads see hours, never money.

@@ -196,6 +196,8 @@ def _m(value: Decimal | None) -> str | None:
 
 def _present_period(row: dict) -> dict:
     annual = Decimal(str(row["annual_ctc"]))
+    # FR-CTC-06 — a row from before 017 has no hours: it was full time.
+    hours = Decimal(str(row.get("hours_per_week", 40)))
     return {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -203,6 +205,7 @@ def _present_period(row: dict) -> dict:
         "monthly_ctc": _m(annual / Decimal("12")),
         "starts_on": row["starts_on"],
         "ends_on": row.get("ends_on"),
+        "hours_per_week": str(hours.quantize(Decimal("0.1"))),
         "created_at": row.get("created_at"),
     }
 
@@ -252,6 +255,7 @@ def add_ctc(user_id: str, payload: CtcPeriodIn, admin: AdminDep) -> dict:
                 "annual_ctc": str(payload.annual_ctc),
                 "starts_on": payload.starts_on.isoformat(),
                 "ends_on": payload.ends_on.isoformat() if payload.ends_on else None,
+                "hours_per_week": str(payload.hours_per_week),
                 "created_by": admin.id,
             }
         )
@@ -274,6 +278,7 @@ def add_ctc(user_id: str, payload: CtcPeriodIn, admin: AdminDep) -> dict:
             "annual_ctc": str(payload.annual_ctc),
             "starts_on": payload.starts_on.isoformat(),
             "ends_on": payload.ends_on.isoformat() if payload.ends_on else None,
+            "hours_per_week": str(payload.hours_per_week),
             "closed_previous": closed["id"] if closed else None,
         },
     )
@@ -293,7 +298,10 @@ def remove_ctc(period_id: str, admin: AdminDep) -> dict:
         target_table="cost_periods",
         target_id=period_id,
         actor_id=admin.id,
-        before={k: row.get(k) for k in ("user_id", "annual_ctc", "starts_on", "ends_on")},
+        before={
+            k: row.get(k)
+            for k in ("user_id", "annual_ctc", "starts_on", "ends_on", "hours_per_week")
+        },
     )
     return {"status": "removed"}
 

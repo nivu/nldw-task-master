@@ -25,7 +25,7 @@ class MonthUtilisation:
     billable: Decimal
     internal: Decimal
     activity: Decimal
-    capacity: Decimal  # hours: (working days − leave) × 8
+    capacity: Decimal  # hours: (working days − leave) × contracted hours a day
 
     @property
     def logged(self) -> Decimal:
@@ -49,7 +49,8 @@ class MonthUtilisation:
 
 
 def capacity_hours(working_days: Decimal) -> Decimal:
-    """Working days already net of leave (`timesheets.working_days`)."""
+    """Working days already net of leave (`timesheets.working_days`), at full
+    time. A part-timer's capacity is `timesheets.available_hours`."""
     return working_days * HOURS_PER_DAY
 
 
