@@ -280,6 +280,7 @@ export const createProject = (input: {
   client: string | null;
   revenue?: string | null;
   category?: ProjectCategory;
+  lead_id?: string | null;
 }) =>
   call<Project>("/admin/projects", { method: "POST", ...body(input) });
 
@@ -291,6 +292,7 @@ export const updateProject = (
     client?: string | null;
     revenue?: string | null;
     category?: ProjectCategory;
+    lead_id?: string | null;
   }
 ) => call<Project>(`/admin/projects/${id}`, { method: "PATCH", ...body(changes) });
 

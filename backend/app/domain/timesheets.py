@@ -370,6 +370,20 @@ def may_allocate(*, actor_id: str, actor_is_manager: bool, person_lead_id: str |
     return actor_is_manager or person_lead_id == actor_id
 
 
+def project_lead_refusal(person: dict | None) -> str | None:
+    """Spec 002 FR-PROJ-07 — may this person be named a project's lead?
+
+    `person` is their profile, or None when the id matches nobody. Any role
+    will do — the lead is a label, not a permission — but they must exist and
+    still be active: a project led by someone who has left is led by nobody.
+    """
+    if person is None:
+        return "That lead does not exist."
+    if not person.get("is_active"):
+        return f"{person.get('display_name') or 'That person'} is not active."
+    return None
+
+
 def archived_allocation_refusal(
     *,
     project_name: str,

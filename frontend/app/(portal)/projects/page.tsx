@@ -33,6 +33,8 @@ export default function ProjectsPage() {
     projects: Project[];
     allocations: AllocationRow[];
     people: AllocatablePerson[];
+    leads: AllocatablePerson[];
+    meId: string;
     currency: string;
     showMoney: boolean;
   }>(async () => {
@@ -44,7 +46,22 @@ export default function ProjectsPage() {
       showMoney ? listAllocatablePeople() : listMyReports(),
       showMoney ? getPeopleFinancials() : null,
     ]);
-    return { projects, allocations, people, currency: financials?.currency ?? "", showMoney };
+    // Spec 002 FR-PROJ-07 — who may be named a project's lead: the same
+    // people list, plus the viewer, whom a lead's own-reports list leaves out.
+    const leads = people.some((p) => p.id === me.id)
+      ? people
+      : [...people, { id: me.id, display_name: me.display_name }].sort((a, b) =>
+          a.display_name.localeCompare(b.display_name)
+        );
+    return {
+      projects,
+      allocations,
+      people,
+      leads,
+      meId: me.id,
+      currency: financials?.currency ?? "",
+      showMoney,
+    };
   }, []);
 
   if (error && !data) {
@@ -78,6 +95,8 @@ export default function ProjectsPage() {
         projects={data.projects}
         allocations={data.allocations}
         people={data.people}
+        leads={data.leads}
+        meId={data.meId}
         currency={data.currency}
         showMoney={data.showMoney}
         onDone={(message) => {

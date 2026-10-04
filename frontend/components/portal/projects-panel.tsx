@@ -52,11 +52,16 @@ const today = () => isoDate(new Date());
  * (FR-ROLE-07/08) get the rest. `people` is the name-and-id list from
  * /analytics/people for a manager, or the lead's own reports, because neither
  * can reach the user directory (FR-ROLE-03) and does not need to.
+ *
+ * A project may name its lead (spec 002 FR-PROJ-07). `leads` is that same
+ * list plus the viewer; the lead is a label and grants nobody any access.
  */
 export function ProjectsPanel({
   projects,
   allocations,
   people,
+  leads,
+  meId,
   currency,
   showMoney,
   onDone,
@@ -65,6 +70,8 @@ export function ProjectsPanel({
   projects: Project[];
   allocations: AllocationRow[];
   people: AllocatablePerson[];
+  leads: AllocatablePerson[];
+  meId: string;
   currency: string;
   showMoney: boolean;
   onDone: (message: string) => void;
@@ -74,8 +81,11 @@ export function ProjectsPanel({
   const [client, setClient] = useState("");
   const [revenue, setRevenue] = useState("");
   const [category, setCategory] = useState<ProjectCategory>("client");
+  const [leadId, setLeadId] = useState("");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [onlyMine, setOnlyMine] = useState(false);
+  const shown = onlyMine ? projects.filter((p) => p.lead_id === meId) : projects;
 
   return (
     <div className="space-y-4">
@@ -99,6 +109,7 @@ export function ProjectsPanel({
                   name,
                   client: client.trim() || null,
                   category,
+                  lead_id: leadId || null,
                   ...(showMoney ? { revenue: revenue.trim() || null } : {}),
                 });
                 onDone(`Added ${name}.`);
@@ -106,6 +117,7 @@ export function ProjectsPanel({
                 setClient("");
                 setRevenue("");
                 setCategory("client");
+                setLeadId("");
               } catch (err) {
                 onError(errorMessage(err));
               } finally {
@@ -141,6 +153,22 @@ export function ProjectsPanel({
                 ))}
               </select>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="plead">Lead</Label>
+              <select
+                id="plead"
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={leadId}
+                onChange={(e) => setLeadId(e.target.value)}
+              >
+                <option value="">No lead</option>
+                {leads.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.display_name}
+                  </option>
+                ))}
+              </select>
+            </div>
             {showMoney && (
               <div className="space-y-1.5">
                 {/* FR-FIN-02 — contract value or internal budget. What it is
@@ -165,9 +193,22 @@ export function ProjectsPanel({
         </CardContent>
       </Card>
 
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4"
+          checked={onlyMine}
+          onChange={(e) => setOnlyMine(e.target.checked)}
+        />
+        Only projects I lead
+      </label>
+      {onlyMine && shown.length === 0 && (
+        <p className="text-sm text-muted-foreground">You are not named as the lead of any project.</p>
+      )}
+
       {/* Spec 005 FR-PNL-04 — grouped by category, in fixed order. */}
       {PROJECT_CATEGORIES.map((cat) => {
-        const inCategory = projects.filter((p) => (p.category ?? "client") === cat);
+        const inCategory = shown.filter((p) => (p.category ?? "client") === cat);
         if (inCategory.length === 0) return null;
         return (
           <div key={cat} className="space-y-2">
@@ -203,6 +244,7 @@ export function ProjectsPanel({
                         </option>
                       ))}
                     </select>
+                    <LeadSelect project={project} leads={leads} onDone={onDone} onError={onError} />
                     {showMoney && (
                       <span className="text-xs tabular-nums text-muted-foreground">
                         {project.revenue !== null && project.revenue !== undefined
@@ -282,6 +324,50 @@ export function ProjectsPanel({
         );
       })}
     </div>
+  );
+}
+
+/** Spec 002 FR-PROJ-07 — who leads the project. The current lead stays
+ *  listed even when they are not among `leads` (a lead sees only their own
+ *  reports), so the dropdown never shows the wrong name. */
+function LeadSelect({
+  project,
+  leads,
+  onDone,
+  onError,
+}: {
+  project: Project;
+  leads: AllocatablePerson[];
+  onDone: (m: string) => void;
+  onError: (m: string) => void;
+}) {
+  const options =
+    project.lead_id && !leads.some((p) => p.id === project.lead_id)
+      ? [{ id: project.lead_id, display_name: project.lead_name ?? "—" }, ...leads]
+      : leads;
+  return (
+    <select
+      aria-label={`Lead of ${project.name}`}
+      className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
+      value={project.lead_id ?? ""}
+      onChange={async (e) => {
+        const next = e.target.value || null;
+        try {
+          await updateProject(project.id, { lead_id: next });
+          const who = options.find((p) => p.id === next)?.display_name;
+          onDone(who ? `${who} now leads ${project.name}.` : `${project.name} has no lead.`);
+        } catch (err) {
+          onError(errorMessage(err));
+        }
+      }}
+    >
+      <option value="">No lead</option>
+      {options.map((p) => (
+        <option key={p.id} value={p.id}>
+          Lead: {p.display_name}
+        </option>
+      ))}
+    </select>
   );
 }
 

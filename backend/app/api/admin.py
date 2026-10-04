@@ -709,18 +709,33 @@ def list_projects(user: LeadDep) -> list[dict]:
                 else None,
             }
         )
-    return [_present_project(p, user, phases.get(p["id"], [])) for p in projects]
+    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    return [_present_project(p, user, phases.get(p["id"], []), names) for p in projects]
 
 
-def _present_project(row: dict, user, phases: list[dict] | None = None) -> dict:  # noqa: ANN001
+def _present_project(
+    row: dict,
+    user,  # noqa: ANN001
+    phases: list[dict] | None = None,
+    names: dict[str, str] | None = None,
+) -> dict:
     """Money — FR-FIN-02. Revenue goes to managers and admins only; a lead
-    gets the project without the key (FR-ROLE-07)."""
+    gets the project without the key (FR-ROLE-07).
+
+    `names` maps profile id to display name for the lead (spec 002
+    FR-PROJ-07); without it the one lead is looked up."""
+    lead_id = row.get("lead_id")
+    if lead_id and names is None:
+        lead = db.get_profile(lead_id)
+        names = {lead_id: lead["display_name"]} if lead else {}
     out = {
         "id": row["id"],
         "name": row["name"],
         "client": row.get("client"),
         "is_archived": row["is_archived"],
         "category": row.get("category", "client"),
+        "lead_id": lead_id,
+        "lead_name": (names or {}).get(lead_id) if lead_id else None,
     }
     if user.is_manager:
         out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
@@ -739,6 +754,10 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
         for p in db.list_projects(include_archived=True)
     ):
         raise ProblemDetail(409, f"A project called {payload.name!r} already exists.")
+    if payload.lead_id is not None:
+        refusal = rules.project_lead_refusal(db.get_profile(payload.lead_id))
+        if refusal:
+            raise ProblemDetail(422, refusal)
 
     row = db.insert_project(
         {
@@ -746,6 +765,7 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "client": (payload.client or "").strip() or None,
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
             "category": payload.category,
+            "lead_id": payload.lead_id,
             "created_by": user.id,
         }
     )
@@ -759,6 +779,7 @@ def create_project(payload: ProjectIn, user: LeadDep) -> dict:
             "client": row.get("client"),
             "revenue": str(payload.revenue) if payload.revenue is not None else None,
             "category": payload.category,
+            "lead_id": payload.lead_id,
         },
     )
     return _present_project(row, user, [])
@@ -784,6 +805,10 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
         raise ProblemDetail(403, "Only a manager or admin can set revenue.")
     if "revenue" in changes and changes["revenue"] is not None:
         changes["revenue"] = str(changes["revenue"])
+    if changes.get("lead_id") is not None:  # null clears the lead (FR-PROJ-07)
+        refusal = rules.project_lead_refusal(db.get_profile(changes["lead_id"]))
+        if refusal:
+            raise ProblemDetail(422, refusal)
 
     row = db.update_project(project_id, changes)
     audit.record(

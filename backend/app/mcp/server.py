@@ -326,8 +326,8 @@ async def someone_elses_week(ctx: Context, user_id: str, week_start: str | None 
 
 @mcp.tool(annotations=READ)
 async def projects_effort(ctx: Context) -> list:
-    """Every project with hours logged so far. Leads see every project too
-    (hours only)."""
+    """Every project with hours logged so far and who leads it (lead_name).
+    Leads see every project too (hours only)."""
     return await _api(ctx, "GET", "/analytics/projects")
 
 
@@ -418,8 +418,9 @@ async def allocatable_people(ctx: Context) -> list:
 
 @mcp.tool(annotations=READ)
 async def list_projects(ctx: Context) -> list:
-    """LEADS, MANAGERS AND ADMINS. Every project with its category and phases;
-    revenue only for managers and admins."""
+    """LEADS, MANAGERS AND ADMINS. Every project with its category, phases and
+    lead (lead_id, lead_name — who leads it, or null); revenue only for
+    managers and admins."""
     return await _api(ctx, "GET", "/admin/projects")
 
 
@@ -430,17 +431,26 @@ async def create_project(
     client: str | None = None,
     revenue: str | None = None,
     category: str = "client",
+    lead_id: str | None = None,
 ) -> dict:
     """LEADS, MANAGERS AND ADMINS. Create a project. CONFIRM FIRST. Revenue is
     the contract value or internal budget, as a decimal string, optional;
     only a manager or admin may set it. category: client (paid client
     engagement, default) | poc (client POC or general) | product (Nunnari
-    product development) | internal (internal tools, applications, website)."""
+    product development) | internal (internal tools, applications, website).
+    lead_id: the user id of the person who leads it, optional; must be an
+    active person. It is a label and grants no access."""
     return await _api(
         ctx,
         "POST",
         "/admin/projects",
-        body={"name": name, "client": client, "revenue": revenue, "category": category},
+        body={
+            "name": name,
+            "client": client,
+            "revenue": revenue,
+            "category": category,
+            "lead_id": lead_id,
+        },
     )
 
 
@@ -448,7 +458,8 @@ async def create_project(
 async def update_project(ctx: Context, project_id: str, changes: dict[str, Any]) -> dict:
     """LEADS, MANAGERS AND ADMINS. Change a project. CONFIRM FIRST. changes may
     hold name, client, revenue (decimal string; managers and admins only),
-    category (client | poc | product | internal) and is_archived (archive,
+    category (client | poc | product | internal), lead_id (the user id of an
+    active person who leads it; null clears it) and is_archived (archive,
     never delete)."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 

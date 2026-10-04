@@ -243,6 +243,7 @@ class ProjectIn(BaseModel):
     client: str | None = Field(default=None, max_length=160)
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
     category: ProjectCategory = "client"
+    lead_id: str | None = None  # spec 002 FR-PROJ-07 — who leads it
 
 
 class ProjectUpdate(BaseModel):
@@ -253,6 +254,7 @@ class ProjectUpdate(BaseModel):
     is_archived: bool | None = None
     revenue: Decimal | None = Field(default=None, ge=0, le=1_000_000_000)
     category: ProjectCategory | None = None
+    lead_id: str | None = None  # FR-PROJ-07; null clears it
 
 
 class PhaseIn(BaseModel):

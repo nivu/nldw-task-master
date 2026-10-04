@@ -1,4 +1,4 @@
-"""Route-level permissions — spec 003 FR-ROLE-02/07/08, spec 002 FR-PROJ-04a, FR-ALLOC-06.
+"""Route-level permissions — spec 003 FR-ROLE-02/07/08, spec 002 FR-PROJ-04a/07, FR-ALLOC-06.
 
 The domain tests check each rule in isolation. These check that the routes
 actually apply them: the backend holds the service-role key, so a guard
@@ -24,6 +24,7 @@ PEOPLE = {
     "u-other-lead": {"role": "lead", "lead_id": None},
     "u-mine": {"role": "user", "lead_id": "u-lead"},
     "u-theirs": {"role": "user", "lead_id": "u-other-lead"},
+    "u-gone": {"role": "lead", "lead_id": None, "is_active": False},
 }
 
 
@@ -133,6 +134,10 @@ class FakeDb:
     def delete_allocation(self, allocation_id):
         del self.allocations[allocation_id]
 
+    # Time — only for the /analytics/projects list
+    def list_time_entries(self, **_):
+        return []
+
     # Audit
     def insert_audit(self, entry):
         self.audit.append(entry)
@@ -202,6 +207,54 @@ class TestProjects:
         r = as_("u-manager").patch(f"{API}/projects/p-live", json={"revenue": "5000"})
         assert r.status_code == 200
         assert r.json()["revenue"] == "5000"
+
+
+class TestProjectLead:
+    """Spec 002 FR-PROJ-07 — whoever may edit a project may name its lead."""
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_set_on_create(self, as_, fake, who):
+        r = as_(who).post(f"{API}/projects", json={"name": "New", "lead_id": "u-other-lead"})
+        assert r.status_code == 201
+        assert r.json()["lead_id"] == "u-other-lead"
+        assert r.json()["lead_name"] == "u-other-lead"
+        assert fake.audit[-1]["after"]["lead_id"] == "u-other-lead"
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_set_and_cleared_on_update(self, as_, fake, who):
+        r = as_(who).patch(f"{API}/projects/p-live", json={"lead_id": "u-mine"})
+        assert r.status_code == 200
+        assert r.json()["lead_name"] == "u-mine"
+        assert fake.projects["p-live"]["lead_id"] == "u-mine"
+        r = as_(who).patch(f"{API}/projects/p-live", json={"lead_id": None})
+        assert r.status_code == 200
+        assert r.json()["lead_id"] is None
+        assert r.json()["lead_name"] is None
+        assert fake.audit[-1]["before"] == {"lead_id": "u-mine"}
+
+    @pytest.mark.parametrize("lead_id", ["u-nobody", "u-gone"])
+    def test_unknown_or_inactive_lead_is_refused(self, as_, fake, lead_id):
+        r = as_("u-manager").post(f"{API}/projects", json={"name": "New", "lead_id": lead_id})
+        assert r.status_code == 422
+        assert len(fake.projects) == 2
+        r = as_("u-manager").patch(f"{API}/projects/p-live", json={"lead_id": lead_id})
+        assert r.status_code == 422
+        assert "lead_id" not in fake.projects["p-live"]
+        assert fake.audit == []
+
+    def test_lists_show_the_lead_name(self, as_, fake):
+        fake.projects["p-live"]["lead_id"] = "u-lead"
+        projects = {p["id"]: p for p in as_("u-lead").get(f"{API}/projects").json()}
+        assert projects["p-live"]["lead_name"] == "u-lead"
+        assert projects["p-archived"]["lead_name"] is None
+        effort = {p["id"]: p for p in as_("u-lead").get("/api/v1/analytics/projects").json()}
+        assert effort["p-live"]["lead_name"] == "u-lead"
+        assert effort["p-archived"]["lead_name"] is None
+
+    def test_plain_user_cannot_set_a_lead(self, as_, fake):
+        r = as_("u-mine").patch(f"{API}/projects/p-live", json={"lead_id": "u-mine"})
+        assert r.status_code == 403
+        assert "lead_id" not in fake.projects["p-live"]
 
 
 class TestPlainUserIsRefused:
