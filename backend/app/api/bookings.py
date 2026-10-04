@@ -97,7 +97,12 @@ def get_booking(booking_id: str, user: CurrentUserDep) -> dict:
         # colleague on a given date already leaks that they were absent.
         raise ProblemDetail(404, "No such booking.")
 
-    return _present(booking, user_id=user.id, include_reason=True)
+    # Q-06 — entitled is not the same as shown. The portal shows someone else's
+    # reason only on the approval screen, while the request waits for a
+    # decision; this route keeps to that, so a booking id from the team roster
+    # cannot be used to read the reasons the roster leaves out.
+    shown = booking["user_id"] == user.id or booking["status"] == "pending"
+    return _present(booking, user_id=user.id, include_reason=shown)
 
 
 def _present(booking: dict, *, user_id: str, include_reason: bool = True) -> dict:

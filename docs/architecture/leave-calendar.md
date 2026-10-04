@@ -196,14 +196,17 @@ unchanged, including the deactivated-owner check. The token routes
 revoke tokens, which is what bounds a leak. Every request logs `auth_via` as
 `session` or `token`.
 
-Nothing is done to route answers before they reach the model. A `reason`
-travels exactly as the route returns it (FR-MCP-03, amended 2026-10-05), so
-NFR-05 is the routes' job alone: `bookings.get_booking` checks
-`can_view_reason`, `team.pending_approvals` returns only requests the caller
-`can_decide`, `/me/calendar` is the caller's own, and the team roster omits
-reasons (Q-06). `test_api_permissions.TestLeaveReasons` holds the routes to
-that; `test_mcp.py` fails if a route is added without a tool, or a write tool
-stops asking for confirmation.
+A `reason` reaches the model exactly where the portal shows it (FR-MCP-03,
+amended 2026-10-05), and the routes enforce that: `bookings.get_booking`
+checks `can_view_reason` and, for anyone but the owner, includes the reason
+only while the booking is pending (Q-06: the portal shows someone else's
+reason only on the approval screen); `team.pending_approvals` returns only
+requests the caller `can_decide`; `/me/calendar` is the caller's own. The one
+change the MCP layer makes to a route's answer is in `team_day`, which drops
+the `reason` that `lead_view_shows_reason` adds to the roster, because the
+Team page never shows it. `test_api_permissions.TestLeaveReasons` holds the
+routes to that; `test_mcp.py` checks the roster rule, and fails if a route is
+added without a tool, or a write tool stops asking for confirmation.
 
 The MCP address shown on the Account page comes from `MCP_PUBLIC_URL` on
 the backend, returned to a signed-in person by the API; it is not in the web

@@ -10,7 +10,10 @@ authorisation code path here to keep in step with the first.
 Nothing is done to the route's answer before it reaches the model: what the
 page shows the person, the tool shows the model. That includes leave reasons
 (FR-MCP-03), which the routes already limit to the person, their lead and
-admins (`001` NFR-05).
+admins (`001` NFR-05), and to the places the portal shows them (Q-06). The
+one exception is `team_day`, which drops the reason the
+`lead_view_shows_reason` setting would add, because the Team page never
+shows it.
 
 Tools that change something say so in their annotations and in their
 description, and ask the model to confirm with the person first (FR-MCP-04).
@@ -207,8 +210,10 @@ async def book_leave(
 
 @mcp.tool(annotations=READ)
 async def get_booking(ctx: Context, booking_id: str) -> dict:
-    """One booking by id, with its reason, if the person may see it: their own,
-    a report's (as their lead), or anyone's (as an admin)."""
+    """One booking by id, if the person may see it: their own, a report's (as
+    their lead), or anyone's (as an admin). The reason is included on their
+    own, and on someone else's only while it waits for a decision, as in the
+    portal."""
     return await _api(ctx, "GET", f"/bookings/{booking_id}")
 
 
@@ -240,9 +245,14 @@ async def decide_booking(
 @mcp.tool(annotations=READ)
 async def team_day(ctx: Context, day: str | None = None) -> dict:
     """Who is present, working from home, on leave or unaccounted for on a
-    day (default today), for the people this person may see. Category only —
-    reasons are in pending_approvals and get_booking, as in the portal."""
-    return await _api(ctx, "GET", "/team", params={"day": day})
+    day (default today), for the people this person may see. Category only,
+    never reasons, as in the portal."""
+    out = await _api(ctx, "GET", "/team", params={"day": day})
+    # Q-06 — the portal's Team page never shows a reason, even when the
+    # lead_view_shows_reason setting puts one in the route's answer.
+    for person in out.get("people", []):
+        person.pop("reason", None)
+    return out
 
 
 @mcp.tool(annotations=READ)

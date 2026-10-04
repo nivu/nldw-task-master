@@ -1264,3 +1264,21 @@ class TestLeaveReasons:
         assert entry["category"] == "sick"
         assert "reason" not in entry
         assert "Dentist" not in r.text
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-admin"])
+    def test_once_decided_the_booking_is_returned_without_it(self, as_, who, monkeypatch):
+        """Q-06 — the portal shows a lead or admin the reason only on the
+        approval screen, while the request is pending. The roster's booking_id
+        must not reach the reason by another door once it is decided."""
+        approved = dict(self.BOOKING, status="approved")
+        monkeypatch.setattr(db, "get_booking", lambda booking_id: dict(approved))
+        r = as_(who).get("/api/v1/bookings/b-mine")
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+        assert "reason" not in r.json()
+        assert "Dentist" not in r.text
+
+    def test_the_person_still_reads_it_once_decided(self, as_, monkeypatch):
+        approved = dict(self.BOOKING, status="approved")
+        monkeypatch.setattr(db, "get_booking", lambda booking_id: dict(approved))
+        assert as_("u-mine").get("/api/v1/bookings/b-mine").json()["reason"] == "Dentist"

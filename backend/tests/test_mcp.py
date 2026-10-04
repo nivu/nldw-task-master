@@ -70,12 +70,11 @@ class TestReasonsPassThrough:
     returns. Who may read a reason is the route's rule (`001` NFR-05), tested
     in test_api_permissions.TestLeaveReasons."""
 
-    def test_there_is_no_redaction_step(self):
-        assert not hasattr(server, "_scrub")
+    class Ctx:
+        headers = {"authorization": "Bearer nunp_test"}
 
-    def test_a_reason_reaches_the_model_unchanged(self, monkeypatch):
-        calendar = {"period": "2026-10", "weeks": [[{"booking": {"reason": "Dentist"}}, None]]}
-
+    @staticmethod
+    def _route_answers(monkeypatch, payload):
         class FakeClient:
             def __init__(self, **_):
                 pass
@@ -87,11 +86,27 @@ class TestReasonsPassThrough:
                 return None
 
             async def request(self, *_, **__):
-                return httpx.Response(200, json=calendar)
-
-        class Ctx:
-            headers = {"authorization": "Bearer nunp_test"}
+                return httpx.Response(200, json=payload)
 
         monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
-        out = asyncio.run(server._api(Ctx(), "GET", "/me/calendar"))
+
+    def test_there_is_no_redaction_step(self):
+        assert not hasattr(server, "_scrub")
+
+    def test_a_reason_reaches_the_model_unchanged(self, monkeypatch):
+        calendar = {"period": "2026-10", "weeks": [[{"booking": {"reason": "Dentist"}}, None]]}
+        self._route_answers(monkeypatch, calendar)
+        out = asyncio.run(server._api(self.Ctx(), "GET", "/me/calendar"))
         assert out == calendar
+
+    def test_the_team_day_drops_a_reason_the_setting_adds(self, monkeypatch):
+        """Q-06 — with lead_view_shows_reason on, the route adds `reason` to
+        the roster, but the portal's Team page never shows it, so neither
+        does the tool."""
+        roster = {
+            "date": "2026-12-15",
+            "people": [{"user_id": "u-mine", "category": "sick", "reason": "Dentist"}],
+        }
+        self._route_answers(monkeypatch, roster)
+        out = asyncio.run(server.team_day(self.Ctx(), day="2026-12-15"))
+        assert out["people"] == [{"user_id": "u-mine", "category": "sick"}]

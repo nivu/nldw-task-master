@@ -63,9 +63,11 @@ admin.
 ## Leave reasons
 
 Claude sees the **reason** on a leave request exactly where the portal shows
-it, and only to the same people: you, on your own requests; your lead, on
-yours; and admins. A lead or manager who is not your lead does not see it,
-and the team-day list shows the category only, as in the portal.
+it, and only to the same people: you, on your own requests; your lead and
+admins, only while the request is waiting for a decision, as on the portal's
+approvals screen. Once it is approved or rejected, they no longer see it. A
+lead or manager who is not your lead never sees it, and the team-day list
+shows the category only, whatever the admin settings say, as in the portal.
 
 ## Keeping it safe
 
