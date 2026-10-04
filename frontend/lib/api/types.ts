@@ -527,6 +527,8 @@ export interface CtcPeriod {
   starts_on: string;
   /** Null = until further notice. */
   ends_on: string | null;
+  /** Spec 005 FR-CTC-06 — the hours a week this CTC pays for; "40.0" = full time. */
+  hours_per_week: string;
   created_at: string | null;
 }
 

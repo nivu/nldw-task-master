@@ -8,8 +8,10 @@ call it; nothing here decides who may see it.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import date, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from app.domain import pnl
@@ -37,9 +39,20 @@ def periods_by_user(rows: list[dict]) -> dict[str, list[pnl.Period]]:
                 annual_ctc=Decimal(str(row["annual_ctc"])),
                 starts_on=date.fromisoformat(row["starts_on"]),
                 ends_on=date.fromisoformat(row["ends_on"]) if row.get("ends_on") else None,
+                hours_per_week=Decimal(
+                    str(row.get("hours_per_week", pnl.FULL_TIME_HOURS_PER_WEEK))
+                ),
             )
         )
     return out
+
+
+def contracted_hours() -> Callable[[str], Callable[[date], Decimal]]:
+    """Each person's contracted hours on a day — FR-CTC-06. Only the hours
+    leave here, never the money, so lead-visible figures (the forecast) may
+    use it."""
+    periods = periods_by_user(db.list_cost_periods())
+    return lambda user_id: partial(pnl.contracted_hours_on, periods.get(user_id, []))
 
 
 class RateBook:

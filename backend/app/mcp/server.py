@@ -49,7 +49,10 @@ someone's first CTC are before they joined, and months after their last CTC
 ends are after they left; both cost nothing. Revenue is
 spread evenly over a project's phase timeline, leaving out any spillover
 phase (unpaid overrun); past months use logged hours, the current and future
-months use allocations (marked "planned"). Any figure
+months use allocations (marked "planned"). A CTC period also says how many
+hours a week it pays for (40 = full time); a part-timer's hour costs more and
+their capacity is smaller, and an allocation percent is a share of their own
+contracted hours. Any figure
 with complete=false is missing somebody's CTC or a project's timeline: say
 so when you quote it. Never rank people by cost or profit.
 
@@ -586,23 +589,36 @@ async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> di
 @mcp.tool(annotations=READ)
 async def list_ctc(ctx: Context, user_id: str) -> dict:
     """ADMINS. A person's CTC (cost to company) history: every dated period and
-    the one in force today, shown annually and monthly. Never present this as
-    salary."""
+    the one in force today, shown annually and monthly, with the hours a week
+    each period pays for (40 = full time). Never present this as salary."""
     return await _api(ctx, "GET", f"/admin/users/{user_id}/ctc")
 
 
 @mcp.tool(annotations=WRITE)
 async def set_ctc(
-    ctx: Context, user_id: str, annual_ctc: str, starts_on: str, ends_on: str | None = None
+    ctx: Context,
+    user_id: str,
+    annual_ctc: str,
+    starts_on: str,
+    ends_on: str | None = None,
+    hours_per_week: str = "40",
 ) -> dict:
     """ADMINS. Add a CTC period — past, current or upcoming. CONFIRM FIRST.
     annual_ctc is a decimal string. An open-ended earlier period is closed the
-    day before starts_on, so "CTC changes next month" is one call."""
+    day before starts_on, so "CTC changes next month" is one call.
+    hours_per_week (above 0, at most 60, default "40" = full time) is what the
+    CTC pays for: a part-timer's logged hours are costed at their real hourly
+    rate, and their capacity, forecast and utilisation shrink to match."""
     return await _api(
         ctx,
         "POST",
         f"/admin/users/{user_id}/ctc",
-        body={"annual_ctc": annual_ctc, "starts_on": starts_on, "ends_on": ends_on},
+        body={
+            "annual_ctc": annual_ctc,
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+            "hours_per_week": hours_per_week,
+        },
     )
 
 

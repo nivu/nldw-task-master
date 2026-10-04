@@ -576,6 +576,7 @@ function CtcEditor({
   const [annual, setAnnual] = useState("");
   const [startsOn, setStartsOn] = useState("");
   const [endsOn, setEndsOn] = useState("");
+  const [hours, setHours] = useState("40");
   const [busy, setBusy] = useState(false);
 
   const fmt = (iso: string | null) =>
@@ -599,9 +600,11 @@ function CtcEditor({
               annual_ctc: annual,
               starts_on: startsOn,
               ends_on: endsOn || null,
+              hours_per_week: hours,
             });
             setAnnual("");
             setEndsOn("");
+            setHours("40");
             reload();
             onChanged();
           } catch (err) {
@@ -636,12 +639,25 @@ function CtcEditor({
             placeholder="open"
           />
         </div>
-        <Button type="submit" size="sm" disabled={busy || !annual || !startsOn}>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Hours / week</Label>
+          <Input
+            type="number"
+            min="0.5"
+            max="60"
+            step="0.5"
+            className="w-24"
+            value={hours}
+            onChange={(e) => setHours(e.target.value)}
+            required
+          />
+        </div>
+        <Button type="submit" size="sm" disabled={busy || !annual || !startsOn || !hours}>
           {busy ? "Saving…" : "Add period"}
         </Button>
         <span className="text-xs text-muted-foreground">
           Leave &ldquo;To&rdquo; empty for until further notice. A new period
-          closes the open one before it.
+          closes the open one before it. 40 hours a week is full time.
         </span>
       </form>
 
@@ -661,6 +677,9 @@ function CtcEditor({
               </span>
               <span className="text-xs text-muted-foreground">
                 {fmt(period.starts_on)} → {fmt(period.ends_on)}
+              </span>
+              <span className="tabular-nums text-xs text-muted-foreground">
+                {Number(period.hours_per_week)} h/week
               </span>
               {data.current?.id === period.id && <Badge variant="secondary">now</Badge>}
               <Button

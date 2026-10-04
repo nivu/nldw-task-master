@@ -49,6 +49,34 @@ class TestTheFigureInForceOnTheDay:
         assert pnl.daily_cost(p, 20) == D("5000")
 
 
+class TestContractedHours:
+    """FR-CTC-06 — a CTC pays for a number of hours a week, 40 by default."""
+
+    def test_a_period_is_full_time_unless_told_otherwise(self):
+        assert period("1200000", date(2026, 1, 1)).hours_per_week == D("40")
+
+    def test_ten_hours_a_week_costs_four_times_as_much_an_hour(self):
+        # 50,000 a month for 10 h a week: 20 working days of 2 h is 40 hours.
+        p = pnl.Period("a", D("600000"), date(2026, 1, 1), None, hours_per_week=D("10"))
+        assert pnl.hourly_cost(p, 20) == D("50000") / D("40")
+        assert pnl.hourly_cost(p, 20) == pnl.hourly_cost(period("600000", date(2026, 1, 1)), 20) * 4
+
+    def test_daily_cost_ignores_the_hours(self):
+        # An allocation percent is a share of their own hours, so a day of
+        # them still costs the month over its working days.
+        p = pnl.Period("a", D("600000"), date(2026, 1, 1), None, hours_per_week=D("10"))
+        assert pnl.daily_cost(p, 20) == D("2500")
+
+    def test_contracted_hours_follow_the_period_in_force(self):
+        full = period("1200000", date(2026, 1, 1), date(2026, 9, 30))
+        part = pnl.Period("a", D("600000"), date(2026, 10, 1), None, hours_per_week=D("10"))
+        assert pnl.contracted_hours_on([full, part], date(2026, 9, 30)) == D("8")
+        assert pnl.contracted_hours_on([full, part], date(2026, 10, 1)) == D("2")
+
+    def test_a_day_with_no_period_counts_as_full_time(self):
+        assert pnl.contracted_hours_on([], date(2026, 10, 1)) == D("8")
+
+
 class TestMonthCost:
     def test_a_fully_covered_month_costs_the_monthly_ctc(self):
         c = pnl.month_cost(

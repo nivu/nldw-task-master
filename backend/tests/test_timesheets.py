@@ -20,6 +20,7 @@ from app.domain.timesheets import (
     allocated_hours,
     archived_allocation_refusal,
     archived_entry_refusal,
+    available_hours,
     check_can_log,
     check_day_total,
     check_hours,
@@ -212,6 +213,37 @@ class TestCapacity:
             Decimal("100"), MON, SUN, holidays=set(), leave_days={FRI: Decimal("1")}
         )
         assert hours == Decimal("32.00")
+
+
+class TestContractedCapacity:
+    """Spec 005 FR-CTC-06 — capacity is the hours a person is contracted for."""
+
+    @staticmethod
+    def ten_a_week(day: date) -> Decimal:
+        return Decimal("2")
+
+    def test_full_time_by_default(self):
+        assert available_hours(MON, SUN, holidays=set()) == Decimal("40")
+
+    def test_a_ten_hour_week_is_a_quarter_of_the_capacity(self):
+        assert available_hours(MON, SUN, holidays=set(), hours_on=self.ten_a_week) == Decimal("10")
+
+    def test_leave_removes_that_days_contracted_hours(self):
+        hours = available_hours(
+            MON, SUN, holidays=set(), leave_days={FRI: Decimal("0.5")}, hours_on=self.ten_a_week
+        )
+        assert hours == Decimal("9")
+
+    def test_a_full_allocation_of_a_part_timer_is_their_hours(self):
+        hours = allocated_hours(Decimal("100"), MON, SUN, holidays=set(), hours_on=self.ten_a_week)
+        assert hours == Decimal("10.00")
+
+    def test_hours_can_change_mid_range(self):
+        # Full time until Wednesday, 10 h a week from Thursday: 3 x 8 + 2 x 2.
+        def hours_on(day: date) -> Decimal:
+            return Decimal("8") if day < date(2026, 9, 10) else Decimal("2")
+
+        assert available_hours(MON, SUN, holidays=set(), hours_on=hours_on) == Decimal("28")
 
 
 class TestOverAllocation:

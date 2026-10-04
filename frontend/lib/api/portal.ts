@@ -360,7 +360,13 @@ export const listCtc = (userId: string) => call<CtcList>(`/admin/users/${userId}
 
 export const addCtc = (
   userId: string,
-  input: { annual_ctc: string; starts_on: string; ends_on: string | null }
+  input: {
+    annual_ctc: string;
+    starts_on: string;
+    ends_on: string | null;
+    /** Spec 005 FR-CTC-06 — defaults to "40" (full time) when left out. */
+    hours_per_week?: string;
+  }
 ) => call<CtcPeriod>(`/admin/users/${userId}/ctc`, { method: "POST", ...body(input) });
 
 export const removeCtc = (periodId: string) =>
