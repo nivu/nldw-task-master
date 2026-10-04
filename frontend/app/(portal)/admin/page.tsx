@@ -293,6 +293,7 @@ function NewUserForm({
     display_name: "",
     role: "user",
     lead_id: "",
+    joined_on: "",
   });
   const [busy, setBusy] = useState(false);
 
@@ -315,9 +316,13 @@ function NewUserForm({
             event.preventDefault();
             setBusy(true);
             try {
-              await createUser({ ...form, lead_id: form.lead_id || null });
+              await createUser({
+                ...form,
+                lead_id: form.lead_id || null,
+                joined_on: form.joined_on || null,
+              });
               onDone(`${form.display_name} can now sign in.`);
-              setForm({ email: "", display_name: "", role: "user", lead_id: "" });
+              setForm({ email: "", display_name: "", role: "user", lead_id: "", joined_on: "" });
             } catch (err) {
               onError(errorMessage(err));
             } finally {
@@ -363,6 +368,19 @@ function NewUserForm({
               A manager runs projects and sees their money; a lead approves
               leave for their reports. One person can be both — set the role
               to manager and make them somebody&apos;s approver below.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="joined-on">Joined on</Label>
+            <Input
+              id="joined-on"
+              type="date"
+              value={form.joined_on}
+              onChange={(e) => setForm({ ...form, joined_on: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional. No time is expected of them before this day (spec 002
+              FR-ANALYTICS-08).
             </p>
           </div>
           <div className="space-y-1.5 sm:col-span-2">
@@ -429,6 +447,7 @@ function UserTable({
               <th className="p-3 font-medium">Approved by</th>
               <th className="p-3 font-medium">Location</th>
               <th className="p-3 font-medium">Logs time</th>
+              <th className="p-3 font-medium">Joined / Left</th>
               <th className="p-3 font-medium">CTC ({currency}/month)</th>
               <th className="p-3" />
             </tr>
@@ -509,6 +528,20 @@ function UserTable({
                     }}
                   />
                 </td>
+                <td className="space-y-1 p-3">
+                  {/* Spec 002 FR-ANALYTICS-08 — no time is expected outside
+                      these. Editable after deactivation, which is usually
+                      when the leaving date is known. */}
+                  {(["joined_on", "left_on"] as const).map((field) => (
+                    <EmploymentDate
+                      key={`${field}-${user[field] ?? ""}`}
+                      user={user}
+                      field={field}
+                      onChanged={onChanged}
+                      onError={onError}
+                    />
+                  ))}
+                </td>
                 <td className="p-3">
                   <button
                     type="button"
@@ -540,7 +573,7 @@ function UserTable({
               </tr>
               {ctcFor === user.id && (
                 <tr>
-                  <td colSpan={7} className="bg-muted/40 p-3">
+                  <td colSpan={8} className="bg-muted/40 p-3">
                     <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
                   </td>
                 </tr>
@@ -551,6 +584,54 @@ function UserTable({
         </table>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Spec 002 FR-ANALYTICS-08 — the day a person joined, or the day they left.
+ *
+ * Saved when the field loses focus rather than on every change, so a date
+ * still being typed is never sent. Empty clears it. Cost is not affected: that
+ * still comes from the CTC periods.
+ */
+function EmploymentDate({
+  user,
+  field,
+  onChanged,
+  onError,
+}: {
+  user: PortalUser;
+  field: "joined_on" | "left_on";
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const stored = user[field] ?? "";
+  const [value, setValue] = useState(stored);
+  const label = field === "joined_on" ? "Joined" : "Left";
+  return (
+    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+      <span className="w-10">{label}</span>
+      <Input
+        type="date"
+        aria-label={`${label} — ${user.display_name}`}
+        className="h-8 w-36"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={async () => {
+          if (value === stored) return;
+          try {
+            await updateUser(
+              user.id,
+              field === "joined_on" ? { joined_on: value || null } : { left_on: value || null }
+            );
+            onChanged();
+          } catch (err) {
+            setValue(stored);
+            onError(errorMessage(err));
+          }
+        }}
+      />
+    </label>
   );
 }
 

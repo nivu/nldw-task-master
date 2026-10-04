@@ -49,8 +49,13 @@ def nothing_logged_today(today: date | None = None) -> dict[str, Any]:
     portal_start = settings_store.portal_start_date()
     if portal_start and today < portal_start:
         return {"sent": 0, "skipped": "before portal_start_date"}
-    # `002` FR-ANALYTICS-07 — nobody is chased who does not keep a timesheet.
-    people = [p for p in db.list_profiles(active_only=True) if timesheet_rules.logs_time(p)]
+    # `002` FR-ANALYTICS-07 — nobody is chased who does not keep a timesheet,
+    # and FR-ANALYTICS-08 — nor before they joined or after they left.
+    people = [
+        p
+        for p in db.list_profiles(active_only=True)
+        if timesheet_rules.logs_time(p) and timesheet_rules.employed_on(p, today)
+    ]
     ids = [p["id"] for p in people]
     holidays = holidays_by_person(ids, today, today)
     leave = leave_days_for(ids, today, today)

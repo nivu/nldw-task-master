@@ -344,8 +344,9 @@ async def coverage(ctx: Context, start: str | None = None, end: str | None = Non
     """How much of the timesheet actually exists for a date range (default the
     last 30 days). Read this before quoting any effort total: totals over an
     incomplete timesheet are lower than reality, not approximate. A lead sees
-    their reports. Days before the portal_start_date setting, and people who
-    do not log time (logs_time false), are never counted as missing."""
+    their reports. Days before the portal_start_date setting, days before a
+    person's joined_on or after their left_on, and people who do not log time
+    (logs_time false), are never counted as missing."""
     return await _api(ctx, "GET", "/analytics/coverage", params={"start": start, "end": end})
 
 
@@ -541,7 +542,8 @@ async def remove_allocation(ctx: Context, allocation_id: str) -> dict:
 @mcp.tool(annotations=READ)
 async def list_users(ctx: Context) -> list:
     """ADMINS. Everyone, with role, approver, active flag, whether they log time
-    (logs_time) and the CTC in force today (monthly). CTC history is under
+    (logs_time), the day they joined and left (joined_on, left_on; null = not
+    recorded) and the CTC in force today (monthly). CTC history is under
     list_ctc; never present it as salary."""
     return await _api(ctx, "GET", "/admin/users")
 
@@ -554,11 +556,15 @@ async def create_user(
     role: str = "user",
     lead_id: str | None = None,
     logs_time: bool = True,
+    joined_on: str | None = None,
+    left_on: str | None = None,
 ) -> dict:
     """ADMINS. Create an account. CONFIRM FIRST. email must be the Google
     address they sign in with; role: user | lead | manager | admin; lead_id is
     who approves their leave (None = an admin); logs_time false = they keep no
-    timesheet and are never counted as missing time or nudged."""
+    timesheet and are never counted as missing time or nudged. joined_on and
+    left_on (YYYY-MM-DD, optional): no time is expected before the one or after
+    the other. They do not change cost — that comes from set_ctc."""
     return await _api(
         ctx,
         "POST",
@@ -569,6 +575,8 @@ async def create_user(
             "role": role,
             "lead_id": lead_id,
             "logs_time": logs_time,
+            "joined_on": joined_on,
+            "left_on": left_on,
         },
     )
 
@@ -577,9 +585,11 @@ async def create_user(
 async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> dict:
     """ADMINS. Change a person. CONFIRM FIRST. changes may hold display_name,
     role (user | lead | manager | admin), lead_id, is_active (deactivate,
-    never delete) and logs_time (false = never counted as missing time, nudged
-    or expected to have a week signed off). CTC is not set here — use set_ctc,
-    which is dated."""
+    never delete), logs_time (false = never counted as missing time, nudged
+    or expected to have a week signed off) and joined_on / left_on
+    (YYYY-MM-DD, null clears; no time is expected before joining or after
+    leaving, and left_on cannot be before joined_on). CTC is not set here —
+    use set_ctc, which is dated; these dates do not change cost."""
     return await _api(ctx, "PATCH", f"/admin/users/{user_id}", body=changes)
 
 
@@ -783,7 +793,8 @@ async def decide_compoff(
 @mcp.tool(annotations=READ)
 async def team_weeks(ctx: Context, week_start: str | None = None) -> dict:
     """LEADS. Each report's week (Monday date, default this week): hours,
-    missing days and whether it is confirmed. People who do not log time are
+    missing days and whether it is confirmed. People who do not log time, or
+    whose joined_on / left_on put the whole week outside their time here, are
     not listed, and days before portal_start_date are not missing."""
     return await _api(ctx, "GET", "/team/timesheets", params={"week_start": week_start})
 

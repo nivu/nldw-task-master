@@ -47,7 +47,9 @@ missing days and whether it is confirmed. Confirm it once it looks right; a
 confirmed week is what goes on a client statement. You can reopen a week while
 its edit window is still open; the person is told, so they can correct it. Anything nobody confirmed is confirmed
 automatically when the window closes. On Friday afternoon you get a Slack
-summary of your reports' gaps for the week.
+summary of your reports' gaps for the week. Days before someone joined or
+after they left are never missing, and a week wholly outside those dates is
+not listed for them.
 
 ## Comp-off claims
 

@@ -126,6 +126,10 @@ class UserCreate(BaseModel):
     lead_id: str | None = None
     # Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.
     logs_time: bool = True
+    # Spec 002 FR-ANALYTICS-08 — no time is expected outside these. None = not
+    # recorded.
+    joined_on: date | None = None
+    left_on: date | None = None
 
 
 class UserUpdate(BaseModel):
@@ -141,6 +145,9 @@ class UserUpdate(BaseModel):
     location_id: str | None = None
     # Spec 002 FR-ANALYTICS-07.
     logs_time: bool | None = None
+    # Spec 002 FR-ANALYTICS-08. null clears the date.
+    joined_on: date | None = None
+    left_on: date | None = None
 
 
 class AllowanceIn(BaseModel):

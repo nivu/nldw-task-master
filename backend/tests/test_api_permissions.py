@@ -89,6 +89,10 @@ class FakeDb:
     def list_reports(self, lead_id, *, active_only=True):
         return [p for p in self.profiles.values() if p["lead_id"] == lead_id]
 
+    def update_profile(self, user_id, data):
+        self.profiles[user_id].update(data)
+        return dict(self.profiles[user_id])
+
     # Projects
     def list_projects(self, *, include_archived=False):
         return [p for p in self.projects.values() if include_archived or not p["is_archived"]]
@@ -341,3 +345,39 @@ class TestAllocationEditValidation:
         assert entry["action"] == "allocation.updated"
         assert entry["before"]["starts_on"] == "2026-10-01"
         assert entry["after"]["percent"] == "25"
+
+
+class TestPeopleDates:
+    """Spec 002 FR-ANALYTICS-08 — joining and leaving dates are set by an admin
+    only, and a person cannot leave before they joined."""
+
+    @pytest.mark.parametrize("who", ["u-mine", "u-lead", "u-manager"])
+    def test_only_an_admin_sets_them(self, as_, fake, who):
+        r = as_(who).patch(f"{API}/users/u-mine", json={"joined_on": "2026-10-01"})
+        assert r.status_code == 403
+        assert "joined_on" not in fake.profiles["u-mine"]
+        assert fake.audit == []
+
+    def test_admin_sets_and_clears_them(self, as_, fake):
+        body = {"joined_on": "2026-10-01", "left_on": "2026-12-31"}
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json=body)
+        assert r.status_code == 200
+        assert r.json()["joined_on"] == "2026-10-01"
+        assert r.json()["left_on"] == "2026-12-31"
+        assert fake.audit[-1]["after"] == body
+
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json={"left_on": None})
+        assert r.status_code == 200
+        assert fake.profiles["u-mine"]["left_on"] is None
+
+    def test_leaving_before_joining_is_refused(self, as_, fake):
+        body = {"joined_on": "2026-10-10", "left_on": "2026-10-01"}
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json=body)
+        assert r.status_code == 422
+        assert "joined_on" not in fake.profiles["u-mine"]
+
+    def test_checked_against_the_stored_date(self, as_, fake):
+        fake.profiles["u-mine"]["joined_on"] = "2026-10-10"
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json={"left_on": "2026-10-01"})
+        assert r.status_code == 422
+        assert "left_on" not in fake.profiles["u-mine"]

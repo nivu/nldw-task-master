@@ -57,6 +57,9 @@ def list_users(admin: AdminDep) -> list[dict]:
             "is_active": row["is_active"],
             # Spec 002 FR-ANALYTICS-07 — false: left out of coverage and nudges.
             "logs_time": rules.logs_time(row),
+            # Spec 002 FR-ANALYTICS-08 — no time is expected outside these.
+            "joined_on": row.get("joined_on"),
+            "left_on": row.get("left_on"),
             # Spec 005 — the CTC in force today, shown monthly. Set through
             # the CTC routes below; never called salary.
             "ctc_monthly_now": _m(rates.monthly_now(row["id"], today)),
@@ -87,6 +90,9 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
     if payload.lead_id and db.get_profile(payload.lead_id) is None:
         raise ProblemDetail(422, "That lead does not exist.")
 
+    if problem := rules.check_employment_dates(payload.joined_on, payload.left_on):
+        raise ProblemDetail(422, problem)
+
     try:
         created = supabase.auth.admin.create_user(
             {
@@ -111,6 +117,8 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
                 "role": payload.role,
                 "lead_id": payload.lead_id,
                 "logs_time": payload.logs_time,
+                "joined_on": _iso(payload.joined_on),
+                "left_on": _iso(payload.left_on),
             }
         )
     except Exception as exc:  # noqa: BLE001
@@ -130,12 +138,11 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
             "role": payload.role,
             "lead_id": payload.lead_id,
             "logs_time": payload.logs_time,
+            "joined_on": _iso(payload.joined_on),
+            "left_on": _iso(payload.left_on),
         },
     )
-    return {
-        k: profile[k]
-        for k in ("id", "email", "display_name", "role", "lead_id", "is_active", "logs_time")
-    }
+    return {k: profile.get(k) for k in _USER_FIELDS}
 
 
 @router.patch("/users/{user_id}")
@@ -170,6 +177,14 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if user_id == admin.id and changes.get("is_active") is False:
         raise ProblemDetail(422, "You cannot deactivate your own account.")
 
+    for key in ("joined_on", "left_on"):
+        if key in changes:
+            changes[key] = _iso(changes[key])
+    # Checked against the stored date for whichever one is not changing.
+    joined_on, left_on = rules.employment({**existing, **changes})
+    if problem := rules.check_employment_dates(joined_on, left_on):
+        raise ProblemDetail(422, problem)
+
     updated = db.update_profile(user_id, changes)
     audit.record(
         action="user.updated",
@@ -179,10 +194,24 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
         before={k: existing.get(k) for k in changes},
         after=changes,
     )
-    return {
-        k: updated[k]
-        for k in ("id", "email", "display_name", "role", "lead_id", "is_active", "logs_time")
-    }
+    return {k: updated.get(k) for k in _USER_FIELDS}
+
+
+_USER_FIELDS = (
+    "id",
+    "email",
+    "display_name",
+    "role",
+    "lead_id",
+    "is_active",
+    "logs_time",
+    "joined_on",
+    "left_on",
+)
+
+
+def _iso(day: date | None) -> str | None:
+    return day.isoformat() if day else None
 
 
 # ---------------------------------------------------------------------------

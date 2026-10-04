@@ -127,6 +127,10 @@ def auto_confirm_closed(today: date | None = None) -> int:
         for person in people:
             if person["id"] in existing:
                 continue
+            # `002` FR-ANALYTICS-08 — nor of a week before they joined or
+            # after they left.
+            if not rules.employed_in_week(person, week):
+                continue
             db.upsert_confirmation(
                 {
                     "user_id": person["id"],

@@ -108,15 +108,21 @@ team = APIRouter(prefix="/team", tags=["team"])
 def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
     """Each report's week: total hours, missing days, and confirmation status.
 
-    People who do not log time are not listed (`002` FR-ANALYTICS-07), and no
-    day before `portal_start_date` is missing.
+    People who do not log time are not listed (`002` FR-ANALYTICS-07), nor
+    anyone in a week wholly before they joined or after they left
+    (FR-ANALYTICS-08); no day before `portal_start_date`, or outside those
+    dates, is missing.
     """
     from app.api.team import _population
 
     monday = confirmations.monday_of(week_start or today_in_company_tz())
     portal_start = settings_store.portal_start_date()
     people = sorted(
-        (p for p in _population(user) if timesheet_rules.logs_time(p)),
+        (
+            p
+            for p in _population(user)
+            if timesheet_rules.logs_time(p) and timesheet_rules.employed_in_week(p, monday)
+        ),
         key=lambda p: p["display_name"],
     )
     status = confirmations.status_for([p["id"] for p in people], monday)
@@ -147,6 +153,7 @@ def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
                     and date.fromisoformat(d["date"]).weekday() < 5
                     and d["date"] <= today_in_company_tz().isoformat()
                     and (portal_start is None or d["date"] >= portal_start.isoformat())
+                    and timesheet_rules.employed_on(person, date.fromisoformat(d["date"]))
                 ],
                 "confirmation": None
                 if conf is None
