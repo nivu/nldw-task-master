@@ -213,6 +213,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | FR-ANALYTICS-05 | Missing days MUST be visible. A timesheet that is merely incomplete MUST NOT read as a project that used few hours. |
 | FR-ANALYTICS-06 | Forecast remaining capacity from allocations and remaining working days, excluding approved leave and declared holidays. |
 | FR-ANALYTICS-07 | A day is *expected* (and so can be missing) only if it is a working day up to today, not a declared holiday or full day of leave, and on or after the company setting `portal_start_date` (empty = no start date). A person whose `logs_time` is off is never expected to log. Coverage, the missing-days lists, the nudges (`006` FR-NUDGE) and weekly sign-off (`006` FR-SIGN) all use this one definition. |
+| FR-ANALYTICS-08 | A person MAY have a joining date and a leaving date, set by an admin (either may be empty = not recorded; leaving MUST NOT be before joining). No day before they joined or after they left is *expected* (FR-ANALYTICS-07), and no week wholly outside those dates is listed for sign-off or auto-confirmed (`006` FR-SIGN-05). These dates do not affect cost: that still comes from CTC periods (`005` FR-PNL-02). |
 
 **FR-ANALYTICS-05 is the one that protects every other number on the page.**
 Effort totals computed over a partly-filled timesheet are not merely imprecise,

@@ -156,6 +156,7 @@ export const createUser = (input: {
   display_name: string;
   role: string;
   lead_id: string | null;
+  joined_on?: string | null;
 }) => call<PortalUser>("/admin/users", { method: "POST", ...body(input) });
 
 export const updateUser = (
@@ -167,6 +168,8 @@ export const updateUser = (
     is_active: boolean;
     location_id: string | null;
     logs_time: boolean;
+    joined_on: string | null;
+    left_on: string | null;
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 

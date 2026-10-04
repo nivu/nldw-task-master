@@ -41,7 +41,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-NUDGE-02 | Friday 17:00: each lead receives their reports' missing days for the week. |
 | FR-NUDGE-03 | Monday 09:00: each manager receives who is over 100% in the coming week. |
 | FR-NUDGE-04 | An admin can send themselves a test message to prove the token works. |
-| FR-NUDGE-05 | Nobody whose `logs_time` is off is nudged, and no day before `portal_start_date` is a gap (`002` FR-ANALYTICS-07). |
+| FR-NUDGE-05 | Nobody whose `logs_time` is off is nudged, and no day before `portal_start_date`, before the person joined or after they left is a gap (`002` FR-ANALYTICS-07/08). |
 
 ## 2. Timesheet sign-off — FR-SIGN
 
@@ -51,7 +51,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-SIGN-02 | A week nobody confirmed by the time its edit window closes (`002` Q-01: end of week + 7 days) is confirmed automatically, marked *auto*. |
 | FR-SIGN-03 | A lead may reopen a confirmed week while it is still editable (until the edit window for its Sunday closes); the person is told, with the last day they can correct it. Reopening a week that was not confirmed tells nobody. |
 | FR-SIGN-04 | Confirmation is audited. |
-| FR-SIGN-05 | Sign-off is expected only of people whose `logs_time` is on, and only for weeks that end on or after `portal_start_date`: neither is listed for confirmation nor auto-confirmed otherwise (`002` FR-ANALYTICS-07). |
+| FR-SIGN-05 | Sign-off is expected only of people whose `logs_time` is on, only for weeks that end on or after `portal_start_date`, and only for weeks with at least one day between the person's joining and leaving dates: neither is listed for confirmation nor auto-confirmed otherwise (`002` FR-ANALYTICS-07/08). |
 
 ## 3. Effort statements — FR-STMT
 

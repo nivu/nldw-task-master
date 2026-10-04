@@ -120,7 +120,8 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
     A day is only "missing" if it was a working day for that person: weekends,
     declared holidays and full days of approved leave are not gaps. Nor is any
     day before `portal_start_date`, and people who do not log time
-    (`profiles.logs_time`) are left out entirely — FR-ANALYTICS-07.
+    (`profiles.logs_time`) are left out entirely — FR-ANALYTICS-07. Nor is
+    any day before a person joined or after they left — FR-ANALYTICS-08.
     """
     profiles = {p["id"]: p for p in db.list_profiles()}
     user_ids = [u for u in user_ids if u not in profiles or rules.logs_time(profiles[u])]
@@ -136,6 +137,7 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
     portal_start = settings_store.portal_start_date()
     rows = []
     for user_id in user_ids:
+        joined_on, left_on = rules.employment(profiles.get(user_id, {}))
         expected = rules.expected_log_days(
             start,
             end,
@@ -143,6 +145,8 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
             holidays=holidays,
             leave_days=leave.get(user_id, {}),
             portal_start=portal_start,
+            joined_on=joined_on,
+            left_on=left_on,
         )
 
         have = logged.get(user_id, set())

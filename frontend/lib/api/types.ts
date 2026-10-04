@@ -180,6 +180,10 @@ export interface PortalUser {
   /** Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.
    *  Only in the admin's user list. */
   logs_time?: boolean;
+  /** Spec 002 FR-ANALYTICS-08 — no time is expected before the one or after
+   *  the other. YYYY-MM-DD; null = not recorded. Only in the admin's user list. */
+  joined_on?: string | null;
+  left_on?: string | null;
   /** Spec 005 — the CTC (cost to company) in force today, shown monthly.
    *  Only in the admin's user list. Never labelled "salary". */
   ctc_monthly_now?: string | null;

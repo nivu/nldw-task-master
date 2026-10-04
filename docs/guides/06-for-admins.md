@@ -25,6 +25,14 @@ director). They are then never shown as missing time, never nudged about it,
 and never in a lead's list of weeks to confirm. They can still log if they
 choose to.
 
+**Joined** and **Left** are the day someone started and the day they left.
+Set the joining date when you add them, or later in the table; set the
+leaving date when they go (it can still be set after you deactivate them).
+No day before they joined or after they left is counted as missing time,
+nudged, or put in front of a lead to sign off. Either can be left empty. They
+do not change cost: that still comes from the person's CTC periods below, so
+give their last CTC period an end date as well.
+
 ### Roles
 
 - **User** — own leave and time.

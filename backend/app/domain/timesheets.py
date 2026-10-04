@@ -127,6 +127,41 @@ def logs_time(profile: dict) -> bool:
     return profile.get("logs_time") is not False
 
 
+def _as_date(value: date | str | None) -> date | None:
+    if not value:
+        return None
+    return value if isinstance(value, date) else date.fromisoformat(value)
+
+
+def employment(profile: dict) -> tuple[date | None, date | None]:
+    """FR-ANALYTICS-08 — the day this person joined and the day they left.
+
+    None = not recorded, so that end is open; a row read before migration 019
+    has neither and behaves as it did.
+    """
+    return _as_date(profile.get("joined_on")), _as_date(profile.get("left_on"))
+
+
+def employed_on(profile: dict, day: date) -> bool:
+    """FR-ANALYTICS-08 — is `day` within this person's joining and leaving dates?"""
+    joined_on, left_on = employment(profile)
+    return (joined_on is None or day >= joined_on) and (left_on is None or day <= left_on)
+
+
+def employed_in_week(profile: dict, week_start: date) -> bool:
+    """FR-ANALYTICS-08 — does any day of the week starting `week_start` fall
+    within this person's joining and leaving dates?"""
+    joined_on, left_on = employment(profile)
+    return week_expected(week_start, None, joined_on=joined_on, left_on=left_on)
+
+
+def check_employment_dates(joined_on: date | None, left_on: date | None) -> str | None:
+    """FR-ANALYTICS-08 — mirrors the CHECK in migration 019, as a sentence."""
+    if joined_on and left_on and left_on < joined_on:
+        return "Someone cannot leave before the day they joined."
+    return None
+
+
 def expected_log_days(
     start: date,
     end: date,
@@ -135,18 +170,22 @@ def expected_log_days(
     holidays: set[date],
     leave_days: dict[date, Decimal] | None = None,
     portal_start: date | None = None,
+    joined_on: date | None = None,
+    left_on: date | None = None,
 ) -> list[date]:
-    """The days in `start..end` someone should have logged — FR-ANALYTICS-05/07.
+    """The days in `start..end` someone should have logged — FR-ANALYTICS-05/07/08.
 
     Working days only, up to and including today: weekends, declared holidays
     and full days of leave are not gaps, and neither is any day before the
-    company started using the portal (`portal_start_date`; None = no such day).
+    company started using the portal (`portal_start_date`; None = no such day),
+    before the person joined or after they left (None = not recorded).
     """
     leave_days = leave_days or {}
-    first = max(start, portal_start) if portal_start else start
+    first = max(d for d in (start, portal_start, joined_on) if d)
+    last = min(d for d in (end, today, left_on) if d)
     days = []
     day = first
-    while day <= min(end, today):
+    while day <= last:
         full_leave = leave_days.get(day, ZERO) >= Decimal("1")
         if not is_weekend(day) and day not in holidays and not full_leave:
             days.append(day)
@@ -154,10 +193,22 @@ def expected_log_days(
     return days
 
 
-def week_expected(week_start: date, portal_start: date | None) -> bool:
+def week_expected(
+    week_start: date,
+    portal_start: date | None,
+    *,
+    joined_on: date | None = None,
+    left_on: date | None = None,
+) -> bool:
     """`006` FR-SIGN-05 — does a week fall (at least partly) on or after the
-    portal start, so that sign-off is expected for it?"""
-    return portal_start is None or week_end(week_start) >= portal_start
+    portal start, and within the person's joining and leaving dates
+    (FR-ANALYTICS-08), so that sign-off is expected for it?"""
+    last = week_end(week_start)
+    return (
+        (portal_start is None or last >= portal_start)
+        and (joined_on is None or last >= joined_on)
+        and (left_on is None or week_start <= left_on)
+    )
 
 
 # ---------------------------------------------------------------------------
