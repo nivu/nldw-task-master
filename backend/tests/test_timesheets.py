@@ -32,6 +32,7 @@ from app.domain.timesheets import (
     over_allocations,
     overlap,
     phase_for,
+    project_lead_refusal,
     week_end,
     working_days,
 )
@@ -337,6 +338,22 @@ class TestMayAllocate:
     def test_a_manager_may_allocate_anyone(self):
         assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id="other")
         assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id=None)
+
+
+class TestProjectLead:
+    """Spec 002 FR-PROJ-07 — any existing, active person may lead a project."""
+
+    @pytest.mark.parametrize("role", ["user", "lead", "manager", "admin"])
+    def test_any_active_person_of_any_role(self, role):
+        person = {"id": "u1", "display_name": "Devansh", "role": role, "is_active": True}
+        assert project_lead_refusal(person) is None
+
+    def test_nobody_is_refused(self):
+        assert project_lead_refusal(None) == "That lead does not exist."
+
+    def test_someone_who_has_left_is_refused(self):
+        person = {"id": "u1", "display_name": "Devansh", "role": "lead", "is_active": False}
+        assert project_lead_refusal(person) == "Devansh is not active."
 
 
 class TestArchivedProjects:

@@ -173,6 +173,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | FR-PROJ-04 | A project MUST be archivable without deleting its history. |
 | FR-PROJ-04a | An archived project MUST NOT accept new allocations — neither a new one nor an edit that extends an existing one's dates (shortening is allowed) — and MUST NOT accept new time entries; a line already logged against it on that day may still be re-saved. Refusals are 422 "*name* is archived." The Time page MUST NOT offer an archived project except where it is already logged that day. Existing entries and allocations stay readable. |
 | FR-PROJ-06 | A project MUST have one category: `client` (paid client engagement, the default), `poc` (client POC or general), `product` (Nunnari product development) or `internal` (internal tools, applications, website). |
+| FR-PROJ-07 | A project MAY name one lead — the person who leads it — set on create or edit by anyone who may edit projects. The lead MUST be an existing, active person (otherwise 422). It is a label, not a permission: it changes nobody's access. The project lists (Projects, Effort → Projects, MCP) MUST show the lead's name, and the Projects page MUST offer a filter to only the projects the viewer leads. Clearing it is allowed. |
 | FR-PROJ-05 | Only an admin MAY create or edit a project. *Superseded by spec 003 FR-ROLE-02 and FR-ROLE-07: managers and leads may too.* |
 
 ### 5.2 Allocation — FR-ALLOC
@@ -247,7 +248,7 @@ This feature shares its people, its roles, its audit log and its timezone with
 ## 8. Data model (indicative)
 
 ```
-projects        id, name, client, is_archived, created_at
+projects        id, name, client, is_archived, lead_id, created_at
 project_phases  id, project_id, phase(pre|delivery|support|spillover),
                 starts_on, ends_on, budget_hours
 allocations     id, project_id, user_id, starts_on, ends_on,

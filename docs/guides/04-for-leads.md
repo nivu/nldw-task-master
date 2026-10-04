@@ -75,6 +75,13 @@ forecast under **Effort** shows everyone's), and you never see or set
 revenue or milestones; that is the manager's side of a project. See *For
 managers* for how phases and categories work.
 
+A project can name its **lead** — the person who leads it. You can set it
+when you add a project or change it from the *Lead* dropdown beside the
+project's name; you can pick yourself or one of your reports, and only an
+active person can be named. It is a label only: being a project's lead does
+not let you allocate anyone outside your team. Tick **Only projects I lead**
+to see just yours. The lead's name also shows on **Effort → Projects**.
+
 ## Effort
 
 **Effort** shows where the hours are going. The per-project view covers every

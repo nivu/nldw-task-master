@@ -128,6 +128,7 @@ def project_list(user: LeadDep) -> list[dict]:
             + Decimal(str(entry["hours_office"]))
             + Decimal(str(entry["hours_home"]))
         )
+    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
 
     return [
         {
@@ -136,6 +137,9 @@ def project_list(user: LeadDep) -> list[dict]:
             "client": p.get("client"),
             "is_archived": p["is_archived"],
             "category": p.get("category", "client"),
+            # Spec 002 FR-PROJ-07 — who leads it; a name, so leads see it too.
+            "lead_id": p.get("lead_id"),
+            "lead_name": names.get(p["lead_id"]) if p.get("lead_id") else None,
             "logged_hours": str(totals.get(p["id"], Decimal("0"))),
         }
         for p in projects

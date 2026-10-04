@@ -341,6 +341,9 @@ export interface Project {
   client: string | null;
   is_archived: boolean;
   category?: ProjectCategory;
+  /** Spec 002 FR-PROJ-07 — who leads it; a label, not a permission. */
+  lead_id?: string | null;
+  lead_name?: string | null;
   phases?: ProjectPhase[];
   logged_hours?: string;
   /** Spec 003 FR-FIN-02 — present only for managers and admins. */

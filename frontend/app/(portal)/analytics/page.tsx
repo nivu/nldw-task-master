@@ -165,6 +165,12 @@ export default function AnalyticsPage() {
                           {project.client && (
                             <span className="block text-xs text-muted-foreground">{project.client}</span>
                           )}
+                          {/* Spec 002 FR-PROJ-07 */}
+                          {project.lead_name && (
+                            <span className="block text-xs text-muted-foreground">
+                              Lead: {project.lead_name}
+                            </span>
+                          )}
                         </span>
                         {project.is_archived && <Badge variant="outline">archived</Badge>}
                         {data.health[project.id] && <RagDot colour={data.health[project.id]} />}

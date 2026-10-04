@@ -34,6 +34,14 @@ by it:
 
 Change a project's category from the dropdown beside its name.
 
+A project can also name its **lead** — the person who leads it, say Devansh
+on Hearsight. Pick one when you add the project, or change it later from the
+*Lead* dropdown beside its name (*No lead* clears it). Only someone with an
+active account can be named. The lead is a label: it shows on Projects and
+on **Effort → Projects**, but it changes nobody's access — who may edit the
+project or allocate to it stays exactly as before. Tick **Only projects I
+lead** to see just the ones with your name on them.
+
 Open **Phases, people & revenue** on a project to:
 
 - **Set revenue** later, or change it. Every change is recorded.
