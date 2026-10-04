@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import Link from "next/link";
 
 import { BackfillPanel } from "@/components/portal/backfill-panel";
@@ -16,6 +17,7 @@ import {
   addCtc,
   createUser,
   declareHoliday,
+  declareHolidays,
   deleteHoliday,
   errorMessage,
   listAllowances,
@@ -44,6 +46,7 @@ import type {
 import { formatMoney } from "@/components/portal/projects-panel";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 import { isoMonth } from "@/lib/dates";
+import { MAX_HOLIDAY_LINES, parseHolidayLines } from "@/lib/holiday-lines";
 
 const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
 // Spec 003 FR-ROLE-01. Only an admin assigns these (FR-ROLE-06).
@@ -189,6 +192,15 @@ export default function AdminPage() {
 
         <TabsContent value="holidays" className="space-y-4 pt-4">
           <HolidayForm
+            locations={locations}
+            onDone={(message) => {
+              setNotice(message);
+              reload();
+            }}
+            onError={setError}
+          />
+          <HolidayPaste
+            holidays={holidays}
             locations={locations}
             onDone={(message) => {
               setNotice(message);
@@ -857,6 +869,144 @@ function HolidayForm({
             {busy ? "Declaring…" : "Declare"}
           </Button>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Spec 001 FR-HOL-08 — a year's calendar in one go. */
+function HolidayPaste({
+  holidays,
+  locations,
+  onDone,
+  onError,
+}: {
+  holidays: Holiday[];
+  locations: Location[];
+  onDone: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const lines = parseHolidayLines(text, holidays, locationId || null);
+  const errors = lines.filter((l) => l.error).length;
+  const toDeclare = lines.filter((l) => !l.error && !l.skip);
+  const tooMany = lines.length > MAX_HOLIDAY_LINES;
+  const where = locations.find((l) => l.id === locationId)?.name;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Paste a list</CardTitle>
+        <CardDescription>
+          One holiday per line, the date first: <code>2026-10-20 Ayudha Puja</code> or{" "}
+          <code>20/10/2026, Ayudha Puja</code>. Up to {MAX_HOLIDAY_LINES} lines.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Textarea
+          aria-label="Holidays, one per line"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={"2026-10-20 Ayudha Puja\n2026-11-08 Diwali"}
+          rows={5}
+        />
+        <div className="space-y-1.5">
+          <Label htmlFor="holiday-paste-location">Applies to</Label>
+          <select
+            id="holiday-paste-location"
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            value={locationId}
+            onChange={(e) => setLocationId(e.target.value)}
+          >
+            <option value="">Everywhere</option>
+            {locations.map((l) => (
+              <option key={l.id} value={l.id}>{l.name} only</option>
+            ))}
+          </select>
+        </div>
+
+        {/* How each line was read, before anything is sent. */}
+        {lines.length > 0 && (
+          <div className="divide-y rounded-md border text-sm">
+            {lines.map((l) => (
+              <div key={l.line} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-2">
+                <span className="w-14 text-xs text-muted-foreground">Line {l.line}</span>
+                {l.error ? (
+                  <>
+                    <span className="min-w-0 flex-1 break-words text-muted-foreground">{l.text}</span>
+                    <span className="text-destructive">{l.error}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="tabular-nums">{l.date}</span>
+                    <span className="min-w-0 flex-1 break-words font-medium">{l.name}</span>
+                    {l.skip && <Badge variant="outline">Skipped — {l.skip}</Badge>}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {lines.length > 0 && (
+          // FR-HOL-05/06 — the admin is about to change other people's plans.
+          <p role="note" className="rounded-md bg-muted p-3 text-sm">
+            {tooMany
+              ? `That is ${lines.length} lines; the most at once is ${MAX_HOLIDAY_LINES}.`
+              : errors > 0
+                ? `Fix or remove the ${errors} line${errors === 1 ? "" : "s"} marked above first.`
+                : toDeclare.length === 0
+                  ? "Nothing new to declare."
+                  : `${toDeclare.length} holiday${toDeclare.length === 1 ? "" : "s"} will be declared ${
+                      where ? `for ${where} only` : "for everyone"
+                    }. Anyone who has booked leave on one of these days will have that booking released, get the days back, and be told.`}
+          </p>
+        )}
+
+        <Button
+          disabled={busy || tooMany || errors > 0 || toDeclare.length === 0}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const result = await declareHolidays(
+                toDeclare.map((l) => ({
+                  date: l.date as string,
+                  name: l.name as string,
+                  location_id: locationId || null,
+                }))
+              );
+              const parts = [
+                `${result.created.length} holiday${result.created.length === 1 ? "" : "s"} declared.`,
+              ];
+              if (result.skipped.length > 0) {
+                parts.push(
+                  `Skipped: ${result.skipped.map((s) => `${s.date} ${s.name} (${s.reason})`).join("; ")}`
+                );
+              }
+              // FR-HOL-05 — say how many bookings were released, as the single form does.
+              if (result.released_bookings > 0) {
+                parts.push(
+                  `${result.released_bookings} existing booking${
+                    result.released_bookings === 1 ? " was" : "s were"
+                  } released and the days returned.`
+                );
+              }
+              onDone(parts.join(" "));
+              setText("");
+            } catch (err) {
+              onError(errorMessage(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy
+            ? "Declaring…"
+            : `Declare ${toDeclare.length} holiday${toDeclare.length === 1 ? "" : "s"}`}
+        </Button>
       </CardContent>
     </Card>
   );

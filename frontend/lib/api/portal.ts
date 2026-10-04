@@ -19,6 +19,7 @@ import type {
   CalendarMonth,
   Category,
   Holiday,
+  HolidayBulkResult,
   Me,
   PendingApproval,
   PersonBalances,
@@ -183,6 +184,11 @@ export const listHolidays = () => call<Holiday[]>("/admin/holidays");
 
 export const declareHoliday = (input: { date: string; name: string; location_id?: string | null }) =>
   call<Holiday>("/admin/holidays", { method: "POST", ...body(input) });
+
+// Spec 001 FR-HOL-08 — each declared exactly as declareHoliday would.
+export const declareHolidays = (
+  holidays: { date: string; name: string; location_id?: string | null }[]
+) => call<HolidayBulkResult>("/admin/holidays/bulk", { method: "POST", ...body({ holidays }) });
 
 export const deleteHoliday = (id: string) =>
   call<{ status: string }>(`/admin/holidays/${id}`, { method: "DELETE" });

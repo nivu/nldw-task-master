@@ -1,11 +1,13 @@
-"""Route-level permissions — spec 003 FR-ROLE-02/07/08, spec 002 FR-PROJ-04a, FR-ALLOC-06.
+"""Route-level permissions — spec 003 FR-ROLE-02/07/08, spec 002 FR-PROJ-04a, FR-ALLOC-06,
+spec 001 FR-HOL-07/08.
 
 The domain tests check each rule in isolation. These check that the routes
 actually apply them: the backend holds the service-role key, so a guard
 missing from a route is a guard missing altogether (see app.api.deps).
 
 Auth is replaced by a dependency override and the Supabase module by an
-in-memory fake holding only what the project and allocation routes touch.
+in-memory fake holding only what the project, allocation and holiday routes
+touch.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import CurrentUser, current_user
 from app.main import app
+from app.services import bookings as booking_service
 from app.services import supabase as db
 
 PEOPLE = {
@@ -28,7 +31,8 @@ PEOPLE = {
 
 
 class FakeDb:
-    """Just enough of app.services.supabase for /admin/projects and /admin/allocations."""
+    """Just enough of app.services.supabase for /admin/projects, /admin/allocations
+    and /admin/holidays."""
 
     def __init__(self) -> None:
         self.profiles = {
@@ -64,6 +68,9 @@ class FakeDb:
             "a-theirs": self._alloc("a-theirs", "u-theirs", "p-live"),
             "a-archived": self._alloc("a-archived", "u-mine", "p-archived"),
         }
+        self.holidays = [
+            {"id": "h-diwali", "date": "2026-11-08", "name": "Diwali", "location_id": None}
+        ]
         self.audit: list[dict] = []
 
     @staticmethod
@@ -132,6 +139,23 @@ class FakeDb:
 
     def delete_allocation(self, allocation_id):
         del self.allocations[allocation_id]
+
+    # Holidays and locations
+    def list_holidays(self, start=None, end=None):
+        return [
+            h
+            for h in self.holidays
+            if (start is None or h["date"] >= start.isoformat())
+            and (end is None or h["date"] <= end.isoformat())
+        ]
+
+    def insert_holiday(self, data):
+        row = {"id": f"h-{len(self.holidays)}", **data}
+        self.holidays.append(row)
+        return row
+
+    def list_locations(self):
+        return [{"id": "loc-chennai", "name": "Chennai"}]
 
     # Audit
     def insert_audit(self, entry):
@@ -341,3 +365,75 @@ class TestAllocationEditValidation:
         assert entry["action"] == "allocation.updated"
         assert entry["before"]["starts_on"] == "2026-10-01"
         assert entry["after"]["percent"] == "25"
+
+
+class TestBulkHolidays:
+    """FR-HOL-08 — each holiday declared through the single-holiday path."""
+
+    @pytest.fixture
+    def released(self, monkeypatch):
+        calls: list[dict] = []
+
+        def release(**kwargs):
+            calls.append(kwargs)
+            return [{"id": f"b-{len(calls)}"}]
+
+        monkeypatch.setattr(booking_service, "release_for_holiday", release)
+        return calls
+
+    BODY = {
+        "holidays": [
+            {"date": "2026-10-20", "name": "Ayudha Puja"},
+            {"date": "2026-11-08", "name": "Deepavali"},
+            {"date": "2026-12-25", "name": "Christmas", "location_id": "loc-chennai"},
+            {"date": "2026-12-25", "name": "Xmas", "location_id": "loc-chennai"},
+        ]
+    }
+
+    @pytest.mark.parametrize("who", ["u-mine", "u-lead", "u-manager"])
+    def test_only_an_admin(self, as_, fake, released, who):
+        r = as_(who).post(f"{API}/holidays/bulk", json=self.BODY)
+        assert r.status_code == 403
+        assert len(fake.holidays) == 1
+        assert released == []
+        assert fake.audit == []
+
+    def test_declares_new_dates_and_skips_taken_ones(self, as_, fake, released):
+        r = as_("u-admin").post(f"{API}/holidays/bulk", json=self.BODY)
+        assert r.status_code == 200
+        body = r.json()
+        assert [c["name"] for c in body["created"]] == ["Ayudha Puja", "Christmas"]
+        assert [(s["name"], s["reason"]) for s in body["skipped"]] == [
+            ("Deepavali", "Already a holiday (Diwali)."),
+            ("Xmas", "Listed earlier in this list."),
+        ]
+        assert body["released_bookings"] == 2
+        assert [c["location_id"] for c in released] == [None, "loc-chennai"]
+        assert [a["action"] for a in fake.audit] == ["holiday.declared", "holiday.declared"]
+
+    def test_an_unknown_location_refuses_the_whole_list(self, as_, fake, released):
+        body = {
+            "holidays": [
+                {"date": "2026-10-20", "name": "Ayudha Puja"},
+                {"date": "2026-10-21", "name": "Vijayadashami", "location_id": "loc-nowhere"},
+            ]
+        }
+        r = as_("u-admin").post(f"{API}/holidays/bulk", json=body)
+        assert r.status_code == 422
+        assert "Holiday 2" in r.json()["detail"]
+        assert len(fake.holidays) == 1
+        assert released == []
+
+    @pytest.mark.parametrize(
+        "holidays",
+        [
+            [],
+            [{"date": "20/10/2026", "name": "Ayudha Puja"}],
+            [{"date": "2026-10-20", "name": ""}],
+            [{"date": "2026-10-20", "name": "Day"}] * 101,
+        ],
+    )
+    def test_malformed_lists_are_refused(self, as_, fake, released, holidays):
+        r = as_("u-admin").post(f"{API}/holidays/bulk", json={"holidays": holidays})
+        assert r.status_code == 422
+        assert len(fake.holidays) == 1
