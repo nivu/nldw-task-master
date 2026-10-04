@@ -20,6 +20,7 @@ import {
   declareHolidays,
   deleteHoliday,
   errorMessage,
+  getMe,
   listAllowances,
   listCtc,
   removeCtc,
@@ -76,16 +77,26 @@ export default function AdminPage() {
     settings: AppSetting[];
     backfills: BackfillEntry[];
     locations: Location[];
+    canGrantDashboard: boolean;
   }>(async () => {
-    const [users, allowances, holidays, settings, backfills, locations] = await Promise.all([
+    const [users, allowances, holidays, settings, backfills, locations, me] = await Promise.all([
       listUsers(),
       listAllowances(),
       listHolidays(),
       listSettings(),
       listBackfills(),
       listLocations(),
+      getMe(),
     ]);
-    return { users, allowances, holidays, settings, backfills, locations };
+    return {
+      users,
+      allowances,
+      holidays,
+      settings,
+      backfills,
+      locations,
+      canGrantDashboard: me.capabilities.grant_dashboard,
+    };
   }, []);
 
   const users = data?.users ?? [];
@@ -140,6 +151,7 @@ export default function AdminPage() {
             users={users}
             locations={locations}
             currency={currency}
+            canGrantDashboard={data?.canGrantDashboard ?? false}
             onChanged={reload}
             onError={setError}
           />
@@ -428,12 +440,15 @@ function UserTable({
   users,
   locations,
   currency,
+  canGrantDashboard,
   onChanged,
   onError,
 }: {
   users: PortalUser[];
   locations: Location[];
   currency: string;
+  /** Spec 003 FR-DASH-03 — the owner only. Other admins never see the column. */
+  canGrantDashboard: boolean;
   onChanged: () => void;
   onError: (message: string) => void;
 }) {
@@ -461,6 +476,7 @@ function UserTable({
               <th className="p-3 font-medium">Logs time</th>
               <th className="p-3 font-medium">Joined / Left</th>
               <th className="p-3 font-medium">CTC ({currency}/month)</th>
+              {canGrantDashboard && <th className="p-3 font-medium">Dashboard access</th>}
               <th className="p-3" />
             </tr>
           </thead>
@@ -564,6 +580,30 @@ function UserTable({
                     {user.ctc_monthly_now ? formatMoney(user.ctc_monthly_now) : "not set"}
                   </button>
                 </td>
+                {canGrantDashboard && (
+                  <td className="p-3">
+                    {/* Spec 003 FR-DASH-03 — the owner grants and revokes;
+                        the owner's own access cannot be switched off. */}
+                    {user.is_owner ? (
+                      <Badge variant="outline">Owner</Badge>
+                    ) : (
+                      <input
+                        type="checkbox"
+                        aria-label={`${user.display_name} may see the dashboard`}
+                        className="h-4 w-4"
+                        checked={user.dashboard_access === true}
+                        onChange={async (e) => {
+                          try {
+                            await updateUser(user.id, { dashboard_access: e.target.checked });
+                            onChanged();
+                          } catch (err) {
+                            onError(errorMessage(err));
+                          }
+                        }}
+                      />
+                    )}
+                  </td>
+                )}
                 <td className="p-3 text-right">
                   <Button
                     variant="ghost"
@@ -585,7 +625,7 @@ function UserTable({
               </tr>
               {ctcFor === user.id && (
                 <tr>
-                  <td colSpan={8} className="bg-muted/40 p-3">
+                  <td colSpan={canGrantDashboard ? 9 : 8} className="bg-muted/40 p-3">
                     <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
                   </td>
                 </tr>

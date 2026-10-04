@@ -66,6 +66,7 @@ import type {
   TeamWeek,
   Utilisation,
   HomeSummary,
+  DashboardSummary,
 } from "@/lib/api/types";
 
 export { BackendError };
@@ -99,6 +100,9 @@ function body(payload: unknown): RequestInit {
 export const getMe = () => call<Me>("/me");
 
 export const getHome = () => call<HomeSummary>("/me/home");
+
+/** Spec 003 FR-DASH — refused (403) unless the owner has authorised this person. */
+export const getDashboard = () => call<DashboardSummary>("/dashboard/summary");
 
 export const getCalendar = (period?: string) =>
   call<CalendarMonth>(`/me/calendar${period ? `?period=${period}` : ""}`);
@@ -174,6 +178,8 @@ export const updateUser = (
     logs_time: boolean;
     joined_on: string | null;
     left_on: string | null;
+    /** Spec 003 FR-DASH-03 — refused for anybody but the owner. */
+    dashboard_access: boolean;
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 

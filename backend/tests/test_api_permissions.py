@@ -960,3 +960,158 @@ class TestCategoryEffort:
     def test_one_month_given_frames_the_rest_of_that_year(self, as_, fake, query, start, end):
         body = as_("u-lead").get(f"/api/v1/analytics/categories?{query}").json()
         assert (body["start"], body["end"]) == (start, end)
+
+
+class TestDashboardAccess:
+    """Spec 003 FR-DASH-01..03 — the dashboard is seen by the owner and whoever
+    the owner authorises, never by role; only the owner grants or revokes
+    access, and nobody becomes the owner through the API."""
+
+    PATH = "/api/v1/dashboard/summary"
+
+    @pytest.fixture(autouse=True)
+    def _people(self, fake, monkeypatch):
+        from app.services import settings_store
+
+        settings_store.invalidate()
+        base = {"is_active": True, "lead_id": None}
+        fake.profiles["u-owner"] = {
+            "id": "u-owner",
+            "email": "u-owner@example.com",
+            "display_name": "u-owner",
+            "role": "admin",
+            "is_owner": True,
+            "dashboard_access": True,
+            **base,
+        }
+        fake.profiles["u-trusted"] = {
+            "id": "u-trusted",
+            "email": "u-trusted@example.com",
+            "display_name": "u-trusted",
+            "role": "user",
+            "dashboard_access": True,
+            **base,
+        }
+        # The two reads only the dashboard makes: no holiday, no claims.
+        monkeypatch.setattr(db, "get_holiday_on", lambda day: None)
+        monkeypatch.setattr(db, "list_compoff_credits", lambda **_: [])
+
+    @pytest.mark.parametrize("who", ["u-owner", "u-trusted"])
+    def test_owner_and_authorised_people_see_it(self, as_, fake, who):
+        r = as_(who).get(self.PATH)
+        assert r.status_code == 200
+        body = r.json()
+        for section in (
+            "today",
+            "data_health",
+            "money",
+            "cash",
+            "delivery",
+            "people",
+            "trends",
+            "attention",
+        ):
+            assert section in body
+        assert len(body["trends"]) == 12
+
+    @pytest.mark.parametrize("who", ["u-admin", "u-manager", "u-lead", "u-mine"])
+    def test_every_role_without_the_flag_is_refused(self, as_, fake, who):
+        r = as_(who).get(self.PATH)
+        assert r.status_code == 403
+        assert "authorised" in r.json()["detail"]
+
+    def test_the_flag_must_be_a_real_true(self, as_, fake):
+        fake.profiles["u-admin"]["dashboard_access"] = "true"
+        assert as_("u-admin").get(self.PATH).status_code == 403
+
+    @pytest.mark.parametrize(
+        ("who", "dashboard", "grant"),
+        [
+            ("u-owner", True, True),
+            ("u-trusted", True, False),
+            ("u-admin", False, False),
+            ("u-manager", False, False),
+            ("u-mine", False, False),
+        ],
+    )
+    def test_capabilities_reflect_the_flags(self, as_, fake, who, dashboard, grant):
+        caps = as_(who).get("/api/v1/me").json()["capabilities"]
+        assert caps["dashboard"] is dashboard
+        assert caps["grant_dashboard"] is grant
+
+    def test_an_admin_cannot_grant_access(self, as_, fake):
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json={"dashboard_access": True})
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Only the owner can grant dashboard access."
+        assert "dashboard_access" not in fake.profiles["u-mine"]
+        assert fake.audit == []
+
+    def test_an_admin_cannot_revoke_access_either(self, as_, fake):
+        r = as_("u-admin").patch(f"{API}/users/u-trusted", json={"dashboard_access": False})
+        assert r.status_code == 403
+        assert fake.profiles["u-trusted"]["dashboard_access"] is True
+
+    def test_an_admin_cannot_slip_it_in_with_another_change(self, as_, fake):
+        body = {"display_name": "Renamed", "dashboard_access": True}
+        r = as_("u-admin").patch(f"{API}/users/u-mine", json=body)
+        assert r.status_code == 403
+        assert fake.profiles["u-mine"]["display_name"] == "u-mine"
+
+    def test_the_owner_grants_and_revokes_with_an_audit(self, as_, fake):
+        r = as_("u-owner").patch(f"{API}/users/u-mine", json={"dashboard_access": True})
+        assert r.status_code == 200
+        assert r.json()["dashboard_access"] is True
+        assert fake.profiles["u-mine"]["dashboard_access"] is True
+        entry = fake.audit[-1]
+        assert entry["action"] == "user.dashboard_access"
+        assert entry["actor_id"] == "u-owner"
+        assert entry["target_id"] == "u-mine"
+        assert entry["before"] == {"dashboard_access": False}
+        assert entry["after"] == {"dashboard_access": True}
+        assert as_("u-mine").get(self.PATH).status_code == 200
+
+        r = as_("u-owner").patch(f"{API}/users/u-mine", json={"dashboard_access": False})
+        assert r.status_code == 200
+        assert fake.audit[-1]["before"] == {"dashboard_access": True}
+        assert fake.audit[-1]["after"] == {"dashboard_access": False}
+        assert as_("u-mine").get(self.PATH).status_code == 403
+
+    def test_access_and_other_changes_are_audited_apart(self, as_, fake):
+        body = {"display_name": "Renamed", "dashboard_access": True}
+        r = as_("u-owner").patch(f"{API}/users/u-mine", json=body)
+        assert r.status_code == 200
+        assert [a["action"] for a in fake.audit] == ["user.dashboard_access", "user.updated"]
+        assert fake.audit[-1]["after"] == {"display_name": "Renamed"}
+
+    def test_access_cannot_be_nulled(self, as_, fake):
+        r = as_("u-owner").patch(f"{API}/users/u-trusted", json={"dashboard_access": None})
+        assert r.status_code == 422
+        assert fake.profiles["u-trusted"]["dashboard_access"] is True
+
+    @pytest.mark.parametrize("who", ["u-owner", "u-admin"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_nobody_sets_is_owner(self, as_, fake, who, value):
+        r = as_(who).patch(f"{API}/users/u-mine", json={"is_owner": value})
+        assert r.status_code == 422
+        assert "is_owner" not in fake.profiles["u-mine"]
+        r = as_(who).patch(f"{API}/users/u-owner", json={"is_owner": value})
+        assert r.status_code == 422
+        assert fake.profiles["u-owner"]["is_owner"] is True
+        assert fake.audit == []
+
+    @pytest.mark.parametrize("field", ["dashboard_access", "is_owner"])
+    def test_create_user_cannot_set_either_flag(self, as_, fake, monkeypatch, field):
+        inserted: list[dict] = []
+        monkeypatch.setattr(db, "get_profile_by_email", lambda email: None, raising=False)
+        monkeypatch.setattr(db, "insert_profile", inserted.append, raising=False)
+        body = {"email": "new@example.com", "display_name": "New", field: True}
+        r = as_("u-owner").post(f"{API}/users", json=body)
+        assert r.status_code == 422
+        assert inserted == []
+
+    def test_admin_list_shows_the_flags_read_only(self, as_, fake):
+        users = {u["id"]: u for u in as_("u-admin").get(f"{API}/users").json()}
+        assert users["u-owner"]["is_owner"] is True
+        assert users["u-trusted"]["dashboard_access"] is True
+        assert users["u-mine"]["dashboard_access"] is False
+        assert users["u-mine"]["is_owner"] is False

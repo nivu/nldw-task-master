@@ -15,6 +15,7 @@ import {
   FolderKanban,
   CircleHelp,
   Home,
+  LayoutDashboard,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -100,6 +101,8 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     { href: "/team", label: "Team", icon: Users, section: "team", show: me?.capabilities.team_view },
     { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: me?.capabilities.team_view },
     { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: me?.capabilities.team_view },
+    // Spec 003 FR-DASH — by the owner's authorisation, not by role.
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: me?.capabilities.dashboard },
     // Spec 003 — the manager tier runs projects from its own page, not from
     // inside the admin panel it may not enter (FR-ROLE-03).
     { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: me?.capabilities.manage_projects },

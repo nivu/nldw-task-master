@@ -157,6 +157,10 @@ class UserUpdate(BaseModel):
     # Spec 002 FR-ANALYTICS-08. null clears the date.
     joined_on: date | None = None
     left_on: date | None = None
+    # Spec 003 FR-DASH-03 — the owner only; refused for anybody else, admins
+    # included. `is_owner` is deliberately absent: extra="forbid" refuses it,
+    # so no request can make anybody the owner (FR-DASH-01).
+    dashboard_access: bool | None = None
 
 
 class AllowanceIn(BaseModel):

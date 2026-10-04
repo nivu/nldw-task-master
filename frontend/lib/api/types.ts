@@ -37,6 +37,10 @@ export interface Me {
     /** Spec 003 — leads, managers and admins run projects (FR-ROLE-07). */
     manage_projects: boolean;
     financials: boolean;
+    /** Spec 003 FR-DASH — the owner or someone they authorised; never a role. */
+    dashboard: boolean;
+    /** Spec 003 FR-DASH-03 — the owner alone grants and revokes dashboard access. */
+    grant_dashboard: boolean;
   };
 }
 
@@ -194,6 +198,10 @@ export interface PortalUser {
   /** Spec 005 — the CTC (cost to company) in force today, shown monthly.
    *  Only in the admin's user list. Never labelled "salary". */
   ctc_monthly_now?: string | null;
+  /** Spec 003 FR-DASH — only in the admin's user list. Changed by the owner
+   *  alone; `is_owner` is read-only everywhere (set by migration 022). */
+  dashboard_access?: boolean;
+  is_owner?: boolean;
 }
 
 export interface Allowance {
@@ -929,4 +937,97 @@ export interface HomeSummary {
     slack_configured: boolean;
     slack_out_channel: string;
   };
+}
+
+/** Spec 003 FR-DASH — the CEO dashboard, owner-authorised only. Every figure
+ *  is the one its detail page shows; complete=false means a CTC or a timeline
+ *  is missing behind it. */
+export interface DashboardCoverage {
+  start: string;
+  end: string;
+  expected_days: number;
+  logged_days: number;
+  coverage: string | null;
+}
+
+export interface DashboardAlert {
+  severity: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  link: string;
+}
+
+export interface DashboardSummary {
+  today: {
+    date: string;
+    holiday: string | null;
+    status: {
+      people: number;
+      present: number;
+      wfh: number;
+      leave: Partial<Record<Category, number>>;
+      unrecognised: number;
+    };
+    pending_approvals: number;
+    pending_compoff_claims: number;
+  };
+  data_health: {
+    last_working_day: DashboardCoverage;
+    week_to_date: DashboardCoverage;
+    month_to_date: DashboardCoverage;
+    missing_last_working_day: { user_id: string; display_name: string }[];
+    portal_start_date: string | null;
+  };
+  money: {
+    currency: string;
+    this_month: PnlCell & { period: string; unattributed: string };
+    last_month: PnlCell & { period: string; unattributed: string };
+    categories: (PnlCell & { category: ProjectCategory; label: string })[];
+    pipeline: PnlCell & { label: string; period: string; weighted_revenue: string | null };
+    incomplete: {
+      unrated: { display_name: string }[];
+      no_timeline: { project_id: string; project_name: string }[];
+    };
+    unattributed: { project_id: string; project_name: string }[];
+  };
+  cash: {
+    currency: string;
+    payment_terms_days: number;
+    totals: { receivable: string; overdue_receivable: string; due_next_30_days: string; paid_this_month: string };
+    overdue_count: number;
+    uninvoiced_overdue_count: number;
+  };
+  delivery: {
+    counts: Record<Rag, number>;
+    red: { project_id: string; project_name: string; reasons: string[] }[];
+    amber: { project_id: string; project_name: string; reasons: string[] }[];
+    spillover: {
+      project_id: string;
+      project_name: string;
+      starts_on: string;
+      ends_on: string;
+      cost: string | null;
+      revenue: string;
+      complete: boolean;
+    }[];
+    burn_over_80: { project_id: string; project_name: string; burn_pct: string; logged_hours: string; budget_hours: string }[];
+  };
+  people: {
+    headcount: number;
+    utilisation: { period: string; target_pct: string; billable: string; capacity: string; utilisation_pct: string | null };
+    unallocated: { user_id: string; display_name: string }[];
+    ending: { user_id: string; display_name: string; ends_on: string }[];
+    over_allocated: { display_name: string; peak_percent: string }[];
+  };
+  trends: {
+    period: string;
+    basis: "actual" | "planned";
+    revenue: string;
+    cost: string | null;
+    profit_pct: string | null;
+    complete: boolean;
+    utilisation_pct: string | null;
+    coverage: string | null;
+  }[];
+  attention: DashboardAlert[];
 }

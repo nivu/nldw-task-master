@@ -165,6 +165,28 @@ Keywords follow RFC 2119.
 | FR-TIME-11 | The note field MUST be prominent and labelled as *what was done*, since it is the only task record (§8, Q-03). |
 | FR-TIME-12 | The day form MUST offer activities alongside allocated projects. |
 
+### 5.6 CEO dashboard — FR-DASH
+
+Added 5 October 2026 (owner request: "visible to people only who I authorise,
+initially just me"). One page and one API call, `GET /dashboard/summary`,
+summarising the company. Access is by the owner's authorisation, **not by
+role** — the one place in the portal where being an admin is not enough.
+
+| ID | Requirement |
+|---|---|
+| FR-DASH-01 | The system MUST mark exactly one person as the **owner** (`profiles.is_owner`). The flag MUST be set only by a migration (`022_dashboard_access.sql`) and MUST NOT be settable or changeable through any API route or MCP tool: the user update model rejects the field (422), and user creation cannot set it. |
+| FR-DASH-02 | The dashboard MUST be visible only to the owner and to people with `profiles.dashboard_access`. The check (`may_view_dashboard`) MUST NOT consider role: an admin, manager, lead or user without the flag MUST be refused (403). A flag that is anything but a real `true` MUST NOT grant access. |
+| FR-DASH-03 | Only the owner MAY grant or revoke `dashboard_access`, for anyone. Any other caller, admins included, MUST be refused with 403 "Only the owner can grant dashboard access." and nothing in the request applied. Every change MUST be audited as `user.dashboard_access` with actor, target, before and after. The toggle under Admin → People MUST be rendered only for the owner (`capabilities.grant_dashboard`). |
+| FR-DASH-04 | **Today** — the date and any holiday; company-wide counts of present, working from home, on leave by category and unrecognised (every active person once, a pending request counting as away, as on the Team page); company-wide pending leave requests and comp-off claims. |
+| FR-DASH-05 | **Data health** — timesheet coverage (`002` FR-ANALYTICS-05, same service) for the last working day, week to date and month to date — expected days, logged days, ratio — honouring `logs_time`, joining and leaving dates and `portal_start_date`; and the names of everyone missing the last working day. |
+| FR-DASH-06 | **Money** — this month and last from the monthly profit table (spec 005, same service): revenue, cost, profit, profit %, basis and `complete`; this month per project category; and the pipeline (tentative revenue and weighted revenue), never added to profit. Who and why for any incomplete figure (no CTC; revenue with no phases). **Cash** — the invoicing totals (receivable, overdue receivable, due in 30 days, paid this month) and the number of invoices past payment terms and of milestones past due and not invoiced (spec 006 FR-MILE-07, same service). |
+| FR-DASH-07 | **Trends** — the twelve months ending this month: revenue, cost and profit % (spec 005), billable utilisation pooled over the headcount (spec 006 FR-UTIL, same service: billable hours ÷ capacity), and timesheet coverage. A month wholly before `portal_start_date` MUST report coverage as null, not 0%. |
+| FR-DASH-08 | **Delivery** — project health counts (spec 006 FR-HEALTH, same service) with the red and amber projects named with their reasons; projects in a spill-over phase today with their planned cost and revenue this month; projects whose hours budget is more than 80% burnt. **People** — headcount (active, logs time, employed today); this month's billable utilisation with its target; people with no confirmed allocation today; people whose confirmed allocations end within 30 days with none after; people over-allocated in the next 30 days. A tentative allocation never counts as work. |
+| FR-DASH-09 | **Attention** — alerts generated from the sections above, each with severity (high / medium / low), title, detail and a link to the detail page, most severe first: a red project (high); invoices past terms or milestones past due and not invoiced (high); money incomplete for this or last month, naming who and why (high); revenue this month with nobody allocated (medium); spill-over cost (medium); last-working-day coverage below 80%, with who is missing (medium); people unallocated today (medium); allocations ending within 30 days without a follow-on (low). |
+| FR-DASH-10 | Every figure MUST be the one its detail page shows — the summary reuses the services behind them — and any figure from an incomplete source MUST carry `complete=false` and be marked incomplete on the page. A 403 MUST render as a refusal, not a blank page. |
+| FR-DASH-11 | The MCP tool `ceo_dashboard` MUST call the same route and so be refused unless the person may view the dashboard. `update_user` MUST describe `dashboard_access` as owner-only. |
+| FR-DASH-12 | Dashboard access opens the dashboard and nothing else. The detail pages it links to (Effort, Projects, Approvals, Admin) keep their existing role-based visibility; someone authorised for the dashboard without the role may see a summary figure but not its breakdown. |
+
 ---
 
 ## 6. Data model (indicative)
@@ -178,6 +200,8 @@ time_entries      ~ project_id nullable
                   + CHECK ((project_id IS NULL) <> (activity IS NULL))
                   + cost_rate_snapshot numeric(10,2)    -- captured at save; NULL for activities
 app_settings      + currency_code  '"INR"'
+profiles          + is_owner boolean          -- migration 022 only; never through the app
+                  + dashboard_access boolean  -- FR-DASH; granted and revoked by the owner
 ```
 
 Two partial unique indexes replace `002`'s single one: one per (user, date,

@@ -81,6 +81,23 @@ someone the company does not pay — a partner's staff, an unpaid intern —
 record a CTC of 0 so their figures read complete. Only managers and admins see CTC; the person
 never does, and it is never called salary.
 
+## Dashboard
+
+The **Dashboard** is the company on one page — today, timesheet coverage,
+money, cash, project health, people, twelve months of trend, and a list of
+what needs attention. It is seen only by the owner and the people the owner
+authorises; being an admin is not enough.
+
+The owner grants and revokes access with the **Dashboard access** box in the
+People table. Other admins do not see that column, and the portal refuses
+the change if they try it another way. Every grant and revoke is in the
+audit log. Who the owner is was set when the dashboard was installed and
+cannot be changed from the portal.
+
+Access opens the dashboard only. The pages its figures link to (Effort,
+Projects, Approvals, Admin) keep their usual rules, so someone with
+dashboard access but no manager role sees the summary, not the breakdown.
+
 ## Locations
 
 Under **Holidays**, add locations if the company works from more than one

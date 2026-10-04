@@ -200,6 +200,17 @@ def expected_log_days(
     return days
 
 
+def coverage_ratio(logged_days: int, expected_days: int) -> Decimal | None:
+    """FR-ANALYTICS-05 — logged over expected, to two places. None when no
+    day was expected: "nothing was due" is not 100% and not 0%.
+
+    Deliberately not rounded further: 0.83 and 1.0 mean very different things
+    about whether the effort totals can be relied on."""
+    if not expected_days:
+        return None
+    return (Decimal(logged_days) / Decimal(expected_days)).quantize(Decimal("0.01"))
+
+
 def week_expected(
     week_start: date,
     portal_start: date | None,

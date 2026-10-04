@@ -32,6 +32,7 @@ The navigation shows only what your role can use:
 | **Team** | Leads, managers, admins | Who is in, out or working from home today |
 | **Approvals** | Leads, managers, admins | Requests waiting for a decision |
 | **Effort** | Leads, managers, admins | Where the team's hours are going |
+| **Dashboard** | People the owner authorises | The whole company on one page: today, data health, money, cash, delivery, people, trends and what needs attention |
 | **Projects** | Leads, managers, admins | Create projects, set phases and categories, allocate people (leads: their own reports; never money) |
 | **Admin** | Admins | People, allowances, holidays, policy |
 | **Account** | Everyone | Your details, yearly history, calendar feed, Claude tokens, your quarter |

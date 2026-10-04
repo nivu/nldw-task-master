@@ -65,6 +65,10 @@ def list_users(admin: AdminDep) -> list[dict]:
             # Spec 005 — the CTC in force today, shown monthly. Set through
             # the CTC routes below; never called salary.
             "ctc_monthly_now": _m(rates.monthly_now(row["id"], today)),
+            # Spec 003 FR-DASH — read-only here; only the owner changes access,
+            # and the owner flag itself is never changed through the app.
+            "dashboard_access": row.get("dashboard_access") is True,
+            "is_owner": row.get("is_owner") is True,
         }
         for row in db.list_profiles()
     ]
@@ -165,6 +169,14 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
 
+    # Spec 003 FR-DASH-03 — the owner alone grants and revokes dashboard
+    # access. Being an admin is not enough; that is the point of the flag.
+    if "dashboard_access" in changes:
+        if not admin.is_owner:
+            raise ProblemDetail(403, "Only the owner can grant dashboard access.")
+        if changes["dashboard_access"] is None:
+            raise ProblemDetail(422, "Dashboard access is either granted or not.")
+
     if changes.get("lead_id") == user_id:
         raise ProblemDetail(422, "Somebody cannot be their own lead.")
 
@@ -188,14 +200,27 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
         raise ProblemDetail(422, problem)
 
     updated = db.update_profile(user_id, changes)
-    audit.record(
-        action="user.updated",
-        target_table="profiles",
-        target_id=user_id,
-        actor_id=admin.id,
-        before={k: existing.get(k) for k in changes},
-        after=changes,
-    )
+    # FR-DASH-03 — access changes get their own audit action, so who was let
+    # in, by whom and when can be read without sifting every profile edit.
+    access = {k: changes.pop(k) for k in ("dashboard_access",) if k in changes}
+    if access:
+        audit.record(
+            action="user.dashboard_access",
+            target_table="profiles",
+            target_id=user_id,
+            actor_id=admin.id,
+            before={"dashboard_access": existing.get("dashboard_access") is True},
+            after=access,
+        )
+    if changes:
+        audit.record(
+            action="user.updated",
+            target_table="profiles",
+            target_id=user_id,
+            actor_id=admin.id,
+            before={k: existing.get(k) for k in changes},
+            after=changes,
+        )
     return {k: updated.get(k) for k in _USER_FIELDS}
 
 
@@ -209,6 +234,8 @@ _USER_FIELDS = (
     "logs_time",
     "joined_on",
     "left_on",
+    "dashboard_access",
+    "is_owner",
 )
 
 

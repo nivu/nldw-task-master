@@ -29,6 +29,7 @@ from app.api.errors import ProblemDetail
 from app.config import settings
 from app.domain import tokens
 from app.domain.approval import Person
+from app.domain.dashboard import may_view_dashboard
 from app.services import supabase as db
 
 logger = logging.getLogger("nldw-task-master")
@@ -83,6 +84,16 @@ class CurrentUser(Person):
         the person's `lead_id`, and a manager who leads nobody approves nobody.
         """
         return self.role in ("lead", "manager", "admin")
+
+    @property
+    def is_owner(self) -> bool:
+        """Spec 003 FR-DASH-01 — set by migration 022 only, never by the app."""
+        return self.profile.get("is_owner") is True
+
+    @property
+    def may_view_dashboard(self) -> bool:
+        """Spec 003 FR-DASH-02 — the owner or someone they authorised. Not a role."""
+        return may_view_dashboard(self.profile)
 
 
 def _bearer_token(request: Request) -> str:
@@ -221,9 +232,25 @@ def require_manager(user: CurrentUserDep) -> CurrentUser:
     return user
 
 
+def require_dashboard(user: CurrentUserDep) -> CurrentUser:
+    """Guards the CEO dashboard — spec 003 FR-DASH-02.
+
+    Deliberately independent of role: an admin or manager without the owner's
+    authorisation gets the same refusal as anybody else. The detail pages the
+    dashboard summarises keep their own role guards; this one neither widens
+    nor narrows them.
+    """
+    if not user.may_view_dashboard:
+        raise ProblemDetail(
+            403, "The dashboard is visible only to people the owner has authorised."
+        )
+    return user
+
+
 LeadDep = Annotated[CurrentUser, Depends(require_lead)]
 ManagerDep = Annotated[CurrentUser, Depends(require_manager)]
 AdminDep = Annotated[CurrentUser, Depends(require_admin)]
+DashboardDep = Annotated[CurrentUser, Depends(require_dashboard)]
 
 
 def require_session(user: CurrentUserDep, request: Request) -> CurrentUser:

@@ -32,6 +32,7 @@ const PROTECTED_ROUTES = [
   "/review",
   "/team",
   "/approvals",
+  "/dashboard",
   "/admin",
   "/account",
   "/",

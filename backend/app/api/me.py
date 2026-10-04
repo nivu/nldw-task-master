@@ -51,6 +51,9 @@ def whoami(user: CurrentUserDep) -> dict:
             # Hints for navigation only — every route re-checks server-side.
             "manage_projects": user.is_lead,
             "financials": user.is_manager,
+            # Spec 003 FR-DASH — by the owner's authorisation, never by role.
+            "dashboard": user.may_view_dashboard,
+            "grant_dashboard": user.is_owner,
         },
     }
 

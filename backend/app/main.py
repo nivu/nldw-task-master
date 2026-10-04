@@ -199,6 +199,8 @@ def _mount_routers() -> None:
         ("app.api.timesheet", "analytics"),
         # Spec 004 — personal access tokens for MCP clients.
         ("app.api.tokens", "router"),
+        # Spec 003 FR-DASH — the CEO dashboard.
+        ("app.api.dashboard", "router"),
     ]
     # Spec 006 — org operations: several small routers in one module.
     from app.api import ops

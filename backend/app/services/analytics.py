@@ -126,11 +126,24 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
     (`profiles.logs_time`) are left out entirely — FR-ANALYTICS-07. Nor is
     any day before a person joined or after they left — FR-ANALYTICS-08.
     """
+    return coverage_windows(user_ids, [(start, end)])[0]
+
+
+def coverage_windows(user_ids: list[str], windows: list[tuple[date, date]]) -> list[dict[str, Any]]:
+    """`coverage` for several date ranges at once, one result per range.
+
+    The CEO dashboard (spec 003 FR-DASH-05) asks for a day, a week, a month
+    and twelve months of trend; fetching the span once and judging each range
+    from it keeps those numbers the ones the coverage page shows, without
+    fifteen round trips.
+    """
     profiles = {p["id"]: p for p in db.list_profiles()}
     user_ids = [u for u in user_ids if u not in profiles or rules.logs_time(profiles[u])]
-    holidays = holidays_between(start, end)
-    leave = leave_days_for(user_ids, start, end)
-    entries = db.list_time_entries(user_ids=user_ids, start=start, end=end)
+    first = min(start for start, _ in windows)
+    last = max(end for _, end in windows)
+    holidays = holidays_between(first, last)
+    leave = leave_days_for(user_ids, first, last)
+    entries = db.list_time_entries(user_ids=user_ids, start=first, end=last)
 
     logged: dict[str, set[date]] = {}
     for entry in entries:
@@ -138,46 +151,48 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
 
     today = today_in_company_tz()
     portal_start = settings_store.portal_start_date()
-    rows = []
-    for user_id in user_ids:
-        joined_on, left_on = rules.employment(profiles.get(user_id, {}))
-        expected = rules.expected_log_days(
-            start,
-            end,
-            today=today,
-            holidays=holidays,
-            leave_days=leave.get(user_id, {}),
-            portal_start=portal_start,
-            joined_on=joined_on,
-            left_on=left_on,
-        )
+    out = []
+    for start, end in windows:
+        rows = []
+        for user_id in user_ids:
+            joined_on, left_on = rules.employment(profiles.get(user_id, {}))
+            expected = rules.expected_log_days(
+                start,
+                end,
+                today=today,
+                holidays=holidays,
+                leave_days=leave.get(user_id, {}),
+                portal_start=portal_start,
+                joined_on=joined_on,
+                left_on=left_on,
+            )
 
-        have = logged.get(user_id, set())
-        missing = [d for d in expected if d not in have]
-        rows.append(
+            have = logged.get(user_id, set())
+            missing = [d for d in expected if d not in have]
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "display_name": profiles.get(user_id, {}).get("display_name", "—"),
+                    "expected_days": len(expected),
+                    "logged_days": len(expected) - len(missing),
+                    "missing_days": [d.isoformat() for d in missing],
+                }
+            )
+
+        total_expected = sum(r["expected_days"] for r in rows)
+        total_logged = sum(r["logged_days"] for r in rows)
+        ratio = rules.coverage_ratio(total_logged, total_expected)
+        out.append(
             {
-                "user_id": user_id,
-                "display_name": profiles.get(user_id, {}).get("display_name", "—"),
-                "expected_days": len(expected),
-                "logged_days": len(expected) - len(missing),
-                "missing_days": [d.isoformat() for d in missing],
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "people": rows,
+                "expected_days": total_expected,
+                "logged_days": total_logged,
+                "coverage": None if ratio is None else str(ratio),
             }
         )
-
-    total_expected = sum(r["expected_days"] for r in rows)
-    total_logged = sum(r["logged_days"] for r in rows)
-    return {
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "people": rows,
-        "expected_days": total_expected,
-        "logged_days": total_logged,
-        # Deliberately not rounded away: 0.83 and 1.0 mean very different
-        # things about whether the effort totals can be relied on.
-        "coverage": str((Decimal(total_logged) / Decimal(total_expected)).quantize(Decimal("0.01")))
-        if total_expected
-        else None,
-    }
+    return out
 
 
 def forecast(start: date, end: date) -> dict[str, Any]:

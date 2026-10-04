@@ -642,7 +642,9 @@ async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> di
     or expected to have a week signed off) and joined_on / left_on
     (YYYY-MM-DD, null clears; no time is expected before joining or after
     leaving, and left_on cannot be before joined_on). CTC is not set here —
-    use set_ctc, which is dated; these dates do not change cost."""
+    use set_ctc, which is dated; these dates do not change cost.
+    dashboard_access (true / false) can be changed by the owner only — any
+    other admin is refused; is_owner can never be changed here."""
     return await _api(ctx, "PATCH", f"/admin/users/{user_id}", body=changes)
 
 
@@ -970,6 +972,21 @@ async def project_health(ctx: Context, project_id: str) -> dict:
     """MANAGERS AND ADMINS. Red/amber/green for burn, margin and schedule,
     with the inputs beside each colour."""
     return await _api(ctx, "GET", f"/analytics/projects/{project_id}/health")
+
+
+@mcp.tool(annotations=READ)
+async def ceo_dashboard(ctx: Context) -> dict:
+    """OWNER-AUTHORISED ONLY. The CEO dashboard in one call: today's
+    attendance and pending approvals, timesheet coverage (last working day,
+    week and month to date), this and last month's profit with categories and
+    pipeline, cash (receivable, overdue, due in 30 days, paid this month),
+    project health, spill-over and budget burn, headcount, utilisation,
+    unallocated people and allocations ending, twelve months of trend, and a
+    list of alerts by severity. Refused unless the person is the owner or the
+    owner has granted them dashboard access — whatever their role, admins
+    included. Figures with complete=false are missing a CTC or a timeline: say
+    so when quoting them. Pipeline is never profit."""
+    return await _api(ctx, "GET", "/dashboard/summary")
 
 
 @mcp.tool(annotations=READ)
