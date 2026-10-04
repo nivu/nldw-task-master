@@ -197,6 +197,9 @@ class FakeDb:
             and (end is None or e["date"] <= end.isoformat())
         ]
 
+    def has_time_entries(self, project_id):
+        return any(e.get("project_id") == project_id for e in self.entries)
+
     def list_bookings(self, **_):
         return []
 
@@ -619,6 +622,40 @@ class TestTentativeProject:
         assert r.status_code == 403
         assert "status" not in fake.projects["p-live"]
 
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager"])
+    def test_a_project_with_no_history_can_become_tentative(self, as_, fake, who):
+        fake.milestones["m-billed"]["invoiced_on"] = None
+        r = as_(who).patch(f"{API}/projects/p-live", json={"status": "tentative"})
+        assert r.status_code == 200
+        assert fake.projects["p-live"]["status"] == "tentative"
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_a_project_with_logged_time_stays_confirmed(self, as_, fake, who):
+        # Its past cost and revenue would leave the confirmed P&L (FR-PNL-05).
+        fake.milestones["m-billed"]["invoiced_on"] = None
+        fake.entries = [
+            {
+                "user_id": "u-mine",
+                "project_id": "p-live",
+                "date": "2026-09-14",
+                "hours_office": "6",
+                "hours_home": "0",
+            }
+        ]
+        r = as_(who).patch(f"{API}/projects/p-live", json={"status": "tentative"})
+        assert r.status_code == 422
+        assert "time logged" in r.json()["detail"]
+        assert "status" not in fake.projects["p-live"]
+        assert fake.audit == []
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_a_project_with_invoices_stays_confirmed(self, as_, fake, who):
+        # Its invoices would leave the receivables (FR-MILE-07).
+        r = as_(who).patch(f"{API}/projects/p-live", json={"status": "tentative"})
+        assert r.status_code == 422
+        assert "invoiced milestones" in r.json()["detail"]
+        assert "status" not in fake.projects["p-live"]
+
 
 class TestBulkHolidays:
     """FR-HOL-08 — each holiday declared through the single-holiday path."""
@@ -736,6 +773,15 @@ class TestInvoices:
         assert r.json()["invoices"] == []
         assert r.json()["totals"]["receivable"] == "0"
 
+    def test_a_tentative_project_is_not_invoiced(self, as_, fake):
+        fake.projects["p-live"]["status"] = "tentative"
+        r = as_("u-manager").patch(
+            f"{API}/milestones/m-unbilled", json={"invoiced_on": "2026-10-10"}
+        )
+        assert r.status_code == 422
+        assert fake.milestones["m-unbilled"]["invoiced_on"] is None
+        assert fake.audit == []
+
     @pytest.mark.parametrize("who", ["u-lead", "u-mine"])
     def test_lead_cannot_mark_a_milestone_paid(self, as_, fake, who):
         r = as_(who).patch(f"{API}/milestones/m-billed", json={"paid_on": "2026-10-10"})
@@ -781,6 +827,66 @@ class TestInvoices:
         )
         assert r.status_code == 200
         assert fake.milestones["m-billed"]["paid_on"] is None
+
+
+class TestForecastContractedHours:
+    """Spec 005 FR-CTC-06 with 002 FR-ANALYTICS-01 — a lead's forecast plans
+    each person at their contracted hours. The hours are visible to a lead by
+    design; the CTC they come from is not."""
+
+    PATH = "/api/v1/analytics/forecast?start=2026-10-05&end=2026-10-09"
+
+    def test_a_lead_sees_a_part_timer_at_their_hours_and_no_money(self, as_, fake):
+        fake.cost_periods["c-0"] = {
+            "id": "c-0",
+            "user_id": "u-mine",
+            "annual_ctc": "600000",
+            "starts_on": "2026-01-01",
+            "ends_on": None,
+            "hours_per_week": "20",
+        }
+        r = as_("u-lead").get(self.PATH)
+        assert r.status_code == 200
+        people = {
+            (p["project_id"], person["user_id"]): person["hours"]
+            for p in r.json()["projects"]
+            for person in p["people"]
+        }
+        # Five weekdays at 50%: 4h a day for the part-timer, 8h for the rest.
+        assert people[("p-live", "u-mine")] == "10.00"
+        assert people[("p-live", "u-theirs")] == "20.00"
+        for word in ("revenue", "cost", "profit", "ctc", "600000"):
+            assert word not in r.text
+
+
+class TestPaymentTermsSetting:
+    """Spec 006 FR-MILE-06 — the payment terms are a whole number of days."""
+
+    @pytest.fixture(autouse=True)
+    def _setting(self, monkeypatch, fake):
+        stored = {"key": "invoice_payment_terms_days", "value": 30, "description": ""}
+        monkeypatch.setattr(db, "list_settings", lambda: [dict(stored)])
+
+        def update_setting(key, value, actor_id):
+            stored["value"] = value
+            return dict(stored)
+
+        monkeypatch.setattr(db, "update_setting", update_setting)
+        return stored
+
+    @pytest.mark.parametrize(("value", "stored"), [(45, 45), ("60", 60), (0, 0)])
+    def test_a_whole_number_of_days_is_stored(self, as_, fake, _setting, value, stored):
+        r = as_("u-admin").put(f"{API}/settings/invoice_payment_terms_days", json={"value": value})
+        assert r.status_code == 200
+        assert _setting["value"] == stored
+        assert fake.audit[-1]["after"]["value"] == stored
+
+    @pytest.mark.parametrize("value", ["thirty", "45 days", -1, 30.5, 366, True, None])
+    def test_anything_else_is_refused(self, as_, fake, _setting, value):
+        r = as_("u-admin").put(f"{API}/settings/invoice_payment_terms_days", json={"value": value})
+        assert r.status_code == 422
+        assert _setting["value"] == 30
+        assert fake.audit == []
 
 
 class TestCategoryEffort:

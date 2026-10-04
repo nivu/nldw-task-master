@@ -63,8 +63,9 @@ def by_category(
     Planned hours are the allocations' hours (`timesheets.allocated_hours`):
     working days in the month less that person's holidays and leave, times
     the percent, at that person's contracted hours (`hours_on`, spec 005
-    FR-CTC-06) — the same arithmetic as the capacity forecast, so the two
-    pages never disagree. A project with no category counts as `client`, the
+    FR-CTC-06) — the capacity forecast's arithmetic, except that `holidays`
+    is per person (their own location's), where the forecast takes every
+    location's, so location-specific holidays can make the two differ. A project with no category counts as `client`, the
     default (FR-PROJ-06). Allocations to a tentative project are left out:
     pipeline work is not planned work until it is won (FR-PROJ-08).
     """

@@ -84,6 +84,19 @@ class TestCheckPayment:
         assert invoicing.check_payment(date(2026, 10, 1), date(2026, 10, 9)) is None
 
 
+class TestCheckTentative:
+    def test_a_tentative_project_is_not_invoiced(self):
+        assert invoicing.check_tentative("FluxBooks", True, "2026-10-01") == (
+            "FluxBooks is tentative; confirm it before invoicing."
+        )
+
+    def test_an_uninvoiced_milestone_on_a_tentative_project_is_fine(self):
+        assert invoicing.check_tentative("FluxBooks", True, None) is None
+
+    def test_a_confirmed_project_is_invoiced(self):
+        assert invoicing.check_tentative("Acme", False, date(2026, 10, 1)) is None
+
+
 class TestTotals:
     def test_each_total(self):
         rows = [

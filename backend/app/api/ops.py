@@ -517,6 +517,14 @@ def update_milestone(milestone_id: str, payload: MilestoneUpdate, manager: Manag
     problem = invoice_rules.check_payment(after.get("invoiced_on"), after.get("paid_on"))
     if problem:
         raise ProblemDetail(422, problem)
+    project = db.get_project(existing["project_id"]) or {}
+    problem = invoice_rules.check_tentative(
+        project.get("name", "The project"),
+        timesheet_rules.is_tentative(project),
+        after.get("invoiced_on"),
+    )
+    if problem:
+        raise ProblemDetail(422, problem)
     row = db.update_milestone(milestone_id, changes)
     if row is None:
         raise ProblemDetail(404, "No such milestone.")

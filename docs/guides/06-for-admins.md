@@ -152,7 +152,8 @@ no start date.
 
 **invoice_payment_terms_days** (30) is how many days a client has to pay an
 invoice. An invoice still unpaid that many days after its invoice date shows
-as **payment overdue** on the managers' Invoices list.
+as **payment overdue** on the managers' Invoices list. It must be a whole
+number of days from 0 to 365; anything else is refused.
 
 Settings are changed through Claude (`update_setting`), not on this page.
 

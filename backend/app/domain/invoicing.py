@@ -71,6 +71,16 @@ def check_payment(invoiced_on: date | str | None, paid_on: date | str | None) ->
     return None
 
 
+def check_tentative(
+    project_name: str, is_tentative: bool, invoiced_on: date | str | None
+) -> str | None:
+    """FR-MILE-05 with `002` FR-PROJ-08 — work not yet won bills nobody: a
+    milestone on a tentative project is invoiced only once it is confirmed."""
+    if is_tentative and _day(invoiced_on) is not None:
+        return f"{project_name} is tentative; confirm it before invoicing."
+    return None
+
+
 def totals(milestones: list[dict], today: date, terms_days: int) -> dict[str, Decimal]:
     """FR-MILE-07 — receivable (invoiced, not paid), the overdue part of it,
     what falls due in the next 30 days and is not yet invoiced, and what was

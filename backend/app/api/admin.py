@@ -700,6 +700,14 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
                 raise ProblemDetail(
                     422, "portal_start_date must be a date (YYYY-MM-DD), or empty for none."
                 ) from exc
+    if key == "invoice_payment_terms_days":
+        # `006` FR-MILE-06. A whole number of days; the reader would otherwise
+        # fall back to 30 in silence, and a negative one makes every invoice late.
+        if isinstance(value, bool) or not str(value).strip().isdigit() or int(value) > 365:
+            raise ProblemDetail(
+                422, "invoice_payment_terms_days must be a whole number of days from 0 to 365."
+            )
+        value = int(value)
 
     row = db.update_setting(key, value, admin.id)
     settings_store.invalidate()
@@ -886,6 +894,14 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
         changes["revenue"] = str(changes["revenue"])
     if changes.get("lead_id") is not None:  # null clears the lead (FR-PROJ-07)
         refusal = rules.project_lead_refusal(db.get_profile(changes["lead_id"]))
+        if refusal:
+            raise ProblemDetail(422, refusal)
+    if changes.get("status") == "tentative" and not rules.is_tentative(existing):
+        refusal = rules.make_tentative_refusal(
+            project_name=existing["name"],
+            has_time_entries=db.has_time_entries(project_id),
+            has_invoices=any(m.get("invoiced_on") for m in db.list_milestones(project_id)),
+        )
         if refusal:
             raise ProblemDetail(422, refusal)
 

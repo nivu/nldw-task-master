@@ -779,6 +779,8 @@ export interface Hiring {
   months: {
     period: string;
     demand_hours: string;
+    /** Spec 002 FR-PROJ-08 — pipeline demand, outside the shortfall. */
+    tentative_demand_hours: string;
     supply_hours: string;
     shortfall_hours: string;
     fte_needed: string;

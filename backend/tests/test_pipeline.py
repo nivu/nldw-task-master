@@ -53,6 +53,30 @@ class TestTheRules:
             is None
         )
 
+    def test_a_project_with_logged_time_cannot_become_tentative(self):
+        assert (
+            rules.make_tentative_refusal(
+                project_name="Acme", has_time_entries=True, has_invoices=False
+            )
+            == "Acme has time logged against it, so it cannot be made tentative."
+        )
+
+    def test_a_project_with_invoices_cannot_become_tentative(self):
+        assert (
+            rules.make_tentative_refusal(
+                project_name="Acme", has_time_entries=False, has_invoices=True
+            )
+            == "Acme has invoiced milestones, so it cannot be made tentative."
+        )
+
+    def test_a_project_with_no_history_can_become_tentative(self):
+        assert (
+            rules.make_tentative_refusal(
+                project_name="Acme", has_time_entries=False, has_invoices=False
+            )
+            is None
+        )
+
 
 def alloc(percent, *, tentative=False, project="p"):
     return rules.Allocation(
@@ -294,3 +318,13 @@ class TestAllocationViewsMarkTentative:
         assert week["allocated_pct"] == "20"
         assert week["with_tentative_pct"] == "60"
         assert week["bench"] is True
+
+    def test_hiring_demand_counts_confirmed_work_and_shows_the_pipeline(self, fake, monkeypatch):
+        # November: 21 weekdays at 8h. Acme 80% is demand; FluxBooks 40% is
+        # shown beside it and hires nobody (FR-HIRE-01).
+        monkeypatch.setattr(db, "default_location_id", lambda: None, raising=False)
+        monkeypatch.setattr(utilisation, "target", lambda: D("80"))
+        month = utilisation.hiring(1, D("1200000"), "2026-11")["months"][0]
+        assert month["demand_hours"] == "134.4"
+        assert month["tentative_demand_hours"] == "67.2"
+        assert month["fte_needed"] == "0.0"

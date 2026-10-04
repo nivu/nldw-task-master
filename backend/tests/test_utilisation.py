@@ -24,6 +24,18 @@ def test_hiring_signal():
     assert h.cost_at(D("1200000")) == D("280000.00")
 
 
+def test_tentative_demand_is_shown_but_hires_nobody():
+    h = u.HiringMonth(
+        period="2026-11",
+        demand_hours=D("100"),
+        supply_hours=D("640"),
+        hours_per_fte=D("128"),
+        tentative_hours=D("960"),
+    )
+    assert h.shortfall_hours == D("0") and h.fte_needed == D("0.0")
+    assert h.as_dict(D("1200000"))["tentative_demand_hours"] == "960.0"
+
+
 def test_no_shortfall_costs_nothing():
     h = u.HiringMonth(
         period="2026-10", demand_hours=D("100"), supply_hours=D("640"), hours_per_fte=D("128")

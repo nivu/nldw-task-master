@@ -523,6 +523,23 @@ def tentative_entry_refusal(
     return None
 
 
+def make_tentative_refusal(
+    *, project_name: str, has_time_entries: bool, has_invoices: bool
+) -> str | None:
+    """FR-PROJ-08 — only a project with no history may become tentative.
+
+    Logged hours are cost already spent and an invoice is money already asked
+    for. Making the project tentative would move both out of the confirmed
+    P&L and the receivables after the fact, and a lead, who has no money, may
+    set the status.
+    """
+    if has_time_entries:
+        return f"{project_name} has time logged against it, so it cannot be made tentative."
+    if has_invoices:
+        return f"{project_name} has invoiced milestones, so it cannot be made tentative."
+    return None
+
+
 # ---------------------------------------------------------------------------
 
 

@@ -334,6 +334,11 @@ def delete_allocation(allocation_id: str) -> None:
     supabase.table("allocations").delete().eq("id", allocation_id).execute()
 
 
+#: PostgREST's `max_rows` (supabase/config.toml). A longer answer is cut off
+#: there without an error, so reads that can exceed it page through.
+PAGE_SIZE = 1000
+
+
 def list_time_entries(
     *,
     user_ids: list[str] | None = None,
@@ -341,18 +346,37 @@ def list_time_entries(
     start: date | None = None,
     end: date | None = None,
 ) -> list[dict[str, Any]]:
-    query = supabase.table("time_entries").select("*")
-    if user_ids is not None:
-        if not user_ids:
-            return []
-        query = query.in_("user_id", user_ids)
-    if project_id is not None:
-        query = query.eq("project_id", project_id)
-    if start is not None:
-        query = query.gte("date", start.isoformat())
-    if end is not None:
-        query = query.lte("date", end.isoformat())
-    return query.order("date").execute().data or []
+    if user_ids is not None and not user_ids:
+        return []
+
+    def page(offset: int) -> list[dict[str, Any]]:
+        # A fresh query per page: the builder accumulates parameters.
+        query = supabase.table("time_entries").select("*")
+        if user_ids is not None:
+            query = query.in_("user_id", user_ids)
+        if project_id is not None:
+            query = query.eq("project_id", project_id)
+        if start is not None:
+            query = query.gte("date", start.isoformat())
+        if end is not None:
+            query = query.lte("date", end.isoformat())
+        # Ordered by id too, so no row straddles two pages or is skipped.
+        query = query.order("date").order("id").range(offset, offset + PAGE_SIZE - 1)
+        return query.execute().data or []
+
+    rows: list[dict[str, Any]] = []
+    while True:
+        chunk = page(len(rows))
+        rows.extend(chunk)
+        if len(chunk) < PAGE_SIZE:
+            return rows
+
+
+def has_time_entries(project_id: str) -> bool:
+    response = (
+        supabase.table("time_entries").select("id").eq("project_id", project_id).limit(1).execute()
+    )
+    return bool(response.data)
 
 
 def insert_time_entry(data: dict[str, Any]) -> dict[str, Any]:

@@ -91,13 +91,16 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-MILE-06 | Each milestone has an invoice status as of today: **paid** if paid; else **payment overdue** if invoiced more than `invoice_payment_terms_days` (30) days ago, **invoiced** if within them; else **overdue** if its due date has passed, **due** if it falls today or within 7 days, **upcoming** otherwise. Days overdue count from the due date (not invoiced) or from the end of the payment terms (invoiced). |
 | FR-MILE-07 | Invoices view: every milestone on every project, archived included and tentative (`002` FR-PROJ-08) left out, with project, client, amount, due date, invoice number, invoice and payment dates, status and days overdue, filterable by status; and totals over all of them — receivable (invoiced, not paid), overdue receivable (payment overdue), due in the next 30 days (not yet invoiced) and paid this calendar month. |
 | FR-MILE-08 | Milestones, invoices and their totals are money: managers and admins only. A lead or user is refused (403). |
+| FR-MILE-09 | A milestone on a tentative project (`002` FR-PROJ-08) MUST NOT be invoiced — refused 422 "*name* is tentative; confirm it before invoicing." Work not yet won bills nobody; with `002` FR-PROJ-09 this keeps every invoiced milestone inside the Invoices view and its totals (FR-MILE-07). |
+| FR-MILE-10 | `invoice_payment_terms_days` MUST be a whole number of days from 0 to 365; any other value is refused 422 when set, never stored and silently read as 30. |
 
 ## 7. Hiring signal — FR-HIRE
 
 | ID | Requirement |
 |---|---|
-| FR-HIRE-01 | Per month for the next N: demand hours (allocations × capacity), supply hours (headcount capacity × target utilisation), shortfall, FTE needed (shortfall ÷ one person's hours at target), and the cost of those FTE at a given annual CTC. |
+| FR-HIRE-01 | Per month for the next N: demand hours (confirmed allocations × capacity, FR-HIRE-03), supply hours (headcount capacity × target utilisation), shortfall, FTE needed (shortfall ÷ one person's hours at target), and the cost of those FTE at a given annual CTC. |
 | FR-HIRE-02 | The CTC to price with is an input to the view, never a person's. |
+| FR-HIRE-03 | Demand (FR-HIRE-01) MUST count confirmed allocations only, like the bench. Allocations to tentative projects (`002` FR-PROJ-08) MUST be shown beside it per month as tentative demand hours and MUST NOT count toward the shortfall, FTE needed or their cost: work not yet won hires nobody. |
 
 ## 8. Checklists — FR-CHK
 

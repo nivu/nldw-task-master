@@ -75,7 +75,10 @@ Work that is coming but not yet won — *"a new project for the FluxBooks team
 after 6 November"* — can be planned before it is signed. Set a project's
 **Status** to **Tentative** when you add it, or from the dropdown beside its
 name, and give its **chance of winning** as a percentage. Leads can do this
-too; neither is money. A tentative project shows a dashed **Tentative** badge.
+too; neither is money. A project that already has hours logged against it, or
+an invoiced milestone, cannot be made tentative: its cost and invoices are
+history, and moving them to the pipeline would rewrite past profit and the
+receivables. A tentative project shows a dashed **Tentative** badge.
 
 A tentative project can have phases, revenue and allocations, so you can
 pencil people in. It is not offered on the Time page and takes no hours —
@@ -104,7 +107,8 @@ table say so.
 
 Each milestone also tracks its invoice. Type the **invoice number** beside it
 and choose **Mark invoiced** (dated today), then **Mark paid** when the client
-pays. A milestone can only be paid once it has been invoiced.
+pays. A milestone can only be paid once it has been invoiced, and a tentative
+project's milestones cannot be invoiced until it is confirmed.
 
 ### Invoices
 
@@ -126,6 +130,12 @@ receivable** (the part of it past the payment terms), **due next 30 days**
 (not yet invoiced) and **paid this month**. Tentative projects are left out
 until they are confirmed: work not yet won bills nobody. Leads never see this.
 
+Payment dates were not recorded before the Invoices list existed, so a
+milestone invoiced earlier shows as unpaid — and, after 30 days, payment
+overdue — until its payment is recorded. Ask Claude to set its `paid_on` to
+the day the client actually paid; **Mark paid** would date it today and count
+it in *paid this month*.
+
 ## Project health
 
 Every project on the Effort page carries a colour. Open it to see three
@@ -146,9 +156,11 @@ money. Weeks a lead has not yet confirmed are marked.
 
 **Bench** shows each person's allocated percent for the coming weeks and
 flags weeks under the threshold as free capacity. **Hiring signal**, on the
-same tab, compares the hours the allocations demand with what the team can
-supply at target utilisation, month by month, and prices the shortfall in
-people at an annual CTC you type in. It is a planning number, not anybody's
+same tab, compares the hours the confirmed allocations demand with what the
+team can supply at target utilisation, month by month, and prices the
+shortfall in people at an annual CTC you type in. Allocations to tentative
+projects are shown beside it as **Tentative h** and are not in the shortfall:
+work not yet won hires nobody until it is won. It is a planning number, not anybody's
 figure. Supply and demand count each person's contracted hours, so a
 part-timer adds their hours, not a full-time week; a hire is priced full time.
 

@@ -1786,8 +1786,9 @@ function HiringCard() {
           <div className="flex-1">
             <CardTitle className="text-base">Hiring signal · {frame.label}</CardTitle>
             <CardDescription>
-              Hours the allocations demand against hours the team can supply at target utilisation.
+              Hours the confirmed allocations demand against hours the team can supply at target utilisation.
               The shortfall in people, priced at an annual CTC you choose — an input, not anybody&apos;s figure.
+              Tentative work is shown beside it and hires nobody until it is won.
             </CardDescription>
           </div>
           <YearFrameControl frame={frame} />
@@ -1816,6 +1817,7 @@ function HiringCard() {
               <tr className="border-b text-left text-muted-foreground">
                 <th className="p-2 font-medium">Month</th>
                 <th className="p-2 text-right font-medium">Demand h</th>
+                <th className="p-2 text-right font-medium">Tentative h</th>
                 <th className="p-2 text-right font-medium">Supply h</th>
                 <th className="p-2 text-right font-medium">Shortfall h</th>
                 <th className="p-2 text-right font-medium">FTE needed</th>
@@ -1827,6 +1829,7 @@ function HiringCard() {
                 <tr key={m.period} className={Number(m.fte_needed) > 0 ? "font-medium" : ""}>
                   <td className="p-2">{m.period}</td>
                   <td className="p-2 text-right tabular-nums">{m.demand_hours}</td>
+                  <td className="p-2 text-right tabular-nums text-muted-foreground">{m.tentative_demand_hours}</td>
                   <td className="p-2 text-right tabular-nums">{m.supply_hours}</td>
                   <td className="p-2 text-right tabular-nums">{m.shortfall_hours}</td>
                   <td className="p-2 text-right tabular-nums">{m.fte_needed}</td>

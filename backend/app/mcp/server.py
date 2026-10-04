@@ -363,9 +363,10 @@ async def coverage(ctx: Context, start: str | None = None, end: str | None = Non
 async def forecast(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
     """Capacity implied by allocations, net of weekends, holidays and leave,
     and who is over-allocated (default the next 90 days). Covers every
-    allocation in the company, for leads too; no money. Tentative projects
-    are included and marked tentative; over_allocated counts confirmed
-    allocations only, over_with_tentative adds the pipeline."""
+    allocation in the company, for leads too; no money. Each person's hours
+    are at their contracted hours, so a part-timer shows fewer. Tentative
+    projects are included and marked tentative; over_allocated counts
+    confirmed allocations only, over_with_tentative adds the pipeline."""
     return await _api(ctx, "GET", "/analytics/forecast", params={"start": start, "end": end})
 
 
@@ -500,8 +501,9 @@ async def update_project(ctx: Context, project_id: str, changes: dict[str, Any])
     hold name, client, revenue (decimal string; managers and admins only),
     category (client | poc | product | internal), lead_id (the user id of an
     active person who leads it; null clears it), status (confirmed |
-    tentative — set confirmed when the work is won), probability (0-100 or
-    null) and is_archived (archive, never delete)."""
+    tentative — set confirmed when the work is won; a project with logged
+    time or an invoiced milestone cannot be made tentative), probability
+    (0-100 or null) and is_archived (archive, never delete)."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 
 
@@ -805,7 +807,8 @@ async def list_settings(ctx: Context) -> list:
 @mcp.tool(annotations=WRITE)
 async def update_setting(ctx: Context, key: str, value: Any) -> dict:
     """ADMINS. Change a policy setting. CONFIRM FIRST; read list_settings for
-    the meaning of each key and its accepted values."""
+    the meaning of each key and its accepted values.
+    invoice_payment_terms_days takes a whole number of days, 0-365."""
     return await _api(ctx, "PUT", f"/admin/settings/{key}", body={"value": value})
 
 
@@ -950,9 +953,10 @@ async def bench(ctx: Context, weeks: int = 8) -> dict:
 async def hiring_signal(
     ctx: Context, months: int = 6, annual_ctc: str = "1200000", start: str | None = None
 ) -> dict:
-    """MANAGERS AND ADMINS. Demand from allocations against supply at target
-    utilisation, FTE needed per month, and their monthly cost at the given
-    annual CTC (an input, not anybody's figure)."""
+    """MANAGERS AND ADMINS. Demand from confirmed allocations against supply
+    at target utilisation, FTE needed per month, and their monthly cost at the
+    given annual CTC (an input, not anybody's figure). tentative_demand_hours
+    is the pipeline's demand, shown beside it and never in the shortfall."""
     return await _api(
         ctx,
         "GET",
@@ -1010,7 +1014,8 @@ async def update_milestone(ctx: Context, milestone_id: str, changes: dict[str, A
     """MANAGERS AND ADMINS. Change a milestone (name, due_on, amount,
     invoiced_on, invoice_number ("" clears it), paid_on, clear_invoiced=true or
     clear_paid=true). CONFIRM FIRST. A milestone is paid only once invoiced, on
-    or after its invoice date."""
+    or after its invoice date, and a tentative project's milestones are not
+    invoiced until it is confirmed."""
     return await _api(ctx, "PATCH", f"/admin/milestones/{milestone_id}", body=changes)
 
 

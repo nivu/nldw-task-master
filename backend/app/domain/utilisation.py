@@ -60,6 +60,9 @@ class HiringMonth:
     demand_hours: Decimal
     supply_hours: Decimal  # capacity × target utilisation
     hours_per_fte: Decimal  # one person's capacity × target
+    # Spec 002 FR-PROJ-08 — demand from tentative projects, shown beside the
+    # rest and never in the shortfall: work not yet won hires nobody.
+    tentative_hours: Decimal = ZERO
 
     @property
     def shortfall_hours(self) -> Decimal:
@@ -82,6 +85,7 @@ class HiringMonth:
         return {
             "period": self.period,
             "demand_hours": str(self.demand_hours.quantize(Decimal("0.1"))),
+            "tentative_demand_hours": str(self.tentative_hours.quantize(Decimal("0.1"))),
             "supply_hours": str(self.supply_hours.quantize(Decimal("0.1"))),
             "shortfall_hours": str(self.shortfall_hours.quantize(Decimal("0.1"))),
             "fte_needed": str(self.fte_needed),

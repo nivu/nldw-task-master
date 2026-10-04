@@ -172,6 +172,9 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
     people = db.list_profiles(active_only=True)
     user_ids = [p["id"] for p in people]
     allocations = db.list_allocations()
+    tentative_ids = {
+        p["id"] for p in db.list_projects(include_archived=True) if rules.is_tentative(p)
+    }
     leave = leave_days_for(user_ids, first, last)
     holidays = holidays_by_person(user_ids, first, last)
     hours_for = contracted_hours()
@@ -203,6 +206,7 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
                 * goal
             )
         demand = ZERO
+        tentative = ZERO
         for a in allocations:
             window = pnl.overlap(
                 date.fromisoformat(a["starts_on"]),
@@ -218,7 +222,10 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
                 holidays=holidays.get(a["user_id"], set()),
                 hours_on=hours_for(a["user_id"]),
             )
-            demand += hours * Decimal(str(a["percent"])) / HUNDRED
+            if a["project_id"] in tentative_ids:
+                tentative += hours * Decimal(str(a["percent"])) / HUNDRED
+            else:
+                demand += hours * Decimal(str(a["percent"])) / HUNDRED
         typical = (
             (sum(per_person, ZERO) / Decimal(len(per_person)))
             if per_person
@@ -230,6 +237,7 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
                 demand_hours=demand,
                 supply_hours=supply,
                 hours_per_fte=typical * goal,
+                tentative_hours=tentative,
             ).as_dict(annual_ctc)
         )
     return {"target_pct": str(target()), "annual_ctc": str(annual_ctc), "months": out}
