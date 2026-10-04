@@ -103,4 +103,15 @@ someone stuck on internal work, not for ranking anyone. Capacity, here and in
 the forecast, is the hours a person is contracted for, so a part-timer's is
 smaller; an allocation percent is a share of their own hours.
 
+**Categories** totals hours by project category — paid client engagement,
+client POC, product development and internal tools — month by month across
+the company, for the year you pick (calendar or financial). Each category
+shows the hours **logged** and the hours **planned** by allocations (net of
+holidays and leave, at each person's contracted hours). Allocations to
+tentative projects are not in the planned hours until the work is won; the
+Forecast shows them, marked tentative. Time logged against no project, such as learning or
+admin, is its own row, *Not on a project*, with no plan. Months from the
+current one on are marked *planned*. Like every effort total, the logged hours
+are only as complete as the timesheet.
+
 Leads see hours, never money.

@@ -196,8 +196,13 @@ tentative project in it has no chance of winning set. The pipeline cost is
 already part of those people's cost above, since they are paid anyway, so it
 is never added to the totals.
 
-Every month-based view — By month, the timeline in months, Utilisation and the
-hiring signal — shows a whole year at a time. Switch between **Calendar year**
+**Categories** on Effort shows the same hours by category that leads see —
+logged and planned per month, with time on no project as its own row — and,
+for you, the money by category beneath it: revenue, cost, profit and profit %
+per category per month, taken from the same figures as **By month**.
+
+Every month-based view — By month, Categories, the timeline in months,
+Utilisation and the hiring signal — shows a whole year at a time. Switch between **Calendar year**
 (January to December) and **Financial year** (April to March) with the buttons
 on the view and step through years with the arrows; the choice is remembered
 on your device and applies to every such view, including your own leave

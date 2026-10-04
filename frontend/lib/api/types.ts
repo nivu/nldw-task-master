@@ -433,6 +433,21 @@ export interface CurrentWork {
   latest_note: string | null;
 }
 
+/** Spec 002 FR-ANALYTICS-09 — hours per project category per month. No money. */
+export interface CategoryHoursCell {
+  logged_hours: string;
+  /** Null on the "activity" row: nobody is allocated to time on no project. */
+  planned_hours: string | null;
+}
+
+export interface CategoryEffort {
+  start: string;
+  end: string;
+  months: { period: string; basis: "actual" | "planned" }[];
+  categories: { category: ProjectCategory | "activity"; label: string; cells: CategoryHoursCell[] }[];
+  totals: CategoryHoursCell[];
+}
+
 export interface AllocationRow {
   id: string;
   project_id: string;

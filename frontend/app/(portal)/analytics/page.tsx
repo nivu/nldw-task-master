@@ -8,12 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/components/portal/projects-panel";
-import { useYearFrame, YearFrameControl } from "@/components/shared/year-frame";
-import { BarsByMonth, LinesByPerson, MoneyByMonth, ProgressBars } from "@/components/shared/charts";
+import { useYearFrame, YearFrameControl, type YearFrame } from "@/components/shared/year-frame";
+import { BarsByMonth, LinesByPerson, MoneyByMonth, ProgressBars, StackedByMonth } from "@/components/shared/charts";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAnalyticsProjects,
   getBench,
+  getCategoryEffort,
   getCoverage,
   getHiring,
   getProjectHealth,
@@ -31,6 +32,7 @@ import {
 } from "@/lib/api/portal";
 import type {
   Bench,
+  CategoryEffort,
   Coverage,
   Hiring,
   ProjectHealth,
@@ -137,6 +139,7 @@ export default function AnalyticsPage() {
           <TabsTrigger value="forecast">Forecast</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
           <TabsTrigger value="utilisation">Utilisation</TabsTrigger>
+          <TabsTrigger value="categories">Categories</TabsTrigger>
           {data.financials && <TabsTrigger value="resources">Resources</TabsTrigger>}
           {data.financials && <TabsTrigger value="bench">Bench</TabsTrigger>}
           {data.financials && <TabsTrigger value="money">Money</TabsTrigger>}
@@ -340,6 +343,10 @@ export default function AnalyticsPage() {
 
         <TabsContent value="utilisation" className="space-y-3 pt-4">
           <UtilisationTab />
+        </TabsContent>
+
+        <TabsContent value="categories" className="space-y-3 pt-4">
+          <CategoriesTab financials={data.financials} />
         </TabsContent>
 
         {data.financials && (
@@ -1518,6 +1525,196 @@ function UtilisationTab() {
             ))}
           </tbody>
         </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Spec 002 FR-ANALYTICS-09 — hours by project category, month by month.
+ *
+ * Hours for everyone who sees this page; the money by category (005
+ * FR-PNL-04) only on the capability, and fetched only then — the route is
+ * ManagerDep regardless. One year frame drives both cards so they always
+ * show the same months.
+ */
+function CategoriesTab({ financials }: { financials: boolean }) {
+  const frame = useYearFrame();
+  return (
+    <>
+      <CategoryHours frame={frame} />
+      {financials && <CategoryMoney frame={frame} />}
+    </>
+  );
+}
+
+const monthHeading = (period: string) =>
+  new Date(`${period}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+
+function CategoryHours({ frame }: { frame: YearFrame }) {
+  const { data, error } = useAsync<CategoryEffort>(
+    () => getCategoryEffort(frame.start, frame.end),
+    [frame.start, frame.end]
+  );
+  const [series, setSeries] = useState<"logged" | "planned">("logged");
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const hours = (v: string | null) => (v === null ? "—" : `${Number(v)}h`);
+  // The activities row has no plan, so it drops out of the planned chart
+  // rather than drawing as zero.
+  const charted = data.categories.filter((c) => series === "logged" || c.category !== "activity");
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1">
+            <CardTitle className="text-base">Hours by category · {frame.label}</CardTitle>
+            <CardDescription>
+              Hours logged against each kind of project, and hours planned by allocations (net of
+              holidays and leave). Tentative projects are not planned until they are won. Time on no
+              project — learning, admin and the like — is its own row. Logged totals are only as
+              complete as the timesheet.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            <Button variant={series === "logged" ? "secondary" : "outline"} size="sm" onClick={() => setSeries("logged")}>
+              Logged
+            </Button>
+            <Button variant={series === "planned" ? "secondary" : "outline"} size="sm" onClick={() => setSeries("planned")}>
+              Planned
+            </Button>
+            <YearFrameControl frame={frame} />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 p-0">
+        <div className="px-2">
+          <StackedByMonth
+            unit="h"
+            months={data.months.map((m) => m.period)}
+            series={charted.map((c) => ({
+              name: c.label,
+              values: c.cells.map((cell) => Number(series === "logged" ? cell.logged_hours : (cell.planned_hours ?? 0))),
+            }))}
+          />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="sticky left-0 bg-card p-2 font-medium">Category</th>
+                {data.months.map((m) => (
+                  <th key={m.period} className="p-2 text-right font-medium whitespace-nowrap">
+                    {monthHeading(m.period)}
+                    {m.basis === "planned" && <span className="block text-[10px] font-normal">planned</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.categories.map((c) => (
+                <tr key={c.category}>
+                  <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">{c.label}</td>
+                  {c.cells.map((cell, i) => (
+                    <td key={i} className="p-2 text-right tabular-nums align-top">
+                      <span className="block font-medium">{hours(cell.logged_hours)}</span>
+                      <span className="block text-muted-foreground">{hours(cell.planned_hours)}</span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              <tr className="border-t-2 font-medium">
+                <td className="sticky left-0 bg-card p-2">Total</td>
+                {data.totals.map((cell, i) => (
+                  <td key={i} className="p-2 text-right tabular-nums align-top">
+                    <span className="block">{hours(cell.logged_hours)}</span>
+                    <span className="block text-muted-foreground">{hours(cell.planned_hours)}</span>
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="px-4 pb-3 text-[11px] text-muted-foreground">
+          Each cell: hours logged, then hours planned. Categories in fixed order, never by hours.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Spec 005 FR-PNL-04 — the profit table's category rows, for the manager tier. */
+function CategoryMoney({ frame }: { frame: YearFrame }) {
+  const { data, error } = useAsync<Pnl>(() => getPnl(frame.start, frame.end), [frame.start, frame.end]);
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const pct = (v: string | null) => (v === null ? "—" : `${Number(v).toFixed(0)}%`);
+  const amt = (v: string | null) => (v === null ? "?" : formatMoney(v));
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Money by category · {frame.label}</CardTitle>
+        <CardDescription>
+          Revenue, cost and profit per category, from the same figures as Money → By month. Months
+          that have ended use logged hours; the current month and the future use allocations.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 p-0">
+        {data.unrated.length > 0 && (
+          <div className="px-4 pt-1">
+            <IncompleteNotice unrated={data.unrated} what="Some months" />
+          </div>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="sticky left-0 bg-card p-2 font-medium">Category</th>
+                {data.months.map((m) => (
+                  <th key={m.period} className="p-2 text-right font-medium whitespace-nowrap">
+                    {monthHeading(m.period)}
+                    {m.basis === "planned" && <span className="block text-[10px] font-normal">planned</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {data.categories.map((c) => (
+                <tr key={c.category}>
+                  <td className="sticky left-0 bg-card p-2 font-medium whitespace-nowrap">{c.label}</td>
+                  {c.cells.map((cell, i) => (
+                    <td
+                      key={i}
+                      className={cn(
+                        "p-2 text-right tabular-nums align-top",
+                        !cell.complete && "bg-amber-50 dark:bg-amber-950/30"
+                      )}
+                      title={`${data.currency} ${amt(cell.revenue)} revenue · ${amt(cell.cost)} cost · ${amt(cell.profit)} profit${
+                        cell.complete ? "" : " · incomplete"
+                      }`}
+                    >
+                      <span className={cn("block font-medium", cell.profit !== null && Number(cell.profit) < 0 && "text-destructive")}>
+                        {pct(cell.profit_pct)}
+                      </span>
+                      <span className="block text-muted-foreground">{amt(cell.revenue)}</span>
+                      <span className="block text-muted-foreground">−{amt(cell.cost)}</span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="px-4 pb-3 text-[11px] text-muted-foreground">
+          Each cell: profit %, then revenue, then cost ({data.currency}). &ldquo;?&rdquo; means a CTC is
+          missing for some of the month.
+        </p>
       </CardContent>
     </Card>
   );

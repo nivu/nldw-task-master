@@ -377,6 +377,19 @@ async def current_work(ctx: Context, days: int = 7) -> list:
 
 
 @mcp.tool(annotations=READ)
+async def category_effort(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
+    """LEADS, MANAGERS AND ADMINS. Hours per project category (client, poc,
+    product, internal) per month (start/end as YYYY-MM; default this calendar
+    year): logged hours, and planned hours from allocations net of holidays
+    and leave, at contracted hours; allocations to tentative (pipeline)
+    projects are left out of planned. Time logged against no project (learning, internal work,
+    admin, other) is its own "activity" row with no plan. Company-wide, no
+    money — the money by category is monthly_pnl. Logged totals over an
+    incomplete timesheet are low; check coverage before quoting them."""
+    return await _api(ctx, "GET", "/analytics/categories", params={"start": start, "end": end})
+
+
+@mcp.tool(annotations=READ)
 async def project_financials(ctx: Context, project_id: str) -> dict:
     """MANAGERS AND ADMINS. Revenue, cost (COGS), margin and per-person
     attributed revenue for a project. If `complete` is false the cost omits
