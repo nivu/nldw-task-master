@@ -125,6 +125,7 @@ export interface TeamDay {
     wfh: number;
     casual: number;
     sick: number;
+    compoff: number;
     unrecognised: number;
   };
 }

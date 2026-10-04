@@ -22,6 +22,7 @@ from app.api.errors import ProblemDetail
 from app.domain.approval import Person, can_decide
 from app.domain.calendar import is_weekend, period_of, today_in_company_tz
 from app.domain.rules import CATEGORY_LABELS, OCCUPYING_STATES
+from app.domain.team import summarise
 from app.schemas import UnrecognisedFlag
 from app.services import balances, settings_store
 from app.services import bookings as booking_service
@@ -83,7 +84,7 @@ def team_day(
             "category": None if booking is None else booking["category"],
             "category_label": None
             if booking is None or booking["category"] is None
-            else CATEGORY_LABELS[booking["category"]],
+            else CATEGORY_LABELS.get(booking["category"], booking["category"]),
             "duration": None if booking is None else str(booking["duration"]),
             "booking_id": None if booking is None else booking["id"],
             # A-21 — a lead planning a day should know which records were
@@ -104,20 +105,8 @@ def team_day(
         "is_weekend": is_weekend(target),
         "holiday": holiday["name"] if holiday else None,
         "people": entries,
-        "summary": _summarise(entries),
+        "summary": summarise(entries),
     }
-
-
-def _summarise(entries: list[dict]) -> dict:
-    counts = {"present": 0, "wfh": 0, "casual": 0, "sick": 0, "unrecognised": 0}
-    for entry in entries:
-        if entry["state"] == "present":
-            counts["present"] += 1
-        elif entry["state"] == "unrecognised":
-            counts["unrecognised"] += 1
-        elif entry["category"]:
-            counts[entry["category"]] += 1
-    return counts
 
 
 def _empty(target: date, today: date) -> dict:
@@ -127,7 +116,7 @@ def _empty(target: date, today: date) -> dict:
         "is_weekend": is_weekend(target),
         "holiday": None,
         "people": [],
-        "summary": {"present": 0, "wfh": 0, "casual": 0, "sick": 0, "unrecognised": 0},
+        "summary": summarise([]),
     }
 
 
