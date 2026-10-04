@@ -98,8 +98,9 @@ def _shutdown_celery(proc: subprocess.Popen) -> None:
 app = FastAPI(
     title="Nunnari Employee Portal API",
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.API_DOCS else None,
+    redoc_url="/redoc" if settings.API_DOCS else None,
+    openapi_url="/openapi.json" if settings.API_DOCS else None,
     lifespan=lifespan,
 )
 

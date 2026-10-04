@@ -45,7 +45,7 @@ it on their calendar.
 Under **Team → Weekly sign-off**, each report's week shows its hours, any
 missing days and whether it is confirmed. Confirm it once it looks right; a
 confirmed week is what goes on a client statement. You can reopen a week while
-its edit window is still open. Anything nobody confirmed is confirmed
+its edit window is still open; the person is told, so they can correct it. Anything nobody confirmed is confirmed
 automatically when the window closes. On Friday afternoon you get a Slack
 summary of your reports' gaps for the week.
 
@@ -67,16 +67,21 @@ compared across people.
 
 **Projects** is open to you too. You can create a project, give it a category
 and phases, archive it, and allocate **your own reports** to it — the people
-whose approver you are. Someone outside your team is allocated by a manager or
-admin. You see only your reports' allocations, and you never see or set
+whose approver you are, and edit or remove those allocations. Someone outside
+your team is allocated by a manager or admin. An archived project takes no new
+allocations, and an allocation on it can be shortened but not extended. The
+allocation list shows only your reports' allocations (the capacity
+forecast under **Effort** shows everyone's), and you never see or set
 revenue or milestones; that is the manager's side of a project. See *For
 managers* for how phases and categories work.
 
 ## Effort
 
-**Effort** shows where your reports' hours are going: per project, what people
-worked on in the last week, the capacity forecast from allocations, and
-**coverage** — how much of the timesheet actually exists.
+**Effort** shows where the hours are going. The per-project view covers every
+project and everyone who logged hours on it, and the capacity forecast covers
+every allocation in the company, so you can plan with the whole picture. What
+people worked on in the last week and **coverage** — how much of the timesheet
+actually exists — are for your reports only.
 
 Read the coverage banner before quoting any total. Hours computed over a
 half-filled timesheet are not roughly right; they are lower than reality.

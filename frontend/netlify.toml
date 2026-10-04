@@ -8,12 +8,8 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# Security headers applied to all responses.
-[[headers]]
-  for = "/*"
-  [headers.values]
-    X-Frame-Options = "DENY"
-    X-Content-Type-Options = "nosniff"
+# Security headers live in next.config.ts, which covers server-rendered pages
+# as well as static files.
 
 # The help guides are prerendered from docs/guides at build time. Without this
 # Netlify's durable cache can keep an old copy across deploys; revalidating on

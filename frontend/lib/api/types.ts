@@ -177,6 +177,9 @@ export interface PortalUser {
   is_active: boolean;
   /** Spec 006 FR-LOC-01. */
   location_id?: string | null;
+  /** Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.
+   *  Only in the admin's user list. */
+  logs_time?: boolean;
   /** Spec 005 — the CTC (cost to company) in force today, shown monthly.
    *  Only in the admin's user list. Never labelled "salary". */
   ctc_monthly_now?: string | null;

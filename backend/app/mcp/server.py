@@ -33,8 +33,8 @@ INSTRUCTIONS = """\
 Nunnari Employee Portal — leave, timesheets, projects and effort reporting.
 
 You act as the person whose token you were given, with exactly their access:
-a lead sees their reports and runs projects (no money; allocates only their
-reports), a manager sees projects and money (revenue, cost, monthly profit,
+a lead sees their reports, hours on every project and the company-wide
+forecast, and runs projects (no money; allocates only their reports), a manager sees projects and money (revenue, cost, monthly profit,
 the allocation timeline), an admin also manages people and CTC. A refusal
 from a tool is the portal's answer for that person; do not try to route
 around it.
@@ -45,7 +45,8 @@ tools, applications, website). Reports group and total by it.
 
 Money: a person's cost is their CTC (cost to company) in force on the day —
 dated periods, past and upcoming, set by an admin with set_ctc; months before
-someone's first CTC are before they joined and cost nothing. Revenue is
+someone's first CTC are before they joined, and months after their last CTC
+ends are after they left; both cost nothing. Revenue is
 spread evenly over a project's phase timeline, leaving out any spillover
 phase (unpaid overrun); past months use logged hours, the current and future
 months use allocations (marked "planned"). Any figure
@@ -325,14 +326,16 @@ async def someone_elses_week(ctx: Context, user_id: str, week_start: str | None 
 
 @mcp.tool(annotations=READ)
 async def projects_effort(ctx: Context) -> list:
-    """Every project with hours logged so far."""
+    """Every project with hours logged so far. Leads see every project too
+    (hours only)."""
     return await _api(ctx, "GET", "/analytics/projects")
 
 
 @mcp.tool(annotations=READ)
 async def project_effort(ctx: Context, project_id: str) -> dict:
     """One project's effort by phase, budget versus logged, and who logged
-    what. Sorted by name — never rank people by hours."""
+    what — everyone on the project, for leads too. Sorted by name — never rank
+    people by hours."""
     return await _api(ctx, "GET", f"/analytics/projects/{project_id}")
 
 
@@ -340,14 +343,17 @@ async def project_effort(ctx: Context, project_id: str) -> dict:
 async def coverage(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
     """How much of the timesheet actually exists for a date range (default the
     last 30 days). Read this before quoting any effort total: totals over an
-    incomplete timesheet are lower than reality, not approximate."""
+    incomplete timesheet are lower than reality, not approximate. A lead sees
+    their reports. Days before the portal_start_date setting, and people who
+    do not log time (logs_time false), are never counted as missing."""
     return await _api(ctx, "GET", "/analytics/coverage", params={"start": start, "end": end})
 
 
 @mcp.tool(annotations=READ)
 async def forecast(ctx: Context, start: str | None = None, end: str | None = None) -> dict:
     """Capacity implied by allocations, net of weekends, holidays and leave,
-    and who is over-allocated (default the next 90 days)."""
+    and who is over-allocated (default the next 90 days). Covers every
+    allocation in the company, for leads too; no money."""
     return await _api(ctx, "GET", "/analytics/forecast", params={"start": start, "end": end})
 
 
@@ -484,7 +490,8 @@ async def allocate(
 ) -> dict:
     """LEADS, MANAGERS AND ADMINS. Allocate a person to a project for a date
     range at a percent of their capacity. CONFIRM FIRST. A lead may allocate
-    only their own reports. Over 100% is recorded and flagged, not refused."""
+    only their own reports. Over 100% is recorded and flagged, not refused.
+    An archived project takes no new allocations."""
     return await _api(
         ctx,
         "POST",
@@ -496,6 +503,26 @@ async def allocate(
             "ends_on": ends_on,
             "percent": percent,
         },
+    )
+
+
+@mcp.tool(annotations=WRITE)
+async def update_allocation(
+    ctx: Context,
+    allocation_id: str,
+    starts_on: str | None = None,
+    ends_on: str | None = None,
+    percent: str | None = None,
+) -> dict:
+    """LEADS, MANAGERS AND ADMINS. Change an allocation's dates or percent
+    (give at least one). CONFIRM FIRST. A lead may change only their own
+    reports'. An archived project's allocation can be shortened, not extended."""
+    body = {"starts_on": starts_on, "ends_on": ends_on, "percent": percent}
+    return await _api(
+        ctx,
+        "PATCH",
+        f"/admin/allocations/{allocation_id}",
+        body={k: v for k, v in body.items() if v is not None},
     )
 
 
@@ -513,31 +540,46 @@ async def remove_allocation(ctx: Context, allocation_id: str) -> dict:
 
 @mcp.tool(annotations=READ)
 async def list_users(ctx: Context) -> list:
-    """ADMINS. Everyone, with role, approver, active flag and the CTC in force
-    today (monthly). CTC history is under list_ctc; never present it as salary."""
+    """ADMINS. Everyone, with role, approver, active flag, whether they log time
+    (logs_time) and the CTC in force today (monthly). CTC history is under
+    list_ctc; never present it as salary."""
     return await _api(ctx, "GET", "/admin/users")
 
 
 @mcp.tool(annotations=WRITE)
 async def create_user(
-    ctx: Context, email: str, display_name: str, role: str = "user", lead_id: str | None = None
+    ctx: Context,
+    email: str,
+    display_name: str,
+    role: str = "user",
+    lead_id: str | None = None,
+    logs_time: bool = True,
 ) -> dict:
     """ADMINS. Create an account. CONFIRM FIRST. email must be the Google
     address they sign in with; role: user | lead | manager | admin; lead_id is
-    who approves their leave (None = an admin)."""
+    who approves their leave (None = an admin); logs_time false = they keep no
+    timesheet and are never counted as missing time or nudged."""
     return await _api(
         ctx,
         "POST",
         "/admin/users",
-        body={"email": email, "display_name": display_name, "role": role, "lead_id": lead_id},
+        body={
+            "email": email,
+            "display_name": display_name,
+            "role": role,
+            "lead_id": lead_id,
+            "logs_time": logs_time,
+        },
     )
 
 
 @mcp.tool(annotations=WRITE)
 async def update_user(ctx: Context, user_id: str, changes: dict[str, Any]) -> dict:
     """ADMINS. Change a person. CONFIRM FIRST. changes may hold display_name,
-    role (user | lead | manager | admin), lead_id and is_active (deactivate,
-    never delete). CTC is not set here — use set_ctc, which is dated."""
+    role (user | lead | manager | admin), lead_id, is_active (deactivate,
+    never delete) and logs_time (false = never counted as missing time, nudged
+    or expected to have a week signed off). CTC is not set here — use set_ctc,
+    which is dated."""
     return await _api(ctx, "PATCH", f"/admin/users/{user_id}", body=changes)
 
 
@@ -683,7 +725,9 @@ async def update_setting(ctx: Context, key: str, value: Any) -> dict:
 
 @mcp.tool(annotations=READ)
 async def audit_log(ctx: Context, limit: int = 100) -> list:
-    """ADMINS. The most recent audit entries: who did what, when."""
+    """ADMINS. The most recent audit entries: who did what, when. `actor` is
+    the person's name, or "System" for the overnight sweep and other automatic
+    changes."""
     return await _api(ctx, "GET", "/admin/audit", params={"limit": limit})
 
 
@@ -739,7 +783,8 @@ async def decide_compoff(
 @mcp.tool(annotations=READ)
 async def team_weeks(ctx: Context, week_start: str | None = None) -> dict:
     """LEADS. Each report's week (Monday date, default this week): hours,
-    missing days and whether it is confirmed."""
+    missing days and whether it is confirmed. People who do not log time are
+    not listed, and days before portal_start_date are not missing."""
     return await _api(ctx, "GET", "/team/timesheets", params={"week_start": week_start})
 
 
@@ -755,7 +800,8 @@ async def confirm_week(
 
 @mcp.tool(annotations=DESTRUCTIVE)
 async def reopen_week(ctx: Context, user_id: str, week_start: str) -> dict:
-    """LEADS. Reopen a confirmed week while it is still editable. CONFIRM FIRST."""
+    """LEADS. Reopen a confirmed week while it is still editable. CONFIRM
+    FIRST. The person is told, with the last day they can correct it."""
     return await _api(ctx, "DELETE", f"/team/timesheets/{user_id}/{week_start}/confirm")
 
 

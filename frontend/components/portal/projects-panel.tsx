@@ -16,6 +16,7 @@ import {
   listMilestones,
   removeMilestone,
   setProjectPhase,
+  updateAllocation,
   updateMilestone,
   updateProject,
 } from "@/lib/api/portal";
@@ -554,6 +555,7 @@ function AllocationForm({
   const [endsOn, setEndsOn] = useState(today());
   const [percent, setPercent] = useState("50");
   const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   return (
     <div className="space-y-2">
@@ -625,32 +627,122 @@ function AllocationForm({
 
       {allocations.length > 0 && (
         <div className="space-y-1">
-          {allocations.map((allocation) => (
-            <div key={allocation.id} className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">
-                {allocation.display_name} @{allocation.percent}% · {allocation.starts_on} →{" "}
-                {allocation.ends_on}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6"
-                onClick={async () => {
-                  try {
-                    await deleteAllocation(allocation.id);
-                    // FR-ALLOC-05 — removing intent never removes recorded fact.
-                    onDone("Allocation removed. Hours already logged are kept.");
-                  } catch (err) {
-                    onError(errorMessage(err));
-                  }
+          {allocations.map((allocation) =>
+            editingId === allocation.id ? (
+              <AllocationEditRow
+                key={allocation.id}
+                allocation={allocation}
+                onDone={(m) => {
+                  setEditingId(null);
+                  onDone(m);
                 }}
-              >
-                Remove
-              </Button>
-            </div>
-          ))}
+                onCancel={() => setEditingId(null)}
+                onError={onError}
+              />
+            ) : (
+              <div key={allocation.id} className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">
+                  {allocation.display_name} @{allocation.percent}% · {allocation.starts_on} →{" "}
+                  {allocation.ends_on}
+                </span>
+                {/* FR-ALLOC-06 — dates and percent are editable; the edit is audited. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6"
+                  onClick={() => setEditingId(allocation.id)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6"
+                  onClick={async () => {
+                    try {
+                      await deleteAllocation(allocation.id);
+                      // FR-ALLOC-05 — removing intent never removes recorded fact.
+                      onDone("Allocation removed. Hours already logged are kept.");
+                    } catch (err) {
+                      onError(errorMessage(err));
+                    }
+                  }}
+                >
+                  Remove
+                </Button>
+              </div>
+            )
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+function AllocationEditRow({
+  allocation,
+  onDone,
+  onCancel,
+  onError,
+}: {
+  allocation: AllocationRow;
+  onDone: (m: string) => void;
+  onCancel: () => void;
+  onError: (m: string) => void;
+}) {
+  const [startsOn, setStartsOn] = useState(allocation.starts_on);
+  const [endsOn, setEndsOn] = useState(allocation.ends_on);
+  const [percent, setPercent] = useState(allocation.percent);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <form
+      className="flex flex-wrap items-end gap-2 text-xs"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        try {
+          await updateAllocation(allocation.id, {
+            starts_on: startsOn,
+            ends_on: endsOn,
+            percent,
+          });
+          onDone(`Allocation for ${allocation.display_name} updated.`);
+        } catch (err) {
+          onError(errorMessage(err));
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <span className="pb-2 text-muted-foreground">{allocation.display_name}</span>
+      <div className="space-y-1.5">
+        <Label className="text-xs">From</Label>
+        <Input type="date" value={startsOn} onChange={(e) => setStartsOn(e.target.value)} required />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">To</Label>
+        <Input type="date" value={endsOn} onChange={(e) => setEndsOn(e.target.value)} required />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs">% of capacity</Label>
+        <Input
+          type="number"
+          min="1"
+          max="100"
+          step="any"
+          className="w-24"
+          value={percent}
+          onChange={(e) => setPercent(e.target.value)}
+          required
+        />
+      </div>
+      <Button type="submit" variant="outline" size="sm" disabled={busy}>
+        {busy ? "Saving…" : "Save"}
+      </Button>
+      <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+        Cancel
+      </Button>
+    </form>
   );
 }

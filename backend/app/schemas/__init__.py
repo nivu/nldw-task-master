@@ -124,6 +124,8 @@ class UserCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
     role: Role = "user"
     lead_id: str | None = None
+    # Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.
+    logs_time: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -137,6 +139,8 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     # Spec 006 FR-LOC-01.
     location_id: str | None = None
+    # Spec 002 FR-ANALYTICS-07.
+    logs_time: bool | None = None
 
 
 class AllowanceIn(BaseModel):
@@ -272,6 +276,17 @@ class AllocationIn(BaseModel):
     starts_on: date
     ends_on: date
     percent: Decimal = Field(gt=0, le=100)
+
+
+class AllocationUpdate(BaseModel):
+    """FR-ALLOC-06. Who and which project are fixed; change those by removing
+    and allocating again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    starts_on: date | None = None
+    ends_on: date | None = None
+    percent: Decimal | None = Field(default=None, gt=0, le=100)
 
 
 class TokenCreate(BaseModel):

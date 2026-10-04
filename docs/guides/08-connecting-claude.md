@@ -46,7 +46,9 @@ Everything you can do in the portal, and nothing you cannot:
 - Read your calendar, balances and history; book or withdraw a day.
 - Log your day against projects or activities; read your week.
 - If you are a lead: see the team, your pending approvals, and decide them;
-  create projects and allocate your own reports (never money).
+  confirm or reopen your reports' weeks; see hours on every project and the
+  company-wide capacity forecast; create projects and allocate your own
+  reports (never money).
 - If you are a manager or admin: projects, allocations, effort, money —
   including profit by month and the allocation timeline.
 - If you are an admin: people, roles, CTC periods, allowances, holidays,

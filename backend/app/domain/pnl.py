@@ -22,7 +22,7 @@ Money is `Decimal`, quantised to the cent at the edges.
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -106,6 +106,30 @@ def period_on(periods: list[Period], day: date) -> Period | None:
     return None
 
 
+def paid_between(periods: list[Period], first: date, last: date) -> bool:
+    """Whether any period touches the range. A person who has since left
+    still belongs in the months they were paid — FR-PNL-02."""
+    return any(overlap(p.starts_on, p.ends_on, first, last) for p in periods)
+
+
+def end_on_leaving(
+    periods: list[Period], is_active: bool, today: date
+) -> tuple[list[Period], bool]:
+    """A deactivated person is not paid from today on, even if nobody gave
+    their CTC an end date. Their open-ended periods are ended yesterday, and
+    the second value says so: the day they actually left is unknown, so the
+    months up to today cannot be called complete — FR-PNL-02."""
+    if is_active or all(p.ends_on is not None for p in periods):
+        return periods, False
+    yesterday = today - timedelta(days=1)
+    ended = [
+        p if p.ends_on is not None else replace(p, ends_on=yesterday)
+        for p in periods
+        if p.ends_on is not None or p.starts_on <= yesterday
+    ]
+    return ended, True
+
+
 def daily_cost(period: Period, month_working_days: int) -> Decimal | None:
     """Monthly CTC spread over the working days of the month the day is in."""
     if month_working_days <= 0:
@@ -123,8 +147,10 @@ class MonthCost:
     cost: Decimal  # what the covered days cost
     covered_days: int
     working_days: int
-    # Working days on or after the person's first CTC period. Days before it
-    # are before they joined: they cost nothing and are not missing a CTC.
+    # Working days from the person's first CTC period to the end of their
+    # last. Days before it are before they joined, and days after a last
+    # period that has ended are after they left: either way they cost nothing
+    # and are not missing a CTC. A gap between periods is still expected.
     # With no period at all, every working day is expected.
     expected_days: int
 
@@ -159,7 +185,10 @@ def month_cost(periods: list[Period], first: date, last: date, holidays: set[dat
     expected = total_days
     if periods:
         joined = min(p.starts_on for p in periods)
-        expected = working_days(max(first, joined), last, holidays) if joined <= last else 0
+        ends = [p.ends_on for p in periods]
+        left = None if None in ends else max(ends)
+        span = overlap(joined, left, first, last)
+        expected = 0 if span is None else working_days(span[0], span[1], holidays)
     return MonthCost(
         cost=cost, covered_days=covered, working_days=total_days, expected_days=expected
     )

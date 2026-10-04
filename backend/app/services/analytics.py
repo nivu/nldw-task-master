@@ -28,6 +28,7 @@ from app.domain import financials as fin
 from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
 from app.services import pnl as pnl_service
+from app.services import settings_store
 from app.services import supabase as db
 from app.services.timesheets import holidays_between, leave_days_for
 
@@ -117,35 +118,39 @@ def coverage(user_ids: list[str], start: date, end: date) -> dict[str, Any]:
     to look at. Every effort total elsewhere is only as trustworthy as this.
 
     A day is only "missing" if it was a working day for that person: weekends,
-    declared holidays and full days of approved leave are not gaps.
+    declared holidays and full days of approved leave are not gaps. Nor is any
+    day before `portal_start_date`, and people who do not log time
+    (`profiles.logs_time`) are left out entirely — FR-ANALYTICS-07.
     """
+    profiles = {p["id"]: p for p in db.list_profiles()}
+    user_ids = [u for u in user_ids if u not in profiles or rules.logs_time(profiles[u])]
     holidays = holidays_between(start, end)
     leave = leave_days_for(user_ids, start, end)
     entries = db.list_time_entries(user_ids=user_ids, start=start, end=end)
-    people = {p["id"]: p["display_name"] for p in db.list_profiles()}
 
     logged: dict[str, set[date]] = {}
     for entry in entries:
         logged.setdefault(entry["user_id"], set()).add(date.fromisoformat(entry["date"]))
 
     today = today_in_company_tz()
+    portal_start = settings_store.portal_start_date()
     rows = []
     for user_id in user_ids:
-        mine_leave = leave.get(user_id, {})
-        expected: list[date] = []
-        day = start
-        while day <= min(end, today):
-            full_leave = mine_leave.get(day, ZERO) >= Decimal("1")
-            if not is_weekend(day) and day not in holidays and not full_leave:
-                expected.append(day)
-            day += timedelta(days=1)
+        expected = rules.expected_log_days(
+            start,
+            end,
+            today=today,
+            holidays=holidays,
+            leave_days=leave.get(user_id, {}),
+            portal_start=portal_start,
+        )
 
         have = logged.get(user_id, set())
         missing = [d for d in expected if d not in have]
         rows.append(
             {
                 "user_id": user_id,
-                "display_name": people.get(user_id, "—"),
+                "display_name": profiles.get(user_id, {}).get("display_name", "—"),
                 "expected_days": len(expected),
                 "logged_days": len(expected) - len(missing),
                 "missing_days": [d.isoformat() for d in missing],

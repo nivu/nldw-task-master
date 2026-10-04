@@ -20,6 +20,11 @@ In the table you can change a person's **role**, open their **CTC** history, and
 **deactivate** them. Deactivation keeps every booking and hour they ever
 logged; it only stops them signing in.
 
+Untick **Logs time** for anyone who does not keep a timesheet (a partner, a
+director). They are then never shown as missing time, never nudged about it,
+and never in a lead's list of weeks to confirm. They can still log if they
+choose to.
+
 ### Roles
 
 - **User** — own leave and time.
@@ -51,9 +56,15 @@ Every project is costed at the CTC in force on the day each hour was logged,
 and every future month is planned at the CTC in force on those days. A
 person with no CTC for a date makes every figure for that date report as
 **incomplete**, never cheaper. Days before a person's first CTC period are
-before they joined: they cost nothing and are not flagged. For someone the
-company does not pay — a partner's staff, an unpaid intern — record a CTC of
-0 so their figures read complete. Only managers and admins see CTC; the person
+before they joined, and days after their last period ends are after they
+left: either way they cost nothing and are not flagged. A gap between two
+periods is still flagged. When someone leaves, give their last period an end
+date; once deactivated they still appear in the months they were paid. If
+you deactivate someone without ending their CTC, they cost nothing from that
+day on, but the months before are flagged **incomplete** until you give the
+period its real end date. For
+someone the company does not pay — a partner's staff, an unpaid intern —
+record a CTC of 0 so their figures read complete. Only managers and admins see CTC; the person
 never does, and it is never called salary.
 
 ## Locations
@@ -104,8 +115,15 @@ here rather than in a document: how unused days carry forward, whether a
 weekend between two leave days is consumed, whether the team view shows
 reasons, and the currency used for money.
 
+**portal_start_date** is the day the company started logging time in the
+portal, for example `2026-10-01`. Days before it are never counted as missing
+— not in coverage, the nudges, the Friday gaps or weekly sign-off. Empty means
+no start date. Settings are changed through Claude (`update_setting`), not on
+this page.
+
 ## Audit
 
 Every change made through the admin panel, every decision on a request, and
 every CTC period added or removed, and every change to a project's revenue, is recorded with who made it
-and when.
+and when. Changes nobody made by hand — a request approved overnight because
+its day arrived undecided, comp-off that expired — are recorded as **System**.

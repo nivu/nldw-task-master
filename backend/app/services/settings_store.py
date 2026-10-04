@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import date
 from typing import Any
 
 from app.services import supabase as db
@@ -112,3 +113,18 @@ def lead_view_shows_reason() -> bool:
 def max_future_booking_days() -> int:
     """A-14 — how far ahead a booking may be made."""
     return int(get("max_future_booking_days", 365))
+
+
+def portal_start_date() -> date | None:
+    """`002` FR-ANALYTICS-07 — the first day anyone is expected to have logged
+    time. Empty (or unset) means no such day: every working day counts."""
+    value = get("portal_start_date")
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        # Validated on write (admin.update_setting); a bad value typed straight
+        # into the table must not take coverage and nudges down with it.
+        logger.warning('{"event": "setting_invalid", "key": "portal_start_date"}')
+        return None

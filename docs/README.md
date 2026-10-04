@@ -21,7 +21,7 @@ User guides, also served in the portal at `/help`:
 | [`guides/01-getting-started.md`](guides/01-getting-started.md) | Signing in, the sidebar, roles |
 | [`guides/02-booking-leave.md`](guides/02-booking-leave.md) | Booking leave and work-from-home days |
 | [`guides/03-logging-your-day.md`](guides/03-logging-your-day.md) | Logging hours against projects and activities |
-| [`guides/04-for-leads.md`](guides/04-for-leads.md) | Team view, approvals, running projects for your reports |
+| [`guides/04-for-leads.md`](guides/04-for-leads.md) | Team view, approvals, weekly sign-off, running projects for your reports, effort across all projects |
 | [`guides/05-for-managers.md`](guides/05-for-managers.md) | Projects, categories, phases including spill-over, revenue, money by month |
 | [`guides/06-for-admins.md`](guides/06-for-admins.md) | People, roles, CTC, holidays, policy |
 | [`guides/07-faq.md`](guides/07-faq.md) | Common questions |

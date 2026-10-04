@@ -13,9 +13,11 @@ from fastapi import APIRouter, Query
 
 from app.api.deps import AdminDep, LeadDep, ManagerDep
 from app.api.errors import ProblemDetail
+from app.domain.audit import actor_name
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
     AllocationIn,
+    AllocationUpdate,
     AllowanceIn,
     BackfillIn,
     CtcPeriodIn,
@@ -53,6 +55,8 @@ def list_users(admin: AdminDep) -> list[dict]:
             "role": row["role"],
             "lead_id": row["lead_id"],
             "is_active": row["is_active"],
+            # Spec 002 FR-ANALYTICS-07 — false: left out of coverage and nudges.
+            "logs_time": rules.logs_time(row),
             # Spec 005 — the CTC in force today, shown monthly. Set through
             # the CTC routes below; never called salary.
             "ctc_monthly_now": _m(rates.monthly_now(row["id"], today)),
@@ -106,6 +110,7 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
                 "display_name": payload.display_name,
                 "role": payload.role,
                 "lead_id": payload.lead_id,
+                "logs_time": payload.logs_time,
             }
         )
     except Exception as exc:  # noqa: BLE001
@@ -120,9 +125,17 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
         target_table="profiles",
         target_id=auth_user_id,
         actor_id=admin.id,
-        after={"email": payload.email, "role": payload.role, "lead_id": payload.lead_id},
+        after={
+            "email": payload.email,
+            "role": payload.role,
+            "lead_id": payload.lead_id,
+            "logs_time": payload.logs_time,
+        },
     )
-    return {k: profile[k] for k in ("id", "email", "display_name", "role", "lead_id", "is_active")}
+    return {
+        k: profile[k]
+        for k in ("id", "email", "display_name", "role", "lead_id", "is_active", "logs_time")
+    }
 
 
 @router.patch("/users/{user_id}")
@@ -166,7 +179,10 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
         before={k: existing.get(k) for k in changes},
         after=changes,
     )
-    return {k: updated[k] for k in ("id", "email", "display_name", "role", "lead_id", "is_active")}
+    return {
+        k: updated[k]
+        for k in ("id", "email", "display_name", "role", "lead_id", "is_active", "logs_time")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -602,14 +618,27 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
             "Answer Q-09 and implement app.domain.cost.bridging_days first.",
         )
 
-    row = db.update_setting(key, payload.value, admin.id)
+    value = payload.value
+    if key == "portal_start_date":
+        # `002` FR-ANALYTICS-07. Empty means no start date; stored as "" rather
+        # than null because app_settings.value is NOT NULL.
+        value = "" if value is None else str(value).strip()
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise ProblemDetail(
+                    422, "portal_start_date must be a date (YYYY-MM-DD), or empty for none."
+                ) from exc
+
+    row = db.update_setting(key, value, admin.id)
     settings_store.invalidate()
     audit.record(
         action="setting.updated",
         target_table="app_settings",
         target_id=key,
         actor_id=admin.id,
-        after={"key": key, "value": payload.value},
+        after={"key": key, "value": value},
     )
     return {"key": row["key"], "value": row["value"]}
 
@@ -617,7 +646,10 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
 @router.get("/audit")
 def read_audit(admin: AdminDep, limit: int = Query(default=200, le=1000)) -> list[dict]:
     """NFR-06 — readable, and by construction not writable."""
-    return db.list_audit(limit)
+    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    return [
+        {**row, "actor": actor_name(row.get("actor_id"), names)} for row in db.list_audit(limit)
+    ]
 
 
 @router.post("/lock-sweep")
@@ -844,7 +876,8 @@ def create_allocation(payload: AllocationIn, user: LeadDep) -> dict:
     (FR-ALLOC-04). Over-allocation is a real thing an admin does mid-crunch,
     and a product that cannot record it cannot warn about it either.
     """
-    if db.get_project(payload.project_id) is None:
+    project = db.get_project(payload.project_id)
+    if project is None:
         raise ProblemDetail(404, "No such project.")
     person = db.get_profile(payload.user_id)
     if person is None:
@@ -855,6 +888,13 @@ def create_allocation(payload: AllocationIn, user: LeadDep) -> dict:
         raise ProblemDetail(403, "A lead can only allocate their own reports.")
     if payload.ends_on < payload.starts_on:
         raise ProblemDetail(422, "An allocation cannot end before it starts.")
+    refusal = rules.archived_allocation_refusal(
+        project_name=project["name"],
+        is_archived=project["is_archived"],
+        new=(payload.starts_on, payload.ends_on),
+    )
+    if refusal:
+        raise ProblemDetail(422, refusal)
 
     row = db.insert_allocation(
         {
@@ -890,6 +930,9 @@ def remove_allocation(allocation_id: str, user: LeadDep) -> dict:
     planned; a time entry says what happened, and deleting the plan must not
     erase the history.
     """
+    existing = db.get_allocation(allocation_id)
+    if existing is None:
+        raise ProblemDetail(404, "No such allocation.")
     if not user.is_manager:
         mine = [p["id"] for p in db.list_reports(user.id, active_only=False)]
         if allocation_id not in {a["id"] for a in db.list_allocations(user_ids=mine)}:
@@ -900,5 +943,72 @@ def remove_allocation(allocation_id: str, user: LeadDep) -> dict:
         target_table="allocations",
         target_id=allocation_id,
         actor_id=user.id,
+        before=_allocation_audit(existing),
     )
     return {"status": "deleted"}
+
+
+@router.patch("/allocations/{allocation_id}")
+def update_allocation(allocation_id: str, payload: AllocationUpdate, user: LeadDep) -> dict:
+    """FR-ALLOC-06 — change an allocation's dates or percent.
+
+    Same rule as allocating: managers and admins any allocation, a lead only
+    their own reports'. On an archived project an edit may shorten an
+    allocation but not extend it (FR-PROJ-04).
+    """
+    existing = db.get_allocation(allocation_id)
+    if existing is None:
+        raise ProblemDetail(404, "No such allocation.")
+    changes = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if not changes:
+        raise ProblemDetail(422, "Nothing to change.")
+    person = db.get_profile(existing["user_id"])
+    if not rules.may_allocate(
+        actor_id=user.id,
+        actor_is_manager=user.is_manager,
+        person_lead_id=person.get("lead_id") if person else None,
+    ):
+        raise ProblemDetail(403, "A lead can only change their own reports' allocations.")
+
+    old = (date.fromisoformat(existing["starts_on"]), date.fromisoformat(existing["ends_on"]))
+    starts_on = changes.get("starts_on", old[0])
+    ends_on = changes.get("ends_on", old[1])
+    if ends_on < starts_on:
+        raise ProblemDetail(422, "An allocation cannot end before it starts.")
+    project = db.get_project(existing["project_id"])
+    if project is not None:
+        refusal = rules.archived_allocation_refusal(
+            project_name=project["name"],
+            is_archived=project["is_archived"],
+            new=(starts_on, ends_on),
+            old=old,
+        )
+        if refusal:
+            raise ProblemDetail(422, refusal)
+
+    data = {k: v.isoformat() if isinstance(v, date) else str(v) for k, v in changes.items()}
+    row = db.update_allocation(allocation_id, data)
+    audit.record(
+        action="allocation.updated",
+        target_table="allocations",
+        target_id=allocation_id,
+        actor_id=user.id,
+        before=_allocation_audit(existing),
+        after=_allocation_audit(row),
+    )
+    return {
+        "id": row["id"],
+        "starts_on": row["starts_on"],
+        "ends_on": row["ends_on"],
+        "percent": str(row["percent"]),
+    }
+
+
+def _allocation_audit(row: dict) -> dict:
+    return {
+        "project_id": row["project_id"],
+        "user_id": row["user_id"],
+        "starts_on": row["starts_on"],
+        "ends_on": row["ends_on"],
+        "percent": str(row["percent"]),
+    }

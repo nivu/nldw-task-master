@@ -317,8 +317,17 @@ def list_allocations(
     return query.order("starts_on").execute().data or []
 
 
+def get_allocation(allocation_id: str) -> dict[str, Any] | None:
+    response = supabase.table("allocations").select("*").eq("id", allocation_id).limit(1).execute()
+    return response.data[0] if response.data else None
+
+
 def insert_allocation(data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("allocations").insert(data).execute().data[0]
+
+
+def update_allocation(allocation_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    return supabase.table("allocations").update(data).eq("id", allocation_id).execute().data[0]
 
 
 def delete_allocation(allocation_id: str) -> None:

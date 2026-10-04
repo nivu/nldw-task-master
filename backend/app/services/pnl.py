@@ -123,15 +123,30 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     range_first = date(months[0][0], months[0][1], 1)
     range_last = pnl.month_bounds(*months[-1])[1]
 
-    people = sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
-    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    rates = rate_book(range_first, range_last)
+    profiles = db.list_profiles()
+    # A deactivated person's open-ended CTC stops yesterday (FR-PNL-02).
+    paid = {
+        p["id"]: pnl.end_on_leaving(rates._periods.get(p["id"], []), p.get("is_active"), today)
+        for p in profiles
+    }
+    # Everyone active, plus anyone since deactivated who was paid in the
+    # range — their months still cost what they cost (FR-PNL-02).
+    people = sorted(
+        (
+            p
+            for p in profiles
+            if p.get("is_active") or pnl.paid_between(paid[p["id"]][0], range_first, range_last)
+        ),
+        key=lambda p: p["display_name"],
+    )
+    names = {p["id"]: p["display_name"] for p in profiles}
     projects = db.list_projects(include_archived=True)
     phases = db.list_phases()
     allocations = db.list_allocations()
     entries = [
         e for e in db.list_time_entries(start=range_first, end=range_last) if e.get("project_id")
     ]
-    rates = rate_book(range_first, range_last)
     holidays = holidays_between(range_first, range_last)
     milestones_by_project: dict[str, list[dict]] = defaultdict(list)
     for m in db.list_milestones():
@@ -275,15 +290,18 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
         total_cost: Decimal | None = ZERO
         for person in people:
             uid = person["id"]
-            mc = pnl.month_cost(rates._periods.get(uid, []), first, last, holidays)
+            periods, left_open = paid[uid]
+            mc = pnl.month_cost(periods, first, last, holidays)
             cost = None if mc.unknown else mc.cost
-            if mc.unknown or not mc.complete:
+            # Left with no end date on their CTC: when they stopped is unknown.
+            complete = mc.complete and not (left_open and mc.covered_days > 0)
+            if mc.unknown or not complete:
                 unrated_ids.add(uid)
             cell = pnl.Cell(
                 revenue=person_revenue.get(uid, ZERO),
                 cost=cost,
                 basis=basis,
-                complete=mc.complete,
+                complete=complete,
             )
             person_cells[uid].append(
                 {**cell.as_dict(), "unrated_days": mc.missing_days}

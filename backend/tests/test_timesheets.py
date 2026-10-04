@@ -18,6 +18,8 @@ from app.domain.timesheets import (
     Allocation,
     DayEntry,
     allocated_hours,
+    archived_allocation_refusal,
+    archived_entry_refusal,
     check_can_log,
     check_day_total,
     check_hours,
@@ -303,3 +305,61 @@ class TestMayAllocate:
     def test_a_manager_may_allocate_anyone(self):
         assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id="other")
         assert may_allocate(actor_id="mgr", actor_is_manager=True, person_lead_id=None)
+
+
+class TestArchivedProjects:
+    """FR-PROJ-04 — an archived project takes no new allocations or time;
+    what is already recorded stays."""
+
+    def test_a_live_project_is_never_refused(self):
+        assert (
+            archived_allocation_refusal(
+                project_name="Atlas", is_archived=False, new=(MON, NEXT_MON)
+            )
+            is None
+        )
+        assert (
+            archived_entry_refusal(project_name="Atlas", is_archived=False, already_logged=False)
+            is None
+        )
+
+    def test_a_new_allocation_on_an_archived_project_is_refused(self):
+        assert (
+            archived_allocation_refusal(project_name="Atlas", is_archived=True, new=(MON, FRI))
+            == "Atlas is archived."
+        )
+
+    def test_extending_an_allocation_on_an_archived_project_is_refused(self):
+        later = archived_allocation_refusal(
+            project_name="Atlas", is_archived=True, new=(MON, NEXT_MON), old=(MON, FRI)
+        )
+        earlier = archived_allocation_refusal(
+            project_name="Atlas", is_archived=True, new=(date(2026, 9, 1), FRI), old=(MON, FRI)
+        )
+        assert later == earlier == "Atlas is archived."
+
+    def test_shortening_or_keeping_an_allocation_on_an_archived_project_is_allowed(self):
+        assert (
+            archived_allocation_refusal(
+                project_name="Atlas", is_archived=True, new=(MON, date(2026, 9, 9)), old=(MON, FRI)
+            )
+            is None
+        )
+        assert (
+            archived_allocation_refusal(
+                project_name="Atlas", is_archived=True, new=(MON, FRI), old=(MON, FRI)
+            )
+            is None
+        )
+
+    def test_new_time_on_an_archived_project_is_refused(self):
+        assert (
+            archived_entry_refusal(project_name="Atlas", is_archived=True, already_logged=False)
+            == "Atlas is archived."
+        )
+
+    def test_a_line_already_logged_on_an_archived_project_can_be_resaved(self):
+        assert (
+            archived_entry_refusal(project_name="Atlas", is_archived=True, already_logged=True)
+            is None
+        )

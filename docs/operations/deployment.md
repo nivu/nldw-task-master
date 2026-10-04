@@ -8,7 +8,7 @@ is not written down, write it down.
 
 | | |
 |---|---|
-| Frontend | <https://nunnari-employee-portal.netlify.app> |
+| Frontend | <https://tva.nunnarilabs.com> (custom domain, below; <https://nunnari-employee-portal.netlify.app> still works) |
 | Backend | <https://api-production-9edd.up.railway.app> |
 | Supabase | project `worjtvnpizpyfimwotkl`, region `ap-south-1` (Mumbai) |
 | Railway | project `nunnari-employee-portal` — `api`, `worker`, `beat`, `Redis` |
@@ -112,11 +112,21 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 REDIS_URL=${{Redis.REDIS_URL}}         # Railway reference variable
 FRONTEND_URL=https://<netlify-domain>  # set after step 3
 RUN_EMBEDDED_WORKER=false              # must stay false — see below
+API_DOCS=false                         # the default; true would publish /docs, /redoc, /openapi.json
 ```
 
 `RUN_EMBEDDED_WORKER` must be false in production. True runs a Celery worker
 inside the API process, so two pools consume the same queue and the API
 container carries a worker's memory alongside uvicorn.
+
+`API_DOCS` defaults to false, so production hides its interactive docs and
+full OpenAPI route map (`001` NFR-09) without anyone setting it. Never set it
+to true on `api`; `backend/.env.example` turns it on for local work. Verify:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/docs           # 404
+curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/openapi.json   # 404
+```
 
 Notification credentials, when they exist, go on `worker` and `beat` (which
 send) and on `api` (which verifies Slack's request signature):
@@ -181,8 +191,19 @@ curl -s https://<netlify-domain>/_next/static/chunks/*.js | grep -c '<railway-do
 # must be 0
 ```
 
-Then go back to Railway and set `FRONTEND_URL` to the Netlify address, and to
-Supabase to set `site_url`.
+The security headers (`X-Frame-Options: DENY`, `Content-Security-Policy:
+frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`; `001` NFR-09) are
+set in `next.config.ts`, not `netlify.toml`: Netlify's `[[headers]]` reach only
+files its CDN serves, not pages the Next.js server function renders. Confirm
+them on a rendered page:
+
+```bash
+curl -sI https://<netlify-domain>/auth/login | grep -i -E 'x-frame-options|frame-ancestors'
+# both must appear
+```
+
+Then go back to Railway and set `FRONTEND_URL` to the Netlify address (in
+production, the custom domain below), and to Supabase to set `site_url`.
 
 ## Auth configuration: one file, two environments
 
@@ -325,6 +346,34 @@ Admin → People:
 Verify the guard, because it is the point of the release: signed in as a lead,
 `/projects` must show *Only a manager or admin can do that*, and the Effort
 page must have no Money or Resources tab.
+
+### After expected days and sign-off rules (002 FR-ANALYTICS-07, 006 FR-SIGN) are deployed
+
+- Set `portal_start_date` (e.g. `2026-10-01`) under Admin → Policy. Until it
+  is set, every working day before go-live counts as missing in coverage,
+  the nudges and sign-off.
+- Untick **Logs time** under Admin → People for anyone who keeps no
+  timesheet.
+
+## Releasing a change
+
+Every release, in this order:
+
+1. **Migrations first.** Get the database password before you start, then
+   `npx supabase db push`. New code reads and writes the new columns: deployed
+   ahead of its migration, creating a person fails and editing one returns an
+   error after the change was saved.
+2. **`api`, `worker` and `beat` from the same commit.** A worker left on the
+   old commit drops any new Celery task the api sends it, silently.
+3. **Netlify**, with `--skip-functions-cache` (section 3), so the server
+   function picks up `next.config.ts` (security headers included).
+4. **Check.** The section 5 curls, plus:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/docs           # 404
+   curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/openapi.json   # 404
+   curl -sI https://<netlify-domain>/auth/login | grep -iE 'x-frame-options|frame-ancestors|nosniff'
+   ```
 
 ## Rolling back
 

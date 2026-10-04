@@ -98,9 +98,12 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
 
     # Projects to offer: the ones allocated for this date, plus any already
     # logged (so an entry made before an allocation ended stays editable).
-    offered_ids = {a["project_id"] for a in allocations} | {
-        e["project_id"] for e in entries if e.get("project_id")
-    }
+    # An archived project is offered only when already logged (FR-PROJ-04).
+    offered_ids = {
+        a["project_id"]
+        for a in allocations
+        if not projects.get(a["project_id"], {}).get("is_archived")
+    } | {e["project_id"] for e in entries if e.get("project_id")}
 
     booking = db.find_booking_on(user_id, day, sorted(CONSUMING_STATES))
 
@@ -192,19 +195,29 @@ def save_day(
     if problem:
         raise TimesheetRefused(problem)
 
-    known = {p["id"] for p in db.list_projects(include_archived=True)}
+    known = {p["id"]: p for p in db.list_projects(include_archived=True)}
+    existing = {
+        _row_key(e): e for e in db.list_time_entries(user_ids=[user_id], start=day, end=day)
+    }
     for entry in parsed:
-        if entry.project_id and entry.project_id not in known:
+        if not entry.project_id:
+            continue
+        if entry.project_id not in known:
             raise TimesheetRefused("That project does not exist.", status=404)
+        # FR-PROJ-04 — no new time on an archived project.
+        problem = rules.archived_entry_refusal(
+            project_name=known[entry.project_id]["name"],
+            is_archived=known[entry.project_id]["is_archived"],
+            already_logged=entry.key in existing,
+        )
+        if problem:
+            raise TimesheetRefused(problem)
 
     # Q-07: logging against a project you are not allocated to is allowed. The
     # person who helped out for an afternoon is exactly the effort a budget
     # conversation misses, and refusing it pushes that work into nothing.
 
     phases_by_project = _phases_by_project()
-    existing = {
-        _row_key(e): e for e in db.list_time_entries(user_ids=[user_id], start=day, end=day)
-    }
 
     saved = []
     for entry in parsed:

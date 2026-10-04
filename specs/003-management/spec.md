@@ -63,7 +63,7 @@ whose rate it is (§8, Q-01).
 | Role | Runs | Sees |
 |---|---|---|
 | `user` | Their own leave and time | Their own |
-| `lead` | Their reports' leave | Their reports; effort analytics for their reports; **no money** |
+| `lead` | Their reports' leave | Their reports; effort analytics for their reports, plus hours on every project and the company-wide capacity forecast (Q-08); **no money** |
 | `manager` | **Projects** — create, phases, budget, revenue, allocations | **All projects**, all allocations, all effort; **cost rates, COGS, margin** |
 | `admin` | Everything: people, allowances, holidays, settings, backfill | Everything |
 
@@ -124,7 +124,7 @@ Keywords follow RFC 2119.
 | FR-ROLE-05 | A manager MUST see all projects, all allocations and all effort analytics (§8, Q-02). |
 | FR-ROLE-06 | Only an admin MAY assign or change roles. |
 | FR-ROLE-07 | A lead MUST be able to create, edit and archive any project and set its phases and budgets, but MUST NOT set or see revenue or milestones. |
-| FR-ROLE-08 | A lead MUST be able to allocate and deallocate their own reports, and MUST see only their reports' allocations. |
+| FR-ROLE-08 | A lead MUST be able to allocate and deallocate their own reports, and MUST see only their reports' allocations in the allocation list. The capacity forecast is the exception: a lead sees every allocation there, and hours on every project in the effort views (Q-08). Neither includes money. |
 
 ### 5.2 Financials — FR-FIN
 
@@ -208,6 +208,7 @@ Settled 11 September 2026, before any schema was written.
 | **Q-05** | How is COGS priced when rates change? | **Snapshot at save.** Each entry carries the rate in force when it was logged. Not asked; decided because the alternative silently re-prices history. |
 | **Q-06** | What does "revenue per employee" compute? | **Attributed revenue** = project revenue × (their hours ÷ total project hours), per project, summed across projects. Not asked; the phrase was ambiguous and this is the reading that is both computable from the data and defensible to a finance person. |
 | **Q-07** | Currency? | **One, `INR`, in `app_settings.currency_code`.** Formatting only. |
+| **Q-08** | Do leads see company-wide effort and allocations? | **Yes, hours only** (owner decision, 4 October 2026). A lead sees hours on every project (project effort views) and every allocation in the capacity forecast and the MCP `forecast` tool. Money stays manager and admin (Q-01, §4.3); the allocation list, coverage and an individual's week stay limited to the lead's reports. See `002` Q-10. |
 
 ---
 

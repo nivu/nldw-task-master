@@ -166,6 +166,7 @@ export const updateUser = (
     lead_id: string | null;
     is_active: boolean;
     location_id: string | null;
+    logs_time: boolean;
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 
@@ -324,6 +325,15 @@ export const createAllocation = (input: {
   ends_on: string;
   percent: string;
 }) => call<{ id: string }>("/admin/allocations", { method: "POST", ...body(input) });
+
+export const updateAllocation = (
+  id: string,
+  changes: Partial<{ starts_on: string; ends_on: string; percent: string }>
+) =>
+  call<{ id: string; starts_on: string; ends_on: string; percent: string }>(
+    `/admin/allocations/${id}`,
+    { method: "PATCH", ...body(changes) }
+  );
 
 export const deleteAllocation = (id: string) =>
   call<{ status: string }>(`/admin/allocations/${id}`, { method: "DELETE" });

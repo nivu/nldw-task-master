@@ -14,7 +14,8 @@ under a minute, at the end of the day, on a phone.
 1. The page opens on today. Use the arrows to move to another day.
 2. Under **Projects**, tap the project you worked on. Projects you are
    allocated to are listed; you may also log against a project you are not
-   allocated to, and it is simply marked *not allocated*.
+   allocated to, and it is simply marked *not allocated*. An archived project
+   is not offered.
 3. Under **Not for a project**, tap **Learning**, **Internal work**, **Admin**
    or **Other** for time that was not client work.
 4. For each line, write **What did you do?** — one or two sentences. This is
@@ -41,7 +42,9 @@ before the lock can be changed freely.
 
 Each week, your lead confirms your timesheet once it looks complete. A
 confirmed week appears on client effort statements as such. If nobody confirms
-it by the time its edit window closes, it is confirmed automatically. If you
+it by the time its edit window closes, it is confirmed automatically. If your
+lead reopens a confirmed week so you can correct it, you are told, with the
+last day you can still change it. If you
 have nothing logged by the evening, the portal reminds you on Slack.
 
 ## Your quarter, in your words

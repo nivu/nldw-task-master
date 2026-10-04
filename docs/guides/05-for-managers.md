@@ -48,13 +48,18 @@ Open **Phases, people & revenue** on a project to:
 - **Allocate** a person for a date range at a percentage of their capacity.
   Fifty percent means half of their working days in that range, after
   weekends, holidays and approved leave are taken out.
+- **Edit** an allocation's dates or percentage from the same list, or remove
+  it. Every change is recorded in the audit log.
 
 A person can be allocated beyond 100%. The portal records it and then flags it
 under Effort, because the honest thing is to show the over-commitment rather
 than refuse to write it down.
 
 Projects are **archived**, never deleted. The hours logged against a finished
-project are exactly the history the reports exist for.
+project are exactly the history the reports exist for. An archived project
+takes nothing new: it cannot be allocated, an allocation on it can be
+shortened but not extended, and it is no longer offered on the Time page, so
+no new hours can be logged against it. Everything already recorded stays.
 
 ### Milestones
 
@@ -117,7 +122,9 @@ from its first phase start to its last phase end, leaving out any spill-over
 phase. A project with revenue but no phases shows no monthly revenue until a
 phase is set. A month's share is the same whichever range of months you are
 looking at. A person's monthly cost is their CTC for that month; months before
-their first CTC are before they joined and cost nothing. A cell marked
+their first CTC are before they joined, and months after their last CTC ends
+are after they left — both cost nothing. Someone who has left still appears in
+the months they were paid. A cell marked
 *incomplete* is missing somebody's CTC for some of its days.
 
 Every month-based view — By month, the timeline in months, Utilisation and the

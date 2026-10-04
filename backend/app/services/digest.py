@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from app.domain import timesheets as timesheet_rules
 from app.domain.calendar import is_weekend, today_in_company_tz
 from app.domain.rules import CATEGORY_LABELS
 from app.services import analytics, settings_store, utilisation
@@ -45,7 +46,11 @@ def nothing_logged_today(today: date | None = None) -> dict[str, Any]:
     today = today or today_in_company_tz()
     if is_weekend(today):
         return {"sent": 0, "skipped": "weekend"}
-    people = db.list_profiles(active_only=True)
+    portal_start = settings_store.portal_start_date()
+    if portal_start and today < portal_start:
+        return {"sent": 0, "skipped": "before portal_start_date"}
+    # `002` FR-ANALYTICS-07 — nobody is chased who does not keep a timesheet.
+    people = [p for p in db.list_profiles(active_only=True) if timesheet_rules.logs_time(p)]
     ids = [p["id"] for p in people]
     holidays = holidays_by_person(ids, today, today)
     leave = leave_days_for(ids, today, today)

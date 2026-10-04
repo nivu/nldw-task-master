@@ -428,6 +428,7 @@ function UserTable({
               <th className="p-3 font-medium">Role</th>
               <th className="p-3 font-medium">Approved by</th>
               <th className="p-3 font-medium">Location</th>
+              <th className="p-3 font-medium">Logs time</th>
               <th className="p-3 font-medium">CTC ({currency}/month)</th>
               <th className="p-3" />
             </tr>
@@ -490,6 +491,25 @@ function UserTable({
                   </select>
                 </td>
                 <td className="p-3">
+                  {/* Spec 002 FR-ANALYTICS-07 — off: never counted as
+                      missing time, nudged or expected to be signed off. */}
+                  <input
+                    type="checkbox"
+                    aria-label={`${user.display_name} logs time`}
+                    className="h-4 w-4"
+                    checked={user.logs_time !== false}
+                    disabled={!user.is_active}
+                    onChange={async (e) => {
+                      try {
+                        await updateUser(user.id, { logs_time: e.target.checked });
+                        onChanged();
+                      } catch (err) {
+                        onError(errorMessage(err));
+                      }
+                    }}
+                  />
+                </td>
+                <td className="p-3">
                   <button
                     type="button"
                     className="text-left tabular-nums underline-offset-2 hover:underline"
@@ -520,7 +540,7 @@ function UserTable({
               </tr>
               {ctcFor === user.id && (
                 <tr>
-                  <td colSpan={6} className="bg-muted/40 p-3">
+                  <td colSpan={7} className="bg-muted/40 p-3">
                     <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
                   </td>
                 </tr>

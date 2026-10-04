@@ -1,4 +1,4 @@
-"""Notification tasks — FR-NOTIF-01, FR-NOTIF-03, FR-NOTIF-04.
+"""Notification tasks — FR-NOTIF-01, FR-NOTIF-03, FR-NOTIF-04, `006` FR-SIGN-03.
 
 Runs off the request path on purpose. A lead's Slack lookup taking three
 seconds must not be three seconds a person stands in their kitchen waiting for
@@ -13,11 +13,13 @@ of the queue entirely.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
+from app.domain import timesheets as timesheet_rules
 from app.domain.rules import CATEGORY_LABELS
 from app.services import notify
 from app.services import supabase as db
+from app.services.timesheets import _grace_days
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -115,6 +117,39 @@ def _released(booking: dict, subject: dict) -> list[str]:
             booking_id=booking["id"],
         )
     )
+
+
+@celery_app.task(name="notifications.week_reopened")
+def week_reopened(user_id: str, week_start: str, actor_id: str) -> dict:
+    """`006` FR-SIGN-03 — tell someone their confirmed week was reopened."""
+    subject = db.get_profile(user_id)
+    if subject is None:
+        return {"delivered": [], "reason": "profile not found"}
+    actor = db.get_profile(actor_id)
+    who = actor["display_name"] if actor else "Your lead"
+    monday = date.fromisoformat(week_start)
+    last_day = timesheet_rules.entry_locks_on(monday, grace_days=_grace_days()) - timedelta(days=1)
+
+    delivered = notify.deliver(
+        notify.Message(
+            recipient_email=subject["email"],
+            recipient_name=subject["display_name"],
+            subject=f"Your week of {monday.strftime('%d %b %Y')} was reopened",
+            body=(
+                f"{who} reopened your timesheet for the week starting "
+                f"{monday.strftime('%a %d %b %Y')}. It is no longer confirmed, and you "
+                f"can correct it until {last_day.strftime('%a %d %b %Y')}."
+            ),
+        )
+    )
+    logger.info(
+        '{"event": "notification_dispatched", "name": "week_reopened", '
+        '"user_id": "%s", "week_start": "%s", "channels": %s}',
+        user_id,
+        week_start,
+        delivered,
+    )
+    return {"delivered": delivered}
 
 
 def _approvers_for(subject: dict) -> list[dict]:

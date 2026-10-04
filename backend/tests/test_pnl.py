@@ -86,9 +86,90 @@ class TestMonthCost:
         assert c.complete and not c.unknown
         assert c.cost == 0
 
+    def test_days_after_the_last_period_ends_are_not_missing(self):
+        # Left mid-month: the second half is after the contract ended.
+        c = pnl.month_cost(
+            [period("1200000", date(2026, 1, 1), date(2026, 9, 15))],
+            date(2026, 9, 1),
+            date(2026, 9, 30),
+            NO_HOLIDAYS,
+        )
+        assert c.complete and not c.unknown
+        assert c.covered_days == 11 and c.missing_days == 0
+        assert c.cost == D("100000") * 11 / 22
+
+    def test_a_month_wholly_after_leaving_costs_nothing_and_is_complete(self):
+        c = pnl.month_cost(
+            [period("1200000", date(2026, 1, 1), date(2026, 8, 31))],
+            date(2026, 9, 1),
+            date(2026, 9, 30),
+            NO_HOLIDAYS,
+        )
+        assert c.complete and not c.unknown
+        assert c.cost == 0 and c.expected_days == 0
+
+    def test_a_gap_before_a_last_period_that_ended_is_still_missing(self):
+        before = period("1200000", date(2026, 1, 1), date(2026, 9, 10))  # 8 working days
+        after = period("1200000", date(2026, 9, 21), date(2026, 9, 25))  # 5 working days
+        c = pnl.month_cost([before, after], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS)
+        assert not c.complete and not c.unknown
+        assert c.missing_days == 6
+
+    def test_an_open_ended_period_keeps_every_later_day_expected(self):
+        # An earlier open-ended period outlives a later one that ended.
+        open_ended = period("1200000", date(2026, 1, 1))
+        ended = period("1200000", date(2026, 3, 1), date(2026, 3, 31))
+        c = pnl.month_cost([open_ended, ended], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS)
+        assert c.expected_days == 22
+
     def test_no_period_at_all_is_unknown(self):
         c = pnl.month_cost([], date(2026, 9, 1), date(2026, 9, 30), NO_HOLIDAYS)
         assert c.unknown and c.cost == 0
+
+
+class TestPaidBetween:
+    """FR-PNL-02 — who belongs in a range's monthly report."""
+
+    def test_a_period_that_ended_inside_the_range_counts(self):
+        periods = [period("1200000", date(2026, 1, 1), date(2026, 8, 15))]
+        assert pnl.paid_between(periods, date(2026, 8, 1), date(2026, 12, 31))
+
+    def test_a_period_that_ended_before_the_range_does_not(self):
+        periods = [period("1200000", date(2026, 1, 1), date(2026, 7, 31))]
+        assert not pnl.paid_between(periods, date(2026, 8, 1), date(2026, 12, 31))
+
+
+class TestEndOnLeaving:
+    """FR-PNL-02 — a deactivated person whose CTC was never end-dated."""
+
+    TODAY = date(2026, 10, 4)
+
+    def test_an_active_person_is_untouched(self):
+        periods = [period("1200000", date(2026, 1, 1))]
+        assert pnl.end_on_leaving(periods, True, self.TODAY) == (periods, False)
+
+    def test_a_deactivated_person_with_an_end_date_is_untouched(self):
+        periods = [period("1200000", date(2026, 1, 1), date(2026, 8, 31))]
+        assert pnl.end_on_leaving(periods, False, self.TODAY) == (periods, False)
+
+    def test_an_open_period_ends_yesterday_and_is_flagged(self):
+        periods, left_open = pnl.end_on_leaving(
+            [period("1200000", date(2026, 1, 1))], False, self.TODAY
+        )
+        assert left_open
+        assert periods[0].ends_on == date(2026, 10, 3)
+        # A future month costs nothing for someone who has gone.
+        c = pnl.month_cost(periods, date(2026, 11, 1), date(2026, 11, 30), NO_HOLIDAYS)
+        assert c.cost == 0 and c.expected_days == 0
+
+    def test_an_open_period_not_yet_started_is_dropped(self):
+        periods, left_open = pnl.end_on_leaving(
+            [period("1200000", date(2026, 11, 1))], False, self.TODAY
+        )
+        assert periods == [] and left_open
+
+    def test_no_periods_is_not_paid(self):
+        assert not pnl.paid_between([], date(2026, 8, 1), date(2026, 12, 31))
 
 
 class TestRevenueByMonth:

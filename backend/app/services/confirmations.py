@@ -8,7 +8,7 @@ from typing import Any
 from app.domain import timesheets as rules
 from app.domain.approval import Person, can_decide
 from app.domain.calendar import today_in_company_tz
-from app.services import audit
+from app.services import audit, settings_store
 from app.services import supabase as db
 from app.services.timesheets import _grace_days
 
@@ -69,10 +69,11 @@ def reopen(*, user_id: str, week_start: date, actor: Person) -> None:
             "Only this person's lead or an admin can reopen their week.", status=403
         )
     today = today_in_company_tz()
-    if rules.is_entry_locked(week_start + timedelta(days=6), today, grace_days=_grace_days()):
+    if rules.week_closed(week_start, today, grace_days=_grace_days()):
         raise SignoffRefused(
             "That week's edit window has closed; it cannot be reopened.", status=409
         )
+    was_confirmed = bool(status_for([user_id], week_start))
     db.delete_confirmation(user_id, week_start)
     audit.record(
         action="timesheet.reopened",
@@ -80,6 +81,22 @@ def reopen(*, user_id: str, week_start: date, actor: Person) -> None:
         target_id=None,
         actor_id=actor.id,
         after={"user_id": user_id, "week_start": week_start.isoformat()},
+    )
+    if was_confirmed:
+        _notify_reopened(user_id, week_start, actor.id)
+
+
+def _notify_reopened(user_id: str, week_start: date, actor_id: str) -> None:
+    """FR-SIGN-03 — the person is told, off the request thread (FR-NOTIF-05)."""
+    from app.services.dispatch import fire_and_forget
+    from app.tasks import notifications
+
+    fire_and_forget(
+        notifications.week_reopened,
+        user_id,
+        week_start.isoformat(),
+        actor_id,
+        label="notify:week_reopened",
     )
 
 
@@ -95,12 +112,16 @@ def auto_confirm_closed(today: date | None = None) -> int:
     confirmed. Idempotent: confirmed rows are skipped."""
     today = today or today_in_company_tz()
     grace = _grace_days()
-    people = db.list_profiles(active_only=True)
+    portal_start = settings_store.portal_start_date()
+    # FR-SIGN-05 — no sign-off is expected of anyone who does not log time.
+    people = [p for p in db.list_profiles(active_only=True) if rules.logs_time(p)]
     # Weeks that closed in the last ~5 weeks; earlier ones were caught before.
     weeks = [monday_of(today) - timedelta(weeks=n) for n in range(1, 6)]
     done = 0
     for week in weeks:
-        if not rules.is_entry_locked(week + timedelta(days=6), today, grace_days=grace):
+        if not rules.week_closed(week, today, grace_days=grace):
+            continue
+        if not rules.week_expected(week, portal_start):
             continue
         existing = status_for([p["id"] for p in people], week)
         for person in people:

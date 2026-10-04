@@ -443,7 +443,9 @@ carry-forward policy (Q-02) can change without a migration.
 
 Append-only, enforced at the database level. Every booking state transition and
 every administrative action: actor, action, target, before/after, timestamp.
-Required by FR-APPR-07 and FR-ADMIN-06.
+Required by FR-APPR-07 and FR-ADMIN-06. A transition is attributed to whoever
+decided it; one nobody decided (the Q-04 sweep, a comp-off lapsing) has no
+actor and reads as **System** — never as the person who made the request.
 
 ### 7.6 `app_settings`
 
@@ -464,6 +466,7 @@ configuration rather than a migration. Seeded with the defaults in §11.
 | NFR-06 | The audit log MUST be append-only and MUST NOT be editable from the application. |
 | NFR-07 | The system SHOULD hold the whole company (tens of users) comfortably; scale is not a design driver. |
 | NFR-08 | Deployment MUST be reproducible from the repository — no manual configuration steps that live only on someone's machine. |
+| NFR-09 | The portal MUST NOT be embeddable in another site (`X-Frame-Options: DENY`, `frame-ancestors 'none'`), and the production API MUST NOT publish its interactive docs or OpenAPI schema. |
 
 ---
 

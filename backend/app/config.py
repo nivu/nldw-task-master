@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Set RUN_EMBEDDED_WORKER=true to opt in.
     RUN_EMBEDDED_WORKER: bool = False
 
+    # Serve the interactive API docs (/docs, /redoc, /openapi.json). Off
+    # unless set, so a deploy that forgets it does not publish the full route
+    # map to anyone who asks; .env.example turns it on for local work.
+    API_DOCS: bool = False
+
     # ------------------------------------------------------------------
     # Notifications — FR-NOTIF
     #

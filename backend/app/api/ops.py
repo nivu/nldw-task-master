@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse, Response
 from app.api.deps import AdminDep, CurrentUserDep, LeadDep, ManagerDep, SessionDep
 from app.api.errors import ProblemDetail
 from app.config import settings
+from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person
 from app.domain.calendar import today_in_company_tz
 from app.schemas import (
@@ -27,7 +28,7 @@ from app.schemas import (
     OAuthApprove,
     ReviewIn,
 )
-from app.services import audit, confirmations, digest, statements, utilisation
+from app.services import audit, confirmations, digest, settings_store, statements, utilisation
 from app.services import checklists as checklist_service
 from app.services import compoff as compoff_service
 from app.services import feeds as feed_service
@@ -105,11 +106,19 @@ team = APIRouter(prefix="/team", tags=["team"])
 
 @team.get("/timesheets")
 def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
-    """Each report's week: total hours, missing days, and confirmation status."""
+    """Each report's week: total hours, missing days, and confirmation status.
+
+    People who do not log time are not listed (`002` FR-ANALYTICS-07), and no
+    day before `portal_start_date` is missing.
+    """
     from app.api.team import _population
 
     monday = confirmations.monday_of(week_start or today_in_company_tz())
-    people = sorted(_population(user), key=lambda p: p["display_name"])
+    portal_start = settings_store.portal_start_date()
+    people = sorted(
+        (p for p in _population(user) if timesheet_rules.logs_time(p)),
+        key=lambda p: p["display_name"],
+    )
     status = confirmations.status_for([p["id"] for p in people], monday)
     rows = []
     for person in people:
@@ -137,6 +146,7 @@ def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
                     and Decimal(d["total"]) == 0
                     and date.fromisoformat(d["date"]).weekday() < 5
                     and d["date"] <= today_in_company_tz().isoformat()
+                    and (portal_start is None or d["date"] >= portal_start.isoformat())
                 ],
                 "confirmation": None
                 if conf is None

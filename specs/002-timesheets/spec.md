@@ -171,6 +171,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | FR-PROJ-02 | A project MUST support four optional phases — `pre`, `delivery`, `support`, `spillover` — each with a start and an end date. |
 | FR-PROJ-03 | Phase dates MUST be editable, and a change MUST NOT invalidate time already logged. |
 | FR-PROJ-04 | A project MUST be archivable without deleting its history. |
+| FR-PROJ-04a | An archived project MUST NOT accept new allocations — neither a new one nor an edit that extends an existing one's dates (shortening is allowed) — and MUST NOT accept new time entries; a line already logged against it on that day may still be re-saved. Refusals are 422 "*name* is archived." The Time page MUST NOT offer an archived project except where it is already logged that day. Existing entries and allocations stay readable. |
 | FR-PROJ-06 | A project MUST have one category: `client` (paid client engagement, the default), `poc` (client POC or general), `product` (Nunnari product development) or `internal` (internal tools, applications, website). |
 | FR-PROJ-05 | Only an admin MAY create or edit a project. *Superseded by spec 003 FR-ROLE-02 and FR-ROLE-07: managers and leads may too.* |
 
@@ -183,6 +184,7 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 | FR-ALLOC-03 | An allocation MUST carry an intended level of effort as a **percentage of capacity** (Q-02). |
 | FR-ALLOC-04 | The system MUST surface when a person's concurrent allocations exceed full capacity. |
 | FR-ALLOC-05 | Removing an allocation MUST NOT delete time already logged against that project. |
+| FR-ALLOC-06 | An allocation's dates and percent MUST be editable (the end may not precede the start; 0 < percent ≤ 100), by whoever may allocate that person (spec 003 FR-ROLE-08). Every edit MUST be audited with the before and after values, as a removal is with the removed allocation's details. |
 
 ### 5.3 Time entry — FR-TIME
 
@@ -203,12 +205,13 @@ Keywords follow RFC 2119. §9 is settled; these reflect those decisions.
 
 | ID | Requirement |
 |---|---|
-| FR-ANALYTICS-01 | A lead MUST see hours logged by their own reports; an admin MUST see the whole organisation. |
+| FR-ANALYTICS-01 | A lead MUST see hours logged by their own reports; an admin MUST see the whole organisation. Two views are company-wide for a lead too (Q-10): the per-project effort views (FR-ANALYTICS-02/03) show hours on every project from everyone who logged them, and the capacity forecast (FR-ANALYTICS-06) covers every allocation. Coverage, missing days and current work (FR-ANALYTICS-04/05) stay limited to the lead's reports. None of these shows money (`003` Q-01). |
 | FR-ANALYTICS-02 | Per project and phase: total hours, hours per person, and the office/home split. |
 | FR-ANALYTICS-03 | Logged hours MUST be comparable against the phase's budget, with over-run shown plainly. |
 | FR-ANALYTICS-04 | A lead MUST be able to see what each report is currently working on. |
 | FR-ANALYTICS-05 | Missing days MUST be visible. A timesheet that is merely incomplete MUST NOT read as a project that used few hours. |
 | FR-ANALYTICS-06 | Forecast remaining capacity from allocations and remaining working days, excluding approved leave and declared holidays. |
+| FR-ANALYTICS-07 | A day is *expected* (and so can be missing) only if it is a working day up to today, not a declared holiday or full day of leave, and on or after the company setting `portal_start_date` (empty = no start date). A person whose `logs_time` is off is never expected to log. Coverage, the missing-days lists, the nudges (`006` FR-NUDGE) and weekly sign-off (`006` FR-SIGN) all use this one definition. |
 
 **FR-ANALYTICS-05 is the one that protects every other number on the page.**
 Effort totals computed over a partly-filled timesheet are not merely imprecise,
@@ -280,6 +283,7 @@ defaults below.
 | **Q-07** | Logging against a project you are not allocated to? | **Allowed, and shown as unallocated effort.** The person who helped out for an afternoon is exactly the effort a budget conversation misses. Refusing it would push that work into somebody else's project or into nothing. |
 | **Q-08** | Who may see an individual's timesheet? | **The person, their lead, and admins** — the same rule as a leave reason (`001` NFR-05). Project analytics aggregate across everyone, but a named individual's day is not browsable by a colleague. |
 | **Q-09** | Import historical effort? | **Start empty.** Note this interacts with Q-01: once the grace period passes, past days cannot be logged at all, so any later decision to import history needs an admin backfill path like `001` A-21. Not built. |
+| **Q-10** | May a lead see effort and allocations beyond their own reports? | **Yes, for project effort and the capacity forecast** (owner decision, 4 October 2026). A lead running a project needs its whole effort picture and the company's allocations to plan, not only the slice their reports contributed. Hours only: money stays manager and admin (`003` Q-01), and coverage, missing days and an individual's week stay with the reporting line (Q-08). |
 
 ---
 

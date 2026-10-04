@@ -101,6 +101,63 @@ def is_locked(
     return (today or today_in_company_tz()) >= entry_locks_on(day, grace_days=grace_days)
 
 
+def week_closed(week_start: date, today: date, *, grace_days: int = DEFAULT_GRACE_DAYS) -> bool:
+    """Has the edit window closed for the whole week starting `week_start`?
+
+    `006` FR-SIGN: a week can be reopened only while this is False, and is
+    auto-confirmed once it is True. Its Sunday is the last day to lock, so the
+    week stays open until that day's window closes.
+    """
+    return is_locked(week_end(week_start), today, grace_days=grace_days)
+
+
+# ---------------------------------------------------------------------------
+# Who is expected to log, and on which days — FR-ANALYTICS-07
+# ---------------------------------------------------------------------------
+
+
+def logs_time(profile: dict) -> bool:
+    """FR-ANALYTICS-07 — is this person expected to keep a timesheet at all?
+
+    Absent counts as yes, so a row read before migration 015 still behaves as
+    it did.
+    """
+    return profile.get("logs_time") is not False
+
+
+def expected_log_days(
+    start: date,
+    end: date,
+    *,
+    today: date,
+    holidays: set[date],
+    leave_days: dict[date, Decimal] | None = None,
+    portal_start: date | None = None,
+) -> list[date]:
+    """The days in `start..end` someone should have logged — FR-ANALYTICS-05/07.
+
+    Working days only, up to and including today: weekends, declared holidays
+    and full days of leave are not gaps, and neither is any day before the
+    company started using the portal (`portal_start_date`; None = no such day).
+    """
+    leave_days = leave_days or {}
+    first = max(start, portal_start) if portal_start else start
+    days = []
+    day = first
+    while day <= min(end, today):
+        full_leave = leave_days.get(day, ZERO) >= Decimal("1")
+        if not is_weekend(day) and day not in holidays and not full_leave:
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def week_expected(week_start: date, portal_start: date | None) -> bool:
+    """`006` FR-SIGN-05 — does a week fall (at least partly) on or after the
+    portal start, so that sign-off is expected for it?"""
+    return portal_start is None or week_end(week_start) >= portal_start
+
+
 # ---------------------------------------------------------------------------
 # Logging rules — FR-TIME
 # ---------------------------------------------------------------------------
@@ -311,6 +368,39 @@ def may_allocate(*, actor_id: str, actor_is_manager: bool, person_lead_id: str |
     FR-ROLE-02, FR-ROLE-08. Managers and admins: anyone. A lead: only the
     people whose `lead_id` is theirs."""
     return actor_is_manager or person_lead_id == actor_id
+
+
+def archived_allocation_refusal(
+    *,
+    project_name: str,
+    is_archived: bool,
+    new: tuple[date, date],
+    old: tuple[date, date] | None = None,
+) -> str | None:
+    """FR-PROJ-04 — an archived project takes no new planned time.
+
+    `old` is the allocation's current (starts_on, ends_on), or None when it is
+    being created. On an archived project creating is refused, and so is an
+    edit that reaches outside the current dates; shortening one is allowed.
+    """
+    if not is_archived:
+        return None
+    if old is None or new[0] < old[0] or new[1] > old[1]:
+        return f"{project_name} is archived."
+    return None
+
+
+def archived_entry_refusal(
+    *, project_name: str, is_archived: bool, already_logged: bool
+) -> str | None:
+    """FR-PROJ-04 — an archived project takes no new time entries.
+
+    A line already logged against it that day stays saveable, so re-saving the
+    day (the whole day is submitted at once) does not fail over history.
+    """
+    if is_archived and not already_logged:
+        return f"{project_name} is archived."
+    return None
 
 
 # ---------------------------------------------------------------------------
