@@ -7,8 +7,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain import invoicing as rules
-from app.domain.timesheets import is_tentative
 from app.domain.calendar import today_in_company_tz
+from app.domain.timesheets import is_tentative
 from app.services import settings_store
 from app.services import supabase as db
 
@@ -16,9 +16,7 @@ from app.services import supabase as db
 def listing(status: str | None = None) -> dict[str, Any]:
     today = today_in_company_tz()
     terms = settings_store.invoice_payment_terms_days()
-    projects = {
-        p["id"]: p for p in db.list_projects(include_archived=True) if not is_tentative(p)
-    }
+    projects = {p["id"]: p for p in db.list_projects(include_archived=True) if not is_tentative(p)}
     milestones = [m for m in db.list_milestones() if m["project_id"] in projects]
 
     invoices = []

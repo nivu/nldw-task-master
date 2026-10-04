@@ -596,7 +596,9 @@ class TestTentativeProject:
         assert fake.projects["p-live"]["status"] == "confirmed"
         assert fake.audit[-1]["before"] == {"status": "tentative"}
 
-    @pytest.mark.parametrize("body", [{"status": "maybe"}, {"probability": 101}, {"probability": -1}])
+    @pytest.mark.parametrize(
+        "body", [{"status": "maybe"}, {"probability": 101}, {"probability": -1}]
+    )
     def test_malformed_values_are_refused(self, as_, fake, body):
         r = as_("u-manager").patch(f"{API}/projects/p-live", json=body)
         assert r.status_code == 422
