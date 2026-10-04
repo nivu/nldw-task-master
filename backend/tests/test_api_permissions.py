@@ -64,6 +64,7 @@ class FakeDb:
             "a-theirs": self._alloc("a-theirs", "u-theirs", "p-live"),
             "a-archived": self._alloc("a-archived", "u-mine", "p-archived"),
         }
+        self.entries: list[dict] = []
         self.audit: list[dict] = []
 
     @staticmethod
@@ -132,6 +133,24 @@ class FakeDb:
 
     def delete_allocation(self, allocation_id):
         del self.allocations[allocation_id]
+
+    # Time, leave and holidays — read by the category totals
+    def list_time_entries(self, *, user_ids=None, project_id=None, start=None, end=None):
+        return [
+            e
+            for e in self.entries
+            if (start is None or e["date"] >= start.isoformat())
+            and (end is None or e["date"] <= end.isoformat())
+        ]
+
+    def list_bookings(self, **_):
+        return []
+
+    def list_holidays(self, start=None, end=None):
+        return []
+
+    def default_location_id(self):
+        return None
 
     # Audit
     def insert_audit(self, entry):
@@ -341,3 +360,68 @@ class TestAllocationEditValidation:
         assert entry["action"] == "allocation.updated"
         assert entry["before"]["starts_on"] == "2026-10-01"
         assert entry["after"]["percent"] == "25"
+
+
+class TestCategoryEffort:
+    """Spec 002 FR-ANALYTICS-08 — hours by category: leads and up, no money."""
+
+    PATH = "/api/v1/analytics/categories?start=2026-10&end=2026-10"
+
+    def test_a_plain_user_is_refused(self, as_, fake):
+        assert as_("u-mine").get(self.PATH).status_code == 403
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_leads_and_up_see_hours_and_never_money(self, as_, fake, who):
+        r = as_(who).get(self.PATH)
+        assert r.status_code == 200
+        assert [c["category"] for c in r.json()["categories"]] == [
+            "client",
+            "poc",
+            "product",
+            "internal",
+            "activity",
+        ]
+        for word in ("revenue", "cost", "profit", "ctc"):
+            assert word not in r.text
+
+    def test_a_lead_sees_the_whole_company_not_just_their_reports(self, as_, fake):
+        fake.entries = [
+            {
+                "user_id": "u-theirs",
+                "project_id": "p-live",
+                "date": "2026-10-05",
+                "hours_office": "6",
+                "hours_home": "0",
+            },
+            {
+                "user_id": "u-mine",
+                "project_id": None,
+                "activity": "learning",
+                "date": "2026-10-05",
+                "hours_office": "2",
+                "hours_home": "0",
+            },
+        ]
+        cells = {
+            c["category"]: c["cells"][0] for c in as_("u-lead").get(self.PATH).json()["categories"]
+        }
+        # Two 50% allocations on Live (client) and one on Old (internal) over
+        # October's 22 weekdays: 88h each.
+        assert cells["client"] == {"logged_hours": "6.00", "planned_hours": "176.00"}
+        assert cells["internal"] == {"logged_hours": "0.00", "planned_hours": "88.00"}
+        assert cells["activity"] == {"logged_hours": "2.00", "planned_hours": None}
+
+    @pytest.mark.parametrize(
+        "query", ["start=2026-11&end=2026-10", "start=2026-13&end=2026-12", "start=Oct"]
+    )
+    def test_bad_ranges_are_refused(self, as_, fake, query):
+        r = as_("u-lead").get(f"/api/v1/analytics/categories?{query}")
+        assert r.status_code == 422
+
+    @pytest.mark.parametrize(
+        ("query", "start", "end"),
+        [("start=2026-10", "2026-10", "2026-12"), ("end=2025-03", "2025-01", "2025-03")],
+    )
+    def test_one_month_given_frames_the_rest_of_that_year(self, as_, fake, query, start, end):
+        body = as_("u-lead").get(f"/api/v1/analytics/categories?{query}").json()
+        assert (body["start"], body["end"]) == (start, end)

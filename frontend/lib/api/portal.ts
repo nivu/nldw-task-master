@@ -26,6 +26,7 @@ import type {
   TeamDay,
   YearHistory,
   AllocationRow,
+  CategoryEffort,
   Coverage,
   CurrentWork,
   Forecast,
@@ -269,6 +270,9 @@ export const getCoverage = (start?: string, end?: string) =>
 export const getForecast = () => call<Forecast>("/analytics/forecast");
 
 export const getCurrentWork = (days = 7) => call<CurrentWork[]>(`/analytics/current?days=${days}`);
+
+export const getCategoryEffort = (start?: string, end?: string) =>
+  call<CategoryEffort>(`/analytics/categories${start ? `?start=${start}&end=${end ?? start}` : ""}`);
 
 // Projects and allocations — manager and admin (spec 003 FR-ROLE-02). The
 // path still says /admin because that is where 002 put it; the guard is the

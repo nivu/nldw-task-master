@@ -24,12 +24,15 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from app.domain import categories as cat
 from app.domain import financials as fin
+from app.domain import pnl
 from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
 from app.services import pnl as pnl_service
 from app.services import settings_store
 from app.services import supabase as db
+from app.services.holidays import holidays_by_person
 from app.services.timesheets import holidays_between, leave_days_for
 
 ZERO = Decimal("0.00")
@@ -320,6 +323,77 @@ def current_work(user_ids: list[str], *, days: int = 7) -> list[dict[str, Any]]:
         }
         for user_id in user_ids
     ]
+
+
+def category_effort(start: str | None, end: str | None) -> dict[str, Any]:
+    """Logged and planned hours per project category, per month —
+    FR-ANALYTICS-08. `start`/`end` are YYYY-MM; default this calendar year.
+
+    Company-wide for a lead too, like the per-project views and the forecast
+    (FR-ANALYTICS-01): it totals categories, never people, and has no money.
+    """
+    today = today_in_company_tz()
+    # A missing end closes the start's year, and a missing start opens the
+    # end's, so one given month never yields an empty range.
+    start = start or f"{(end or str(today.year))[:4]}-01"
+    end = end or f"{start[:4]}-12"
+    sy, sm = (int(x) for x in start.split("-"))
+    ey, em = (int(x) for x in end.split("-"))
+    months = pnl.months_between(date(sy, sm, 1), date(ey, em, 1))[:24]
+    first = date(months[0][0], months[0][1], 1)
+    last = pnl.month_bounds(*months[-1])[1]
+
+    categories = {
+        p["id"]: p.get("category") or "client" for p in db.list_projects(include_archived=True)
+    }
+    logged = [
+        cat.Logged(
+            day=date.fromisoformat(e["date"]),
+            project_id=e.get("project_id"),
+            hours=Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"])),
+        )
+        for e in db.list_time_entries(start=first, end=last)
+    ]
+    allocations = [
+        rules.Allocation(
+            user_id=a["user_id"],
+            project_id=a["project_id"],
+            starts_on=date.fromisoformat(a["starts_on"]),
+            ends_on=date.fromisoformat(a["ends_on"]),
+            percent=Decimal(str(a["percent"])),
+        )
+        for a in db.list_allocations()
+    ]
+    user_ids = sorted({a.user_id for a in allocations})
+
+    rows = cat.by_category(
+        months,
+        logged=logged,
+        allocations=allocations,
+        categories=categories,
+        holidays=holidays_by_person(user_ids, first, last),
+        leave=leave_days_for(user_ids, first, last),
+    )
+    labels = {**rules.PROJECT_CATEGORY_LABELS, cat.NOT_ON_A_PROJECT: cat.NOT_ON_A_PROJECT_LABEL}
+
+    return {
+        "start": f"{months[0][0]:04d}-{months[0][1]:02d}",
+        "end": f"{months[-1][0]:04d}-{months[-1][1]:02d}",
+        "months": [
+            {
+                "period": f"{y:04d}-{m:02d}",
+                "basis": pnl.basis_for(*pnl.month_bounds(y, m), today),
+            }
+            for y, m in months
+        ],
+        # Fixed order — the categories as 002 FR-PROJ-06 lists them, then
+        # time on no project. Never sorted by hours.
+        "categories": [
+            {"category": key, "label": labels[key], "cells": [c.as_dict() for c in cells]}
+            for key, cells in rows.items()
+        ],
+        "totals": [c.as_dict() for c in cat.totals(rows)],
+    }
 
 
 # ---------------------------------------------------------------------------

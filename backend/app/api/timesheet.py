@@ -181,6 +181,20 @@ def what_the_team_is_doing(user: LeadDep, days: int = Query(default=7, ge=1, le=
     return analytics_service.current_work(_population(user), days=days)
 
 
+@analytics.get("/categories")
+def category_effort(
+    user: LeadDep,
+    start: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    end: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+) -> dict:
+    """FR-ANALYTICS-08 — logged and planned hours per project category per
+    month, plus time on no project. Hours only; the money by category is the
+    monthly profit table (spec 005 FR-PNL-04), behind ManagerDep."""
+    if start and end and start > end:
+        raise ProblemDetail(422, "The start month must not be after the end month.")
+    return analytics_service.category_effort(start, end)
+
+
 # ---------------------------------------------------------------------------
 # Money and resourcing — spec 003. MANAGER AND ADMIN ONLY.
 #

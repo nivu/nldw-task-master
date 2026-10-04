@@ -90,4 +90,13 @@ half-filled timesheet are not roughly right; they are lower than reality.
 per person per month, with the target the company has set. It is for spotting
 someone stuck on internal work, not for ranking anyone.
 
+**Categories** totals hours by project category — paid client engagement,
+client POC, product development and internal tools — month by month across
+the company, for the year you pick (calendar or financial). Each category
+shows the hours **logged** and the hours **planned** by allocations (net of
+holidays and leave). Time logged against no project, such as learning or
+admin, is its own row, *Not on a project*, with no plan. Months from the
+current one on are marked *planned*. Like every effort total, the logged hours
+are only as complete as the timesheet.
+
 Leads see hours, never money.
