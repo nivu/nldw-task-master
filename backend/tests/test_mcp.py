@@ -2,12 +2,15 @@
 
 What these protect is not the tools' arithmetic (they have none — every tool
 is a route call) but the two properties that make the endpoint safe to hand a
-model: every operation is covered, and every reason is withheld.
+model: every operation is covered, and the route's answer reaches the model
+unchanged — reasons included, since the routes decide who may read them.
 """
 
 from __future__ import annotations
 
 import asyncio
+
+import httpx
 
 from app.main import app
 from app.mcp import server
@@ -62,22 +65,33 @@ class TestCoverage:
                 assert "CONFIRM" in tool.description, tool.name
 
 
-class TestReasonsAreWithheld:
-    """FR-MCP-03 — at any depth, without dropping the fact that one exists."""
+class TestReasonsPassThrough:
+    """FR-MCP-03 (amended 2026-10-05) — the tool returns what the route
+    returns. Who may read a reason is the route's rule (`001` NFR-05), tested
+    in test_api_permissions.TestLeaveReasons."""
 
-    def test_a_reason_is_replaced_not_returned(self):
-        out = server._scrub({"id": "b1", "reason": "chemotherapy", "category": "sick"})
-        assert "chemotherapy" not in str(out)
-        assert out["reason"].startswith("(withheld")
-        assert out["category"] == "sick"
+    def test_there_is_no_redaction_step(self):
+        assert not hasattr(server, "_scrub")
 
-    def test_an_empty_reason_is_simply_dropped(self):
-        assert "reason" not in server._scrub({"reason": None, "x": 1})
+    def test_a_reason_reaches_the_model_unchanged(self, monkeypatch):
+        calendar = {"period": "2026-10", "weeks": [[{"booking": {"reason": "Dentist"}}, None]]}
 
-    def test_nested_in_lists_and_calendars(self):
-        payload = {"weeks": [[{"booking": {"reason": "Dentist"}}, None]]}
-        assert "Dentist" not in str(server._scrub(payload))
+        class FakeClient:
+            def __init__(self, **_):
+                pass
 
-    def test_notes_are_not_reasons(self):
-        """A timesheet note is what somebody worked on; it is returned."""
-        assert server._scrub({"note": "Built the export"})["note"] == "Built the export"
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def request(self, *_, **__):
+                return httpx.Response(200, json=calendar)
+
+        class Ctx:
+            headers = {"authorization": "Bearer nunp_test"}
+
+        monkeypatch.setattr(server.httpx, "AsyncClient", FakeClient)
+        out = asyncio.run(server._api(Ctx(), "GET", "/me/calendar"))
+        assert out == calendar

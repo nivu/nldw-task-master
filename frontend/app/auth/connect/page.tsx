@@ -86,7 +86,7 @@ function Connect() {
                 Account → Connect Claude.
               </p>
               <p className="text-muted-foreground">
-                Leave reasons are never shared through this connection.
+                Leave reasons are shared only where the portal already shows them to you.
               </p>
               <div className="flex gap-2">
                 <Button onClick={() => decide(true)} disabled={busy}>

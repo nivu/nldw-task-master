@@ -60,11 +60,12 @@ Before anything is changed, Claude is instructed to show you exactly what it
 is about to do and wait for your yes. If it does not, say no and tell an
 admin.
 
-## What Claude never sees
+## Leave reasons
 
-The **reason** on any leave request, including your own. Reasons can be
-health information, and a conversation with an assistant is not a place for
-them. Where a reason exists, Claude is told to send you to the portal.
+Claude sees the **reason** on a leave request exactly where the portal shows
+it, and only to the same people: you, on your own requests; your lead, on
+yours; and admins. A lead or manager who is not your lead does not see it,
+and the team-day list shows the category only, as in the portal.
 
 ## Keeping it safe
 

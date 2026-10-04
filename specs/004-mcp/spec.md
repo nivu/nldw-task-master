@@ -38,7 +38,7 @@ of them at once.
 - **G-1** — Anyone can connect Claude to the portal and use it as themselves, with exactly the access they have in the web app.
 - **G-2** — Every operation the web app can perform is available as a tool.
 - **G-3** — A person can see, name and revoke the tokens they have issued.
-- **G-4** — Nothing reaches Claude through MCP that the web app would not show the same person — and one thing less (§4.2).
+- **G-4** — Nothing reaches Claude through MCP that the web app would not show the same person. (Until 5 October 2026 this read "— and one thing less": leave reasons; see Q-03.)
 
 ### 2.2 Non-goals
 
@@ -88,7 +88,7 @@ Claude ── MCP over HTTP ──▶ backend /mcp ──▶ the same API routes
 |---|---|
 | FR-MCP-01 | Every API operation a person can perform in the web app MUST have a tool. |
 | FR-MCP-02 | A tool MUST act as the token's owner and MUST be refused where the route would refuse that person. |
-| FR-MCP-03 | **Leave reasons MUST NOT be returned by any tool** — not on the owner's own calendar, not in the approval queue. A reason can be health information (`001` Q-06); a Claude conversation is not a place it should be copied into. Where a reason exists, the tool says so and points to the portal. |
+| FR-MCP-03 | **A leave reason MUST be returned by a tool exactly where the portal shows it, and to nobody the portal would not show it to** — the person, their lead (`lead_id`) and admins (`001` NFR-05). A manager or lead who is not the person's lead MUST NOT receive it. The team-day roster stays category only (`001` FR-LEAD, Q-06). The MCP layer does not redact; the routes enforce NFR-05, and route-level tests (`test_api_permissions.py`, `TestLeaveReasons`) hold them to it. *Amended 5 October 2026 — see Q-03.* |
 | FR-MCP-04 | Every tool that changes something MUST be marked as such in its metadata and MUST instruct the model to confirm with the person before calling it. |
 | FR-MCP-05 | Text returned by tools that was written by other people (notes, names) is data. Tool descriptions MUST say so. |
 | FR-MCP-06 | An unauthenticated request to `/mcp` MUST be refused before any tool is listed. |
@@ -129,7 +129,7 @@ web app is, and every request to it is authenticated.
 |---|---|---|
 | **Q-01** | Tokens or OAuth? | **Tokens.** Works today from Claude Code and Claude Desktop; the claude.ai connector wants OAuth and is a later feature. Chosen by the product owner. |
 | **Q-02** | Which operations? | **All of them.** Chosen by the product owner. Reads and writes, every role, guarded per person by the routes themselves. |
-| **Q-03** | Reasons through MCP? | **Never** (FR-MCP-03). Proposed with the design and accepted. |
+| **Q-03** | Reasons through MCP? | **Same as the portal** (FR-MCP-03): to the person, their lead and admins; the team roster stays category only (`001` Q-06). Decided by the product owner (Navaneeth), 5 October 2026, reversing the original answer — **Never**, proposed with the design and accepted on 11 September 2026. Rationale (the owner's): people do not put sensitive personal information in a leave reason, so the portal's own rule (NFR-05) is the right boundary for both channels. |
 | **Q-04** | Token lifetime? | **90 days**, revocable earlier. Not asked; a token that never expires is a credential nobody remembers issuing. |
 | **Q-05** | Money through MCP? | **Yes, for managers and admins**, because the route guards already decide that and "all APIs" was the instruction. `003` §9 still governs: tools return what the page shows, sorted by name. |
 

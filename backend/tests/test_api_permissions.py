@@ -1184,3 +1184,83 @@ class TestDashboardAccess:
         assert users["u-trusted"]["dashboard_access"] is True
         assert users["u-mine"]["dashboard_access"] is False
         assert users["u-mine"]["is_owner"] is False
+
+
+class TestLeaveReasons:
+    """`001` NFR-05 — a leave reason is readable by the person, their lead and
+    admins, and by nobody else; the team roster carries the category only
+    (FR-LEAD, Q-06). Since spec 004 FR-MCP-03 was amended on 2026-10-05 the
+    MCP tools return these routes' answers unchanged, so this rule is the only
+    thing between a reason and the wrong reader."""
+
+    DAY = "2026-12-15"
+    BOOKING = {
+        "id": "b-mine",
+        "user_id": "u-mine",
+        "date": DAY,
+        "category": "sick",
+        "duration": "1.0",
+        "status": "pending",
+        "reason": "Dentist",
+        "created_at": "2026-12-01T09:00:00Z",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _booking(self, fake, monkeypatch):
+        from app.services import settings_store
+
+        settings_store.invalidate()
+        monkeypatch.setattr(
+            db,
+            "get_booking",
+            lambda booking_id: dict(self.BOOKING) if booking_id == "b-mine" else None,
+        )
+        monkeypatch.setattr(
+            db,
+            "list_bookings",
+            lambda user_ids=None, **_: (
+                [dict(self.BOOKING)] if user_ids is None or "u-mine" in user_ids else []
+            ),
+        )
+        monkeypatch.setattr(db, "get_holiday_on", lambda day: None)
+
+    @pytest.mark.parametrize("who", ["u-mine", "u-lead", "u-admin"])
+    def test_the_person_their_lead_and_an_admin_read_it(self, as_, who):
+        r = as_(who).get("/api/v1/bookings/b-mine")
+        assert r.status_code == 200
+        assert r.json()["reason"] == "Dentist"
+
+    @pytest.mark.parametrize("who", ["u-other-lead", "u-manager", "u-theirs"])
+    def test_anyone_else_is_told_there_is_no_such_booking(self, as_, who):
+        r = as_(who).get("/api/v1/bookings/b-mine")
+        assert r.status_code == 404
+        assert "Dentist" not in r.text
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-admin"])
+    def test_the_approval_queue_carries_it_for_the_lead_and_an_admin(self, as_, who):
+        (request,) = as_(who).get("/api/v1/team/approvals").json()
+        assert request["reason"] == "Dentist"
+
+    @pytest.mark.parametrize("who", ["u-other-lead", "u-manager"])
+    def test_the_approval_queue_of_anyone_else_does_not(self, as_, who):
+        r = as_(who).get("/api/v1/team/approvals")
+        assert r.status_code == 200
+        assert "Dentist" not in r.text
+
+    def test_the_person_reads_it_on_their_own_calendar(self, as_, monkeypatch):
+        from app.api import me
+        from app.services import holidays
+
+        monkeypatch.setattr(holidays, "holidays_for_user", lambda *_: {})
+        monkeypatch.setattr(me.balances, "summary_for", lambda *_, **__: [])
+        weeks = as_("u-mine").get("/api/v1/me/calendar?period=2026-12").json()["weeks"]
+        (cell,) = [c for week in weeks for c in week if c and c["date"] == self.DAY]
+        assert cell["booking"]["reason"] == "Dentist"
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-admin"])
+    def test_the_team_day_shows_the_category_and_never_the_reason(self, as_, who):
+        r = as_(who).get(f"/api/v1/team?day={self.DAY}")
+        (entry,) = [p for p in r.json()["people"] if p["user_id"] == "u-mine"]
+        assert entry["category"] == "sick"
+        assert "reason" not in entry
+        assert "Dentist" not in r.text
