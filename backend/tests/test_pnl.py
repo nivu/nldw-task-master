@@ -257,7 +257,9 @@ class TestRevenueByMonth:
             ]
         )
         assert (
-            pnl.month_revenue(D("3600000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS)
+            pnl.month_revenue(
+                D("3600000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS
+            )
             == 0
         )
 
@@ -346,4 +348,3 @@ class TestHolidaySpan:
             D("1000000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS
         )
         assert october != without
-

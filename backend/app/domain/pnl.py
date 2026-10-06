@@ -285,7 +285,7 @@ def shares(weights: dict[str, Decimal]) -> dict[str, Decimal]:
 # ---------------------------------------------------------------------------
 
 
-def sum_cells(cells: list["Cell"], basis: str) -> "Cell":
+def sum_cells(cells: list[Cell], basis: str) -> Cell:
     """Total of several cells for one month — spec 005 FR-PNL-04. Cost is
     unknown if any cost is; complete only if every cell is."""
     cost: Decimal | None = ZERO

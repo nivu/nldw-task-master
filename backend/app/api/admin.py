@@ -11,8 +11,10 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import AdminDep, LeadDep, ManagerDep
+from app.api.deps import AdminDep, LeadDep
 from app.api.errors import ProblemDetail
+from app.domain import holidays as holiday_rules
+from app.domain import timesheets as rules
 from app.domain.audit import actor_name
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
@@ -30,8 +32,6 @@ from app.schemas import (
     UserCreate,
     UserUpdate,
 )
-from app.domain import holidays as holiday_rules
-from app.domain import timesheets as rules
 from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
 from app.services import pnl as pnl_service
@@ -1001,9 +1001,7 @@ def list_allocations(user: LeadDep) -> list[dict]:
     """A lead sees only their reports' allocations — FR-ROLE-08."""
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
     user_ids = (
-        None
-        if user.is_manager
-        else [p["id"] for p in db.list_reports(user.id, active_only=False)]
+        None if user.is_manager else [p["id"] for p in db.list_reports(user.id, active_only=False)]
     )
     projects = {p["id"]: p["name"] for p in db.list_projects(include_archived=True)}
     return [

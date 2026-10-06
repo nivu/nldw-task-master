@@ -306,9 +306,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
             )
 
         for category in rules.PROJECT_CATEGORIES:
-            category_cells[category].append(
-                pnl.sum_cells(by_category[category], basis).as_dict()
-            )
+            category_cells[category].append(pnl.sum_cells(by_category[category], basis).as_dict())
 
         total_revenue = unattributed_total
         total_cost: Decimal | None = ZERO
@@ -327,9 +325,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                 basis=basis,
                 complete=complete,
             )
-            person_cells[uid].append(
-                {**cell.as_dict(), "unrated_days": mc.missing_days}
-            )
+            person_cells[uid].append({**cell.as_dict(), "unrated_days": mc.missing_days})
             total_revenue += cell.revenue
             if cost is None:
                 total_cost = None
