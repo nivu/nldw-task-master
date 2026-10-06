@@ -132,7 +132,7 @@ Notification credentials, when they exist, go on `worker` and `beat` (which
 send) and on `api` (which verifies Slack's request signature):
 
 ```
-SLACK_BOT_TOKEN=          # scopes: chat:write, users:read.email
+SLACK_BOT_TOKEN=          # scopes: chat:write, users:read, users:read.email
 SLACK_SIGNING_SECRET=     # required for /api/v1/slack/interactions
 SMTP_HOST= SMTP_PORT= SMTP_USER= SMTP_PASSWORD= SMTP_FROM=
 ```
@@ -306,7 +306,7 @@ when it does:
 
 ### Org operations (spec 006)
 
-- **Slack.** Set `SLACK_BOT_TOKEN` (scopes `chat:write`, `users:read.email`,
+- **Slack.** Set `SLACK_BOT_TOKEN` (scopes `chat:write`, `users:read`, `users:read.email`,
   and `chat:write.public` or invite the bot to the channel) and
   `SLACK_SIGNING_SECRET` on the api, worker and beat services. Then Admin →
   Notifications → *Send me a test*. Set `slack_out_channel` under Admin →

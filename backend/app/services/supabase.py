@@ -51,6 +51,24 @@ def get_profile_by_email(email: str) -> dict[str, Any] | None:
     return response.data[0] if response.data else None
 
 
+def get_profile_by_email_ignoring_case(email: str) -> dict[str, Any] | None:
+    """The one profile whose email matches ignoring letter case, else None.
+
+    For emails that come from outside the portal (a Slack profile), whose case
+    need not match what the admin typed. `ilike` narrows the rows; the exact
+    comparison below decides, so a LIKE wildcard in the address can only widen
+    the query, never cause a wrong match. Two profiles differing only in case
+    is ambiguous, and returns None.
+    """
+    wanted = email.strip().lower()
+    if not wanted:
+        return None
+    pattern = wanted.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    response = supabase.table("profiles").select("*").ilike("email", pattern).execute()
+    matches = [row for row in response.data or [] if row["email"].strip().lower() == wanted]
+    return matches[0] if len(matches) == 1 else None
+
+
 def list_profiles(*, active_only: bool = False) -> list[dict[str, Any]]:
     query = supabase.table("profiles").select("*").order("display_name")
     if active_only:

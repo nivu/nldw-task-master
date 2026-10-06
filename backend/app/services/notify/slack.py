@@ -3,9 +3,11 @@
 Written against Slack's real Web API. Two calls are involved: `users.lookupByEmail`
 to turn a Nunnari email into a Slack user id, then `chat.postMessage` to open a
 DM. Both are plain HTTPS with a bot token, so this needs no SDK — the constitution's
-"replace a dependency with fewer than 50 lines of clear code" rule applies.
+"replace a dependency with fewer than 50 lines of clear code" rule applies. A third,
+`users.info`, turns the Slack user who pressed a button back into an email, because
+Slack's interaction payload carries the user's id but never their email.
 
-Scopes the bot token needs: `chat:write` and `users:read.email`.
+Scopes the bot token needs: `chat:write`, `users:read` and `users:read.email`.
 
 FR-NOTIF-04 asks that a lead be able to approve or reject without leaving Slack.
 The message below carries Block Kit buttons whose `action_id` and `value` are
@@ -27,6 +29,9 @@ logger = logging.getLogger("nldw-task-master")
 
 SLACK_API = "https://slack.com/api"
 _TIMEOUT_SECONDS = 10
+#: For `users.info` during a button press: Slack drops an interaction it has not
+#: had a reply to within 3 seconds, so a slow lookup must give up before that.
+_LOOKUP_TIMEOUT_SECONDS = 2
 
 
 def send(message) -> bool:  # noqa: ANN001 - app.services.notify.Message, avoids a cycle
@@ -96,6 +101,18 @@ def _blocks(message) -> list[dict]:  # noqa: ANN001
     return blocks
 
 
+def lookup_email(user_id: str) -> str | None:
+    """The email on a Slack user's profile, via `users.info`, or None if unavailable."""
+    token = settings.SLACK_BOT_TOKEN.get_secret_value() if settings.SLACK_BOT_TOKEN else ""
+    if not token or not user_id:
+        return None
+    query = urllib.parse.urlencode({"user": user_id})
+    response = _get(f"users.info?{query}", token, timeout=_LOOKUP_TIMEOUT_SECONDS)
+    if not response.get("ok"):
+        return None
+    return response.get("user", {}).get("profile", {}).get("email") or None
+
+
 def _lookup_user(token: str, email: str) -> str | None:
     query = urllib.parse.urlencode({"email": email})
     response = _get(f"users.lookupByEmail?{query}", token)
@@ -117,18 +134,20 @@ def _post(method: str, token: str, payload: dict) -> dict:
     return _execute(request, method)
 
 
-def _get(path: str, token: str) -> dict:
+def _get(path: str, token: str, *, timeout: float = _TIMEOUT_SECONDS) -> dict:
     request = urllib.request.Request(
         f"{SLACK_API}/{path}",
         headers={"Authorization": f"Bearer {token}"},
         method="GET",
     )
-    return _execute(request, path)
+    return _execute(request, path, timeout)
 
 
-def _execute(request: urllib.request.Request, label: str) -> dict:
+def _execute(
+    request: urllib.request.Request, label: str, timeout: float = _TIMEOUT_SECONDS
+) -> dict:
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         logger.warning('{"event": "slack_call_failed", "method": "%s", "error": "%s"}', label, exc)

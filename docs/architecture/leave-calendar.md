@@ -321,9 +321,12 @@ Demo accounts, all with password `portal123` (see `supabase/seed.sql`):
 - **The sandwich rule's `true` branch does not exist** (spec Q-09). The setting
   refuses to be switched on rather than silently doing nothing.
 - **Notification senders have no credentials.** Both adapters are complete;
-  adding `SLACK_BOT_TOKEN` (scopes: `chat:write`, `users:read.email`) plus
+  adding `SLACK_BOT_TOKEN` (scopes: `chat:write`, `users:read`, `users:read.email`) plus
   `SLACK_SIGNING_SECRET`, or `SMTP_HOST`, activates them with no code change.
-  Slack's interactivity request URL is `/api/v1/slack/interactions`.
+  Slack's interactivity request URL is `/api/v1/slack/interactions`. A button
+  press is matched to a portal account by the email `users.info` returns for the
+  person who pressed it, ignoring letter case; that lookup gives up after 2 s so
+  the reply still reaches Slack within its 3 s limit.
 (Route guarding lives in `frontend/proxy.ts` — the Next.js 16 name for what
 used to be `middleware.ts`. Which routes are guarded is configured in
 `lib/supabase/middleware.ts`, not in that file.)

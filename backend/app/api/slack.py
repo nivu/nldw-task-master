@@ -11,9 +11,10 @@ Slack's scheme (v0) is an HMAC-SHA256 over `v0:{timestamp}:{raw body}` keyed by
 the app's signing secret. The raw body matters — re-serialising the parsed form
 changes the bytes and the signature will not match.
 
-The Slack user is mapped back to a portal account by email, and the resulting
-decision runs through exactly the same `bookings.decide` path as the web UI, so
-FR-APPR-05 applies identically. Slack is a transport, not a trust boundary.
+The Slack user is mapped back to a portal account by email — looked up with
+`users.info`, since the interaction payload carries only the Slack user id — and
+the resulting decision runs through exactly the same `bookings.decide` path as
+the web UI, so FR-APPR-05 applies identically. Slack is a transport, not a trust boundary.
 """
 
 from __future__ import annotations
@@ -26,12 +27,14 @@ import time
 import urllib.parse
 
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.api.errors import ProblemDetail
 from app.config import settings
 from app.domain.approval import Person
 from app.services import bookings as booking_service
 from app.services import supabase as db
+from app.services.notify import slack as slack_adapter
 
 logger = logging.getLogger("nldw-task-master")
 router = APIRouter(prefix="/slack", tags=["slack"])
@@ -59,7 +62,10 @@ async def interactions(request: Request) -> dict:
     if action_id not in ("booking_approve", "booking_reject") or not booking_id:
         raise ProblemDetail(400, "Unrecognised Slack action.")
 
-    actor = _resolve_actor(payload)
+    # `_resolve_actor` makes blocking calls (Slack's `users.info`, then the
+    # profile read). This handler is `async` to read the raw body, so they run
+    # in a worker thread rather than stalling every other request on the loop.
+    actor = await run_in_threadpool(_resolve_actor, payload)
     approve = action_id == "booking_approve"
 
     try:
@@ -125,18 +131,24 @@ def _parse(raw: bytes) -> dict:
 def _resolve_actor(payload: dict) -> Person:
     """Map the Slack user who pressed the button to a portal account.
 
-    Matched on email, which is why the bot needs `users:read.email`. A Slack
-    account with no portal profile is refused — the button must not become a
-    way to act without an account.
+    Matched on email. Slack's interaction payload carries the user's id but no
+    email, so the email is fetched with `users.info`, which is why the bot needs
+    `users:read` and `users:read.email`. A Slack account with no portal profile
+    is refused — the button must not become a way to act without an account.
     """
-    email = (payload.get("user") or {}).get("email")
+    user_id = (payload.get("user") or {}).get("id")
+    email = slack_adapter.lookup_email(user_id) if user_id else None
     if not email:
-        # Slack omits the email unless the app has the scope. Fail closed.
+        # No bot token, no user id, a Slack error or a missing scope. Fail closed.
         raise ProblemDetail(
-            403, "Could not identify you. The Slack app needs the users:read.email scope."
+            403,
+            "Could not identify you. The Slack app needs a bot token with the "
+            "users:read and users:read.email scopes.",
         )
 
-    profile = db.get_profile_by_email(email)
+    # Ignoring case: the Slack profile's email need not be typed the way the
+    # admin typed the portal one, and the outbound lookupByEmail ignores it too.
+    profile = db.get_profile_by_email_ignoring_case(email)
     if profile is None or not profile["is_active"]:
         raise ProblemDetail(403, "That Slack account is not linked to an active portal user.")
 
