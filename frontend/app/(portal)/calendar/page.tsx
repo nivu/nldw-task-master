@@ -94,12 +94,19 @@ export default function CalendarPage() {
                 colour={RING_COLOUR[balance.category]}
                 size={56}
               />
-              <div className="ml-auto text-right">
-                <p className="text-2xl font-semibold tabular-nums">{balance.remaining}</p>
-                <p className="text-[11px] text-muted-foreground">
-                  left{balance.opening !== "0.0" && ` · ${balance.opening} carried in`}
+              {/* FR-BAL-09 — never set up is not the same as used up. */}
+              {balance.configured === false ? (
+                <p className="ml-auto text-right text-[11px] text-muted-foreground">
+                  Not set up yet — ask an admin
                 </p>
-              </div>
+              ) : (
+                <div className="ml-auto text-right">
+                  <p className="text-2xl font-semibold tabular-nums">{balance.remaining}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    left{balance.opening !== "0.0" && ` · ${balance.opening} carried in`}
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         ))}

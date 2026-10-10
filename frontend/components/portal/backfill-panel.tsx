@@ -13,7 +13,7 @@ import { backfillLeave, errorMessage, undoBackfill } from "@/lib/api/portal";
 import type { BackfillEntry, Category, PortalUser } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
-const CATEGORIES: Category[] = ["wfh", "casual", "sick"];
+const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff"];
 
 /**
  * Spec A-21 — recording leave that was already taken.
@@ -49,7 +49,7 @@ export function BackfillPanel({
   });
   const [busy, setBusy] = useState(false);
 
-  const reasonRequired = form.category !== "wfh";
+  const reasonRequired = form.category === "casual" || form.category === "sick";
   const ready =
     form.user_id &&
     form.date &&

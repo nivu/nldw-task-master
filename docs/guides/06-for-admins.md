@@ -128,7 +128,19 @@ the morning post and the nudge hour are settings under Policy.
 
 Set the monthly allowance per category. A row with no person is the company
 default and applies from its month onwards until another row replaces it.
-Nobody can book anything until a default exists.
+Nobody can book anything until a default exists: they are told that category
+"has not been set up yet" and to ask an admin. The **Policy** tab shows the
+company default in force for each category, with a button back to this tab.
+
+Sick leave defaults to **1 day a month** from October 2026 (12 a year, carried
+forward if unused). Change it here like any other default.
+
+A row for a person is an override for that one month only; it does not carry
+into later months. To put someone back on the company default, press
+**Remove** on their row (Claude: `remove_allowance`). Company-default rows
+cannot be removed, only replaced with a new figure, because removing one would
+change every month that falls back to it for everyone. Every removal is in the
+audit log.
 
 ## Holidays
 
@@ -152,13 +164,52 @@ Every holiday in the list is declared exactly as if you had added it on its
 own, so anyone who had booked one of those days gets their days back and is
 told. Up to 100 lines at a time.
 
+## Approvals
+
+As an admin, **Approvals** lists every pending request in the organisation
+except your own: leave requests first, then comp-off claims. Each leave
+request shows who it is waiting on: **Lead: name**, or **No lead — admin**
+when the person has no lead and it falls to an admin. You may decide any of
+them, not only the ones with no lead. Your own requests go to another admin,
+or are approved overnight once the day has passed.
+
 ## Backfill
 
 Days lock at the end of the day they apply to. **Backfill** is the one place a
 locked day can be changed: use it to record leave that was already taken, for
 example in the first month after going live. Every backfilled day is marked as
 entered by an admin on the person's calendar and on the team view, and is
-listed here so it can be reviewed or undone.
+listed here so it can be reviewed or undone. Comp-off can be backfilled too;
+it spends the person's comp-off credits, and undoing it gives them back.
+
+## Record leave taken vs Mark absent
+
+On **Team**, pick a past weekday with the date picker. Next to each person who
+shows as present you see two buttons:
+
+- **Record leave taken** enters the leave they actually took (work from home,
+  casual, sick or comp-off; full or half day). It **counts against their
+  allowance**, exactly like a booking they made themselves, and comp-off spends
+  their credits. Use it when you know what the day was. It is a backfill, so it
+  is marked "by admin" and listed under Backfill.
+- **Mark absent** records that they were away without booking and nobody knows
+  why. It **uses no allowance**. Leads can use it too.
+
+If you know what the day was, use Record leave taken. Use Mark absent only when
+you do not.
+
+**Fixing a wrong absence mark.** A day marked absent shows two more buttons for
+admins:
+
+- **Convert to leave** turns that day into the leave actually taken. The normal
+  balance check applies: if they do not have enough left, it is refused (unless
+  the policy allows going over), and comp-off needs enough credits. The notice
+  afterwards shows how much of that leave they have left this month.
+- **Remove** clears the absence mark, leaving the day empty.
+
+Backfilling a day that holds only an absence mark also replaces the mark
+instead of being refused. Undoing a converted day leaves it empty; it does not
+become an absence mark again.
 
 ## Policy
 

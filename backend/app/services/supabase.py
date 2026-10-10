@@ -15,17 +15,92 @@ calling this blocking client from an async handler would stall the event loop.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
-from supabase import Client, create_client
+import httpx
+from supabase import Client, ClientOptions, create_client
 
 from app.config import settings
+
+logger = logging.getLogger("nldw-task-master")
+
+
+class _RetryIdempotent(httpx.HTTPTransport):
+    """Retry a read once when the connection drops under it.
+
+    Only GET and HEAD — every PostgREST select — are retried. A write is never
+    sent twice: whether the first attempt reached the database is unknown.
+
+    A read's body is pulled in here, inside the retry, because the connection
+    can drop after the headers have arrived as easily as before; left to the
+    client, that failure would surface outside this transport and never be
+    retried.
+    """
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method not in ("GET", "HEAD"):
+            return super().handle_request(request)
+        try:
+            return self._buffered(request)
+        except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            logger.warning(
+                '{"event": "supabase_read_retried", "method": "%s", "path": "%s", "error": "%s"}',
+                request.method,
+                request.url.path,
+                type(exc).__name__,
+            )
+            return self._buffered(request)
+
+    def _buffered(self, request: httpx.Request) -> httpx.Response:
+        response = super().handle_request(request)
+        if response.is_stream_consumed:  # already held in memory
+            return response
+        try:
+            raw = b"".join(response.iter_raw())
+        finally:
+            response.close()
+        # Still encoded as sent (iter_raw), so the client decodes it as usual.
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            stream=httpx.ByteStream(raw),
+            extensions=response.extensions,
+        )
+
+
+# One client shared by PostgREST and storage, deliberately HTTP/1.1. The library
+# default is a single HTTP/2 connection, and routes run in a thread pool: two
+# threads reading and writing that one socket at once fail with
+# `ReadError: [Errno 11]`, and the failure takes down every request in flight
+# on it. Over HTTP/1.1 each concurrent request gets its own pooled connection.
+# The timeout must be set here — a supplied client skips PostgREST's 120s.
+_http = httpx.Client(
+    http2=False,
+    timeout=httpx.Timeout(120.0, connect=10.0),
+    follow_redirects=True,
+    # A supplied transport owns the pool, so the limits go on it.
+    transport=_RetryIdempotent(
+        http2=False,
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    ),
+)
 
 supabase: Client = create_client(
     settings.SUPABASE_URL,
     settings.SUPABASE_SERVICE_ROLE_KEY.get_secret_value(),
+    options=ClientOptions(httpx_client=_http),
 )
+
+# Auth (GoTrue) gets its own small HTTP/1.1 client: sharing `_http` would raise
+# its timeout from the library's 5s to PostgREST's 120s, leaving a sign-in check
+# hanging for two minutes when auth is down.
+_auth_http = httpx.Client(
+    http2=False, timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
+)
+supabase.auth._http_client = _auth_http
+supabase.auth.admin._http_client = _auth_http
 
 # Columns that are safe to return for someone other than the booking's owner
 # when the reason must not travel (Q-06, NFR-05).
@@ -156,6 +231,20 @@ def update_booking(booking_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("bookings").update(data).eq("id", booking_id).execute().data[0]
 
 
+def update_booking_if_status(
+    booking_id: str, expected_status: str, data: dict[str, Any]
+) -> dict[str, Any] | None:
+    """One UPDATE guarded by the row's current status; None if it had moved on."""
+    response = (
+        supabase.table("bookings")
+        .update(data)
+        .eq("id", booking_id)
+        .eq("status", expected_status)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
 def list_pending_before(day: date) -> list[dict[str, Any]]:
     """Pending bookings whose own date has passed — the Q-04 sweep's input."""
     return (
@@ -207,6 +296,15 @@ def upsert_allowance(data: dict[str, Any]) -> dict[str, Any]:
         .execute()
         .data[0]
     )
+
+
+def get_allowance(allowance_id: str) -> dict[str, Any] | None:
+    response = supabase.table("allowances").select("*").eq("id", allowance_id).limit(1).execute()
+    return response.data[0] if response.data else None
+
+
+def delete_allowance(allowance_id: str) -> None:
+    supabase.table("allowances").delete().eq("id", allowance_id).execute()
 
 
 # ---------------------------------------------------------------------------

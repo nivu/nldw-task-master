@@ -90,6 +90,7 @@ def balances_for(
                 allowance=balance.allowance,
                 used=balance.used - exclude_booking_duration,
                 remaining=balance.remaining + exclude_booking_duration,
+                configured=balance.configured,
             )
         result[category] = balance
     return result
@@ -142,6 +143,7 @@ def serialise(balance: ledger.Balance) -> dict[str, Any]:
         "allowance": str(balance.allowance),
         "used": str(balance.used),
         "remaining": str(balance.remaining),
+        "configured": balance.configured,
     }
 
 

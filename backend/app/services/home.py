@@ -65,6 +65,7 @@ def _mine(user_id: str, today: date) -> dict[str, Any]:
                     "is_today": d["is_today"],
                     "holiday": d["holiday"],
                     "on_leave": d["on_leave"],
+                    "wfh": d["wfh"],
                     "locked": d["locked"],
                 }
                 for d in week["days"]

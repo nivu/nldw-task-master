@@ -69,6 +69,18 @@ class Balance:
     allowance: Decimal
     used: Decimal
     remaining: Decimal
+    #: False when no allowance has ever been set up for this category (FR-BAL-09),
+    #: so a zero means "nobody configured it" rather than "used up".
+    configured: bool = True
+
+
+def is_configured(grants: Iterable[Grant], period: str, category: str) -> bool:
+    """Has any allowance — personal or company — been set for this category by `period`?
+
+    `grants` are already filtered to the person. This is what tells "not set up
+    yet" apart from "used up" (FR-BAL-09): both resolve to a zero balance.
+    """
+    return any(grant.category == category and grant.period <= period for grant in grants)
 
 
 def resolve_allowance(grants: Iterable[Grant], period: str, category: str) -> Decimal:
@@ -189,6 +201,7 @@ def balance_for(
         allowance=allowance,
         used=used,
         remaining=opening + allowance - used,
+        configured=is_configured(grants, period, category),
     )
 
 

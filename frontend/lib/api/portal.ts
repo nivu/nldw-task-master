@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Allowance,
   AppSetting,
+  AdminLeaveResult,
   BackfillEntry,
   AuditEntry,
   Balance,
@@ -192,6 +193,10 @@ export const setAllowance = (input: {
   user_id: string | null;
 }) => call<Allowance>("/admin/allowances", { method: "PUT", ...body(input) });
 
+// Spec 001 FR-ADMIN-01a — personal overrides only; company defaults are refused.
+export const deleteAllowance = (id: string) =>
+  call<{ status: string }>(`/admin/allowances/${id}`, { method: "DELETE" });
+
 export const listHolidays = () => call<Holiday[]>("/admin/holidays");
 
 export const declareHoliday = (input: { date: string; name: string; location_id?: string | null }) =>
@@ -220,7 +225,14 @@ export const backfillLeave = (input: {
   duration: string;
   reason: string | null;
   note: string;
-}) => call<{ id: string }>("/admin/backfill", { method: "POST", ...body(input) });
+}) => call<AdminLeaveResult>("/admin/backfill", { method: "POST", ...body(input) });
+
+/** FR-BACK-10 — turn a day marked absent into the leave actually taken. */
+export const convertAbsence = (
+  id: string,
+  input: { category: Category; duration: string; reason: string | null; note: string }
+) =>
+  call<AdminLeaveResult>(`/admin/absences/${id}/convert`, { method: "POST", ...body(input) });
 
 export const undoBackfill = (id: string) =>
   call<{ id: string; status: string }>(`/admin/backfill/${id}`, { method: "DELETE" });

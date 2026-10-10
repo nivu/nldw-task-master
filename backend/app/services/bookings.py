@@ -99,13 +99,15 @@ def create_or_replace(
                 "Claim comp-off for a weekend or holiday you worked, and ask your lead to approve it."
             )
         remaining = duration
+        configured = True
     else:
-        remaining = balances.remaining_for(
+        balance = balances.balances_for(
             user_id,
             period_of(day),
-            category,
             exclude_booking_duration=give_back,
-        )
+            exclude_category=category,
+        )[category]
+        remaining, configured = balance.remaining, balance.configured
 
     refusal = rules.validate_booking(
         rules.BookingRequest(day=day, category=category, duration=duration, reason=reason),
@@ -114,6 +116,7 @@ def create_or_replace(
         today=today,
         max_future_days=settings_store.max_future_booking_days(),
         allow_excess=settings_store.allow_excess_booking(),
+        configured=configured,
     )
     if refusal:
         raise BookingRefused(refusal)
@@ -350,8 +353,10 @@ def backfill(
     if subject is None:
         raise BookingRefused("No such person.", status=404)
 
+    from app.services.holidays import holiday_on_for_user
+
     today = today_in_company_tz()
-    holiday = db.get_holiday_on(day)
+    holiday = holiday_on_for_user(user_id, day)
 
     refusal = rules.check_backfill(
         day, category, reason, holiday_name=holiday["name"] if holiday else None, today=today
@@ -359,11 +364,29 @@ def backfill(
     if refusal:
         raise BookingRefused(refusal)
 
-    if db.find_booking_on(user_id, day, sorted(rules.OCCUPYING_STATES)):
+    existing = db.find_booking_on(user_id, day, sorted(rules.OCCUPYING_STATES))
+    if existing and existing["status"] == "unrecognised":
+        # FR-BACK-08 — a day marked absent yields to the leave actually taken,
+        # converted in place. FR-BACK-07 still holds: no allowance check here.
+        converted = _convert_absence(
+            existing,
+            category=category,
+            duration=duration,
+            reason=reason,
+            note=note,
+            actor=actor,
+            today=today,
+            check_allowance=False,
+        )
+        return {**converted, "replaced_absence": True}
+    if existing:
         raise BookingRefused(
             f"{subject['display_name']} already has something recorded on {day.isoformat()}.",
             status=409,
         )
+
+    if category == "compoff":
+        _require_compoff_credits(user_id, duration, today)
 
     stamp = _now()
     created = db.insert_booking(
@@ -382,6 +405,10 @@ def backfill(
             "backfill_note": note.strip(),
         }
     )
+    if category == "compoff":
+        from app.services import compoff as compoff_service
+
+        compoff_service.consume(user_id=user_id, days=duration, booking_id=created["id"], on=today)
     audit.record(
         action="booking.backfilled",
         target_table="bookings",
@@ -400,11 +427,11 @@ def backfill(
             "backfill_note": note.strip(),
         },
     )
-    return created
+    return {**created, "replaced_absence": False}
 
 
 def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
-    """Reverse a backfill — and ONLY a backfill.
+    """Reverse a backfill — and ONLY a backfill, or remove a day marked absent.
 
     An admin entering a month of history by hand will mistype something, and
     without this the mistake is permanent and somebody's balance is wrong
@@ -415,11 +442,33 @@ def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
     genuinely made themselves stays locked once its date has passed, exactly as
     §6.3 requires. Widening this to "an admin may withdraw any past booking"
     would quietly repeal the integrity rule.
+
+    FR-BACK-11 — an `unrecognised` row is treated as admin-entered for this
+    purpose: only `flag_unrecognised` creates that status, so removing one
+    reopens no booking the person made themselves.
     """
     if actor.role != "admin":
         raise BookingRefused("Only an admin can undo a backfill.", status=403)
 
     booking = _require(booking_id)
+
+    if booking["status"] == "unrecognised":
+        cleared = db.update_booking_if_status(
+            booking_id,
+            "unrecognised",
+            {"status": "withdrawn", "decided_by": actor.id, "decided_at": _now()},
+        )
+        if cleared is None:
+            raise BookingRefused("That day changed while you were removing it.", status=409)
+        audit.record(
+            action="booking.absence_cleared",
+            target_table="bookings",
+            target_id=booking_id,
+            actor_id=actor.id,
+            before={"status": "unrecognised", "date": booking["date"]},
+            after={"status": "withdrawn"},
+        )
+        return cleared
 
     if not booking.get("backfilled_by"):
         raise BookingRefused(
@@ -440,6 +489,7 @@ def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
             "backfill_note": (booking.get("backfill_note") or "") + " [undone by admin]",
         },
     )
+    _return_compoff(booking)
     audit.record(
         action="booking.backfill_undone",
         target_table="bookings",
@@ -449,6 +499,158 @@ def undo_backfill(*, booking_id: str, actor: Person) -> dict[str, Any]:
         after={"status": "withdrawn"},
     )
     return updated
+
+
+def convert_absence(
+    *,
+    booking_id: str,
+    category: str,
+    duration: Decimal,
+    reason: str | None,
+    note: str,
+    actor: Person,
+) -> dict[str, Any]:
+    """Turn a day marked absent into the leave actually taken — FR-BACK-10.
+
+    Unlike a backfill, the ordinary allowance check applies: the person was
+    away and nobody recorded why, and converting that into leave is a charge
+    like any other. Comp-off draws on credits instead.
+    """
+    if actor.role != "admin":
+        raise BookingRefused("Only an admin can convert an absence into leave.", status=403)
+
+    if not (note or "").strip():
+        raise BookingRefused("A conversion needs a note saying why it was entered by hand.")
+
+    booking = _require(booking_id)
+
+    from app.services.holidays import holiday_on_for_user
+
+    today = today_in_company_tz()
+    day = date.fromisoformat(booking["date"])
+    holiday = holiday_on_for_user(booking["user_id"], day)
+
+    refusal = rules.check_absence_conversion(
+        booking["status"],
+        day,
+        category,
+        reason,
+        holiday_name=holiday["name"] if holiday else None,
+        today=today,
+    )
+    if refusal:
+        raise BookingRefused(refusal, status=409 if booking["status"] != "unrecognised" else 422)
+
+    return _convert_absence(
+        booking,
+        category=category,
+        duration=duration,
+        reason=reason,
+        note=note,
+        actor=actor,
+        today=today,
+        check_allowance=True,
+    )
+
+
+def balance_after(row: dict[str, Any]) -> str | None:
+    """What is left of the row's allowance once it is counted; None for comp-off."""
+    if row.get("category") not in rules.ALLOWANCE_CATEGORIES:
+        return None
+    day = date.fromisoformat(row["date"])
+    return str(balances.remaining_for(row["user_id"], period_of(day), row["category"]))
+
+
+def _convert_absence(
+    existing: dict[str, Any],
+    *,
+    category: str,
+    duration: Decimal,
+    reason: str | None,
+    note: str,
+    actor: Person,
+    today: date,
+    check_allowance: bool,
+) -> dict[str, Any]:
+    """The single conditional UPDATE both convert_absence and backfill share.
+
+    Rewriting the row in place, guarded on `status = 'unrecognised'`, is one
+    statement and therefore atomic; a concurrent change leaves zero rows and a
+    409 rather than a half-done swap.
+    """
+    user_id = existing["user_id"]
+    if category == "compoff":
+        _require_compoff_credits(user_id, duration, today)
+    elif check_allowance:
+        balance = balances.balances_for(
+            user_id,
+            period_of(date.fromisoformat(existing["date"])),
+            exclude_category=category,
+        )[category]
+        refusal = rules.check_allowance(
+            balance.remaining,
+            duration,
+            category,
+            allow_excess=settings_store.allow_excess_booking(),
+            configured=balance.configured,
+        )
+        if refusal:
+            raise BookingRefused(refusal)
+
+    stamp = _now()
+    updated = db.update_booking_if_status(
+        existing["id"],
+        "unrecognised",
+        {
+            "status": "approved",
+            "category": category,
+            "duration": str(duration),
+            "reason": (reason or "").strip() or None,
+            "decided_by": actor.id,
+            "decided_at": stamp,
+            "backfilled_by": actor.id,
+            "backfilled_at": stamp,
+            "backfill_note": note.strip(),
+        },
+    )
+    if updated is None:
+        raise BookingRefused("That day changed while you were converting it.", status=409)
+
+    if category == "compoff":
+        from app.services import compoff as compoff_service
+
+        compoff_service.consume(user_id=user_id, days=duration, booking_id=existing["id"], on=today)
+
+    audit.record(
+        action="booking.absence_converted",
+        target_table="bookings",
+        target_id=existing["id"],
+        actor_id=actor.id,
+        before={
+            "status": "unrecognised",
+            "category": None,
+            "duration": str(existing["duration"]),
+            "date": existing["date"],
+        },
+        after={
+            "status": "approved",
+            "category": category,
+            "duration": str(duration),
+            "backfill_note": note.strip(),
+        },
+    )
+    return updated
+
+
+def _require_compoff_credits(user_id: str, duration: Decimal, today: date) -> None:
+    """Spec 006 FR-COMP-03 — admin-entered comp-off still spends real credits."""
+    from app.services import compoff as compoff_service
+
+    have = compoff_service.available(user_id, today)
+    if have < duration:
+        raise BookingRefused(
+            f"They have {have} day(s) of comp-off available and this needs {duration}."
+        )
 
 
 def release_for_holiday(

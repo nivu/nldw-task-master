@@ -12,7 +12,9 @@ Ask an admin to check it under Admin → People.
 
 **I cannot select a day on the calendar.**
 It is a weekend, a declared holiday, or it has already passed. Past days are
-locked; if one is wrong, an admin can correct it through Backfill.
+locked; if one is wrong, an admin can correct it through Backfill. A day your
+lead marked as absent can be converted into the leave you took, or removed, by
+an admin.
 
 **Why can I not mark casual leave for today?**
 Casual leave is requested ahead of time. If you are unwell today, mark sick

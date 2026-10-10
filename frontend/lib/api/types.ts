@@ -51,6 +51,8 @@ export interface Balance {
   allowance: string;
   used: string;
   remaining: string;
+  /** Spec 001 FR-BAL-09 — false when no allowance was ever set up for this category. */
+  configured: boolean;
 }
 
 export interface DayBooking {
@@ -135,6 +137,8 @@ export interface PendingApproval {
   id: string;
   user_id: string;
   display_name: string;
+  /** FR-APPR-08 — the requester's lead, or null when it falls to an admin. */
+  approver: string | null;
   date: string;
   category: Category;
   category_label: string;
@@ -161,6 +165,21 @@ export interface BackfillEntry {
   status: BookingStatus;
   note: string | null;
   entered_by: string;
+}
+
+/** FR-BACK-08/10 — what POST /admin/backfill and an absence conversion return. */
+export interface AdminLeaveResult {
+  id: string;
+  user_id: string;
+  date: string;
+  category: Category;
+  duration: string;
+  status: BookingStatus;
+  backfilled_by: string;
+  /** What is left of that allowance afterwards; null for comp-off. May be negative. */
+  balance_after: string | null;
+  /** Backfill only — true when it replaced a day marked absent. */
+  replaced_absence?: boolean;
 }
 
 export interface Holiday {
@@ -333,7 +352,11 @@ export interface TimesheetWeekDay {
   is_today: boolean;
   locked: boolean;
   holiday: boolean;
+  /** Casual, sick or comp-off leave only. */
   on_leave: string | null;
+  /** Work from home is a working day, not leave. */
+  wfh: string | null;
+  booked: { category: Category; label: string; duration: string } | null;
   entries: TimesheetEntry[];
   total: string;
 }
@@ -704,7 +727,14 @@ export interface TeamWeek {
     user_id: string;
     display_name: string;
     total: string;
-    days: { date: string; total: string; holiday: boolean; on_leave: string | null }[];
+    days: {
+      date: string;
+      total: string;
+      holiday: boolean;
+      on_leave: string | null;
+      wfh: string | null;
+      booked: { category: Category; label: string; duration: string } | null;
+    }[];
     missing_days: string[];
     confirmation: { status: "confirmed" | "auto"; confirmed_at: string; note: string | null } | null;
   }[];
@@ -916,7 +946,7 @@ export interface HomeSummary {
     week: {
       week_start: string;
       total: string;
-      days: { date: string; total: string; is_today: boolean; holiday: boolean; on_leave: string | null; locked: boolean }[];
+      days: { date: string; total: string; is_today: boolean; holiday: boolean; on_leave: string | null; wfh: string | null; locked: boolean }[];
     };
     logged_today: boolean;
   };

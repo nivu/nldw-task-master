@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +28,28 @@ logger = logging.getLogger("nldw-task-master")
 # be parseable by standard aggregation tools, and these are not ours to shape.
 for _noisy in ("httpx", "httpcore", "hpack"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+# A personal token pasted into a URL field (a whole curl command, header and
+# all) arrives as part of the path, and every request line is logged. Spec 004
+# FR-TOK-02 shows the plaintext once; it must not then sit in the log.
+_SECRET = re.compile(r"(Bearer(?:\s|%20)+)[^\s\"'&%]+|nunp_[A-Za-z0-9_-]+", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    """Replace any personal token, or whatever follows 'Bearer ', with [redacted]."""
+    return _SECRET.sub(lambda m: f"{m.group(1)}[redacted]" if m.group(1) else "[redacted]", text)
+
+
+class _RedactAccessLog(logging.Filter):
+    """uvicorn's own access line carries the raw path and query string."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactAccessLog())
 
 # ---------------------------------------------------------------------------
 # Lifespan: optionally run a Celery worker inside the API process.
@@ -141,7 +164,7 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Respon
         '{"method": "%s", "path": "%s", "status_code": %d, "duration_ms": %.2f, '
         '"user_id": "%s", "auth_via": "%s"}',
         request.method,
-        request.url.path,
+        redact(request.url.path),
         response.status_code,
         duration_ms,
         getattr(request.state, "user_id", "-"),

@@ -11,9 +11,10 @@ Nothing is done to the route's answer before it reaches the model: what the
 page shows the person, the tool shows the model. That includes leave reasons
 (FR-MCP-03), which the routes already limit to the person, their lead and
 admins (`001` NFR-05), and to the places the portal shows them (Q-06). The
-one exception is `team_day`, which drops the reason the
+exceptions are `team_day`, which drops the reason the
 `lead_view_shows_reason` setting would add, because the Team page never
-shows it.
+shows it, and `pending_approvals`, which joins the leave queue and the
+pending comp-off claims into one answer, as the Approvals page does.
 
 Tools that change something say so in their annotations and in their
 description, and ask the model to confirm with the person first (FR-MCP-04).
@@ -112,7 +113,10 @@ async def _api(
     from app.main import app  # late: main mounts this module
 
     clean = {k: v for k, v in (params or {}).items() if v is not None}
-    transport = httpx.ASGITransport(app=app)
+    # A crash in the route comes back as the route's own RFC 7807 500, already
+    # logged with its traceback by `unhandled_handler` (FR-MCP-07). Re-raised,
+    # it would reach the model as a bare "Error executing tool".
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://portal.internal") as client:
         response = await client.request(
             method,
@@ -126,6 +130,15 @@ async def _api(
             detail = response.json().get("detail") or response.text
         except json.JSONDecodeError:
             detail = response.text
+        if response.status_code >= 500:
+            # A failed read is safe to repeat; a failed write may already have
+            # landed, and repeating it could book or log something twice.
+            hint = (
+                "This is usually temporary; try once more."
+                if method.upper() in ("GET", "HEAD")
+                else "It may or may not have been saved; check before trying again."
+            )
+            raise ToolError(f"{response.status_code}: {detail} {hint}")
         raise ToolError(f"{response.status_code}: {detail}")
     if not response.content:
         return {"status": "ok"}
@@ -196,8 +209,9 @@ async def book_leave(
     reason: str | None = None,
 ) -> dict:
     """Book a day for the connected person. CONFIRM WITH THEM FIRST.
-    category: wfh | casual | sick. duration: "1" or "0.5". Casual must be a
-    future day; sick must be today; wfh may be either. The portal refuses
+    category: wfh | casual | sick. duration: "full" | "half" (or 1.0 / 0.5).
+    reason: the person's own reason, required for casual and sick. Casual
+    must be a future day; sick must be today; wfh may be either. The portal refuses
     weekends, holidays, locked days and insufficient balance with a sentence
     to relay verbatim. The booking is pending until their lead decides."""
     return await _api(
@@ -256,9 +270,17 @@ async def team_day(ctx: Context, day: str | None = None) -> dict:
 
 
 @mcp.tool(annotations=READ)
-async def pending_approvals(ctx: Context) -> list:
-    """Requests waiting for this person's decision, each with its reason."""
-    return await _api(ctx, "GET", "/team/approvals")
+async def pending_approvals(ctx: Context) -> dict:
+    """Requests waiting for this person's decision: `leave` (leave requests,
+    each with its reason and its approver, the requester's lead or null when
+    it falls to an admin) and `compoff` (pending comp-off claims). A lead sees
+    their own reports; an ADMIN sees every pending request in the organisation
+    except their own. Decide with decide_booking / decide_compoff."""
+    leave = await _api(ctx, "GET", "/team/approvals")
+    claims = await _api(ctx, "GET", "/compoff/team")
+    # One call for the whole queue: /compoff/team lists every status, the
+    # queue is only what still waits.
+    return {"leave": leave, "compoff": [c for c in claims if c.get("status") == "pending"]}
 
 
 @mcp.tool(annotations=READ)
@@ -308,14 +330,20 @@ async def log_day(ctx: Context, day: str, lines: list[dict[str, Any]]) -> dict:
 
 @mcp.tool(annotations=READ)
 async def my_week(ctx: Context, week_start: str | None = None) -> dict:
-    """The person's timesheet for a week (Monday date, default this week)."""
+    """The person's timesheet for a week (Monday date, default this week).
+    Each day: total hours, holiday, on_leave (duration of casual, sick or
+    comp-off leave, else null), wfh (duration of an approved or pending
+    work-from-home booking, else null; WFH is a working day, not leave) and
+    booked {category, label, duration}. missing_days lists the expected days
+    with nothing logged: a WFH day and a half day of leave are expected."""
     return await _api(ctx, "GET", "/timesheet/week", params={"week_start": week_start})
 
 
 @mcp.tool(annotations=READ)
 async def someone_elses_week(ctx: Context, user_id: str, week_start: str | None = None) -> dict:
     """A report's or colleague's week, if this person may see it (their lead,
-    a manager, or an admin)."""
+    a manager, or an admin). Same shape as my_week: on_leave is leave only
+    (casual, sick, comp-off); wfh is a working day and is still expected."""
     return await _api(
         ctx, "GET", f"/timesheet/of/{user_id}/week", params={"week_start": week_start}
     )
@@ -694,14 +722,24 @@ async def list_allowances(ctx: Context) -> list:
 async def set_allowance(
     ctx: Context, period: str, category: str, days: str, user_id: str | None = None
 ) -> dict:
-    """ADMINS. Set a monthly allowance from a period (YYYY-MM) onwards. CONFIRM
-    FIRST. user_id None = the organisation default."""
+    """ADMINS. Set a monthly allowance (days per month) for a period (YYYY-MM).
+    CONFIRM FIRST. user_id None = the organisation default, which continues into
+    later months until changed. With a user_id it is a personal override for
+    that month only."""
     return await _api(
         ctx,
         "PUT",
         "/admin/allowances",
         body={"period": period, "category": category, "days": days, "user_id": user_id},
     )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def remove_allowance(ctx: Context, allowance_id: str) -> dict:
+    """ADMINS. Remove one person's allowance override (id from list_allowances),
+    so the organisation default applies to them again. Company defaults cannot
+    be removed; set a new figure instead. CONFIRM FIRST."""
+    return await _api(ctx, "DELETE", f"/admin/allowances/{allowance_id}")
 
 
 @mcp.tool(annotations=READ)
@@ -765,13 +803,18 @@ async def backfill_leave(
     user_id: str,
     day: str,
     category: str,
-    duration: str,
     note: str,
+    duration: str = "full",
     reason: str | None = None,
 ) -> dict:
-    """ADMINS. Record leave already taken on a locked day — the one sanctioned
-    override of the lock. CONFIRM FIRST. A note saying why is required and is
-    shown to the person."""
+    """ADMINS. Record leave already taken on a past (locked) day — the one
+    sanctioned override of the lock. CONFIRM FIRST. category: wfh | casual |
+    sick | compoff. duration: "full" | "half" (or 1.0 / 0.5). reason: the
+    person's own reason, required for casual and sick, optional for wfh and
+    compoff. note: why it is being entered by hand, always required and shown
+    to the person. The day must be a past weekday; weekends, holidays and a
+    day that already holds a record are refused. If the day only holds an
+    absence marked by mark_absent, it is replaced with this leave."""
     return await _api(
         ctx,
         "POST",
@@ -787,9 +830,33 @@ async def backfill_leave(
     )
 
 
+@mcp.tool(annotations=WRITE)
+async def convert_absence(
+    ctx: Context,
+    booking_id: str,
+    category: str,
+    duration: str,
+    note: str,
+    reason: str | None = None,
+) -> dict:
+    """ADMINS. Turn a day marked absent (unrecognised, from mark_absent) into the
+    leave actually taken, in place. CONFIRM FIRST. Counts against the person's
+    allowance like any booking and is refused if the balance is short (comp-off
+    uses credits instead). category: wfh | casual | sick | compoff. duration:
+    "full" | "half" (or 1.0 / 0.5). reason: the person's own reason, required
+    for casual and sick. note: why it is being entered by hand, always
+    required. Returns balance_after (null for comp-off)."""
+    return await _api(
+        ctx,
+        "POST",
+        f"/admin/absences/{booking_id}/convert",
+        body={"category": category, "duration": duration, "reason": reason, "note": note},
+    )
+
+
 @mcp.tool(annotations=DESTRUCTIVE)
 async def undo_backfill(ctx: Context, booking_id: str) -> dict:
-    """ADMINS. Undo a backfilled entry. CONFIRM FIRST."""
+    """ADMINS. Undo a backfilled entry, or remove a day marked absent. CONFIRM FIRST."""
     return await _api(ctx, "DELETE", f"/admin/backfill/{booking_id}")
 
 
@@ -848,8 +915,8 @@ async def claim_compoff(
 
 @mcp.tool(annotations=READ)
 async def team_compoff(ctx: Context) -> list:
-    """LEADS. Comp-off claims from the people this person may decide for,
-    pending first."""
+    """LEADS AND ADMINS (admins: anyone). Comp-off claims from the people this
+    person may decide for, pending first."""
     return await _api(ctx, "GET", "/compoff/team")
 
 
@@ -857,8 +924,8 @@ async def team_compoff(ctx: Context) -> list:
 async def decide_compoff(
     ctx: Context, credit_id: str, approve: bool, note: str | None = None
 ) -> dict:
-    """LEADS. Approve or reject a comp-off claim. CONFIRM FIRST. Rejecting
-    needs a note the person will read."""
+    """LEADS AND ADMINS (admins: anyone). Approve or reject a comp-off claim.
+    CONFIRM FIRST. Rejecting needs a note the person will read."""
     return await _api(
         ctx, "POST", f"/compoff/{credit_id}/decision", body={"approve": approve, "note": note}
     )
@@ -869,7 +936,10 @@ async def team_weeks(ctx: Context, week_start: str | None = None) -> dict:
     """LEADS. Each report's week (Monday date, default this week): hours,
     missing days and whether it is confirmed. People who do not log time, or
     whose joined_on / left_on put the whole week outside their time here, are
-    not listed, and days before portal_start_date are not missing."""
+    not listed, and days before portal_start_date are not missing. Each day
+    has on_leave (casual, sick or comp-off only), wfh and booked {category,
+    label, duration}. WFH is a working day and still counts as an expected
+    day in missing_days; a half day of leave is still expected."""
     return await _api(ctx, "GET", "/team/timesheets", params={"week_start": week_start})
 
 

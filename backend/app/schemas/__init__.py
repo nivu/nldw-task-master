@@ -15,13 +15,31 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, field_validator
 
 Category = Literal["wfh", "casual", "sick", "compoff"]
 Role = Literal["user", "lead", "manager", "admin"]
 Status = Literal["pending", "approved", "rejected", "withdrawn", "released", "unrecognised"]
+
+_DURATION_WORDS = {"full": "1.0", "full day": "1.0", "half": "0.5", "half day": "0.5"}
+
+
+def _duration_word(value: object) -> object:
+    """FR-BOOK-02 — "full" / "half" (any case) are synonyms for 1.0 / 0.5.
+
+    Claude reads "duration" as a word far more readily than as a number.
+    """
+    if isinstance(value, str):
+        word = value.strip().lower()
+        return _DURATION_WORDS.get(word, word)
+    return value
+
+
+#: A day's duration: 1.0 / 0.5 as a number or string, or "full" / "half".
+#: Each model still checks the value is one of the two with `_half_or_full`.
+DayDuration = Annotated[Decimal, BeforeValidator(_duration_word)]
 
 
 class BookingCreate(BaseModel):
@@ -31,14 +49,14 @@ class BookingCreate(BaseModel):
 
     date: date
     category: Category
-    duration: Decimal
+    duration: DayDuration
     reason: str | None = Field(default=None, max_length=500)
 
     @field_validator("duration")
     @classmethod
     def _half_or_full(cls, value: Decimal) -> Decimal:
         if value not in (Decimal("0.5"), Decimal("1.0")):
-            raise ValueError("duration must be 0.5 (half day) or 1.0 (full day)")
+            raise ValueError("duration must be full (1.0) or half (0.5)")
         return value
 
     @field_validator("reason")
@@ -90,6 +108,8 @@ class BalanceOut(BaseModel):
     allowance: str
     used: str
     remaining: str
+    #: FR-BAL-09 — False when no allowance was ever set up for this category.
+    configured: bool = True
 
 
 class HolidayIn(BaseModel):
@@ -186,7 +206,7 @@ class BackfillIn(BaseModel):
     user_id: str
     date: date
     category: Category
-    duration: Decimal
+    duration: DayDuration
     reason: str | None = Field(default=None, max_length=500)
     note: str = Field(min_length=1, max_length=500)
 
@@ -194,7 +214,29 @@ class BackfillIn(BaseModel):
     @classmethod
     def _half_or_full(cls, value: Decimal) -> Decimal:
         if value not in (Decimal("0.5"), Decimal("1.0")):
-            raise ValueError("duration must be 0.5 (half day) or 1.0 (full day)")
+            raise ValueError("duration must be full (1.0) or half (0.5)")
+        return value
+
+
+class AbsenceConvertIn(BaseModel):
+    """FR-BACK-10 — an admin turning a day marked absent into the leave taken.
+
+    The date and person come from the unrecognised row itself; `note` is
+    required for the same reason as on `BackfillIn`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: Category
+    duration: DayDuration
+    reason: str | None = Field(default=None, max_length=500)
+    note: str = Field(min_length=1, max_length=500)
+
+    @field_validator("duration")
+    @classmethod
+    def _half_or_full(cls, value: Decimal) -> Decimal:
+        if value not in (Decimal("0.5"), Decimal("1.0")):
+            raise ValueError("duration must be full (1.0) or half (0.5)")
         return value
 
 

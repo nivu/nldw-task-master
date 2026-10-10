@@ -84,13 +84,13 @@ export default function HomePage() {
             <div className="flex items-end gap-2">
               {m.week.days.map((d) => {
                 const h = Number(d.total);
-                const off = d.holiday || (d.on_leave && d.on_leave !== null);
+                const off = d.holiday || !!d.on_leave;
                 return (
                   <Link
                     key={d.date}
                     href="/timesheet"
                     className="flex flex-1 flex-col items-center gap-1"
-                    title={`${d.date}: ${h}h${d.holiday ? " · holiday" : ""}${d.on_leave ? ` · ${d.on_leave}` : ""}`}
+                    title={`${d.date}: ${h}h${d.holiday ? " · holiday" : ""}${d.on_leave ? ` · leave ${d.on_leave}` : ""}${d.wfh ? " · WFH" : ""}`}
                   >
                     <div className="flex h-24 w-full items-end rounded bg-muted/60">
                       <div
@@ -121,14 +121,21 @@ export default function HomePage() {
           </CardHeader>
           <CardContent className="grid grid-cols-3 gap-2">
             {m.balances.map((b) => (
-              <Ring
-                key={b.category}
-                used={Number(b.used)}
-                total={Number(b.opening) + Number(b.allowance)}
-                label={CATEGORY_LABEL[b.category]}
-                colour={RING[b.category]}
-                size={52}
-              />
+              <div key={b.category}>
+                <Ring
+                  used={Number(b.used)}
+                  total={Number(b.opening) + Number(b.allowance)}
+                  label={CATEGORY_LABEL[b.category]}
+                  colour={RING[b.category]}
+                  size={52}
+                />
+                {/* FR-BAL-09 — never set up is not the same as used up. */}
+                {b.configured === false && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Not set up yet — ask an admin
+                  </p>
+                )}
+              </div>
             ))}
           </CardContent>
         </Card>

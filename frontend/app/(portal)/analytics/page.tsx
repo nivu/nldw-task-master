@@ -373,8 +373,8 @@ export default function AnalyticsPage() {
             <CardHeader>
               <CardTitle className="text-base">Who has logged what</CardTitle>
               <CardDescription>
-                Working days only — weekends, holidays and full days of approved
-                leave are not gaps.
+                Working days only — weekends, holidays and full days of leave
+                are not gaps. Work from home is a working day.
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-y p-0">

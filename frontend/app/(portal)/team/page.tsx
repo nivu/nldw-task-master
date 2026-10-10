@@ -8,9 +8,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CompoffQueue, QuarterReviews, WeekSignoff } from "@/components/portal/team-ops";
-import { errorMessage, flagUnrecognised, getTeamConsumption, getTeamDay } from "@/lib/api/portal";
+import { RecordLeaveForm, type RecordLeaveInput } from "@/components/portal/record-leave-form";
+import {
+  backfillLeave,
+  convertAbsence,
+  errorMessage,
+  flagUnrecognised,
+  getMe,
+  getTeamConsumption,
+  getTeamDay,
+  undoBackfill,
+} from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
-import type { PersonBalances, TeamDay, TeamMemberDay } from "@/lib/api/types";
+import type { AdminLeaveResult, PersonBalances, TeamDay, TeamMemberDay } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
@@ -29,20 +39,51 @@ import { cn } from "@/lib/utils";
 export default function TeamPage() {
   const [day, setDay] = useState<string>("");
   const [notice, setNotice] = useState<string | null>(null);
+  // Which row's "Record leave taken" / "Convert to leave" form is open.
+  const [recording, setRecording] = useState<string | null>(null);
 
   const { data, error, setError, reload } = useAsync<{
     day: TeamDay;
     consumption: PersonBalances[];
+    isAdmin: boolean;
   }>(
     async () => {
-      const [teamDay, usage] = await Promise.all([
+      const [teamDay, usage, me] = await Promise.all([
         getTeamDay(day || undefined),
         getTeamConsumption(),
+        getMe(),
       ]);
-      return { day: teamDay, consumption: usage.people };
+      return { day: teamDay, consumption: usage.people, isAdmin: me.role === "admin" };
     },
     [day]
   );
+
+  /** FR-BACK-08/10 — admin-only fixes for a past day, from the person's row. */
+  async function recordLeave(person: TeamMemberDay, input: RecordLeaveInput) {
+    if (!data) return;
+    try {
+      const result =
+        person.state === "unrecognised" && person.booking_id
+          ? await convertAbsence(person.booking_id, input)
+          : await backfillLeave({ user_id: person.user_id, date: data.day.date, ...input });
+      setNotice(leaveNotice(person, result));
+      setRecording(null);
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function removeAbsence(person: TeamMemberDay) {
+    if (!data || !person.booking_id) return;
+    try {
+      await undoBackfill(person.booking_id);
+      setNotice(`Absence mark removed for ${person.display_name} on ${data.day.date}.`);
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
 
   async function flag(person: TeamMemberDay) {
     if (!data) return;
@@ -64,7 +105,9 @@ export default function TeamPage() {
   }
   if (!data) return <p className="text-sm text-muted-foreground">Loading the team…</p>;
 
-  const { day: teamDay, consumption } = data;
+  const { day: teamDay, consumption, isAdmin } = data;
+  // A past weekday that is not a holiday: the only days an admin can fix.
+  const fixable = teamDay.date < teamDay.today && !teamDay.is_weekend && !teamDay.holiday;
   const isToday = teamDay.date === teamDay.today;
   const pretty = new Date(`${teamDay.date}T00:00:00`).toLocaleDateString("en-GB", {
     weekday: "long",
@@ -129,6 +172,14 @@ export default function TeamPage() {
         <Stat label="Unrecognised" value={teamDay.summary.unrecognised} />
       </div>
 
+      {/* Shown once, not on every row: the difference between the two buttons. */}
+      {isAdmin && fixable && (
+        <p className="text-xs text-muted-foreground">
+          Record leave taken counts against their allowance. Mark absent records an unexplained
+          absence and uses no allowance.
+        </p>
+      )}
+
       <Card>
         <CardContent className="divide-y p-0">
           {teamDay.people.length === 0 && (
@@ -137,44 +188,83 @@ export default function TeamPage() {
             </p>
           )}
           {teamDay.people.map((person) => (
-            <div key={person.user_id} className="flex items-center gap-3 p-3">
-              <span className="flex-1 text-sm font-medium">{person.display_name}</span>
+            <div key={person.user_id} className="p-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="flex-1 text-sm font-medium">{person.display_name}</span>
 
-              {person.state === "present" ? (
-                <>
-                  <Badge variant="outline">Present</Badge>
-                  {/* FR-LEAD-03. V1 has no attendance data, so an
-                      unrecognised absence is set by hand, after the fact. */}
-                  {teamDay.date < teamDay.today && !teamDay.is_weekend && !teamDay.holiday && (
-                    <Button variant="ghost" size="sm" onClick={() => flag(person)}>
-                      Mark absent
-                    </Button>
-                  )}
-                </>
-              ) : (
-                <>
-                  <span className="text-sm text-muted-foreground">
-                    {person.category_label ?? "Absent, not booked"}
-                    {person.duration === "0.5" && " (half day)"}
-                  </span>
-                  {/* FR-LEAD-02 — agreed absences must be distinguishable
-                      from merely requested ones. */}
-                  <Badge
-                    variant={
-                      person.state === "approved"
-                        ? "secondary"
-                        : person.state === "pending"
-                          ? "outline"
-                          : "destructive"
+                {person.state === "present" ? (
+                  <>
+                    <Badge variant="outline">Present</Badge>
+                    {/* FR-LEAD-03. V1 has no attendance data, so an
+                        unrecognised absence is set by hand, after the fact. */}
+                    {fixable && (
+                      <Button variant="ghost" size="sm" onClick={() => flag(person)}>
+                        Mark absent
+                      </Button>
+                    )}
+                    {fixable && isAdmin && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setRecording(person.user_id)}
+                      >
+                        Record leave taken
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-muted-foreground">
+                      {person.category_label ?? "Absent, not booked"}
+                      {person.duration === "0.5" && " (half day)"}
+                    </span>
+                    {/* FR-LEAD-02 — agreed absences must be distinguishable
+                        from merely requested ones. */}
+                    <Badge
+                      variant={
+                        person.state === "approved"
+                          ? "secondary"
+                          : person.state === "pending"
+                            ? "outline"
+                            : "destructive"
+                      }
+                    >
+                      {person.state}
+                    </Badge>
+                    {/* A-21 — a lead planning around an absence should know
+                        which records were entered by an admin after the fact
+                        rather than requested at the time. */}
+                    {person.backfilled && <Badge variant="outline">by admin</Badge>}
+                    {/* FR-BACK-10/11 — a wrong absence mark is fixable by an admin. */}
+                    {person.state === "unrecognised" && isAdmin && (
+                      <>
+                        {fixable && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setRecording(person.user_id)}
+                          >
+                            Convert to leave
+                          </Button>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={() => removeAbsence(person)}>
+                          Remove
+                        </Button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+              {recording === person.user_id && (
+                <div className="mt-2">
+                  <RecordLeaveForm
+                    submitLabel={
+                      person.state === "unrecognised" ? "Convert to leave" : "Record leave taken"
                     }
-                  >
-                    {person.state}
-                  </Badge>
-                  {/* A-21 — a lead planning around an absence should know
-                      which records were entered by an admin after the fact
-                      rather than requested at the time. */}
-                  {person.backfilled && <Badge variant="outline">by admin</Badge>}
-                </>
+                    onSubmit={(input) => recordLeave(person, input)}
+                    onCancel={() => setRecording(null)}
+                  />
+                </div>
               )}
             </div>
           ))}
@@ -236,6 +326,20 @@ export default function TeamPage() {
       </Tabs>
     </div>
   );
+}
+
+/** The success notice, with the allowance left afterwards when there is one. */
+function leaveNotice(person: TeamMemberDay, result: AdminLeaveResult): string {
+  const what = CATEGORY_LABEL[result.category].toLowerCase();
+  const done =
+    person.state === "unrecognised" || result.replaced_absence
+      ? `Converted ${person.display_name}'s absence on ${result.date} into ${what}.`
+      : `Recorded ${what} for ${person.display_name} on ${result.date}.`;
+  if (result.balance_after === null) return done;
+  const left = Number(result.balance_after);
+  return left < 0
+    ? `${done} Warning: their ${what} balance is now ${result.balance_after} — below zero.`
+    : `${done} ${result.balance_after} day(s) of ${what} left this month.`;
 }
 
 function Stat({ label, value }: { label: string; value: number }) {

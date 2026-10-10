@@ -59,6 +59,11 @@ export function BookingDialog({
     category === "compoff"
       ? compoffAvailable
       : (balances.find((b) => b.category === category)?.remaining ?? "0");
+  // FR-BAL-09 — nobody has set an allowance for this category yet, which is
+  // not the same as having used it up.
+  const notSetUp =
+    category !== "compoff" &&
+    balances.find((b) => b.category === category)?.configured === false;
   // Q-07 — a reason is required for casual and sick, optional for WFH and
   // comp-off. The server enforces this; the form only mirrors it so the
   // button state is honest before anyone presses it.
@@ -173,15 +178,21 @@ export function BookingDialog({
           </div>
 
           {/* FR-BOOK-12 */}
-          <p className="rounded-md bg-muted px-3 py-2 text-sm">
-            <span className="text-muted-foreground">You have </span>
-            <span className="font-medium">{remaining}</span>
-            <span className="text-muted-foreground">
-              {" "}
-              {remaining === "1.0" ? "day" : "days"} of{" "}
-              {CATEGORY_LABEL[category].toLowerCase()} left this month.
-            </span>
-          </p>
+          {notSetUp ? (
+            <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+              {CATEGORY_LABEL[category]} hasn&apos;t been set up yet — ask an admin.
+            </p>
+          ) : (
+            <p className="rounded-md bg-muted px-3 py-2 text-sm">
+              <span className="text-muted-foreground">You have </span>
+              <span className="font-medium">{remaining}</span>
+              <span className="text-muted-foreground">
+                {" "}
+                {remaining === "1.0" ? "day" : "days"} of{" "}
+                {CATEGORY_LABEL[category].toLowerCase()} left this month.
+              </span>
+            </p>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="reason">

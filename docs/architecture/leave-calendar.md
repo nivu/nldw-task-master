@@ -74,6 +74,15 @@ schema decision. `rolling` accumulates from the start of tracking; `pooling`
 resets each January. Both are implemented; `app_settings.carry_forward_policy`
 picks. This is why the question can stay open without blocking anything.
 
+A zero balance can mean two different things, and the ledger keeps them apart
+(spec FR-BAL-09). `ledger.is_configured` asks whether any allowance row —
+personal or company — exists for the category at or before the period;
+`Balance.configured` carries the answer to the API (`configured` on every
+balance) and to `check_allowance`, which then says "not set up yet, ask an
+admin" instead of "0 days remaining". A personal override covers its own month
+only (A-12); `DELETE /admin/allowances/{id}` removes one, and refuses company
+defaults, which can only be replaced.
+
 ### 3. The audit log is append-only in the database, not by convention
 
 `005_audit_triggers.sql` installs triggers that reject `UPDATE`, `DELETE` and
@@ -115,6 +124,22 @@ Everything about how it is built is aimed at keeping it from growing:
   happened, and at go-live the allowances usually have not been set yet.
   `test_backfill.py` asserts the absence of that parameter structurally, so
   adding it later fails a test rather than silently changing behaviour.
+* A day marked absent (`unrecognised`, only ever created by `flag_unrecognised`)
+  is fixed in place, never by withdraw-then-insert.
+  `services/bookings.py::convert_absence` (FR-BACK-10, `POST
+  /admin/absences/{id}/convert`) checks `rules.check_absence_conversion` and
+  then the normal allowance (or comp-off credits). It shares the private
+  `_convert_absence` with `backfill`, which uses it when the only row on the
+  day is unrecognised (no allowance check there, per FR-BACK-07). The write is
+  one `db.update_booking_if_status(id, "unrecognised", ...)`: a single UPDATE,
+  so it is atomic, and zero rows back means the day changed underneath and the
+  caller gets a 409. `ALLOWED_TRANSITIONS` is not widened, so `decide()` still
+  cannot touch an unrecognised row.
+* `undo_backfill` also accepts an `unrecognised` row and withdraws it
+  (FR-BACK-11, audit `booking.absence_cleared`). The withdrawn row keeps its
+  NULL category, which `bookings_category_required` permits for `unrecognised`
+  and `withdrawn` only (spec A-18, migration 024). Comp-off backfills spend
+  credits on the way in and `undo_backfill` returns them.
 
 ## Who can see a reason
 
@@ -187,6 +212,10 @@ process. Every tool is a thin wrapper that calls the matching API route
 **in-process** (httpx over an ASGI transport) with the caller's own bearer
 token, so authorisation, validation, error wording and request logging are
 the route's, verbatim. There is no second authorisation code path.
+A crash inside a route is not re-raised into the tool: the transport returns
+the route's RFC 7807 500 (logged with its traceback by `unhandled_handler`),
+and the model reads that sentence plus "This is usually temporary; try once
+more." rather than a bare "Error executing tool" (FR-MCP-07).
 
 Callers authenticate with a **personal access token** (`nunp_…`, spec 004
 FR-TOK). `deps.current_user` recognises the prefix and resolves it through
@@ -201,10 +230,13 @@ amended 2026-10-05), and the routes enforce that: `bookings.get_booking`
 checks `can_view_reason` and, for anyone but the owner, includes the reason
 only while the booking is pending (Q-06: the portal shows someone else's
 reason only on the approval screen); `team.pending_approvals` returns only
-requests the caller `can_decide`; `/me/calendar` is the caller's own. The one
-change the MCP layer makes to a route's answer is in `team_day`, which drops
-the `reason` that `lead_view_shows_reason` adds to the roster, because the
-Team page never shows it. `test_api_permissions.TestLeaveReasons` holds the
+requests the caller `can_decide`, each naming its `approver` (the lead's name,
+or null when it falls to an admin; FR-APPR-08); `/me/calendar` is the
+caller's own. The MCP layer changes a route's answer in two places:
+`team_day` drops the `reason` that `lead_view_shows_reason` adds to the
+roster, because the Team page never shows it; and `pending_approvals` joins
+`/team/approvals` with the still-pending claims from `/compoff/team` into
+`{"leave": [...], "compoff": [...]}`, as the Approvals page shows them. `test_api_permissions.TestLeaveReasons` holds the
 routes to that; `test_mcp.py` checks the roster rule, and fails if a route is
 added without a tool, or a write tool stops asking for confirmation.
 
@@ -315,9 +347,11 @@ Demo accounts, all with password `portal123` (see `supabase/seed.sql`):
 
 ## Known gaps
 
-- **Allowance figures are placeholders** (spec Q-01). wfh 4.0, casual 1.5, sick
-  1.0 per month were invented so the product is usable in development. They must
-  be replaced before the first live month.
+- **Development allowance figures are placeholders** (spec Q-01). `seed.sql`'s
+  wfh 4.0, casual 1.5, sick 1.0 per month are development data only. Production
+  figures are set by admins in Admin > Allowances, except the sick default (1.0
+  a month from 2026-10), which migration `023_sick_allowance_default.sql`
+  inserted because production had none.
 - **The sandwich rule's `true` branch does not exist** (spec Q-09). The setting
   refuses to be switched on rather than silently doing nothing.
 - **Notification senders have no credentials.** Both adapters are complete;

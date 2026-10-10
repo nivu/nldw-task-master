@@ -61,6 +61,9 @@ If you log hours on a day you booked as leave, the portal warns you but lets
 you save. People do finish something on a sick day, and refusing would make the
 effort vanish from the project.
 
+Work from home is not leave. A work-from-home day is a normal working day: log
+it as usual, and you get the evening reminder if nothing is logged.
+
 ## Why the note matters
 
 There is no task list in the portal on purpose. Task tracking lives in the

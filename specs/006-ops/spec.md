@@ -37,7 +37,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 
 | ID | Requirement |
 |---|---|
-| FR-NUDGE-01 | 18:00 on a working day: anyone with nothing logged for today, who is not on full-day leave, is told, with a link. Setting `nudge_hour`, `nudges_enabled`. |
+| FR-NUDGE-01 | 18:00 on a working day: anyone with nothing logged for today, who is not on full-day leave (work from home is not leave), is told, with a link. Setting `nudge_hour`, `nudges_enabled`. |
 | FR-NUDGE-02 | Friday 17:00: each lead receives their reports' missing days for the week. |
 | FR-NUDGE-03 | Monday 09:00: each manager receives who is over 100% in the coming week. |
 | FR-NUDGE-04 | An admin can send themselves a test message to prove the token works. |
@@ -52,6 +52,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | FR-SIGN-03 | A lead may reopen a confirmed week while it is still editable (until the edit window for its Sunday closes); the person is told, with the last day they can correct it. Reopening a week that was not confirmed tells nobody. |
 | FR-SIGN-04 | Confirmation is audited. |
 | FR-SIGN-05 | Sign-off is expected only of people whose `logs_time` is on, only for weeks that end on or after `portal_start_date`, and only for weeks with at least one day between the person's joining and leaving dates: neither is listed for confirmation nor auto-confirmed otherwise (`002` FR-ANALYTICS-07/08). |
+| FR-SIGN-06 | The sign-off view lists, per day, leave (`on_leave`: casual, sick or comp-off) and work from home (`wfh`) separately, and its missing days come from the one definition in `002` FR-ANALYTICS-07: a work-from-home day and a half day of leave are still expected. *Added 10 October 2026.* |
 
 ## 3. Effort statements — FR-STMT
 
@@ -66,7 +67,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 
 | ID | Requirement |
 |---|---|
-| FR-UTIL-01 | Per person per month: billable hours (projects with a client), internal project hours, activity hours, capacity hours (working days × the person's contracted hours a day — 8 full time, `005` FR-CTC-06 — less approved leave), utilisation = billable ÷ capacity. Q-04. |
+| FR-UTIL-01 | Per person per month: billable hours (projects with a client), internal project hours, activity hours, capacity hours (working days × the person's contracted hours a day — 8 full time, `005` FR-CTC-06 — less approved leave, not work from home), utilisation = billable ÷ capacity. Q-04. |
 | FR-UTIL-02 | Target utilisation is a setting (`utilisation_target`, 80). Below target is shown, never ranked. |
 | FR-UTIL-03 | Bench: per person per week for the next N weeks, allocated %; under `bench_threshold` (60) is bench. Manager tier. |
 | FR-UTIL-04 | Leads see utilisation for their reports; managers everyone. |
@@ -124,7 +125,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 |---|---|
 | FR-LOC-01 | Locations are admin-managed; one default exists; each person belongs to one. |
 | FR-LOC-02 | A holiday applies everywhere or to one location. A person's calendar, timesheet, capacity and coverage use the holidays that apply to them. |
-| FR-COMP-01 | A person who worked a weekend or a holiday claims a comp-off (full or half day) with a note; their lead approves or rejects. |
+| FR-COMP-01 | A person who worked a weekend or a holiday claims a comp-off (full or half day) with a note; their lead, or any admin, approves or rejects. |
 | FR-COMP-02 | An approved credit is valid for `compoff_valid_days` (90) and lapses nightly after that. |
 | FR-COMP-03 | Booking a `compoff` day consumes the oldest valid credit; it draws on no allowance. Withdrawing the booking returns the credit. |
 | FR-COMP-04 | Balances show comp-off available; the team view shows comp-off as its own category. |

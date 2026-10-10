@@ -45,7 +45,8 @@ Everything you can do in the portal, and nothing you cannot:
 
 - Read your calendar, balances and history; book or withdraw a day.
 - Log your day against projects or activities; read your week.
-- If you are a lead: see the team, your pending approvals, and decide them;
+- If you are a lead: see the team, your pending approvals (leave and comp-off
+  together; an admin sees everyone's), and decide them;
   confirm or reopen your reports' weeks; see hours on every project and per
   project category, and the company-wide capacity forecast; create projects
   and allocate your own reports (never money).
@@ -77,3 +78,5 @@ shows the category only, whatever the admin settings say, as in the portal.
   matter.
 - Every action taken through Claude is logged as coming through a token, so
   it can be told apart from what you did in the browser.
+- The portal never writes a token into its logs, even one pasted into an
+  address by mistake. Revoke it anyway if that happens.

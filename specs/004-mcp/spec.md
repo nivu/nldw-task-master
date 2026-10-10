@@ -81,6 +81,7 @@ Claude ── MCP over HTTP ──▶ backend /mcp ──▶ the same API routes
 | FR-TOK-05 | A token MUST stop working the moment its owner is deactivated, exactly as a session does. |
 | FR-TOK-06 | Issuing and revoking a token MUST be written to the audit log. |
 | FR-TOK-07 | Each request made with a token MUST be logged as such (`auth_via: token`) so the two channels can be told apart. |
+| FR-TOK-08 | A token MUST NOT be written to the log, even when it arrives inside a URL: request lines replace anything matching `nunp_…`, or following `Bearer `, with `[redacted]`. *Added 10 October 2026.* |
 
 ### 4.2 Tools — FR-MCP
 
@@ -88,10 +89,12 @@ Claude ── MCP over HTTP ──▶ backend /mcp ──▶ the same API routes
 |---|---|
 | FR-MCP-01 | Every API operation a person can perform in the web app MUST have a tool. |
 | FR-MCP-02 | A tool MUST act as the token's owner and MUST be refused where the route would refuse that person. |
-| FR-MCP-03 | **A leave reason MUST be returned by a tool exactly where the portal shows it, and to nobody the portal would not show it to** — the person, their lead (`lead_id`) and admins (`001` NFR-05). A manager or lead who is not the person's lead MUST NOT receive it. The person reads their own reason on any of their bookings; their lead and admins read it only on a request still pending a decision, as on the portal's approval screen (`001` Q-06), whether through `pending_approvals` or `get_booking`. The team-day roster stays category only (`001` FR-LEAD, Q-06), even when `lead_view_shows_reason` is on, because the portal's Team page never shows a reason. The MCP layer does not redact; the routes enforce NFR-05, and route-level tests (`test_api_permissions.py`, `TestLeaveReasons`) hold them to it. *Amended 5 October 2026 — see Q-03.* |
+| FR-MCP-03 | **A leave reason MUST be returned by a tool exactly where the portal shows it, and to nobody the portal would not show it to** — the person, their lead (`lead_id`) and admins (`001` NFR-05). A manager or lead who is not the person's lead MUST NOT receive it. The person reads their own reason on any of their bookings; their lead and admins read it only on a request still pending a decision, as on the portal's approval screen (`001` Q-06), whether through `pending_approvals` or `get_booking`. The team-day roster stays category only (`001` FR-LEAD, Q-06), even when `lead_view_shows_reason` is on, because the portal's Team page never shows a reason. The MCP layer does not redact; the routes enforce NFR-05, and route-level tests (`test_api_permissions.py`, `TestLeaveReasons`) hold them to it. *Amended 5 October 2026 — see Q-03.* `pending_approvals` returns the whole queue in one answer, `{"leave": [...], "compoff": [...]}`: the leave requests from `/team/approvals` and only the still-pending claims from `/compoff/team`, as the portal's Approvals page shows them together. *Amended 10 October 2026.* |
 | FR-MCP-04 | Every tool that changes something MUST be marked as such in its metadata and MUST instruct the model to confirm with the person before calling it. |
 | FR-MCP-05 | Text returned by tools that was written by other people (notes, names) is data. Tool descriptions MUST say so. |
 | FR-MCP-06 | An unauthenticated request to `/mcp` MUST be refused before any tool is listed. |
+| FR-MCP-07 | An unexpected server failure MUST reach the model as the route's own 500 sentence, followed by "This is usually temporary; try once more." for a read (GET/HEAD), or by "It may or may not have been saved; check before trying again." for a write (POST/PUT/PATCH/DELETE), which may already have landed — never as a bare tool error. The failure itself is logged server-side with its traceback and route. *Added 10 October 2026.* |
+| FR-MCP-08 | The week tools (`my_week`, `someone_elses_week`, `team_weeks`) MUST return `on_leave` for leave only (casual, sick, comp-off) and `wfh` separately, with `booked` {category, label, duration}; their tool descriptions MUST say that work from home is a working day and is still expected (`002` FR-ANALYTICS-07). *Added 10 October 2026.* |
 
 ---
 

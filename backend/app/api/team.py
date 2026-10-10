@@ -127,10 +127,17 @@ def pending_approvals(user: LeadDep) -> list[dict]:
     Reasons ARE included here. Q-06 keeps them out of the roster, not out of
     the decision: a lead cannot reasonably approve a request whose reason they
     are not allowed to read.
+
+    FR-APPR-08: an admin's queue holds every pending request in the
+    organisation except their own, so each item names its `approver`: the
+    requester's lead, or None when it falls to an admin (Q-05). A lead who is
+    no longer active cannot decide, so their reports' requests also show None.
     """
     people = {person["id"]: person for person in _population(user)}
     if not people:
         return []
+    names = {pid: person["display_name"] for pid, person in people.items()}
+    names[user.id] = user.display_name
 
     rows = db.list_bookings(user_ids=list(people), statuses=["pending"])
 
@@ -150,6 +157,7 @@ def pending_approvals(user: LeadDep) -> list[dict]:
                 "id": row["id"],
                 "user_id": row["user_id"],
                 "display_name": person["display_name"],
+                "approver": names.get(person["lead_id"]) if person["lead_id"] else None,
                 "date": row["date"],
                 "category": row["category"],
                 "category_label": CATEGORY_LABELS.get(row["category"], row["category"]),

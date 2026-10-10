@@ -17,7 +17,7 @@ from typing import Any
 
 from app.domain import timesheets as rules
 from app.domain.calendar import today_in_company_tz
-from app.domain.rules import CONSUMING_STATES
+from app.domain.rules import CATEGORY_LABELS, CONSUMING_STATES, is_leave
 from app.services import audit, settings_store
 from app.services import supabase as db
 
@@ -53,6 +53,22 @@ def leave_days_for(user_ids: list[str], start: date, end: date) -> dict[str, dic
 
     Only consuming states count (`001` §6.4). A withdrawn or rejected booking
     never removed any capacity, so counting it would understate the team.
+    Work from home is not leave: it is a working day at full capacity, so it
+    is left out (`rules.LEAVE_CATEGORIES`).
+    """
+    out: dict[str, dict[date, Decimal]] = {}
+    for user_id, days in bookings_by_day_for(user_ids, start, end).items():
+        for day, booking in days.items():
+            if is_leave(booking["category"]):
+                out.setdefault(user_id, {})[day] = Decimal(booking["duration"])
+    return out
+
+
+def bookings_by_day_for(user_ids: list[str], start: date, end: date) -> dict[str, dict[date, dict]]:
+    """Approved and pending bookings of every category, per person per day.
+
+    Each value is `{category, label, duration}`, so a view can tell work from
+    home apart from leave.
     """
     rows = db.list_bookings(
         user_ids=user_ids,
@@ -61,11 +77,13 @@ def leave_days_for(user_ids: list[str], start: date, end: date) -> dict[str, dic
         statuses=sorted(CONSUMING_STATES),
         columns="user_id,date,duration,category,status",
     )
-    out: dict[str, dict[date, Decimal]] = {}
+    out: dict[str, dict[date, dict]] = {}
     for row in rows:
-        out.setdefault(row["user_id"], {})[date.fromisoformat(row["date"])] = Decimal(
-            str(row["duration"])
-        )
+        out.setdefault(row["user_id"], {})[date.fromisoformat(row["date"])] = {
+            "category": row["category"],
+            "label": CATEGORY_LABELS.get(row["category"], row["category"]),
+            "duration": str(row["duration"]),
+        }
     return out
 
 
@@ -285,19 +303,25 @@ def week_for(user_id: str, monday: date) -> dict[str, Any]:
     from app.services.holidays import holidays_by_person
 
     holidays = holidays_by_person([user_id], monday, sunday)[user_id]  # spec 006 FR-LOC-02
-    leave = leave_days_for([user_id], monday, sunday).get(user_id, {})
+    booked = bookings_by_day_for([user_id], monday, sunday).get(user_id, {})
 
     days = []
     for offset in range(7):
         day = monday + timedelta(days=offset)
         on_day = [e for e in entries if e["date"] == day.isoformat()]
+        booking = booked.get(day)
         days.append(
             {
                 "date": day.isoformat(),
                 "is_today": day == today,
                 "locked": rules.is_locked(day, today, grace_days=grace),
                 "holiday": day in holidays,
-                "on_leave": str(leave.get(day)) if day in leave else None,
+                # Leave only; work from home is a working day (`wfh`).
+                "on_leave": booking["duration"]
+                if booking and is_leave(booking["category"])
+                else None,
+                "wfh": booking["duration"] if booking and booking["category"] == "wfh" else None,
+                "booked": booking,
                 "entries": [_present_entry(e, projects) for e in on_day],
                 "total": str(
                     sum(
@@ -311,9 +335,28 @@ def week_for(user_id: str, monday: date) -> dict[str, Any]:
             }
         )
 
+    # FR-ANALYTICS-07 — the one definition of an expected day, shared with
+    # coverage: a full day of leave is not expected; a half day of leave and
+    # a work-from-home day are.
+    joined_on, left_on = rules.employment(db.get_profile(user_id) or {})
+    expected = rules.expected_log_days(
+        monday,
+        sunday,
+        today=today,
+        holidays=holidays,
+        leave_days={
+            day: Decimal(b["duration"]) for day, b in booked.items() if is_leave(b["category"])
+        },
+        portal_start=settings_store.portal_start_date(),
+        joined_on=joined_on,
+        left_on=left_on,
+    )
+    logged = {d["date"] for d in days if Decimal(d["total"]) > 0}
+
     return {
         "week_start": monday.isoformat(),
         "days": days,
+        "missing_days": [d.isoformat() for d in expected if d.isoformat() not in logged],
         "total": str(
             sum(
                 (Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"])) for e in entries),

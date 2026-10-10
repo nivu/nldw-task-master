@@ -6,9 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { decideBooking, errorMessage, getApprovals } from "@/lib/api/portal";
+import { CompoffQueue } from "@/components/portal/team-ops";
+import { decideBooking, errorMessage, getApprovals, getMe } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
-import type { PendingApproval } from "@/lib/api/types";
+import type { Me, PendingApproval } from "@/lib/api/types";
 
 /**
  * The approval queue — FR-APPR-02/03/04.
@@ -20,6 +21,11 @@ import type { PendingApproval } from "@/lib/api/types";
  * FR-APPR-03: a rejection captures a note. The Reject button is disabled until
  * one is written — a rejection with no explanation is the thing the email
  * workflow already did badly.
+ *
+ * FR-APPR-08: an admin's queue is every pending request in the organisation
+ * except their own, so each request names its approver (the requester's lead,
+ * or "No lead — admin"). Comp-off claims wait on the same people, so their
+ * queue sits below the leave queue.
  */
 export default function ApprovalsPage() {
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -29,6 +35,8 @@ export default function ApprovalsPage() {
     () => getApprovals(),
     []
   );
+  const { data: me } = useAsync<Me>(() => getMe(), []);
+  const scope = me?.capabilities.admin_panel ? "waiting across the organisation" : "waiting on you";
 
   async function decide(id: string, approve: boolean) {
     setBusy(id);
@@ -58,8 +66,8 @@ export default function ApprovalsPage() {
         <h1 className="font-heading text-lg font-semibold">Approvals</h1>
         <p className="text-sm text-muted-foreground">
           {queue.length === 0
-            ? "Nothing waiting on you."
-            : `${queue.length} request${queue.length === 1 ? "" : "s"} waiting on you.`}
+            ? `Nothing ${scope}.`
+            : `${queue.length} request${queue.length === 1 ? "" : "s"} ${scope}.`}
         </p>
       </div>
 
@@ -77,6 +85,9 @@ export default function ApprovalsPage() {
             <CardContent className="space-y-3 p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{request.display_name}</span>
+                <Badge variant="outline" className="text-muted-foreground">
+                  {request.approver ? `Lead: ${request.approver}` : "No lead — admin"}
+                </Badge>
                 <Badge variant="secondary">{request.category_label}</Badge>
                 <Badge variant="outline">
                   {request.duration === "0.5" ? "Half day" : "Full day"}
@@ -117,6 +128,8 @@ export default function ApprovalsPage() {
           </Card>
         );
       })}
+
+      <CompoffQueue onError={setError} />
     </div>
   );
 }

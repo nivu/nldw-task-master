@@ -102,7 +102,7 @@ function WeekStrip({ day, today, onPick, version }: { day: string; today: string
             type="button"
             disabled={future}
             onClick={() => onPick(d.date)}
-            title={`${d.date}: ${h}h${d.holiday ? " · holiday" : ""}${d.on_leave ? ` · ${d.on_leave}` : ""}`}
+            title={`${d.date}: ${h}h${d.holiday ? " · holiday" : ""}${d.on_leave ? ` · leave ${d.on_leave}` : ""}${d.wfh ? " · WFH" : ""}`}
             className={cn("flex flex-1 flex-col items-center gap-1 rounded-md p-1", selected && "bg-muted", future && "opacity-40")}
           >
             <div className="flex h-10 w-full items-end rounded bg-muted/60">

@@ -18,6 +18,7 @@ import {
   createUser,
   declareHoliday,
   declareHolidays,
+  deleteAllowance,
   deleteHoliday,
   errorMessage,
   getMe,
@@ -60,6 +61,17 @@ const ROLE_LABEL: Record<Role, string> = {
 };
 const currentPeriod = () => isoMonth(new Date());
 
+/** Spec A-12 step 2–3: the company default in force for a month, if any. */
+function companyDefault(
+  allowances: Allowance[],
+  category: Category,
+  period: string
+): Allowance | undefined {
+  return allowances
+    .filter((a) => a.user_id === null && a.category === category && a.period <= period)
+    .sort((a, b) => b.period.localeCompare(a.period))[0];
+}
+
 /**
  * The admin panel — FR-ADMIN, FR-HOL, FR-AUTH-03/06.
  *
@@ -69,6 +81,8 @@ const currentPeriod = () => isoMonth(new Date());
  */
 export default function AdminPage() {
   const [notice, setNotice] = useState<string | null>(null);
+  // Controlled so the Policy tab can send the admin to Allowances.
+  const [tab, setTab] = useState("people");
 
   const { data, error, setError, reload } = useAsync<{
     users: PortalUser[];
@@ -126,7 +140,7 @@ export default function AdminPage() {
       )}
       {notice && <div className="rounded-md bg-muted p-3 text-sm">{notice}</div>}
 
-      <Tabs defaultValue="people">
+      <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
         {/* Scrolls sideways on a phone rather than overlapping (NFR-01). */}
         <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="people">People</TabsTrigger>
@@ -170,7 +184,9 @@ export default function AdminPage() {
               <CardTitle className="text-base">Set allowances</CardTitle>
               <CardDescription>
                 A row with no person is the organisation default. It applies from
-                its period onwards until another one replaces it.
+                its period onwards until another one replaces it. A row for a
+                person overrides the default for that one month only; remove it
+                to put them back on the default.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto p-0">
@@ -181,6 +197,7 @@ export default function AdminPage() {
                     <th className="p-3 font-medium">Category</th>
                     <th className="p-3 text-right font-medium">Days</th>
                     <th className="p-3 font-medium">Applies to</th>
+                    <th className="p-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -193,6 +210,31 @@ export default function AdminPage() {
                         {row.user_id
                           ? users.find((u) => u.id === row.user_id)?.display_name ?? "—"
                           : "Everyone"}
+                      </td>
+                      <td className="p-3 text-right">
+                        {/* FR-ADMIN-01a — only personal overrides can be removed. */}
+                        {row.user_id && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={async () => {
+                              const who =
+                                users.find((u) => u.id === row.user_id)?.display_name ??
+                                "this person";
+                              try {
+                                await deleteAllowance(row.id);
+                                setNotice(
+                                  `Removed ${who}'s ${CATEGORY_LABEL[row.category].toLowerCase()} override for ${row.period}.`
+                                );
+                                reload();
+                              } catch (err) {
+                                setError(errorMessage(err));
+                              }
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -276,6 +318,37 @@ export default function AdminPage() {
         </TabsContent>
 
         <TabsContent value="policy" className="space-y-4 pt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Monthly allowances (company defaults)</CardTitle>
+              <CardDescription>
+                Days per month for everyone, carried forward if unused. Sick
+                leave defaults to 1 day a month. These are edited on the
+                Allowances tab.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <dl className="grid grid-cols-3 gap-3 text-sm">
+                {CATEGORIES.map((category) => {
+                  const current = companyDefault(allowances, category, currentPeriod());
+                  return (
+                    <div key={category}>
+                      <dt className="text-xs text-muted-foreground">{CATEGORY_LABEL[category]}</dt>
+                      <dd className="font-medium tabular-nums">
+                        {current ? `${current.days} / month` : "Not set up"}
+                      </dd>
+                      {current && (
+                        <dd className="text-[11px] text-muted-foreground">since {current.period}</dd>
+                      )}
+                    </div>
+                  );
+                })}
+              </dl>
+              <Button variant="outline" size="sm" onClick={() => setTab("allowances")}>
+                Edit allowances
+              </Button>
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Open questions</CardTitle>

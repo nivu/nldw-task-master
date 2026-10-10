@@ -29,6 +29,14 @@ CATEGORY_LABELS = {
 #: Categories that draw down a monthly allowance. Comp-off does not; it
 #: consumes credits earned by working a weekend or holiday (spec 006).
 ALLOWANCE_CATEGORIES = ("wfh", "casual", "sick")
+#: Categories that take the person out of work. Work from home is a working
+#: day: it is expected on the timesheet and is full capacity.
+LEAVE_CATEGORIES = ("casual", "sick", "compoff")
+
+
+def is_leave(category: str | None) -> bool:
+    return category in LEAVE_CATEGORIES
+
 
 FULL_DAY = Decimal("1.0")
 HALF_DAY = Decimal("0.5")
@@ -194,17 +202,27 @@ def check_allowance(
     category: str,
     *,
     allow_excess: bool,
+    configured: bool = True,
 ) -> str | None:
     """FR-BOOK-05, Q-08 — do not let a balance go below zero.
 
     `remaining` must already exclude any booking being replaced, otherwise
     changing a full day to a half day on the same date would be refused for
     lack of allowance the person is about to give back.
+
+    `configured` is False when no allowance was ever set up for the category
+    (FR-BAL-09). That is an admin's job, not the person's, so it gets its own
+    message rather than "0 days remaining", which reads as "you used it up".
     """
     if allow_excess:
         return None
+    label = CATEGORY_LABELS.get(category, category)
+    if not configured:
+        return (
+            f"{label} has not been set up yet, so there is no allowance to book against. "
+            f"Ask an admin to set a monthly {label.lower()} allowance (Admin > Allowances)."
+        )
     if duration > remaining:
-        label = CATEGORY_LABELS.get(category, category)
         return (
             f"Not enough {label.lower()} left: {_days(remaining)} remaining, "
             f"{_days(duration)} requested."
@@ -260,6 +278,27 @@ def check_backfill(
     return None
 
 
+def check_absence_conversion(
+    current_status: str,
+    day: date,
+    category: str,
+    reason: str | None,
+    *,
+    holiday_name: str | None,
+    today: date,
+) -> str | None:
+    """An admin turning a day marked absent into the leave actually taken.
+
+    FR-BACK-10. Only an `unrecognised` row qualifies; everything else about the
+    day is judged exactly as a backfill is. `ALLOWED_TRANSITIONS` is left
+    alone on purpose — widening it would let `decide()` approve an
+    unrecognised row with no category from the ordinary path.
+    """
+    if current_status != "unrecognised":
+        return "Only an absence marked as unrecognised can be converted."
+    return check_backfill(day, category, reason, holiday_name=holiday_name, today=today)
+
+
 def check_transition(current: str, target: str) -> str | None:
     """§6.4 — is this state change one the machine permits?"""
     allowed = ALLOWED_TRANSITIONS.get(current)
@@ -286,6 +325,7 @@ def validate_booking(
     today: date,
     max_future_days: int,
     allow_excess: bool,
+    configured: bool = True,
 ) -> str | None:
     """Every rule that governs creating or changing a booking, in order.
 
@@ -305,7 +345,13 @@ def validate_booking(
             today=today,
             max_future_days=max_future_days,
         ),
-        check_allowance(remaining, request.duration, request.category, allow_excess=allow_excess),
+        check_allowance(
+            remaining,
+            request.duration,
+            request.category,
+            allow_excess=allow_excess,
+            configured=configured,
+        ),
     ):
         if failure:
             return failure

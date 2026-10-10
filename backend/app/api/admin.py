@@ -18,6 +18,7 @@ from app.domain import timesheets as rules
 from app.domain.audit import actor_name
 from app.domain.calendar import period_of, today_in_company_tz
 from app.schemas import (
+    AbsenceConvertIn,
     AllocationIn,
     AllocationUpdate,
     AllowanceIn,
@@ -430,6 +431,40 @@ def set_allowance(payload: AllowanceIn, admin: AdminDep) -> dict:
     }
 
 
+@router.delete("/allowances/{allowance_id}")
+def remove_allowance(allowance_id: str, admin: AdminDep) -> dict:
+    """FR-ADMIN-01a — remove one person's override so the company default applies.
+
+    Company defaults are refused: deleting one silently changes what every
+    month resolves to for everyone (spec A-12). Replace it with a new figure
+    instead.
+    """
+    existing = db.get_allowance(allowance_id)
+    if existing is None:
+        raise ProblemDetail(404, "No such allowance.")
+    if existing["user_id"] is None:
+        raise ProblemDetail(
+            422,
+            "That is a company default, which applies to everyone. Set a new figure "
+            "instead of removing it.",
+        )
+
+    db.delete_allowance(allowance_id)
+    audit.record(
+        action="allowance.removed",
+        target_table="allowances",
+        target_id=allowance_id,
+        actor_id=admin.id,
+        before={
+            "period": existing["period"],
+            "category": existing["category"],
+            "days": str(existing["days"]),
+            "user_id": existing["user_id"],
+        },
+    )
+    return {"status": "removed"}
+
+
 # ---------------------------------------------------------------------------
 # Holidays — FR-HOL
 # ---------------------------------------------------------------------------
@@ -633,12 +668,47 @@ def backfill_booking(payload: BackfillIn, admin: AdminDep) -> dict:
         "duration": str(created["duration"]),
         "status": created["status"],
         "backfilled_by": created["backfilled_by"],
+        # FR-BACK-08 — true when the day held only a mark-absent row, which
+        # this backfill converted in place.
+        "replaced_absence": created["replaced_absence"],
+        "balance_after": booking_service.balance_after(created),
+    }
+
+
+@router.post("/absences/{booking_id}/convert")
+def convert_absence(booking_id: str, payload: AbsenceConvertIn, admin: AdminDep) -> dict:
+    """FR-BACK-10 — turn a day marked absent into the leave actually taken.
+
+    The normal allowance check applies (comp-off spends credits), unlike a
+    backfill. `balance_after` is null for comp-off.
+    """
+    try:
+        updated = booking_service.convert_absence(
+            booking_id=booking_id,
+            category=payload.category,
+            duration=payload.duration,
+            reason=payload.reason,
+            note=payload.note,
+            actor=admin,
+        )
+    except booking_service.BookingRefused as exc:
+        raise ProblemDetail(exc.status, exc.message) from exc
+
+    return {
+        "id": updated["id"],
+        "user_id": updated["user_id"],
+        "date": updated["date"],
+        "category": updated["category"],
+        "duration": str(updated["duration"]),
+        "status": updated["status"],
+        "backfilled_by": updated["backfilled_by"],
+        "balance_after": booking_service.balance_after(updated),
     }
 
 
 @router.delete("/backfill/{booking_id}")
 def undo_backfill(booking_id: str, admin: AdminDep) -> dict:
-    """Reverse a backfill. Refuses anything that was not itself a backfill."""
+    """Reverse a backfill or remove a day marked absent (FR-BACK-11); nothing else."""
     try:
         updated = booking_service.undo_backfill(booking_id=booking_id, actor=admin)
     except booking_service.BookingRefused as exc:

@@ -100,6 +100,10 @@ Given Tarun is signed in
   And the booking is accepted despite being made on the day itself
 ```
 
+This depends on a sick allowance being configured (Q-01, FR-BAL-09). With
+none, the booking is refused with a "not set up yet" message, not a balance
+shortfall.
+
 ### 4.3 Correcting a work-from-home day
 
 ```gherkin
@@ -195,7 +199,7 @@ its primary users. The gate stays *"an admin created your account"*
 | ID | Requirement |
 |---|---|
 | FR-BOOK-01 | A user MUST be able to book a day as one of: work from home, casual leave, sick leave. |
-| FR-BOOK-02 | A booking MUST carry a duration of either full day (1.0) or half day (0.5). |
+| FR-BOOK-02 | A booking MUST carry a duration of either full day (1.0) or half day (0.5). The API also accepts `"full"` / `"half"` (any case, or `"full day"` / `"half day"`) as synonyms, for booking and backfill alike. *Amended 10 October 2026.* |
 | FR-BOOK-03 | A booking MUST capture a free-text reason. A reason MUST be required for casual and sick leave. |
 | FR-BOOK-04 | The system MUST reject a booking on a declared holiday or a non-working day. |
 | FR-BOOK-05 | The system MUST reject a booking that would take the user's remaining allowance for that category below zero. |
@@ -219,6 +223,7 @@ its primary users. The gate stays *"an admin created your account"*
 | FR-BAL-06 | The system MUST display, for the current period and per category: allowance, used, and remaining. |
 | FR-BAL-07 | Changing an allowance MUST apply to the period it is set for and MUST NOT retroactively invalidate bookings already approved in a closed period. |
 | FR-BAL-08 | A user MUST be able to see their own consumption history for the current year. |
+| FR-BAL-09 | When no allowance has ever been configured for a category (no personal or organisation row for that period or earlier), the system MUST say so — "not set up yet, ask an admin" — distinctly from an exhausted balance, both when refusing a booking and when displaying balances. *Added 10 October 2026.* |
 
 ### 5.5 Approval — FR-APPR
 
@@ -231,6 +236,7 @@ its primary users. The gate stays *"an admin created your account"*
 | FR-APPR-05 | A lead MUST NOT be able to act on bookings outside their own reports; an admin MAY act on any. |
 | FR-APPR-06 | A rejected booking MUST return its cost to the user's allowance. |
 | FR-APPR-07 | Every state transition MUST be recorded with actor and timestamp. |
+| FR-APPR-08 | An admin's approval queue MUST list every pending request in the organisation except their own, each showing its assigned approver: the requester's lead, or none when it falls to an admin (Q-05). See FR-APPR-05 and FR-ADMIN-05. *Added 10 October 2026.* |
 
 ### 5.6 Holidays — FR-HOL
 
@@ -250,6 +256,7 @@ its primary users. The gate stays *"an admin created your account"*
 | ID | Requirement |
 |---|---|
 | FR-ADMIN-01 | An admin MUST be able to set per-category allowances for a given period. |
+| FR-ADMIN-01a | An admin MUST be able to remove a per-person override, so the organisation default applies to that person again. Organisation-default rows cannot be removed, only replaced, because removing one changes the resolution (A-12) for everyone. The removal is audited. *Added 10 October 2026.* |
 | FR-ADMIN-02 | An admin MUST be able to create, edit and deactivate users. |
 | FR-ADMIN-03 | An admin MUST be able to assign each user to a lead. |
 | FR-ADMIN-04 | An admin MUST be able to manage the holiday calendar. |
@@ -295,8 +302,10 @@ Added 2026-09-04, resolving A-21. **This is the only sanctioned exception to
 | FR-BACK-05 | Every backfilled booking MUST be permanently marked as such, and that marking MUST be visible to the person on their own calendar and to their lead on the team view. |
 | FR-BACK-06 | A backfilled booking MUST enter the `approved` state — it has already happened, so there is nothing left to decide — and MUST NOT notify anybody. |
 | FR-BACK-07 | The allowance check (FR-BOOK-05) MUST NOT apply. A backfill records what happened; a resulting negative balance MUST be reported honestly rather than clamped or refused. |
-| FR-BACK-08 | Weekends, holidays, the reason requirement and the one-booking-per-day rule MUST all still apply. The exception is to the lock, and to nothing else. |
-| FR-BACK-09 | An admin MUST be able to undo a backfill, and MUST NOT be able to undo anything else. A booking somebody made themselves stays locked once its date has passed. |
+| FR-BACK-08 | Weekends, holidays, the reason requirement and the one-booking-per-day rule MUST all still apply. The exception is to the lock, and to nothing else. The one-booking-per-day rule yields only to an `unrecognised` absence: a backfill on a day that holds nothing else converts that row in place (FR-BACK-10, without the allowance check, per FR-BACK-07). A comp-off backfill MUST spend comp-off credits (spec 006 FR-COMP-03) and is refused when there are not enough. |
+| FR-BACK-09 | An admin MUST be able to undo a backfill or remove an `unrecognised` absence (FR-BACK-11), and MUST NOT be able to undo anything else. A booking somebody made themselves stays locked once its date has passed. Undoing a comp-off backfill MUST return its credits. |
+| FR-BACK-10 | An admin MUST be able to convert an `unrecognised` absence into the leave actually taken, on the same row and in one atomic write. A note is required (FR-BACK-04), the reason requirement, weekends and holidays apply, and the row is marked as backfilled (FR-BACK-05). Unlike FR-BACK-07, the normal allowance check (FR-BOOK-05, Q-08 `allow_excess_booking`) applies; comp-off spends credits instead. The lead's absence note stays on the row, and nobody is notified. |
+| FR-BACK-11 | An admin MAY remove an `unrecognised` absence through the backfill undo. Only `mark_absent` creates that state, so this reopens no booking the person made themselves. The day becomes empty again; the row is kept as `withdrawn`, still without a category (A-18, migration 024), as a record that the mark existed. |
 
 **Why FR-BACK-09 is worded that way.** Without an undo, one mistyped entry
 permanently corrupts a person's balance. With an unrestricted one, "an admin
@@ -364,7 +373,12 @@ the record stands.
 pending/approved --> withdrawn      (user, same day only)
 pending/approved --> released       (admin declares a holiday)
 (no booking)     --> unrecognised   (lead, after the fact)
+unrecognised     --> approved       (admin converts it to leave, FR-BACK-10)
+unrecognised     --> withdrawn      (admin removes the mark, FR-BACK-11)
 ```
+
+The two `unrecognised` exits are admin-only paths of their own; the ordinary
+approve/reject transitions still treat `unrecognised` as terminal.
 
 Only `approved` and `pending` consume allowance. `rejected`, `withdrawn`,
 `released` and `unrecognised` return it.
@@ -507,7 +521,7 @@ small diff — never a rebuild. Nothing here is silently decided.
 
 | ID | Question | Shipped default | Where it lives | Owner |
 |---|---|---|---|---|
-| Q-01 | The actual monthly allowance figures per category. Three non-reconciling numbers were given on the call. | Seed values: wfh 4.0, casual 1.5, sick 1.0 per month, **clearly marked as placeholders**. Blocks the first live month, not the build. **Rollout plan (confirmed 2026-09-04):** go live as early in a month as possible, with each person's leave already taken that month entered by an admin. See A-21. | `allowances` table, seeded in `supabase/seed.sql` | Devansh & Vinita |
+| Q-01 | The actual monthly allowance figures per category. Three non-reconciling numbers were given on the call. | Seed values: wfh 4.0, casual 1.5, sick 1.0 per month, **clearly marked as placeholders** (development only). **Live figures (10 October 2026):** casual 3.0 from 2026-09 and wfh 2.0 from 2026-10, set by an admin; sick 1.0 from 2026-10, set by migration `023_sick_allowance_default.sql` because production had none and same-day sick leave (§4.2) was always refused. All are editable in Admin > Allowances. Blocks the first live month, not the build. **Rollout plan (confirmed 2026-09-04):** go live as early in a month as possible, with each person's leave already taken that month entered by an admin. See A-21. | `allowances` table, seeded in `supabase/seed.sql` | Devansh & Vinita |
 | Q-02 | Carry-forward: rolling into the next month, or pooling to year-end? | `rolling` — cumulative from the start of tracking, no reset. `pooling` is implemented too and resets each calendar year. | `app_settings.carry_forward_policy` | Devansh |
 | Q-03 | Precise lock boundary; does approval lock earlier than midnight? | End of the booked date, 23:59:59 **Asia/Kolkata**, evaluated server-side. Approval does **not** shorten the window. | `app/domain/rules.py::is_locked` | Sriram |
 | Q-04 | Fate of a pending booking that reaches its own date un-actioned. | **Auto-approve at lock.** A nightly sweep at 00:05 IST promotes them, writing `system` as the actor in the audit log. | `app/tasks/lock_sweep.py` | Devansh |
@@ -523,13 +537,13 @@ small diff — never a rebuild. Nothing here is silently decided.
 | ID | Assumption | Why |
 |---|---|---|
 | A-11 | The starter template's multi-tenant `orgs` / `team_members` model is **removed**, not extended. Migrations 001–004 were rewritten rather than added to. | Nunnari is one company; NFR-07 says scale is not a design driver; the constitution's YAGNI principle forbids designing for a hypothetical tenant. Safe because those migrations had never been applied to any database, so there was no drift to cause. |
-| A-12 | Allowance resolution falls back: user-specific row for the exact period → org-default row for the exact period → **most recent org-default row for any earlier period** → 0. | Without the third step every future month starts at zero allowance until an admin acts, which would block booking next month. Makes an admin's setting a standing policy rather than a one-month grant. |
+| A-12 | Allowance resolution falls back: user-specific row for the exact period → org-default row for the exact period → **most recent org-default row for any earlier period** → 0. A personal override applies to its exact period only; it never carries into later months. When the fall-through reaches 0 with no row at all, the category is "not set up" (FR-BAL-09). | Without the third step every future month starts at zero allowance until an admin acts, which would block booking next month. Makes an admin's setting a standing policy rather than a one-month grant. |
 | A-13 | Weekends are **Saturday and Sunday**. Not stated in the source spec. | FR-CAL-05 says "non-working days (weekends)" without defining them. |
 | A-14 | A user may not book a date more than 365 days ahead. | Unbounded future booking lets one person consume allowance for periods no admin has configured. Not in the source spec. |
 | A-15 | `unrecognised` days are created by a lead against a date **in the past only**, and consume no allowance. | §6.4 lists it as non-consuming and describes it as flagged "after the fact". |
 | A-16 | Deactivating a user (FR-AUTH-06) leaves their bookings intact and blocks sign-in, but does **not** cancel future bookings. | FR-AUTH-06 says history is preserved; cancelling future leave is a separate decision nobody has made. |
 | A-17 | The API returns RFC 7807 problem details, and the frontend renders `detail` verbatim to the user. | Constitution V. Observability. |
-| A-18 | A booking's `category` is **nullable for `unrecognised` rows only**. Every other status requires one. | FR-LEAD-03 has a lead flagging that somebody was absent without booking. The lead genuinely may not know which category it was, and forcing them to pick one would put a guess into the record. |
+| A-18 | A booking's `category` is **nullable for `unrecognised` rows, and for the `withdrawn` row an admin leaves behind when removing one (FR-BACK-11)**. Every other status requires one. | FR-LEAD-03 has a lead flagging that somebody was absent without booking. The lead genuinely may not know which category it was, and forcing them to pick one would put a guess into the record. |
 | A-19 | **RESOLVED — confirmed 2026-09-04.** §6.1's table (casual leave, "same-day: No") is authoritative over FR-BOOK-09. Casual leave is bookable for a **future date only** — not for today. | The two read as a conflict: FR-BOOK-09 is a *floor* (no booking in the past) while the §6.1 table is a positive statement about notice. Casual leave is planned by definition; somebody taking an unplanned day off today is describing sick leave or work from home. Confirmed by the product owner; FR-BOOK-09 should be reworded in the next revision of this file to remove the ambiguity. |
 | A-20 | Sick leave cannot be booked for a **future** date. | §6.1's table, "planned ahead: No". Nobody knows they will be ill next Tuesday, and a future-dated sick day is almost always a mis-tap on casual. |
 | A-21 | **RESOLVED — decided 2026-09-04. Implemented.** An admin can record leave somebody already took, on a date that is already locked, as a **distinctly-labelled, audited action**. See §5.10. | Go-live happens partway through a month and the leave already taken has to be recorded. The alternative — quietly reducing each person's allowance to net it off — loses which days were taken, which is the "tracking that stops describing reality" problem from §1. |

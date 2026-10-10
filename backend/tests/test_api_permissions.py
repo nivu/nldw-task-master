@@ -243,6 +243,14 @@ class FakeDb:
     def list_settings(self):
         return []
 
+    # Allowances — a test that needs rows sets `fake.allowance_rows = {id: row}`.
+    def get_allowance(self, allowance_id):
+        row = getattr(self, "allowance_rows", {}).get(allowance_id)
+        return dict(row) if row else None
+
+    def delete_allowance(self, allowance_id):
+        getattr(self, "allowance_rows", {}).pop(allowance_id, None)
+
     # Audit
     def insert_audit(self, entry):
         self.audit.append(entry)

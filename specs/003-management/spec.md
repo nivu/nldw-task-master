@@ -156,7 +156,7 @@ Keywords follow RFC 2119.
 | FR-RES-01 | A manager or admin MUST be able to see, per person, their allocations across a date range — present and future. |
 | FR-RES-02 | The view MUST show each person's total allocated percentage per week and flag weeks over 100%. |
 | FR-RES-03 | The view MUST show unallocated capacity — people and weeks where the total is under 100%. |
-| FR-RES-04 | Approved leave MUST be visible on the timeline, so a fully-allocated fortnight that is also a holiday reads as what it is. |
+| FR-RES-04 | Approved leave (casual, sick or comp-off; not work from home, which is a working day) MUST be visible on the timeline, so a fully-allocated fortnight that is also a holiday reads as what it is. |
 
 ### 5.5 Timesheet — FR-TIME (amendments to `002`)
 

@@ -57,6 +57,11 @@ export function WeekSignoff({ onError }: { onError: (m: string) => void }) {
             {p.missing_days.length > 0 && (
               <Badge variant="outline">{p.missing_days.length} day{p.missing_days.length === 1 ? "" : "s"} missing</Badge>
             )}
+            {p.days.some((d) => d.wfh) && (
+              <Badge variant="outline" className="text-muted-foreground">
+                WFH {p.days.reduce((n, d) => n + Number(d.wfh ?? 0), 0)}
+              </Badge>
+            )}
             {p.confirmation ? (
               <Badge variant="secondary">{p.confirmation.status === "auto" ? "auto-confirmed" : "confirmed"}</Badge>
             ) : (

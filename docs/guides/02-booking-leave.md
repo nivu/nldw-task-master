@@ -58,7 +58,9 @@ automatically overnight, so an absence is never left in limbo.
 Each category has a monthly allowance set by an admin. The calendar shows, per
 category, the allowance for the month, what you have used, and what remains.
 Unused days carry forward according to the company's policy, which admins can
-see under **Admin → Policy**. Your yearly history is under **Account**, viewable by calendar year or financial year (April to March).
+see under **Admin → Policy**. If a category shows **Not set up yet — ask an
+admin**, nobody has given that category an allowance, so it cannot be booked
+until an admin sets one. That is different from having used your days up. Your yearly history is under **Account**, viewable by calendar year or financial year (April to March).
 
 ## Holidays
 

@@ -24,7 +24,7 @@ Below the roster is each person's balance and usage for the month.
 
 **Approvals** lists every request waiting for you, with the reason the person
 wrote, because you cannot reasonably decide a request whose reason you cannot
-read.
+read. Your reports' comp-off claims are listed below the leave requests.
 
 - **Approve** confirms it.
 - **Reject** needs a note. The button stays disabled until you have written
@@ -38,7 +38,9 @@ automatically overnight.
 If someone is away and nothing was booked, use **Mark absent** next to their
 name on the team view for that day. It records the absence so the day is not silently
 counted as present. It does not consume the person's allowance, and they see
-it on their calendar.
+it on their calendar. If you marked the wrong day, or the person later says it
+was leave, ask an admin: they can convert the mark into the leave taken, or
+remove it.
 
 ## Weekly sign-off
 
@@ -49,12 +51,15 @@ its edit window is still open; the person is told, so they can correct it. Anyth
 automatically when the window closes. On Friday afternoon you get a Slack
 summary of your reports' gaps for the week. Days before someone joined or
 after they left are never missing, and a week wholly outside those dates is
-not listed for them.
+not listed for them. Work from home is a working day, not leave: a
+work-from-home day with nothing logged counts as missing, and the number of
+work-from-home days shows as a small **WFH** badge. A half day of leave is
+still a day to log.
 
 ## Comp-off claims
 
 A report who worked a weekend or holiday claims a day back; the claim comes to
-you under **Team → Comp-off claims**. Approve it, or reject it with a note the
+you under **Team → Comp-off claims** and on **Approvals**. Approve it, or reject it with a note the
 person will read. An approved day is valid for a limited time and is booked
 like leave under the comp-off category.
 

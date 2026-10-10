@@ -69,6 +69,12 @@ The service-role key bypasses Row-Level Security entirely. It belongs only to
 the backend. If it ever reaches a `NEXT_PUBLIC_` variable it is in the browser
 bundle and every row in the database is readable by anyone.
 
+The backend's Supabase client (`app/services/supabase.py`) talks HTTP/1.1 on
+purpose. The library default is one shared HTTP/2 connection, and routes run
+in a thread pool: two threads on that one socket failed with
+`ReadError: [Errno 11]` and took every in-flight request down with them. Reads
+(GET) that still drop are retried once; writes never are.
+
 ## 2. Railway
 
 Four services in one project. The three application services are built from

@@ -331,9 +331,11 @@ def leave_warning(category: str | None, duration: str | None) -> str | None:
     project entirely. Warning keeps the record honest and leaves the
     inconsistency visible so somebody can ask about it.
     """
-    if not category:
+    from app.domain.rules import CATEGORY_LABELS, is_leave
+
+    # Work from home is a working day, not leave: nothing to warn about.
+    if not is_leave(category):
         return None
-    from app.domain.rules import CATEGORY_LABELS
 
     label = CATEGORY_LABELS.get(category, category)
     length = "half day" if str(duration) in ("0.5", "0.50") else "full day"

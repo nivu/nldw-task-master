@@ -29,7 +29,7 @@ from app.schemas import (
     OAuthApprove,
     ReviewIn,
 )
-from app.services import audit, confirmations, digest, settings_store, statements, utilisation
+from app.services import audit, confirmations, digest, statements, utilisation
 from app.services import checklists as checklist_service
 from app.services import compoff as compoff_service
 from app.services import feeds as feed_service
@@ -118,7 +118,6 @@ def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
     from app.api.team import _population
 
     monday = confirmations.monday_of(week_start or today_in_company_tz())
-    portal_start = settings_store.portal_start_date()
     people = sorted(
         (
             p
@@ -143,20 +142,14 @@ def team_weeks(user: LeadDep, week_start: date | None = None) -> dict:
                         "total": d["total"],
                         "holiday": d["holiday"],
                         "on_leave": d["on_leave"],
+                        "wfh": d["wfh"],
+                        "booked": d["booked"],
                     }
                     for d in week["days"]
                 ],
-                "missing_days": [
-                    d["date"]
-                    for d in week["days"]
-                    if not d["holiday"]
-                    and not d["on_leave"]
-                    and Decimal(d["total"]) == 0
-                    and date.fromisoformat(d["date"]).weekday() < 5
-                    and d["date"] <= today_in_company_tz().isoformat()
-                    and (portal_start is None or d["date"] >= portal_start.isoformat())
-                    and timesheet_rules.employed_on(person, date.fromisoformat(d["date"]))
-                ],
+                # FR-ANALYTICS-07, the same definition coverage uses: a WFH
+                # day and a half day of leave are still expected.
+                "missing_days": week["missing_days"],
                 "confirmation": None
                 if conf is None
                 else {
