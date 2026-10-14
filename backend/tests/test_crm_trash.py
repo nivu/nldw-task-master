@@ -145,6 +145,29 @@ class TestCompanyPeople:
         assert fake.rows["crm_people"][person["id"]]["deleted_group"] == group
         assert fake.rows["crm_companies"][company["id"]]["deleted_group"] == group
 
+    def test_a_member_cannot_take_another_sellers_people_with_them(self, crm):
+        """FR-CRM-DEL-04 — each person deleted with the company is held to
+        the same rule; nothing is deleted when one fails it."""
+        http, fake, *_ = crm
+        company = _company(http, who=MEMBER["id"])
+        mine = _person(http, who=MEMBER["id"], company_id=company["id"])
+        theirs = _person(
+            http, who=SELLER["id"], first_name="Ravi", last_name="Kumar", company_id=company["id"]
+        )
+        applied = len(fake.applied)
+        r = _delete(http, "companies", company["id"], who=MEMBER["id"], body={"people": "delete"})
+        assert r.status_code == 403
+        assert r.json()["detail"] == (
+            "Only a workspace admin or their owner can delete Ravi Kumar; "
+            "unlink them instead, or ask a workspace admin."
+        )
+        assert len(fake.applied) == applied
+        assert fake.rows["crm_companies"][company["id"]]["deleted_at"] is None
+        for p in (mine, theirs):
+            assert fake.rows["crm_people"][p["id"]]["deleted_at"] is None
+        r = _delete(http, "companies", company["id"], who=MEMBER["id"], body={"people": "unlink"})
+        assert r.status_code == 200
+
 
 class TestRestore:
     """FR-CRM-DEL-01, -02 — Admins restore, and the group comes back."""
@@ -160,6 +183,26 @@ class TestRestore:
         assert r.status_code == 200 and r.json()["deleted_at"] is None
         assert fake.rows["crm_people"][person["id"]]["deleted_at"] is None
         assert fake.rows["crm_people"][person["id"]]["company_id"] == company["id"]
+
+    def test_a_person_whose_company_was_trashed_later_comes_back_unlinked(self, crm):
+        http, fake, *_ = crm
+        company = _company(http)
+        person = _person(http, company_id=company["id"])
+        _delete(http, "people", person["id"])
+        _delete(http, "companies", company["id"])
+        r = http.post(f"/api/v1/crm/people/{person['id']}/restore{LABS}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200
+        assert (r.json()["deleted_at"], r.json()["company_id"]) == (None, None)
+        assert fake.rows["crm_people"][person["id"]]["company_id"] is None
+        assert fake.rows["crm_companies"][company["id"]]["deleted_at"]
+
+    def test_a_person_whose_company_is_live_keeps_it(self, crm):
+        http, fake, *_ = crm
+        company = _company(http)
+        person = _person(http, company_id=company["id"])
+        _delete(http, "people", person["id"])
+        r = http.post(f"/api/v1/crm/people/{person['id']}/restore{LABS}", headers=as_(OWNER["id"]))
+        assert r.json()["company_id"] == company["id"]
 
     def test_members_cannot_restore(self, crm):
         http, *_ = crm

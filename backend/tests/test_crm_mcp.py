@@ -53,8 +53,9 @@ class TestTools:
         imports = [line for line in source.splitlines() if line.startswith(("import ", "from "))]
         assert imports == [
             "from __future__ import annotations",
+            "import uuid",
             "from typing import Any, Literal",
-            "from app.mcp.server import READ, WRITE, Context, _api, mcp",
+            "from app.mcp.server import READ, WRITE, Context, ToolError, _api, mcp",
         ]
 
 
@@ -148,6 +149,11 @@ class Recorder:
         return self.answer
 
 
+#: Record ids in the record-tool tests below.
+P1 = "00000000-0000-4000-8000-0000000000a1"
+C1 = "00000000-0000-4000-8000-0000000000c1"
+
+
 class TestRecordTools:
     """FR-CRM-MCP-01 (S3: crm_get, crm_create, crm_update), -10; plan §5.10."""
 
@@ -155,8 +161,8 @@ class TestRecordTools:
         ("call", "expected"),
         [
             (
-                lambda: crm.crm_get(Ctx("u"), "person", "p1", workspace="labs"),
-                ("GET", "/crm/people/p1", {"workspace": "labs"}, None),
+                lambda: crm.crm_get(Ctx("u"), "person", P1, workspace="labs"),
+                ("GET", f"/crm/people/{P1}", {"workspace": "labs"}, None),
             ),
             (
                 lambda: crm.crm_create(Ctx("u"), "company", {"name": "Acme"}),
@@ -182,8 +188,8 @@ class TestRecordTools:
                 ),
             ),
             (
-                lambda: crm.crm_update(Ctx("u"), "company", "c1", {"city": "Pune"}),
-                ("PATCH", "/crm/companies/c1", {"workspace": None}, {"city": "Pune"}),
+                lambda: crm.crm_update(Ctx("u"), "company", C1, {"city": "Pune"}),
+                ("PATCH", f"/crm/companies/{C1}", {"workspace": None}, {"city": "Pune"}),
             ),
         ],
     )
@@ -200,7 +206,7 @@ class TestRecordTools:
             crm.crm_update(
                 Ctx("u"),
                 "person",
-                "p1",
+                P1,
                 {"city": "Pune"},
                 expect_updated_at="2026-10-14T10:00:00+05:30",
                 workspace="labs",
@@ -209,11 +215,23 @@ class TestRecordTools:
         assert recorder.calls == [
             (
                 "PATCH",
-                "/crm/people/p1",
+                f"/crm/people/{P1}",
                 {"workspace": "labs"},
                 {"city": "Pune", "expect_updated_at": "2026-10-14T10:00:00+05:30"},
             )
         ]
+
+    @pytest.mark.parametrize("bad", ["../members/x", f"{C1}/../../members/x", "c1", ""])
+    def test_an_id_that_is_not_a_uuid_reaches_no_route(self, monkeypatch, bad):
+        """An id is put into a path: `../members/…` must not walk out of the
+        record's route into one the MCP never offers (FR-CRM-MCP-10)."""
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        with pytest.raises(server.ToolError, match="No such company"):
+            asyncio.run(crm.crm_update(Ctx("u"), "company", bad, {"role": "admin"}))
+        with pytest.raises(server.ToolError, match="No such company"):
+            asyncio.run(crm.crm_get(Ctx("u"), "company", bad))
+        assert recorder.calls == []
 
     def test_crm_create_returns_duplicates_before_creating(self, crm_store):
         first = asyncio.run(

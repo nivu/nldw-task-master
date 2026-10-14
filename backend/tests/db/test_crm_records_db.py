@@ -285,6 +285,51 @@ class TestApply:
             "company.restored",
         ]
 
+    def test_a_person_restored_and_unlinked_in_one_call(self, stack, workspace, owner):
+        """`records.restore` unlinks a person whose company is still in the
+        Trash: the restore and the update are two ops of one call."""
+        company = _company(stack, workspace, owner)
+        person = _apply(
+            stack,
+            _actor(workspace, owner),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_people",
+                    "values": {"first_name": "D", "company_id": company},
+                }
+            ],
+        )[0]["id"]
+        for table, target in (("crm_people", person), ("crm_companies", company)):
+            _apply(
+                stack,
+                _actor(workspace, owner),
+                [
+                    {
+                        "op": "soft_delete",
+                        "table": table,
+                        "id": target,
+                        "deleted_group": str(uuid.uuid4()),
+                    }
+                ],
+            )
+        done = _apply(
+            stack,
+            _actor(workspace, owner),
+            [
+                {"op": "restore", "table": "crm_people", "id": person},
+                {
+                    "op": "update",
+                    "table": "crm_people",
+                    "id": person,
+                    "values": {"company_id": None},
+                },
+            ],
+        )
+        assert done[-1]["row"]["company_id"] is None
+        row = stack.sql(f"SELECT * FROM crm_people WHERE id = {stack.q(person)}")[0]
+        assert (row["deleted_at"], row["company_id"]) == (None, None)
+
 
 class TestPurge:
     """Data-model §5.4, 029's first form."""

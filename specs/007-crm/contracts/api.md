@@ -139,7 +139,7 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | GET | `/crm/{object}/{id}/timeline` | Read | `types?=create,field,stage,note,task,link,merge,handoff,email,delete` (`delete`: moved to and restored from the Trash) | `[{at, actor_name, actor_kind, channel, type, summary, changes}]`; amounts removed for Viewers (FR-CRM-AUD-05) |
 | POST | `/crm/companies/duplicates`, `/crm/people/duplicates` | Write | `{name?, domain?, email?}` | `{exact: {...}\|null, similar: [{id, name, similarity}]}` (FR-CRM-DUP-02) |
 | POST | `/crm/links` | Write (Viewer: no) | `{record_type, record_id, url, label}` | the Drive link; 422 if not `https://` |
-| DELETE | `/crm/links/{id}` | Write | — | soft-deletes |
+| DELETE | `/crm/links/{id}` | Admin, or a member on links they added (FR-CRM-DEL-04: a link has no owner) | — | soft-deletes; 403 "Only a workspace admin or whoever added it can remove this link." |
 | POST | `/crm/opportunities/{id}/contacts` | Write | `{person_id, role_id?}` | the contact link |
 | DELETE | `/crm/opportunities/{id}/contacts/{person_id}` | Write | — | — |
 | POST | `/crm/tasks/{id}/complete` | Write, or a Viewer assignee | — | the task (`status = done`, `completed_at`) |

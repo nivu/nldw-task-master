@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { DuplicateWarning } from "@/components/crm/duplicate-warning";
-import { FieldEditor } from "@/components/crm/field-editor";
+import { FieldEditor, type RelationSearch } from "@/components/crm/field-editor";
 import { useCrm } from "@/components/crm/shell";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createCrmRecord, listCrmRecords } from "@/lib/api/crm";
-import type { CrmCompany, CrmDuplicates, CrmPerson } from "@/lib/api/crm-types";
+import { createCrmRecord, listCrmRecords, searchCompanyChoices } from "@/lib/api/crm";
+import type { CrmDuplicates, CrmPerson } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { formatDate } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
@@ -169,12 +169,9 @@ function NewPersonDialog({
   workspace: string;
 }) {
   const router = useRouter();
-  const { data: companies } = useAsync(
-    () =>
-      open
-        ? listCrmRecords<CrmCompany>(workspace, "companies", { limit: 200 }).then((p) => p.rows)
-        : Promise.resolve([] as CrmCompany[]),
-    [workspace, open]
+  const searchCompanies = useCallback<RelationSearch>(
+    (q, after) => searchCompanyChoices(workspace, q, after),
+    [workspace]
   );
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
@@ -283,7 +280,7 @@ function NewPersonDialog({
                   name: "company_id",
                   label: "Company",
                   type: "relation",
-                  choices: (companies ?? []).map((c) => ({ value: c.id, label: c.name })),
+                  search: searchCompanies,
                 }}
                 value={company}
                 onChange={(value) => setCompany(value as string | null)}

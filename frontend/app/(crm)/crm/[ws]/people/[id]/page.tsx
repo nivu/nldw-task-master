@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
 import { RelatedPanel } from "@/components/crm/related-panel";
+import type { RelationSearch } from "@/components/crm/field-editor";
 import { useCrm } from "@/components/crm/shell";
 import { Timeline } from "@/components/crm/timeline";
 import { Button } from "@/components/ui/button";
@@ -15,18 +16,17 @@ import {
   deleteCrmRecord,
   getCrmMembers,
   getCrmRecord,
-  listCrmRecords,
+  searchCompanyChoices,
   updateCrmRecord,
 } from "@/lib/api/crm";
-import type { CrmCompany, CrmMember, CrmPerson } from "@/lib/api/crm-types";
+import type { CrmMember, CrmPerson } from "@/lib/api/crm-types";
 import { useAsync } from "@/lib/use-async";
 
 /** Spec 007 §5.7, grouped for the field panel (FR-CRM-REC-02). */
-function personGroups(members: CrmMember[], companies: CrmCompany[], current: CrmPerson): FieldGroup[] {
-  const companyChoices = companies.map((c) => ({ value: c.id, label: c.name }));
-  if (current.company_id && !companies.some((c) => c.id === current.company_id)) {
-    companyChoices.push({ value: current.company_id, label: current.company_name ?? "Current company" });
-  }
+function personGroups(members: CrmMember[], searchCompanies: RelationSearch, current: CrmPerson): FieldGroup[] {
+  const companyChoices = current.company_id
+    ? [{ value: current.company_id, label: current.company_name ?? "Current company" }]
+    : [];
   return [
     {
       title: "Person",
@@ -34,7 +34,13 @@ function personGroups(members: CrmMember[], companies: CrmCompany[], current: Cr
         { name: "first_name", label: "First name", type: "text", required: true },
         { name: "last_name", label: "Last name", type: "text" },
         { name: "job_title", label: "Job title", type: "text" },
-        { name: "company_id", label: "Company", type: "relation", choices: companyChoices },
+        {
+          name: "company_id",
+          label: "Company",
+          type: "relation",
+          choices: companyChoices,
+          search: searchCompanies,
+        },
         { name: "city", label: "City", type: "text" },
       ],
     },
@@ -82,13 +88,12 @@ export default function PersonPage() {
   const [version, setVersion] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const { data, error, reload } = useAsync(
-    () =>
-      Promise.all([
-        getCrmRecord<CrmPerson>(ws, "people", id),
-        getCrmMembers(ws),
-        listCrmRecords<CrmCompany>(ws, "companies", { limit: 200 }),
-      ]),
+    () => Promise.all([getCrmRecord<CrmPerson>(ws, "people", id), getCrmMembers(ws)]),
     [ws, id]
+  );
+  const searchCompanies = useCallback<RelationSearch>(
+    (q, after) => searchCompanyChoices(ws, q, after),
+    [ws]
   );
 
   if (error) {
@@ -103,7 +108,7 @@ export default function PersonPage() {
   }
   if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const [page, members, companies] = data;
+  const [page, members] = data;
   const person = page.record;
   const canEdit = bootstrap.role !== "viewer";
   const me = bootstrap.me.id;
@@ -136,7 +141,7 @@ export default function PersonPage() {
             </Button>
           )
         }
-        groups={personGroups(members, companies.rows, person)}
+        groups={personGroups(members, searchCompanies, person)}
         values={person as unknown as Record<string, unknown>}
         canEdit={canEdit}
         timeZone={bootstrap.me.timezone}

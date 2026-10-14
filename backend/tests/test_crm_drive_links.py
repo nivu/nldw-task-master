@@ -8,7 +8,7 @@ upload, content, preview or Drive permission is accepted or stored.
 from __future__ import annotations
 
 import pytest
-from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
+from crm_fake import MEMBER, OWNER, SELLER, VIEWER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 
 LABS = "?workspace=labs"
@@ -117,6 +117,19 @@ class TestWhoMay:
         )
         assert page.json()["links"] == []
         assert fake.rows["crm_drive_links"][link["id"]]["deleted_at"]
+
+    def test_a_member_removes_only_the_links_they_added(self, crm):
+        """FR-CRM-DEL-04 — a link has no owner, so its creator stands in."""
+        http, fake, made = crm
+        theirs = _link(http, "company", made["company"]["id"], who=SELLER["id"]).json()
+        r = http.delete(f"/api/v1/crm/links/{theirs['id']}{LABS}", headers=as_(MEMBER["id"]))
+        assert r.status_code == 403
+        assert r.json()["detail"] == (
+            "Only a workspace admin or whoever added it can remove this link."
+        )
+        assert fake.rows["crm_drive_links"][theirs["id"]]["deleted_at"] is None
+        r = http.delete(f"/api/v1/crm/links/{theirs['id']}{LABS}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200
 
     def test_removing_an_unknown_link_is_not_found(self, crm):
         http, *_ = crm

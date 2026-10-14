@@ -404,19 +404,28 @@ def timeline(
             limit=500,
         )
     }
-    rows = store.list_timeline(
-        ctx.workspace_id,
-        KINDS[kind].table,
-        record_id,
-        record_type=kind,
-        related_ids=sorted(links),
-        before=before,
-        limit=limit,
-    )
-    entries = show.timeline(rows, kind, ws.facts, links=links)
-    if types:
-        entries = [e for e in entries if e["type"] in types]
-    return entries
+    # A type filter, and a Viewer's dropped entries, leave a batch of audit
+    # rows short, so batches are read until `limit` entries are found or the
+    # history ends. Every row skipped past the last entry shown matched
+    # nothing, so that entry's id stays a sound `before` for the next page.
+    entries: list[dict[str, Any]] = []
+    batch = max(limit, 200)
+    while len(entries) < limit:
+        rows = store.list_timeline(
+            ctx.workspace_id,
+            KINDS[kind].table,
+            record_id,
+            record_type=kind,
+            related_ids=sorted(links),
+            before=before,
+            limit=batch,
+        )
+        found = show.timeline(rows, kind, ws.facts, links=links)
+        entries += [e for e in found if not types or e["type"] in types]
+        if len(rows) < batch:
+            break
+        before = rows[-1]["id"]
+    return entries[:limit]
 
 
 def duplicates(
@@ -560,14 +569,18 @@ def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
     return present_rows(ws, kind, [done[0]["row"]])[0]
 
 
+def _owns(row: dict[str, Any], user_id: str) -> bool:
+    """FR-CRM-DEL-04 — the owner, or with no owner set, the creator."""
+    owner = row.get("owner_id")
+    return owner == user_id if owner else row.get("created_by") == user_id
+
+
 def soft_delete(ctx: Any, kind: str, record_id: str, *, people: str | None = None) -> dict:
     """FR-CRM-DEL-01, -02, -04. A Member deletes only what they own (or, with
     no owner set, created); everything deleted in this one action shares a
     `deleted_group`, so a restore brings it back together."""
     row = live(ctx.workspace_id, kind, record_id)
-    owner = row.get("owner_id")
-    owns = owner == ctx.user.id if owner else row.get("created_by") == ctx.user.id
-    if not ctx.may("soft_delete", owns=owns):
+    if not ctx.may("soft_delete", owns=_owns(row, ctx.user.id)):
         raise CrmRefused(
             403, f"Only a workspace admin or its owner can delete this {show.NOUNS[kind]}."
         )
@@ -585,6 +598,19 @@ def soft_delete(ctx: Any, kind: str, record_id: str, *, people: str | None = Non
                 422,
                 f"{row['name']} has {n} {'person' if n == 1 else 'people'}; say whether to "
                 "unlink them or delete them too.",
+            )
+        # The people go to the Trash too, so each is held to the same rule:
+        # a Member's company does not carry another seller's people with it.
+        barred = [
+            dedupe.full_name(p["first_name"], p.get("last_name"))
+            for p in staff
+            if not ctx.may("soft_delete", owns=_owns(p, ctx.user.id))
+        ]
+        if people == "delete" and barred:
+            raise CrmRefused(
+                403,
+                f"Only a workspace admin or their owner can delete {', '.join(barred)}; "
+                "unlink them instead, or ask a workspace admin.",
             )
         for p in staff:
             if people == "delete":
@@ -617,19 +643,47 @@ def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
     if row is None or not row.get("deleted_at"):
         raise CrmRefused(404, f"No such {show.NOUNS[kind]} in the Trash.")
     group = row.get("deleted_group")
-    ops: list[dict[str, Any]] = []
+    back: list[tuple[str, dict[str, Any]]] = []
     if group:
         for t in reversed(TRASH_TABLES):
-            ops += [
-                {"op": "restore", "table": t, "id": r["id"]}
+            back += [
+                (t, r)
                 for r in store.list_records(
                     ctx.workspace_id, t, filters={"deleted_group": group}, deleted=True, limit=2000
                 )
             ]
-    if not any(op["id"] == record_id for op in ops):
-        ops.insert(0, {"op": "restore", "table": table, "id": record_id})
+    if not any(r["id"] == record_id for _, r in back):
+        back.insert(0, (table, row))
+    ops: list[dict[str, Any]] = [{"op": "restore", "table": t, "id": r["id"]} for t, r in back]
+
+    # A person trashed on their own keeps their company_id; if that company
+    # went to the Trash later and is not coming back with them, the person
+    # returns unlinked rather than pointing at a trashed company.
+    coming = {r["id"] for t, r in back if t == "crm_companies"}
+    people = [r for t, r in back if t == "crm_people"]
+    wanted = sorted({p["company_id"] for p in people if p.get("company_id")} - coming)
+    gone = {
+        c["id"]
+        for c in (
+            store.list_records(
+                ctx.workspace_id,
+                "crm_companies",
+                any_of={"id": wanted},
+                deleted=None,
+                limit=len(wanted),
+            )
+            if wanted
+            else []
+        )
+        if c.get("deleted_at")
+    }
+    ops += [
+        {"op": "update", "table": "crm_people", "id": p["id"], "values": {"company_id": None}}
+        for p in people
+        if p.get("company_id") in gone
+    ]
     done = store.apply(actor(ctx), ops)
-    restored = next(d["row"] for d in done if d["id"] == record_id)
+    restored = [d["row"] for d in done if d["id"] == record_id][-1]
     return present_rows(ws, kind, [restored])[0]
 
 
@@ -693,9 +747,13 @@ def add_link(ctx: Any, payload: DriveLinkIn) -> dict[str, Any]:
 
 
 def delete_link(ctx: Any, link_id: str) -> dict[str, Any]:
+    """FR-CRM-DEL-04 — a link has no owner, so a Member removes only the
+    links they added."""
     row = store.get_record(ctx.workspace_id, "crm_drive_links", link_id) if _uuid(link_id) else None
     if row is None or row.get("deleted_at"):
         raise CrmRefused(404, "No such Drive link.")
+    if not ctx.may("soft_delete", owns=row.get("created_by") == ctx.user.id):
+        raise CrmRefused(403, "Only a workspace admin or whoever added it can remove this link.")
     group = str(uuid.uuid4())
     store.apply(
         actor(ctx),

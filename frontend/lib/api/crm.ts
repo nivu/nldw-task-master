@@ -16,6 +16,7 @@ import type {
   CrmBootstrap,
   CrmCapacity,
   CrmColor,
+  CrmCompany,
   CrmDriveLink,
   CrmDuplicates,
   CrmFxRate,
@@ -234,6 +235,13 @@ export const listCrmRecords = <T extends CrmRecord>(
 ) =>
   call<CrmPage<T>>(
     `/${object}${query(workspace, { q: options.q, limit: options.limit, after: options.after ?? undefined })}`
+  );
+
+/** Companies as relation choices, searched on the server a page at a time,
+ *  so a person can be linked to any live company, not only recent ones. */
+export const searchCompanyChoices = (workspace: string, q: string, after: string | null) =>
+  listCrmRecords<CrmCompany>(workspace, "companies", { q: q || undefined, limit: 50, after }).then(
+    (page) => ({ choices: page.rows.map((c) => ({ value: c.id, label: c.name })), next: page.next })
   );
 
 export const getCrmRecord = <T extends CrmRecord>(workspace: string, object: CrmObject, id: string) =>

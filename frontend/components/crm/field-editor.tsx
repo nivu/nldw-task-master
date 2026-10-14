@@ -2,7 +2,7 @@
 
 import { Marked, type Tokens } from "marked";
 import { MessageCircle, Plus, Star, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -58,11 +58,20 @@ export interface FieldSpec {
   type: FieldType;
   /** select, multi-select and relation; currency codes for currency. */
   choices?: Choice[];
+  /** relation: asks the server as the person types, a page at a time, for a
+   *  relation too large to offer whole (a person's company). `choices` then
+   *  only needs to name the current value. */
+  search?: RelationSearch;
   /** System-written fields are shown, never edited (FR-CRM-CO-03). */
   readOnly?: boolean;
   required?: boolean;
   placeholder?: string;
 }
+
+export type RelationSearch = (
+  q: string,
+  after: string | null
+) => Promise<{ choices: Choice[]; next: string | null }>;
 
 /** currency: an amount (decimal string) and its code. */
 export interface Money {
@@ -307,6 +316,115 @@ function ChoiceSelect({
   );
 }
 
+function SearchedRelation({
+  id,
+  value,
+  known,
+  search,
+  allowNone,
+  label,
+  onChange,
+}: {
+  id?: string;
+  value: string | null;
+  known: Choice[];
+  search: RelationSearch;
+  allowNone: boolean;
+  label: string;
+  onChange: (value: string | null) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState<Choice[]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [named, setNamed] = useState<Choice[]>(known);
+
+  useEffect(() => {
+    let live = true;
+    const timer = setTimeout(() => {
+      search(q.trim(), null)
+        .then((page) => {
+          if (!live) return;
+          setFound(page.choices);
+          setNext(page.next);
+          setError(null);
+        })
+        .catch(() => live && setError("Could not search; try again."));
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [q, search]);
+
+  async function more() {
+    try {
+      const page = await search(q.trim(), next);
+      setFound((current) => [...current, ...page.choices]);
+      setNext(page.next);
+    } catch {
+      setError("Could not search; try again.");
+    }
+  }
+
+  function choose(choice: Choice | null) {
+    if (choice) setNamed((current) => [...current, choice]);
+    onChange(choice ? choice.value : null);
+  }
+
+  const current = value ? [...named, ...found].find((c) => c.value === value) : undefined;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className={cn(!value && "text-muted-foreground")}>
+          {value ? (current?.label ?? "Chosen") : "None"}
+        </span>
+        {value && allowNone && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => choose(null)}>
+            Clear
+          </Button>
+        )}
+      </div>
+      <Input
+        id={id}
+        type="search"
+        placeholder={`Search ${label.toLowerCase()}`}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <ul className="max-h-48 overflow-y-auto rounded-md border text-sm">
+        {found.length === 0 ? (
+          <li className="p-2 text-muted-foreground">No matches.</li>
+        ) : (
+          found.map((choice) => (
+            <li key={choice.value}>
+              <button
+                type="button"
+                aria-pressed={choice.value === value}
+                className={cn(
+                  "w-full px-2 py-1 text-left hover:bg-muted",
+                  choice.value === value && "bg-muted font-medium"
+                )}
+                onClick={() => choose(choice)}
+              >
+                {choice.label}
+              </button>
+            </li>
+          ))
+        )}
+        {next && (
+          <li>
+            <button type="button" className="w-full px-2 py-1 text-left text-muted-foreground hover:bg-muted" onClick={more}>
+              More…
+            </button>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 function TextList({
   value,
   onChange,
@@ -483,8 +601,30 @@ export function FieldEditor({
           {spec.label}
         </label>
       );
-    case "select":
     case "relation":
+      if (spec.search) {
+        return (
+          <SearchedRelation
+            id={id}
+            value={(value as string | null) ?? null}
+            known={spec.choices ?? []}
+            search={spec.search}
+            allowNone={!spec.required}
+            label={spec.label}
+            onChange={onChange}
+          />
+        );
+      }
+      return (
+        <ChoiceSelect
+          id={id}
+          value={(value as string | null) ?? null}
+          choices={spec.choices ?? []}
+          allowNone={!spec.required}
+          onChange={onChange}
+        />
+      );
+    case "select":
       return (
         <ChoiceSelect
           id={id}

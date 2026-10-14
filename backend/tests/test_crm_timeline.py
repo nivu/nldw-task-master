@@ -134,6 +134,29 @@ class TestEntries:
         entries = _timeline(http, made["id"], plural="people", query="&types=create")
         assert [e["type"] for e in entries] == ["create"]
 
+    def test_the_type_filter_reaches_past_a_page_of_other_changes(self, crm):
+        """A stage move older than 250 field changes still comes back for
+        types=stage: the filter is not applied to one page of audit rows."""
+        http, _ = crm
+        made = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Acme"}, headers=as_(OWNER["id"])
+        ).json()
+        http.patch(
+            f"/api/v1/crm/companies/{made['id']}{LABS}",
+            json={"lead_stage": "qualified"},
+            headers=as_(OWNER["id"]),
+        )
+        for n in range(250):
+            http.patch(
+                f"/api/v1/crm/companies/{made['id']}{LABS}",
+                json={"city": f"City {n}"},
+                headers=as_(OWNER["id"]),
+            )
+        entries = _timeline(http, made["id"], query="&types=stage&limit=50")
+        assert [e["type"] for e in entries] == ["stage"]
+        fields = _timeline(http, made["id"], query="&types=field&limit=50")
+        assert len(fields) == 50
+
     def test_an_mcp_write_says_so(self, crm):
         http, _ = crm
         made = asyncio.run(
