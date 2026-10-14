@@ -10,14 +10,17 @@ hours, and this module only adds them up.
 
 - **Supply** is each person's contracted hours (spec 005 FR-CTC-06) on the
   working days between their joining and leaving dates, less the holidays
-  that apply to them and their leave. A person contributes to a week when
-  their supply there is above zero.
+  that apply to them and their approved leave (pending leave is not yet
+  time off). A person contributes to a week when their supply there is
+  above zero.
 - **Demand** is what the allocations passed in imply, at the same rule as the
   forecast (`timesheets.allocated_hours`, Q-02): a share of the person's
   capacity, which shrinks with their leave. Confirmed and tentative are kept
   apart, because pipeline work is not yet anybody's (spec 002 FR-PROJ-08).
   The caller passes only allocations that count: not released, not on an
-  archived project (FR-CRM-CHG-03, -04).
+  archived project (FR-CRM-CHG-03, -04). Demand covers the same people and
+  days as supply: an allocation held by someone not in `people`, or running
+  past their leaving date, counts only where they supply hours.
 """
 
 from __future__ import annotations
@@ -84,11 +87,16 @@ def weekly(
     allocations: list[rules.Allocation],
     holidays: dict[str, set[date]],
     leave: dict[str, dict[date, Decimal]],
+    approved_leave: dict[str, dict[date, Decimal]],
     hours_on: Callable[[str], Callable[[date], Decimal]],
 ) -> list[Week]:
     """Per week touching `start`..`end`. Each week counts only its days inside
     the range, so a forecast that starts on a Wednesday does not count the
-    Monday and Tuesday already gone."""
+    Monday and Tuesday already gone.
+
+    `approved_leave` reduces supply; `leave` (approved and pending) reduces
+    demand, as the forecast's allocated hours do."""
+    by_id = {person.user_id: person for person in people}
     out = []
     for monday in week_starts(start, end):
         lo, hi = max(monday, start), min(monday + timedelta(days=6), end)
@@ -103,7 +111,7 @@ def weekly(
                 window[0],
                 window[1],
                 holidays=holidays.get(person.user_id, set()),
-                leave_days=leave.get(person.user_id, {}),
+                leave_days=approved_leave.get(person.user_id, {}),
                 hours_on=hours_on(person.user_id),
             )
             if hours > ZERO:
@@ -113,7 +121,12 @@ def weekly(
         confirmed = ZERO
         tentative = ZERO
         for allocation in allocations:
+            person = by_id.get(allocation.user_id)
+            if person is None:
+                continue
             window = rules.overlap(allocation.starts_on, allocation.ends_on, lo, hi)
+            if window is not None:
+                window = _clip(*window, person.joined_on, person.left_on)
             if window is None:
                 continue
             hours = rules.allocated_hours(

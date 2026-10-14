@@ -25,7 +25,17 @@ SUN = date(2026, 11, 8)
 FULL_TIME = lambda uid: lambda day: D("8")  # noqa: E731
 
 
-def week(people, allocations=(), *, holidays=None, leave=None, hours_on=FULL_TIME, start=MON):
+def week(
+    people,
+    allocations=(),
+    *,
+    holidays=None,
+    leave=None,
+    approved_leave=None,
+    hours_on=FULL_TIME,
+    start=MON,
+):
+    """`approved_leave` defaults to `leave`: every booking approved."""
     (only,) = calc.weekly(
         start,
         SUN,
@@ -33,6 +43,7 @@ def week(people, allocations=(), *, holidays=None, leave=None, hours_on=FULL_TIM
         allocations=list(allocations),
         holidays=holidays or {},
         leave=leave or {},
+        approved_leave=(leave or {}) if approved_leave is None else approved_leave,
         hours_on=hours_on,
     )
     return only
@@ -89,6 +100,11 @@ class TestSupply:
         assert week(people).contributors == 3
         assert week(people, leave={"c": everyone_off}).contributors == 2
 
+    def test_pending_leave_does_not_reduce_supply(self):
+        pending = {"a": {date(2026, 11, 3): D("1")}}
+        w = week([calc.Person("a")], leave=pending, approved_leave={})
+        assert (w.supply_hours, w.contributors) == (D("40.00"), 1)
+
 
 class TestDemand:
     def test_confirmed_and_tentative_are_kept_apart(self):
@@ -98,6 +114,18 @@ class TestDemand:
     def test_demand_shrinks_with_leave_as_the_forecast_does(self):
         leave = {"a": {date(2026, 11, 3): D("1")}}
         assert week([calc.Person("a")], [alloc("50")], leave=leave).confirmed_hours == D("16.00")
+
+    def test_demand_stops_when_the_person_leaves(self):
+        left = calc.Person("a", left_on=date(2026, 11, 3))
+        assert week([left], [alloc("100")]).confirmed_hours == D("16.00")
+
+    def test_demand_starts_when_the_person_joins(self):
+        joined = calc.Person("a", joined_on=date(2026, 11, 5))
+        assert week([joined], [alloc("100")]).confirmed_hours == D("16.00")
+
+    def test_an_allocation_held_by_someone_outside_the_people_counts_nowhere(self):
+        w = week([calc.Person("a")], [alloc("50", user="gone"), alloc("50", tentative=True)])
+        assert (w.confirmed_hours, w.tentative_hours) == (D("0.00"), D("20.00"))
 
     def test_an_allocation_counts_only_its_days_in_the_week(self):
         w = week([calc.Person("a")], [alloc("100", starts=date(2026, 11, 5))])
@@ -198,8 +226,13 @@ class FakeDb:
     def default_location_id(self):
         return "loc-chennai"
 
-    def list_bookings(self, *, user_ids=None, **_):
-        return [b for b in self.bookings if user_ids is None or b["user_id"] in user_ids]
+    def list_bookings(self, *, user_ids=None, statuses=None, **_):
+        return [
+            b
+            for b in self.bookings
+            if (user_ids is None or b["user_id"] in user_ids)
+            and (statuses is None or b["status"] in statuses)
+        ]
 
     def list_cost_periods(self, user_id=None):
         return list(self.cost_periods)
@@ -243,6 +276,24 @@ class TestTheService:
         fake.people[0]["is_active"] = False
         (w,) = service.weekly(MON, SUN)
         assert (w["supply_hours"], w["contributors"]) == ("52.00", 2)
+        # u1's 50% confirmed allocation leaves with them.
+        assert (w["confirmed_hours"], w["tentative_hours"]) == ("0.00", "16.00")
+
+    def test_pending_leave_shrinks_demand_but_not_supply(self, fake):
+        fake.bookings.append(
+            {
+                "user_id": "u2",
+                "date": "2026-11-05",
+                "duration": "1",
+                "category": "casual",
+                "status": "pending",
+            }
+        )
+        (w,) = service.weekly(MON, SUN)
+        # Supply as before: only u1's approved Tuesday is off. u2's tentative
+        # 50% is of 24h (Wed holiday, Thu pending leave), as the forecast has it.
+        assert (w["supply_hours"], w["contributors"]) == ("76.00", 3)
+        assert (w["confirmed_hours"], w["tentative_hours"]) == ("12.00", "12.00")
 
 
 class TestTheForecastWeeks:

@@ -7,9 +7,11 @@ arithmetic is `domain/capacity.py`; this module only reads its inputs.
 Supply is every active staff account (CRM-only accounts are no TVA population,
 FR-CRM-CHG-02), the same people as the allocation picker and the hiring
 signal. Holidays are the ones that apply to each person by location (spec 006
-FR-LOC-02); leave is `leave_days_for`, the same booked leave the forecast's
-allocated hours already net out, so supply and demand shrink together.
-Demand is the allocations that count (`list_counting_allocations`).
+FR-LOC-02). Supply is reduced by approved leave only, since a pending request
+is not yet time off; demand keeps `leave_days_for`'s approved and pending
+leave, the same booked leave the forecast's allocated hours already net out.
+Demand is the allocations that count (`list_counting_allocations`), for the
+same people and days as supply.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ def weekly(start: date, end: date) -> list[dict[str, Any]]:
         allocations=allocations,
         holidays=holidays_by_person(user_ids, start, end),
         leave=leave_days_for(user_ids, start, end),
+        approved_leave=leave_days_for(user_ids, start, end, statuses=frozenset({"approved"})),
         hours_on=pnl_service.contracted_hours(),
     )
     return [w.as_dict() for w in weeks]
