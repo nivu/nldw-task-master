@@ -35,20 +35,22 @@ export interface MeCrmWorkspace {
   last_used: boolean;
 }
 
-export interface Me {
+export interface MePreferences {
+  timezone: "Asia/Kolkata" | "Australia/Sydney";
+  number_format: "indian_short" | "full";
+}
+
+interface MeBase {
   id: string;
   email: string;
   display_name: string;
-  /** Spec 007. For `crm_only` the backend sends no `role`, `lead_id` or
-   *  `capabilities`, only `preferences`; from S1c the portal layout sends
-   *  them to /crm before the TVA shell renders. */
-  account_type: AccountType;
   /** Spec 007 — every account's CRM workspaces; empty until S1b adds them. */
   crm: { workspaces: MeCrmWorkspace[] };
-  preferences?: {
-    timezone: "Asia/Kolkata" | "Australia/Sydney";
-    number_format: "indian_short" | "full";
-  };
+}
+
+export interface StaffMe extends MeBase {
+  account_type: "staff";
+  preferences?: MePreferences;
   role: Role;
   lead_id: string | null;
   /** A hint for which navigation to render. Never a permission — every
@@ -65,6 +67,17 @@ export interface Me {
     grant_dashboard: boolean;
   };
 }
+
+/** Spec 007 contracts §1 — the backend sends no `role`, `lead_id` or
+ *  `capabilities` for a CRM-only account, only `preferences`; from S1c the
+ *  portal layout sends them to /crm before the TVA shell renders. */
+export interface CrmOnlyMe extends MeBase {
+  account_type: "crm_only";
+  preferences: MePreferences;
+}
+
+/** Narrow on `account_type` before reading `role` or `capabilities`. */
+export type Me = StaffMe | CrmOnlyMe;
 
 export interface Balance {
   category: Category;
@@ -228,6 +241,9 @@ export interface PortalUser {
   role: Role;
   lead_id: string | null;
   is_active: boolean;
+  /** Spec 007 FR-CRM-CHG-02 — `crm_only` appears only in the admin's user
+   *  list; every person picker leaves them out. */
+  account_type?: AccountType;
   /** Spec 006 FR-LOC-01. */
   location_id?: string | null;
   /** Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.

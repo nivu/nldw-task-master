@@ -39,7 +39,7 @@ export default function ProjectsPage() {
     showMoney: boolean;
   }>(async () => {
     const me = await getMe();
-    const showMoney = me.capabilities.financials;
+    const showMoney = me.account_type === "staff" && me.capabilities.financials;
     const [projects, allocations, people, financials] = await Promise.all([
       listProjects(),
       listAllocations(),

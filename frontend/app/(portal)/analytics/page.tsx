@@ -110,10 +110,11 @@ export default function AnalyticsPage() {
     ]);
     // Spec 006 FR-HEALTH — a colour per project for the manager tier.
     const health: Record<string, "green" | "amber" | "red"> = {};
-    if (me.capabilities.financials) {
+    const financials = me.account_type === "staff" && me.capabilities.financials;
+    if (financials) {
       for (const h of await getProjectsHealth()) health[h.project_id] = h.overall;
     }
-    return { projects, coverage, forecast, current, financials: me.capabilities.financials, health };
+    return { projects, coverage, forecast, current, financials, health };
   }, []);
 
   if (error) {

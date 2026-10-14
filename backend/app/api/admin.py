@@ -97,8 +97,12 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
     if db.get_profile_by_email(payload.email):
         raise ProblemDetail(409, f"{payload.email} already has an account.")
 
-    if payload.lead_id and db.get_profile(payload.lead_id) is None:
-        raise ProblemDetail(422, "That lead does not exist.")
+    if payload.lead_id:
+        lead = db.get_profile(payload.lead_id)
+        if lead is None:
+            raise ProblemDetail(422, "That lead does not exist.")
+        if refusal := rules.lead_person_refusal(lead):
+            raise ProblemDetail(422, refusal)
 
     if problem := rules.check_employment_dates(payload.joined_on, payload.left_on):
         raise ProblemDetail(422, problem)
@@ -199,8 +203,12 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if changes.get("lead_id") == user_id:
         raise ProblemDetail(422, "Somebody cannot be their own lead.")
 
-    if changes.get("lead_id") and db.get_profile(changes["lead_id"]) is None:
-        raise ProblemDetail(422, "That lead does not exist.")
+    if changes.get("lead_id"):
+        lead = db.get_profile(changes["lead_id"])
+        if lead is None:
+            raise ProblemDetail(422, "That lead does not exist.")
+        if refusal := rules.lead_person_refusal(lead):
+            raise ProblemDetail(422, refusal)
 
     if user_id == admin.id and changes.get("role") and changes["role"] != "admin":
         # Removing your own admin rights locks the panel for everyone if you
@@ -319,8 +327,11 @@ def add_ctc(user_id: str, payload: CtcPeriodIn, admin: AdminDep) -> dict:
     period that started earlier is closed the day before this one starts,
     which is how "CTC changes next month" is entered. Any other overlap is
     refused by the database (FR-CTC-02)."""
-    if db.get_profile(user_id) is None:
+    person = db.get_profile(user_id)
+    if person is None:
         raise ProblemDetail(404, "No such user.")
+    if refusal := rules.staff_subject_refusal(person, "ctc"):
+        raise ProblemDetail(422, refusal)
     if payload.ends_on is not None and payload.ends_on < payload.starts_on:
         raise ProblemDetail(422, "The end date is before the start date.")
 
@@ -415,8 +426,12 @@ def set_allowance(payload: AllowanceIn, admin: AdminDep) -> dict:
     change cannot retroactively invalidate bookings already approved in a
     closed period. `user_id` omitted sets the organisation default.
     """
-    if payload.user_id and db.get_profile(payload.user_id) is None:
-        raise ProblemDetail(422, "No such user.")
+    if payload.user_id:
+        person = db.get_profile(payload.user_id)
+        if person is None:
+            raise ProblemDetail(422, "No such user.")
+        if refusal := rules.staff_subject_refusal(person, "leave"):
+            raise ProblemDetail(422, refusal)
 
     row = db.upsert_allowance(
         {

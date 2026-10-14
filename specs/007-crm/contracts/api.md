@@ -58,6 +58,10 @@ without acting; `/api/v1/feed/{key}.ics` never resolves a `crm_only` profile
 |---|---|---|
 | `GET /admin/users` | Includes `crm_only` accounts with `account_type`; they are left out of every count | CHG-02 |
 | `PATCH /admin/users/{id}` | On a `crm_only` profile, `role`, `lead_id`, `logs_time` and `dashboard_access: true` are refused 422 "Change the account type first." Setting `is_active: false` records `deactivated_reason = 'admin'` | CHG-02, ACC-04 |
+| `POST /admin/users`, `PATCH /admin/users/{id}` | A `crm_only` `lead_id` is refused 422 "A CRM-only account cannot be anyone's lead." before anything is written | CHG-02 |
+| `POST /admin/backfill`, `PUT /admin/allowances` (with `user_id`) | A `crm_only` person is refused 422 "A CRM-only account has no leave." | CHG-02 |
+| `POST /admin/users/{id}/ctc` | A `crm_only` person is refused 422 "A CRM-only account has no CTC." | CHG-02 |
+| `POST /admin/checklists` | A `crm_only` person is refused 422 "A CRM-only account has no checklists." | CHG-02 |
 | `POST /admin/projects`, `PATCH /admin/projects/{id}` | A `crm_only` lead is refused 422 "A CRM-only account cannot lead a project." `PATCH` on a linked project refuses `status` and `probability`, and `is_archived` while tentative: 422 "Managed by CRM deal *name*." (the name only for Labs members, otherwise "Managed by a CRM deal.") | CHG-02, CHG-05 |
 | `GET /admin/projects`, `GET /analytics/projects/{project_id}` | Each project gains `crm_managed: bool`; for Labs members also `crm: {company: {id, name}, opportunity: {id, name, owner_name, won_on}}`. Never an amount. The Labs membership and the linked deals and companies are read once per request, not per project. | TVA-02 |
 | `POST /admin/allocations` | A `crm_only` person is refused 422 "A CRM-only account cannot be allocated." | CHG-02 |

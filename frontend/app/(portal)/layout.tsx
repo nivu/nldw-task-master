@@ -94,19 +94,20 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
 
   // Only the links this person can actually use. The server re-checks every
   // one of these routes regardless — hiding a link is tidiness, not security.
+  const caps = me?.account_type === "staff" ? me.capabilities : undefined;
   const links = [
     { href: "/home", label: "Home", icon: Home, section: "mine", show: true },
     { href: "/calendar", label: "Calendar", icon: CalendarDays, section: "mine", show: true },
     { href: "/timesheet", label: "Time", icon: Clock, section: "mine", show: true },
-    { href: "/team", label: "Team", icon: Users, section: "team", show: me?.capabilities.team_view },
-    { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: me?.capabilities.team_view },
-    { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: me?.capabilities.team_view },
+    { href: "/team", label: "Team", icon: Users, section: "team", show: caps?.team_view },
+    { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: caps?.team_view },
+    { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: caps?.team_view },
     // Spec 003 FR-DASH — by the owner's authorisation, not by role.
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: me?.capabilities.dashboard },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: caps?.dashboard },
     // Spec 003 — the manager tier runs projects from its own page, not from
     // inside the admin panel it may not enter (FR-ROLE-03).
-    { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: me?.capabilities.manage_projects },
-    { href: "/admin", label: "Admin", icon: Settings, section: "manage", show: me?.capabilities.admin_panel },
+    { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: caps?.manage_projects },
+    { href: "/admin", label: "Admin", icon: Settings, section: "manage", show: caps?.admin_panel },
     { href: "/account", label: "Account", icon: User, section: "footer", show: true },
   ].filter((link) => link.show);
 

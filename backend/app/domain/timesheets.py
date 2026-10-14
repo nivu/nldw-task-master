@@ -506,6 +506,35 @@ def allocation_person_refusal(person: dict) -> str | None:
     return None
 
 
+def lead_person_refusal(person: dict) -> str | None:
+    """Spec 007 FR-CRM-CHG-02 — a CRM-only account is nobody's lead.
+
+    A lead approves leave and timesheets, which a seller who is not staff
+    cannot do. The database refuses it too (`tva_staff_only`, 025).
+    """
+    if person.get("account_type") == "crm_only":
+        return "A CRM-only account cannot be anyone's lead."
+    return None
+
+
+_NOT_STAFF = {
+    "leave": "A CRM-only account has no leave.",
+    "checklist": "A CRM-only account has no checklists.",
+    "ctc": "A CRM-only account has no CTC.",
+}
+
+
+def staff_subject_refusal(person: dict, subject: str) -> str | None:
+    """Spec 007 FR-CRM-CHG-02 — leave balances, checklists and CTC leave
+    CRM-only accounts out, so nothing of the kind is written for one.
+
+    `subject` is "leave", "checklist" or "ctc".
+    """
+    if person.get("account_type") == "crm_only":
+        return _NOT_STAFF[subject]
+    return None
+
+
 def archived_allocation_refusal(
     *,
     project_name: str,

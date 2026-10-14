@@ -568,8 +568,11 @@ def set_checklist_template(kind: str, payload: ChecklistTemplateIn, admin_user: 
 
 @admin.post("/checklists", status_code=201)
 def start_checklist(payload: ChecklistStart, admin_user: AdminDep) -> dict:
-    if db.get_profile(payload.user_id) is None:
+    person = db.get_profile(payload.user_id)
+    if person is None:
         raise ProblemDetail(404, "No such person.")
+    if refusal := timesheet_rules.staff_subject_refusal(person, "checklist"):
+        raise ProblemDetail(422, refusal)
     row = checklist_service.start(
         user_id=payload.user_id, kind=payload.kind, actor_id=admin_user.id
     )

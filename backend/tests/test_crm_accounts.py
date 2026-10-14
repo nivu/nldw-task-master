@@ -318,3 +318,60 @@ class TestTvaWorkRefused:
         r = TestClient(app).patch("/api/v1/admin/projects/p1", json={"lead_id": "u-crm"})
         assert r.status_code == 422
         assert r.json()["detail"] == "A CRM-only account cannot lead a project."
+
+    def test_naming_a_crm_only_lead_on_update_user(self, tva):
+        r = _patch("u-staff", {"lead_id": "u-crm"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account cannot be anyone's lead."
+        assert tva.profiles["u-staff"] == STAFF
+
+    def test_naming_a_crm_only_lead_on_create_user(self, tva, monkeypatch):
+        class NoGoTrue:
+            def __getattr__(self, name):
+                raise AssertionError("GoTrue was reached before the lead was refused")
+
+        monkeypatch.setattr(db, "get_profile_by_email", lambda email: None)
+        monkeypatch.setattr(db, "supabase", NoGoTrue())
+        r = TestClient(app).post(
+            "/api/v1/admin/users",
+            json={"email": "new@example.com", "display_name": "New", "lead_id": "u-crm"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account cannot be anyone's lead."
+
+    def test_backfilling_leave_for_a_crm_only_account(self, tva):
+        r = TestClient(app).post(
+            "/api/v1/admin/backfill",
+            json={
+                "user_id": "u-crm",
+                "date": "2026-10-01",
+                "category": "casual",
+                "duration": "1.0",
+                "note": "Took the day",
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no leave."
+
+    def test_setting_an_allowance_for_a_crm_only_account(self, tva):
+        r = TestClient(app).put(
+            "/api/v1/admin/allowances",
+            json={"period": "2026-10", "category": "casual", "days": "2", "user_id": "u-crm"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no leave."
+
+    def test_adding_ctc_for_a_crm_only_account(self, tva):
+        r = TestClient(app).post(
+            "/api/v1/admin/users/u-crm/ctc",
+            json={"annual_ctc": "1200000", "starts_on": "2026-10-01"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no CTC."
+
+    def test_starting_a_checklist_for_a_crm_only_account(self, tva):
+        r = TestClient(app).post(
+            "/api/v1/admin/checklists", json={"user_id": "u-crm", "kind": "onboarding"}
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no checklists."

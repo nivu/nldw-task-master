@@ -73,7 +73,9 @@ export default function AccountPage() {
           <CardContent className="space-y-1 p-4 text-sm">
             <p className="font-medium">{me.display_name}</p>
             <p className="text-muted-foreground">{me.email}</p>
-            <p className="text-muted-foreground capitalize">Role: {me.role}</p>
+            {me.account_type === "staff" && (
+              <p className="text-muted-foreground capitalize">Role: {me.role}</p>
+            )}
           </CardContent>
         </Card>
       )}

@@ -109,11 +109,14 @@ export default function AdminPage() {
       settings,
       backfills,
       locations,
-      canGrantDashboard: me.capabilities.grant_dashboard,
+      canGrantDashboard: me.account_type === "staff" && me.capabilities.grant_dashboard,
     };
   }, []);
 
   const users = data?.users ?? [];
+  // Spec 007 FR-CRM-CHG-02 — CRM-only accounts are in the People table only;
+  // they have no lead, leave or checklist, so no other picker offers them.
+  const staff = users.filter((u) => u.account_type !== "crm_only");
   const allowances = data?.allowances ?? [];
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
@@ -154,7 +157,7 @@ export default function AdminPage() {
 
         <TabsContent value="people" className="space-y-4 pt-4">
           <NewUserForm
-            leads={users.filter((u) => u.role !== "user" && u.is_active)}
+            leads={staff.filter((u) => u.role !== "user" && u.is_active)}
             onDone={(message) => {
               setNotice(message);
               reload();
@@ -299,7 +302,7 @@ export default function AdminPage() {
 
         <TabsContent value="backfill" className="space-y-4 pt-4">
           <BackfillPanel
-            people={users}
+            people={staff}
             entries={backfills}
             onDone={(message) => {
               setNotice(message);
@@ -310,7 +313,7 @@ export default function AdminPage() {
         </TabsContent>
 
         <TabsContent value="checklists" className="space-y-4 pt-4">
-          <ChecklistsPanel people={users.filter((u) => u.is_active)} onError={setError} />
+          <ChecklistsPanel people={staff.filter((u) => u.is_active)} onError={setError} />
         </TabsContent>
 
         <TabsContent value="notifications" className="space-y-4 pt-4">

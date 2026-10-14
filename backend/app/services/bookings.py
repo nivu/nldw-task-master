@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain import rules
+from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person, can_decide
 from app.domain.calendar import period_of, today_in_company_tz
 from app.services import audit, balances, settings_store
@@ -352,6 +353,8 @@ def backfill(
     subject = db.get_profile(user_id)
     if subject is None:
         raise BookingRefused("No such person.", status=404)
+    if refusal := timesheet_rules.staff_subject_refusal(subject, "leave"):
+        raise BookingRefused(refusal)
 
     from app.services.holidays import holiday_on_for_user
 

@@ -4,7 +4,7 @@ constitution §I; FR-CRM-CHG-02.
 A CRM-only seller holds a real session JWT, and the anon key is public. 025
 revokes every table privilege in `public` from `anon` and `authenticated`, so
 that pair reads nothing through PostgREST: every table answers a permission
-error or no rows. The tables are enumerated from information_schema, so a
+error, and an empty `200` counts as open. The tables are enumerated from information_schema, so a
 table added later is checked without anyone remembering to list it.
 
 `tva_staff_only()` is the database's backstop behind the Python refusals: a
@@ -38,9 +38,10 @@ class TestBrowserLockdown:
         open_tables = {}
         for table in _public_tables(stack):
             r = stack.rest(table, bearer=bearer)
+            # Only the permission error counts as closed. `200 []` is a table
+            # that answered: after a reset most tables are empty, so an empty
+            # answer cannot tell a revoked table from a re-granted one.
             if r.status_code in (401, 403) and r.json().get("code") == "42501":
-                continue  # permission denied
-            if r.status_code == 200 and r.json() == []:
                 continue
             open_tables[table] = (r.status_code, r.text[:200])
         assert open_tables == {}
