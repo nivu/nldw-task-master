@@ -15,9 +15,16 @@
 --    plan must equal it). Missing, trashed or in another workspace: CRM04.
 --    The deal must still be at `expect_stage` and `expect_updated_at`, and
 --    the company at its `expect_updated_at`, or nothing is written (CRM09).
+--    A move to a closed stage carries `expect_siblings`, the company's other
+--    open deals and whether one is won, from which the company's change was
+--    worked out (FR-CRM-PIPE-05); they are counted again under the company's
+--    lock, so two of its deals closed at once cannot both miss the last-open
+--    rule (CRM09).
 -- 2. Every task to close must be a live task of this workspace linked to
 --    this deal; every task to create must have an assignee who is a member
---    of the workspace and link only to records of it. Else CRM04.
+--    of the workspace and link only to records of it. Else CRM04. A move to
+--    Closed Lost must close every open task on the deal: one added since the
+--    plan was made refuses the move (CRM09).
 -- 3. A plan with a TVA project action is refused here: this first form has
 --    the CRM side only, and 033 replaces it with the TVA branches
 --    (FR-CRM-TVA). Until then the backend refuses a Labs deal's move into
@@ -110,6 +117,22 @@ BEGIN
         END IF;
     END IF;
 
+    IF jsonb_typeof(p_plan -> 'expect_siblings') = 'object' AND (
+        (SELECT count(*) FROM crm_opportunities
+         WHERE workspace_id = ws AND company_id = comp.id AND id <> opp.id
+           AND deleted_at IS NULL
+           AND stage IN ('discovery', 'qualification', 'proposal', 'negotiation'))
+            IS DISTINCT FROM (p_plan -> 'expect_siblings' ->> 'open')::integer
+        OR EXISTS (
+            SELECT 1 FROM crm_opportunities
+            WHERE workspace_id = ws AND company_id = comp.id AND id <> opp.id
+              AND deleted_at IS NULL AND stage = 'closed_won')
+            IS DISTINCT FROM (p_plan -> 'expect_siblings' ->> 'won')::boolean
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM09',
+            MESSAGE = 'The company''s deals changed meanwhile; reload and try again.';
+    END IF;
+
     -- 2. Tasks to close: live tasks of this workspace, linked to this deal.
     SELECT coalesce(array_agg(value::uuid), '{}') INTO close_ids
     FROM jsonb_array_elements_text(coalesce(p_plan -> 'close_tasks', '[]'));
@@ -123,6 +146,16 @@ BEGIN
         )
     ) THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM04', MESSAGE = 'No such task on this deal.';
+    END IF;
+    IF p_plan -> 'opportunity' ->> 'stage' = 'closed_lost' AND EXISTS (
+        SELECT 1 FROM crm_tasks k
+        JOIN crm_task_links tl ON tl.task_id = k.id AND tl.workspace_id = ws
+        WHERE k.workspace_id = ws AND k.deleted_at IS NULL AND k.status <> 'done'
+          AND tl.record_type = 'opportunity' AND tl.record_id = opp.id
+          AND NOT k.id = ANY (close_ids)
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM09',
+            MESSAGE = 'The deal''s tasks changed meanwhile; reload and try again.';
     END IF;
 
     -- Tasks to create: assignees are members, links are records of this

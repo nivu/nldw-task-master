@@ -285,6 +285,58 @@ class TestEdit:
         assert r.status_code == 422
         assert r.json()["detail"] == "Negotiation needs amount and currency."
 
+    def test_a_cleared_probability_is_refused(self, crm):
+        http, fake, *_ = crm
+        deal = _deal(http, _company(http)).json()
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{deal['id']}{ACADEMY}",
+            json={"probability": None},
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (422, "Probability is required.")
+        assert fake.rows["crm_opportunities"][deal["id"]]["probability"] == 10
+
+    @pytest.mark.parametrize("stage", ["new", "disqualified"])
+    def test_an_open_deal_does_not_move_onto_a_company_it_could_not_open_on(self, crm, stage):
+        """FR-CRM-PIPE-04, -10 — through an edit as through a create."""
+        http, fake, *_ = crm
+        deal = _deal(http, _company(http)).json()
+        other = _company(http, stage=stage, name="Beta College")
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{deal['id']}{ACADEMY}",
+            json={"company_id": other["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422
+        assert fake.rows["crm_opportunities"][deal["id"]]["company_id"] == deal["company_id"]
+
+    def test_moving_onto_a_qualified_company_opens_it(self, crm):
+        http, fake, *_ = crm
+        deal = _deal(http, _company(http)).json()
+        other = _company(http, name="Beta College")
+        stamp = fake.rows["crm_companies"][other["id"]]["updated_at"]
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{deal['id']}{ACADEMY}",
+            json={"company_id": other["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert fake.rows["crm_companies"][other["id"]]["lead_stage"] == "deal_open"
+        assert fake.applied[-1][1][-1]["expect_updated_at"] == stamp
+
+    def test_a_closed_deal_moves_to_any_company(self, crm):
+        http, fake, _, academy = crm
+        deal = _deal(http, _company(http)).json()
+        _move(http, deal["id"], "closed_lost", changes={"lost_reason_id": _reason(fake, academy)})
+        other = _company(http, stage="new", name="Beta College")
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{deal['id']}{ACADEMY}",
+            json={"company_id": other["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert fake.rows["crm_companies"][other["id"]]["lead_stage"] == "new"
+
 
 class TestMoves:
     """FR-CRM-PIPE-07 to -09, -14; AC pipeline rules."""
@@ -390,6 +442,14 @@ class TestMoves:
         r = _move(http, deal["id"], "qualification", changes={"probability": 35})
         assert r.json()["opportunity"]["probability"] == 35
 
+    def test_a_null_probability_takes_the_stage_default(self, crm):
+        http, *_ = crm
+        person = _person(http)
+        deal = _deal(http, _company(http), point_of_contact_id=person["id"]).json()
+        r = _move(http, deal["id"], "qualification", changes={"probability": None})
+        assert r.status_code == 200, r.text
+        assert r.json()["opportunity"]["probability"] == 25
+
     def test_a_stale_move_is_refused_and_writes_nothing(self, crm):
         http, fake, *_ = crm
         person = _person(http)
@@ -485,6 +545,51 @@ class TestLost:
         _move(http, first["id"], "closed_lost", changes={"lost_reason_id": _reason(fake, academy)})
         assert fake.rows["crm_companies"][company["id"]]["lead_stage"] == "deal_open"
 
+    def test_a_sibling_closed_meanwhile_refuses_the_move(self, crm, monkeypatch):
+        """FR-CRM-PIPE-05, -15 — the plan counted the other deal as open; it
+        closed before the write, so the last-open rule would be missed."""
+        http, fake, _, academy = crm
+        company = _company(http)
+        first = _deal(http, company).json()
+        second = _deal(http, company, name="Acme - second").json()
+        reason = _reason(fake, academy)
+        write = deals.store.deal_transition
+
+        def racing(actor, plan):
+            fake.rows["crm_opportunities"][second["id"]].update(
+                stage="closed_lost", lost_reason_id=reason
+            )
+            return write(actor, plan)
+
+        monkeypatch.setattr(deals.store, "deal_transition", racing)
+        r = _move(http, first["id"], "closed_lost", changes={"lost_reason_id": reason})
+        assert (r.status_code, r.json()["detail"]) == (
+            409,
+            "The company's deals changed meanwhile; reload and try again.",
+        )
+        assert fake.rows["crm_opportunities"][first["id"]]["stage"] == "discovery"
+
+    def test_a_task_added_meanwhile_refuses_the_move(self, crm, monkeypatch):
+        """Automation 9 — every open task on the deal closes with it."""
+        http, fake, _, academy = crm
+        deal = _deal(http, _company(http)).json()
+        write = deals.store.deal_transition
+
+        def racing(actor, plan):
+            monkeypatch.setattr(deals.store, "deal_transition", write)
+            _task(http, deal["id"], title="Added meanwhile")
+            return write(actor, plan)
+
+        monkeypatch.setattr(deals.store, "deal_transition", racing)
+        r = _move(
+            http, deal["id"], "closed_lost", changes={"lost_reason_id": _reason(fake, academy)}
+        )
+        assert (r.status_code, r.json()["detail"]) == (
+            409,
+            "The deal's tasks changed meanwhile; reload and try again.",
+        )
+        assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "discovery"
+
 
 class TestReopen:
     """FR-CRM-PIPE-12, -13 (CRM side)."""
@@ -544,6 +649,32 @@ class TestReopen:
         r = _move(http, deal["id"], "negotiation")
         assert r.status_code == 200, r.text
         assert r.json()["opportunity"]["won_on"] is None
+
+    def test_a_nurturing_company_goes_back_to_deal_open(self, crm):
+        """FR-CRM-PIPE-04, -12 — the loss moved it to Nurturing."""
+        http, fake, _, academy = crm
+        deal = self._lost(http, fake, academy)
+        assert fake.rows["crm_companies"][deal["company_id"]]["lead_stage"] == "nurturing"
+        r = _move(http, deal["id"], "discovery", changes=NEXT)
+        assert r.status_code == 200, r.text
+        assert r.json()["company"]["lead_stage"] == "deal_open"
+
+    def test_a_disqualified_company_takes_no_reopened_deal(self, crm):
+        http, fake, _, academy = crm
+        deal = _deal(http, _company(http)).json()
+        _move(
+            http,
+            deal["id"],
+            "closed_lost",
+            changes={"lost_reason_id": _reason(fake, academy)},
+            company_on_loss="disqualified",
+        )
+        r = _move(http, deal["id"], "discovery", changes=NEXT)
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "Acme College is Disqualified; a disqualified company takes no deal.",
+        )
+        assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "closed_lost"
 
 
 class TestLabsStopsBeforeProposal:
@@ -669,6 +800,24 @@ class TestCompanyDelete:
         )
         assert r.status_code == 200, r.text
         assert fake.rows["crm_opportunities"][deal["id"]]["company_id"] == other["id"]
+        assert fake.rows["crm_companies"][other["id"]]["lead_stage"] == "deal_open"
+
+    @pytest.mark.parametrize("stage", ["new", "disqualified"])
+    def test_open_deals_do_not_move_onto_a_company_they_could_not_open_on(self, crm, stage):
+        """FR-CRM-PIPE-04."""
+        http, fake, *_ = crm
+        company = _company(http)
+        other = _company(http, stage=stage, name="Other College")
+        deal = _deal(http, company).json()
+        r = http.request(
+            "DELETE",
+            f"/api/v1/crm/companies/{company['id']}{ACADEMY}",
+            json={"deals": {"move_to": other["id"]}},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422
+        assert fake.rows["crm_opportunities"][deal["id"]]["company_id"] == company["id"]
+        assert not fake.rows["crm_companies"][company["id"]].get("deleted_at")
 
     def test_delete_them_too_and_restore_together(self, crm):
         http, fake, *_ = crm
@@ -748,6 +897,39 @@ class TestCompanyDelete:
             f"/api/v1/crm/opportunities/{deal['id']}{ACADEMY}", headers=as_(SELLER["id"])
         )
         assert r.status_code == 200
+
+
+class TestCompanyLeadStageFollowsDeals:
+    """Contracts §2.5.1, FR-CRM-PIPE-04, -05 — not moved by hand while a
+    deal is open."""
+
+    @pytest.mark.parametrize("stage", ["new", "nurturing", "qualified", "disqualified"])
+    def test_refused_while_a_deal_is_open(self, crm, stage):
+        http, fake, *_ = crm
+        company = _company(http)
+        _deal(http, company)
+        r = http.patch(
+            f"/api/v1/crm/companies/{company['id']}{ACADEMY}",
+            json={"lead_stage": stage},
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "Acme College has open deals; its lead stage follows them.",
+        )
+        assert fake.rows["crm_companies"][company["id"]]["lead_stage"] == "deal_open"
+
+    def test_allowed_once_no_deal_is_open(self, crm):
+        http, fake, _, academy = crm
+        company = _company(http)
+        deal = _deal(http, company).json()
+        _move(http, deal["id"], "closed_lost", changes={"lost_reason_id": _reason(fake, academy)})
+        r = http.patch(
+            f"/api/v1/crm/companies/{company['id']}{ACADEMY}",
+            json={"lead_stage": "qualified"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
 
 
 class TestThroughMcp:

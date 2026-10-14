@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { createCrmRecord } from "@/lib/api/crm";
 import type { CrmMember, CrmNote, NoteKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { formatDate, type CrmTimezone } from "@/lib/crm/format";
+import { formatDate, todayIn, type CrmTimezone } from "@/lib/crm/format";
 
 /**
  * Notes and Log activity — spec 007 FR-CRM-NOTE-01 to -03; Q-27, Q-53, Q-63.
@@ -32,24 +32,22 @@ const KINDS: { value: NoteKind; label: string }[] = [
   { value: "other", label: "Other" },
 ];
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 export function NoteComposer({
   workspace,
   link,
   members,
+  timeZone,
   onCreated,
 }: {
   workspace: string;
   link: { record_type: "company" | "person" | "opportunity"; record_id: string };
   members: CrmMember[];
+  timeZone: CrmTimezone;
   onCreated: (note: CrmNote) => void;
 }) {
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<NoteKind>("note");
-  const [occurredOn, setOccurredOn] = useState(today());
+  const [occurredOn, setOccurredOn] = useState(todayIn(timeZone));
   const [mentions, setMentions] = useState<string[]>([]);
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -82,7 +80,7 @@ export function NoteComposer({
       );
       setBody("");
       setKind("note");
-      setOccurredOn(today());
+      setOccurredOn(todayIn(timeZone));
       setMentions([]);
       setPreview(false);
       onCreated(made as CrmNote);
@@ -268,7 +266,7 @@ export function NotesTab({
 }) {
   return (
     <div className="space-y-3">
-      {canEdit && <NoteComposer workspace={workspace} link={link} members={members} onCreated={onChange} />}
+      {canEdit && <NoteComposer workspace={workspace} link={link} members={members} timeZone={timeZone} onCreated={onChange} />}
       <NoteList workspace={workspace} notes={notes} timeZone={timeZone} />
     </div>
   );

@@ -233,6 +233,29 @@ class TestReopenFromLost:
             None,
         )
 
+    def test_a_nurturing_company_goes_back_to_deal_open(self):
+        """FR-CRM-PIPE-04: the loss moved it to Nurturing; it has a deal again."""
+        move = _plan(
+            self._lost(),
+            "qualification",
+            {"next_step": "Re-engage", "next_step_on": "2026-11-01"},
+            user_id="u-seller",
+            company=_company(lead_stage="nurturing"),
+        )
+        assert move.plan["company"]["changes"] == {"lead_stage": "deal_open"}
+        assert move.would["company_lead_stage"] == "deal_open"
+
+    def test_a_disqualified_company_takes_no_reopened_deal(self):
+        move = _plan(
+            self._lost(),
+            "qualification",
+            {"next_step": "Re-engage", "next_step_on": "2026-11-01"},
+            user_id="u-seller",
+            company=_company(lead_stage="disqualified"),
+        )
+        assert not move.allowed
+        assert move.message == "Acme is Disqualified; a disqualified company takes no deal."
+
 
 class TestProbability:
     """FR-CRM-PIPE-11."""
@@ -250,6 +273,10 @@ class TestProbability:
     def test_unless_set_in_the_same_save(self):
         move = _plan(_deal(point_of_contact_id="p1"), "qualification", {"probability": 40})
         assert move.plan["opportunity"]["probability"] == 40
+
+    def test_a_null_is_no_choice(self):
+        move = _plan(_deal(point_of_contact_id="p1"), "qualification", {"probability": None})
+        assert move.plan["opportunity"]["probability"] == 25
 
     def test_a_broken_setting_falls_back(self):
         assert pipeline.default_probability("proposal", {"proposal": "fifty"}) == 50
@@ -323,6 +350,17 @@ class TestCompanyOnClose:
     @pytest.mark.parametrize("stage", ["customer", "partner"])
     def test_customer_and_partner_are_unchanged_by_a_loss(self, stage):
         assert self._close(stage, outcome="closed_lost", choice="disqualified") == {}
+
+    def test_the_plan_carries_the_counts_it_used(self):
+        """FR-CRM-PIPE-15 — 031 counts them again under the company's lock."""
+        move = _plan(
+            target="closed_lost",
+            changes={"lost_reason_id": "r1"},
+            other_open_deals=1,
+            has_won=True,
+        )
+        assert move.plan["expect_siblings"] == {"open": 1, "won": True}
+        assert "expect_siblings" not in _plan(_deal(point_of_contact_id="p1")).plan
 
 
 class TestLostClosesTasks:

@@ -28,7 +28,7 @@ import {
 } from "@/lib/api/crm";
 import type { CrmBootstrap, CrmLinkRef, CrmMember, CrmTask, TaskBucket } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { formatDate, type CrmTimezone } from "@/lib/crm/format";
+import { formatDate, todayIn, type CrmTimezone } from "@/lib/crm/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -111,7 +111,7 @@ export function TaskList({
       <ul className="divide-y rounded-md border">
         {tasks.map((task) => {
           const mine = task.assignee_id === bootstrap.me.id;
-          const overdue = task.status !== "done" && task.due_on && task.due_on < new Date().toISOString().slice(0, 10);
+          const overdue = task.status !== "done" && task.due_on && task.due_on < todayIn(bootstrap.me.timezone);
           return (
             <li key={task.id} className="flex items-start gap-3 p-2.5">
               <Checkbox

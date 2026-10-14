@@ -21,7 +21,7 @@ import { Label } from "@/components/ui/label";
 import { createCrmRecord, getCrmMembers, listCrmRecords, searchCompanyChoices } from "@/lib/api/crm";
 import type { CrmMember, CrmOpportunity } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { formatDate, type NumberFormat } from "@/lib/crm/format";
+import { formatDate, todayIn, type NumberFormat } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
@@ -52,7 +52,7 @@ export default function OpportunitiesPage() {
     return page.rows;
   }, [ws, search]);
   const rows = [...(data ?? []), ...extra];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIn(tz);
 
   async function more() {
     if (!next) return;

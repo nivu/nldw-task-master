@@ -37,6 +37,14 @@ export function formatDate(value: string | Date, timeZone: CrmTimezone): string 
   }).format(when);
 }
 
+/**
+ * Today's calendar day ("2026-10-14") in the viewer's zone, not UTC's: before
+ * 05:30 IST the UTC date is still yesterday.
+ */
+export function todayIn(timeZone: CrmTimezone): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
+}
+
 /** Up to two decimals, trailing zeros dropped: 12 → "12", 1.25 → "1.25". */
 function short(value: number): string {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(value);

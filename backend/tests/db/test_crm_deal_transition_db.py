@@ -503,6 +503,48 @@ class TestTransition:
         )
         assert note == {"body": "Closed: deal lost (Price).", "record_id": deal}
 
+    def test_a_sibling_closed_meanwhile_refuses_the_move(self, stack, workspace, owner):
+        """FR-CRM-PIPE-05, -15 — two deals of one company closed at once: each
+        plan saw the other open; the second write counts again and refuses."""
+        company = _company(stack, workspace, owner)
+        first = _deal(stack, workspace, owner, company)
+        second = _deal(stack, workspace, owner, company)
+        reason = _option(stack, workspace, "opportunity.lost_reason", "Price", "price")
+        lost = {"probability": 0, "lost_reason_id": reason, "lost_on": "2026-10-14"}
+        siblings = {"open": 1, "won": False}
+        plan_first = _plan(stack, first, "closed_lost", values=lost, expect_siblings=siblings)
+        plan_second = _plan(stack, second, "closed_lost", values=lost, expect_siblings=siblings)
+        _move(stack, _actor(workspace, owner), plan_first)
+        message = _refused(stack, _move_sql(stack, _actor(workspace, owner), plan_second), "CRM09")
+        assert message == "The company's deals changed meanwhile; reload and try again."
+        assert _deal_row(stack, second)["stage"] == "discovery"
+        won = {**plan_second, "expect_siblings": {"open": 0, "won": True}}
+        _refused(stack, _move_sql(stack, _actor(workspace, owner), won), "CRM09")
+        right = {**plan_second, "expect_siblings": {"open": 0, "won": False}}
+        assert _move(stack, _actor(workspace, owner), right)["opportunity"]["stage"] == (
+            "closed_lost"
+        )
+
+    def test_lost_refuses_when_a_task_was_added_meanwhile(self, stack, workspace, owner):
+        """Automation 9 — every open task on the deal closes with it."""
+        deal = _deal(stack, workspace, owner)
+        first = _task(stack, workspace, owner, deal)
+        reason = _option(stack, workspace, "opportunity.lost_reason", "Price", "price")
+        plan = _plan(
+            stack,
+            deal,
+            "closed_lost",
+            values={"probability": 0, "lost_reason_id": reason, "lost_on": "2026-10-14"},
+            close_tasks=[first],
+            close_note={"body": "Closed: deal lost (Price)."},
+        )
+        late = _task(stack, workspace, owner, deal, title="Added meanwhile")
+        message = _refused(stack, _move_sql(stack, _actor(workspace, owner), plan), "CRM09")
+        assert message == "The deal's tasks changed meanwhile; reload and try again."
+        assert _deal_row(stack, deal)["stage"] == "discovery"
+        done = _move(stack, _actor(workspace, owner), {**plan, "close_tasks": [first, late]})
+        assert done["tasks_closed"] == 2
+
     def test_the_backstops_hold_through_a_move(self, stack, workspace, owner):
         deal = _deal(stack, workspace, owner)
         _refused(
@@ -694,7 +736,13 @@ class TestStoreQueries:
         reason = _option(stack, workspace, "opportunity.lost_reason", "Price", "price")
         done = store.deal_transition(
             _actor(workspace, owner),
-            _plan(stack, deal, "closed_lost", values={"probability": 0, "lost_reason_id": reason}),
+            _plan(
+                stack,
+                deal,
+                "closed_lost",
+                values={"probability": 0, "lost_reason_id": reason},
+                close_tasks=[task],
+            ),
         )
         assert done["opportunity"]["stage"] == "closed_lost"
         assert [h["to_stage"] for h in store.list_stage_history(workspace, deal)] == [
@@ -709,6 +757,7 @@ class TestStoreQueries:
             related={"crm_tasks": [task]},
         )
         assert [r["action"] for r in rows] == [
+            "task.updated",
             "opportunity.stage_changed",
             "opportunity_contact.created",
             "task_link.created",

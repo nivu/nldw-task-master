@@ -27,6 +27,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.domain.crm import pipeline
 from app.main import app
 from app.services import supabase as db
 from app.services.crm import store
@@ -880,6 +881,22 @@ class FakeCrmStore:
                 raise store.refusal_for(
                     "CRM09", "The company changed meanwhile; reload and try again."
                 )
+        siblings = plan.get("expect_siblings")
+        if siblings:
+            others = [
+                d
+                for d in self.rows["crm_opportunities"].values()
+                if d["workspace_id"] == ws
+                and d["company_id"] == company["id"]
+                and d["id"] != opp["id"]
+                and not d.get("deleted_at")
+            ]
+            open_n = sum(1 for d in others if d["stage"] in pipeline.OPEN)
+            won = any(d["stage"] == "closed_won" for d in others)
+            if (open_n, won) != (siblings["open"], siblings["won"]):
+                raise store.refusal_for(
+                    "CRM09", "The company's deals changed meanwhile; reload and try again."
+                )
         for task_id in plan.get("close_tasks") or []:
             task = self.rows["crm_tasks"].get(task_id)
             on_deal = any(
@@ -890,6 +907,23 @@ class FakeCrmStore:
             )
             if task is None or task["workspace_id"] != ws or task.get("deleted_at") or not on_deal:
                 raise store.refusal_for("CRM04", "No such task on this deal.")
+        if (plan.get("opportunity") or {}).get("stage") == "closed_lost":
+            linked = {
+                link["task_id"]
+                for link in self.rows["crm_task_links"].values()
+                if link["record_type"] == "opportunity" and link["record_id"] == opp["id"]
+            }
+            if any(
+                t["id"] in linked
+                and t["workspace_id"] == ws
+                and not t.get("deleted_at")
+                and t["status"] != "done"
+                and t["id"] not in (plan.get("close_tasks") or [])
+                for t in self.rows["crm_tasks"].values()
+            ):
+                raise store.refusal_for(
+                    "CRM09", "The deal's tasks changed meanwhile; reload and try again."
+                )
         for t in plan.get("create_tasks") or []:
             if not any(
                 m["workspace_id"] == ws and m["user_id"] == t["assignee_id"]

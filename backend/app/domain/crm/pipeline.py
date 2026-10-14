@@ -28,6 +28,7 @@ __all__ = [
     "Move",
     "company_effect_on_close",
     "company_effect_on_open",
+    "company_effect_on_reopen",
     "default_probability",
     "may_move",
     "missing_sentence",
@@ -214,6 +215,16 @@ def company_effect_on_close(
     return {}
 
 
+def company_effect_on_reopen(company: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """FR-CRM-PIPE-04, -12 — a deal reopened from Lost is open again, so its
+    company is held to the rule for opening one. A company the loss moved to
+    Nurturing goes back to Deal open; a Disqualified one takes no deal until
+    someone sets its lead stage back by hand. Returns (changes, refusal)."""
+    if company.get("lead_stage") == "nurturing":
+        return {"lead_stage": "deal_open"}, None
+    return company_effect_on_open(company)
+
+
 @dataclass
 class Move:
     """A planned move: the plan for 031, or why not."""
@@ -269,7 +280,10 @@ def plan_move(
         # FR-CRM-PIPE-12: a reopen from Lost carries its next step and date in
         # the same save, whatever the deal had before it was lost.
         missing += [f for f in NEXT_STEP if _blank(changes.get(f)) and f not in missing]
-    probability = changes.get("probability", default_probability(target, probabilities))
+    # An explicit null is no choice: the stage's default applies.
+    probability = changes.get("probability")
+    if probability is None:
+        probability = default_probability(target, probabilities)
 
     values: dict[str, Any] = {
         **changes,
@@ -287,6 +301,10 @@ def plan_move(
         values["won_on"] = None
 
     company_changes: dict[str, Any] = {}
+    if current == "closed_lost":
+        company_changes, why = company_effect_on_reopen(company)
+        if why:
+            return Move(False, why)
     if target in CLOSED:
         company_changes = company_effect_on_close(
             company,
@@ -313,6 +331,10 @@ def plan_move(
         "opportunity": values,
         "history": {"from": current, "to": target},
     }
+    if target in CLOSED:
+        # FR-CRM-PIPE-05, -15: what the company's change was worked out from;
+        # 031 counts them again under the company's lock.
+        plan["expect_siblings"] = {"open": other_open_deals, "won": has_won}
     if company_changes:
         plan["company"] = {
             "id": company["id"],

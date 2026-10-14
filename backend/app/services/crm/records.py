@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from app.domain.crm import dedupe, objects
+from app.domain.crm import dedupe, objects, pipeline
 from app.schemas.crm import (
     CompanyFields,
     CompanyUpdate,
@@ -232,6 +232,49 @@ def check_fields(ws: Workspace, kind: str, values: dict[str, Any], existing: dic
                 why = objects.url_refusal(link["url"])
                 if why:
                     raise CrmRefused(422, why)
+
+
+def open_deal_company_ops(ws: Workspace, company: dict[str, Any]) -> list[dict[str, Any]]:
+    """FR-CRM-PIPE-04 — an open deal sits on a company at Qualified or later,
+    never a Disqualified one, and a Qualified company it moves onto goes to
+    Deal open in the same write. The ops for that, or the refusal."""
+    labelled = {
+        **company,
+        "lead_stage_label": ws.facts.fixed_label("company.lead_stage", company["lead_stage"]),
+    }
+    changes, why = pipeline.company_effect_on_open(labelled)
+    if why:
+        raise CrmRefused(422, why)
+    if not changes:
+        return []
+    return [
+        {
+            "op": "update",
+            "table": "crm_companies",
+            "id": company["id"],
+            "expect_updated_at": company["updated_at"],
+            "values": changes,
+        }
+    ]
+
+
+def _lead_stage_follows_deals(ws: Workspace, row: dict[str, Any], values: dict[str, Any]) -> None:
+    """Contracts §2.5.1, FR-CRM-PIPE-04, -05 — Deal open, Customer and
+    Partner follow from the deals: while the company has an open deal, its
+    lead stage is not moved off them by hand."""
+    if "lead_stage" not in values or values["lead_stage"] == row.get("lead_stage"):
+        return
+    if row.get("lead_stage") not in ("deal_open", "customer", "partner"):
+        return
+    deals = store.list_records(
+        ws.id,
+        "crm_opportunities",
+        filters={"company_id": row["id"]},
+        any_of={"stage": list(pipeline.OPEN)},
+        limit=1,
+    )
+    if deals:
+        raise CrmRefused(422, f"{row['name']} has open deals; its lead stage follows them.")
 
 
 def _domains(
@@ -696,6 +739,7 @@ def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
 
     ops: list[dict[str, Any]] = []
     if kind == "company":
+        _lead_stage_follows_deals(ws, row, values)
         wanted = _domains(ws, values, record_id)
         if wanted is not None:
             current = store.list_domains(ctx.workspace_id, company_ids=[record_id])
@@ -840,6 +884,13 @@ def _company_deals(
             raise CrmRefused(404, "No such company.")
         if target["id"] == company["id"]:
             raise CrmRefused(422, "Move the deals to another company.")
+        # FR-CRM-PIPE-04: open deals move only onto a company they could
+        # have been opened on, and a Qualified one goes to Deal open.
+        company_ops = (
+            open_deal_company_ops(load(ctx), target)
+            if any(d["stage"] in pipeline.OPEN for d in rows)
+            else []
+        )
         return [
             {
                 "op": "update",
@@ -848,7 +899,7 @@ def _company_deals(
                 "values": {"company_id": target["id"]},
             }
             for d in rows
-        ]
+        ] + company_ops
     barred = [d["name"] for d in rows if not ctx.may("soft_delete", owns=_owns(d, ctx.user.id))]
     if barred:
         raise CrmRefused(

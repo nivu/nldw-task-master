@@ -177,8 +177,15 @@ def update(ctx: Any, deal_id: str, payload: Any) -> dict[str, Any]:
     values = base.parse("opportunity", payload, creating=False)
     expect = values.pop("expect_updated_at", None)
     base.check_fields(ws, "opportunity", values, row)
+    if "probability" in values and values["probability"] is None:
+        raise CrmRefused(422, "Probability is required.")
+    company_ops: list[dict[str, Any]] = []
     if values.get("company_id") and values["company_id"] != row["company_id"]:
-        base.live(ws.id, "company", values["company_id"])
+        target = base.live(ws.id, "company", values["company_id"])
+        if row["stage"] in pipeline.OPEN:
+            # FR-CRM-PIPE-04 holds through an edit too: an open deal moves
+            # only onto a company it could have been opened on.
+            company_ops = base.open_deal_company_ops(ws, target)
     _person(ws, values.get("point_of_contact_id"))
     _money(ws, values, row)
 
@@ -206,7 +213,7 @@ def update(ctx: Any, deal_id: str, payload: Any) -> dict[str, Any]:
     }
     if expect:
         op["expect_updated_at"] = expect
-    done = store.apply(actor(ctx), [op])
+    done = store.apply(actor(ctx), [op, *company_ops])
     return base.present_rows(ws, "opportunity", [done[0]["row"]])[0]
 
 
@@ -268,7 +275,7 @@ def _plan(ctx: Any, deal_id: str, body: StagePreviewIn, expect: str | None):
     reason = changes.get("lost_reason_id") or row.get("lost_reason_id")
     move = pipeline.plan_move(
         deal=row,
-        company=company,
+        company=_labelled(ws, company),
         target=target,
         changes=changes,
         role=ctx.role,
