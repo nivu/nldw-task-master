@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from crm_fake import MEMBER, OWNER, PEOPLE, SELLER, VIEWER, FakeCrmStore, as_, two_workspaces
@@ -292,6 +293,16 @@ class TestNameClash:
             "name": "Acme - Phase 1",
             "linkable": True,
         }
+        # The preview shows the link before it is made.
+        would = _preview(
+            http, deal["id"], "proposal", changes=PROPOSAL, link_project_id=clash["id"]
+        )
+        assert would["allowed"] is True
+        assert (would["would"]["project"]["action"], would["would"]["project"]["name"]) == (
+            "link",
+            "Acme - Phase 1",
+        )
+        assert fake.rows["projects"][clash["id"]]["source_opportunity_id"] is None
         r = _move(http, deal["id"], "proposal", changes=PROPOSAL, link_project_id=clash["id"])
         assert r.status_code == 200, r.text
         linked = fake.rows["projects"][clash["id"]]
@@ -817,3 +828,191 @@ class TestAcademyAndAudit:
             f"/api/v1/crm/companies/{deal['company_id']}{LABS}", headers=as_(VIEWER["id"])
         ).json()
         assert [p["name"] for p in company["related"]["projects"]] == ["Acme - Phase 1"]
+
+
+class TestHandoffMilestonesLinkAndCompany:
+    """Review of S5: the handoff's milestones are the project's full set
+    (FR-CRM-TVA-07, -08), a won-without-Proposal deal may adopt a clashing
+    project (FR-CRM-TVA-10 with -05), and a deal's project follows it to
+    another company (FR-CRM-TVA-01, -02, FR-CRM-CO-02)."""
+
+    def _with_milestones(self, http, fake):
+        deal = _at_proposal(http)["opportunity"]
+        [project] = _projects(fake)
+        for name, due in (("Kickoff", "2026-11-02"), ("Go-live", "2027-01-29")):
+            fake.add(
+                "project_milestones",
+                project_id=project["id"],
+                name=name,
+                due_on=due,
+                amount="420000.00",
+                invoiced_on=None,
+            )
+        return deal, project
+
+    def _prefilled(self, http, deal_id, who=SRIRAM["id"]):
+        r = http.get(f"/api/v1/crm/opportunities/{deal_id}/handoff{LABS}", headers=as_(who))
+        assert r.status_code == 200, r.text
+        return r.json()["milestones"]
+
+    def test_confirming_the_prefilled_milestones_adds_none(self, crm):
+        http, fake, *_ = crm
+        deal, _ = self._with_milestones(http, fake)
+        before = sorted(fake.rows["project_milestones"])
+        shown = self._prefilled(http, deal["id"])
+        assert len(shown) == 2 and all(m["id"] for m in shown)
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], revenue="840000", milestones=shown)
+        assert r.status_code == 200, r.text
+        assert sorted(fake.rows["project_milestones"]) == before
+        assert not any(a["action"].startswith("milestone.") for a in fake.audit)
+
+    def test_a_milestone_left_out_is_removed_and_a_changed_one_updated(self, crm):
+        http, fake, *_ = crm
+        deal, _ = self._with_milestones(http, fake)
+        kickoff, _ = self._prefilled(http, deal["id"])
+        r = _handoff(
+            http,
+            deal["id"],
+            who=SRIRAM["id"],
+            milestones=[
+                {**kickoff, "amount": "500000.00"},
+                {"name": "Support", "due_on": "2027-03-01", "amount": "340000"},
+            ],
+        )
+        assert r.status_code == 200, r.text
+        got = sorted(
+            (m["name"], Decimal(str(m["amount"]))) for m in fake.rows["project_milestones"].values()
+        )
+        assert got == [("Kickoff", Decimal(500000)), ("Support", Decimal(340000))]
+        actions = sorted(a["action"] for a in fake.audit if a["action"].startswith("milestone."))
+        assert actions == ["milestone.added", "milestone.removed", "milestone.updated"]
+
+    def test_an_invoiced_milestone_is_never_removed(self, crm):
+        http, fake, *_ = crm
+        deal, _ = self._with_milestones(http, fake)
+        kickoff, golive = self._prefilled(http, deal["id"])
+        fake.rows["project_milestones"][golive["id"]]["invoiced_on"] = "2026-10-01"
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], milestones=[kickoff])
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "“Go-live” is invoiced, so the handoff cannot remove it.",
+        )
+        assert len(fake.rows["project_milestones"]) == 2
+        assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "proposal"
+
+    def test_a_milestone_of_another_project_is_refused(self, crm):
+        http, fake, *_ = crm
+        deal, _ = self._with_milestones(http, fake)
+        other = fake.add_project("Other work")
+        stray = fake.add(
+            "project_milestones",
+            project_id=other["id"],
+            name="Stray",
+            due_on="2026-12-01",
+            amount="1.00",
+            invoiced_on=None,
+        )
+        r = _handoff(
+            http,
+            deal["id"],
+            who=SRIRAM["id"],
+            milestones=[
+                {"id": stray["id"], "name": "Stray", "due_on": "2026-12-01", "amount": "1"}
+            ],
+        )
+        assert (r.status_code, r.json()["detail"]) == (404, "No such milestone on this project.")
+        assert fake.rows["project_milestones"][stray["id"]]["project_id"] == other["id"]
+
+    def test_milestones_left_unsent_are_kept(self, crm):
+        http, fake, *_ = crm
+        deal, _ = self._with_milestones(http, fake)
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], revenue="840000")
+        assert r.status_code == 200, r.text
+        assert len(fake.rows["project_milestones"]) == 2
+
+    def test_a_reopened_won_deal_won_again_keeps_one_copy(self, crm):
+        http, fake, *_ = crm
+        deal = _at_proposal(http)["opportunity"]
+        milestones = [{"name": "Kickoff", "due_on": "2026-11-02", "amount": "840000"}]
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], revenue="840000", milestones=milestones)
+        assert r.status_code == 200, r.text
+        r = _move(http, deal["id"], "negotiation", changes=REOPEN)
+        assert r.status_code == 200, r.text
+        shown = self._prefilled(http, deal["id"])
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], milestones=shown)
+        assert r.status_code == 200, r.text
+        assert len(fake.rows["project_milestones"]) == 1
+
+    def test_a_manager_adopts_a_clashing_project_when_skipping_to_won(self, crm):
+        http, fake, *_ = crm
+        clash = fake.add_project("Acme - Phase 1", probability=30)
+        deal = _deal(http, **PROPOSAL)
+        r = _handoff(http, deal["id"], who=SRIRAM["id"])
+        assert (r.status_code, r.json()["detail"]) == (
+            409,
+            "A project called “Acme - Phase 1” already exists. Give the project another name "
+            "or link the deal to it.",
+        )
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], link_project_id=clash["id"])
+        assert r.status_code == 200, r.text
+        [project] = _projects(fake)
+        assert project["id"] == clash["id"]
+        assert (project["status"], project["source_opportunity_id"], project["client"]) == (
+            "confirmed",
+            deal["id"],
+            "Acme Corp",
+        )
+        assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "closed_won"
+
+    @pytest.mark.parametrize("who", [MEMBER["id"], SELLER["id"]])
+    def test_only_a_tva_manager_adopts_at_the_handoff(self, crm, who):
+        http, fake, *_ = crm
+        clash = fake.add_project("Acme - Phase 1")
+        deal = _deal(http, who=who, **PROPOSAL)
+        r = _handoff(http, deal["id"], who=who, link_project_id=clash["id"])
+        assert (r.status_code, r.json()["detail"]) == (409, "Ask a TVA manager to link it.")
+        assert fake.rows["projects"][clash["id"]]["source_opportunity_id"] is None
+
+    def test_a_deal_with_a_project_cannot_adopt_another(self, crm):
+        http, fake, *_ = crm
+        deal = _at_proposal(http)["opportunity"]
+        other = fake.add_project("Other work")
+        r = _handoff(http, deal["id"], who=SRIRAM["id"], link_project_id=other["id"])
+        assert (r.status_code, r.json()["detail"]) == (409, "This deal already has a TVA project.")
+
+    def test_the_project_follows_its_deal_to_another_company(self, crm):
+        http, fake, *_ = crm
+        deal = _at_proposal(http)["opportunity"]
+        old = deal["company_id"]
+        new = _company(http, name="Globex")
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{deal['id']}{LABS}",
+            json={"company_id": new["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        [project] = _projects(fake)
+        assert (project["crm_company_id"], project["client"]) == (new["id"], "Globex")
+        moved = [
+            a
+            for a in fake.audit
+            if a["target_table"] == "projects" and (a.get("after") or {}).get("client") == "Globex"
+        ]
+        assert moved and moved[0]["workspace_id"] is None
+
+        def related(company_id):
+            r = http.get(f"/api/v1/crm/companies/{company_id}{LABS}", headers=as_(OWNER["id"]))
+            return [p["id"] for p in r.json()["related"]["projects"]]
+
+        assert related(new["id"]) == [project["id"]]
+        assert related(old) == []
+        # The new company is held by the deal's project; the old one is free.
+        r = http.request(
+            "DELETE",
+            f"/api/v1/crm/companies/{new['id']}{LABS}",
+            json={"deals": "delete"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422 and "TVA project" in r.json()["detail"]
+        r = http.request("DELETE", f"/api/v1/crm/companies/{old}{LABS}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text

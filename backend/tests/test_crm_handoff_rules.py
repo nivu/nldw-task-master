@@ -127,11 +127,12 @@ class TestPrefill:
 
     def test_handoff_preview_shows_existing_revenue_to_a_staff_manager(self):
         project = {"id": "p-1", "name": "Acme", "category": "client", "revenue": "800000"}
-        milestones = [{"name": "Kickoff", "due_on": "2026-11-02", "amount": "200000"}]
+        milestones = [{"id": "m-1", "name": "Kickoff", "due_on": "2026-11-02", "amount": "200000"}]
         out = _prefill(project=project, milestones=milestones, may_set_revenue=True)
         assert out["revenue"]["existing_tva_revenue"] == "800000.00"
+        # Each carries its id: the confirm matches the list it is sent by id.
         assert out["milestones"] == [
-            {"name": "Kickoff", "due_on": "2026-11-02", "amount": "200000.00"}
+            {"id": "m-1", "name": "Kickoff", "due_on": "2026-11-02", "amount": "200000.00"}
         ]
         assert out["can_set_revenue"] is True
 

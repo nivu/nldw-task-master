@@ -118,7 +118,8 @@ def prefill(
     """Contracts §2.6 `GET …/handoff`. `existing_tva_revenue` and the
     milestones' amounts are there only for someone who may set revenue; for
     anyone else the key is absent (TVA shows revenue to managers and admins
-    alone, `003`)."""
+    alone, `003`). Each milestone carries its id: the confirm treats the list
+    it is sent as the project's full set, matched by id."""
     revenue: dict[str, Any] = {
         "suggested_inr": won["amount_in_inr"] if isinstance(won, dict) else None,
         "won_fx_rate": won["won_fx_rate"] if isinstance(won, dict) else None,
@@ -130,7 +131,12 @@ def prefill(
         revenue["existing_tva_revenue"] = _money(project["revenue"])
     shown = (
         [
-            {"name": m["name"], "due_on": str(m["due_on"]), "amount": _money(m["amount"])}
+            {
+                "id": m["id"],
+                "name": m["name"],
+                "due_on": str(m["due_on"]),
+                "amount": _money(m["amount"]),
+            }
             for m in milestones
         ]
         if may_set_revenue

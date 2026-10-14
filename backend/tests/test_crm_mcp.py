@@ -497,6 +497,34 @@ class TestHandoffTool:
                     },
                 ),
             ),
+            (
+                # The preview shows the link the move would make.
+                lambda: crm.crm_move_stage(
+                    Ctx("u"), D1, "proposal", preview=True, link_project_id="p-1"
+                ),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/stage/preview",
+                    {"workspace": None},
+                    {"stage": "proposal", "changes": {}, "link_project_id": "p-1"},
+                ),
+            ),
+            (
+                lambda: crm.crm_handoff(
+                    Ctx("u"),
+                    D1,
+                    "confirm",
+                    lead_id="u-lead",
+                    phases=TestHandoffTool.PHASES,
+                    link_project_id="p-1",
+                ),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/handoff",
+                    {"workspace": None},
+                    {"lead_id": "u-lead", "phases": PHASES, "link_project_id": "p-1"},
+                ),
+            ),
         ],
     )
     def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):

@@ -345,7 +345,10 @@ class MoveChanges(BaseModel):
 
 class StagePreviewIn(BaseModel):
     """`project_name` names the TVA project a Labs move into Proposal creates,
-    when it is not to be the deal's name (a clash, FR-CRM-TVA-05)."""
+    when it is not to be the deal's name (a clash, FR-CRM-TVA-05).
+    `link_project_id` links the deal to an existing tentative project instead
+    of creating one (FR-CRM-TVA-05: a staff TVA manager or admin only); a
+    preview shows that link too."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -353,16 +356,14 @@ class StagePreviewIn(BaseModel):
     changes: MoveChanges = Field(default_factory=MoveChanges)
     company_on_loss: Literal["nurturing", "disqualified"] | None = None
     project_name: str | None = Field(default=None, min_length=1, max_length=200)
+    link_project_id: str | None = None
 
 
 class StageMoveIn(StagePreviewIn):
     """`expect_updated_at` is the deal's `updated_at` as last read; the web app
-    always sends it, an MCP caller may not. `link_project_id` links the deal
-    to an existing tentative project instead of creating one (FR-CRM-TVA-05:
-    a staff TVA manager or admin only)."""
+    always sends it, an MCP caller may not."""
 
     expect_updated_at: datetime | None = None
-    link_project_id: str | None = None
 
 
 ProjectCategory = Literal["client", "poc", "product"]
@@ -386,10 +387,12 @@ class HandoffPhases(BaseModel):
 
 
 class MilestoneIn(BaseModel):
-    """A billing milestone, in INR (TVA is single-currency)."""
+    """A billing milestone, in INR (TVA is single-currency). `id` is one of
+    the project's existing milestones, as the handoff pre-fill gave it."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    id: str | None = None
     name: str = Field(min_length=1, max_length=200)
     due_on: date
     amount: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
@@ -398,7 +401,11 @@ class MilestoneIn(BaseModel):
 class HandoffIn(BaseModel):
     """Contracts §2.6 `POST …/handoff`. `revenue` and milestone amounts are
     INR whatever the deal's currency, and are written only for a staff TVA
-    manager or admin (FR-CRM-TVA-08)."""
+    manager or admin (FR-CRM-TVA-08). `milestones`, when sent, is the
+    project's full set: an existing one left out is removed, so the pre-fill
+    sent back unchanged changes nothing. `link_project_id` adopts an existing
+    tentative project instead of creating one (FR-CRM-TVA-05, -10: a staff
+    TVA manager or admin only)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -407,7 +414,8 @@ class HandoffIn(BaseModel):
     lead_id: str
     phases: HandoffPhases
     revenue: Decimal | None = Money
-    milestones: list[MilestoneIn] = Field(default_factory=list, max_length=50)
+    milestones: list[MilestoneIn] | None = Field(default=None, max_length=50)
+    link_project_id: str | None = None
     expect_updated_at: datetime | None = None
 
 

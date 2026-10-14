@@ -154,7 +154,8 @@ function HandoffForm({
           ...(pre ? { pre } : {}),
         },
         ...(manager && revenue.trim() ? { revenue: revenue.trim() } : {}),
-        ...(manager && milestones.length ? { milestones } : {}),
+        // The full set: the project's milestones not sent are removed.
+        ...(manager ? { milestones } : {}),
         expect_updated_at: deal.updated_at,
       });
       onDone(result);

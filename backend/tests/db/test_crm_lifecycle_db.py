@@ -485,6 +485,249 @@ class TestLinkAndRevenueAreForManagers:
         assert _project_of(stack, deal) is None
 
 
+class TestConfirmMilestonesAndAdoption:
+    """The confirm's milestones are the project's full set, matched by id, so
+    the pre-fill sent back adds nothing (FR-CRM-TVA-07, -08); a confirm may
+    adopt an existing tentative project (FR-CRM-TVA-10 with -05)."""
+
+    def _tentative_with_milestones(self, stack, labs, manager):
+        deal, _ = _deal(stack, labs, manager, stage="qualification")
+        _move(
+            stack,
+            _actor(labs, manager),
+            _plan(stack, deal, "proposal", project={"action": "create", "name": _name()}),
+        )
+        project = _project_of(stack, deal)["id"]
+        stack.sql(
+            "INSERT INTO project_milestones (project_id, name, due_on, amount) VALUES "
+            f"({stack.q(project)}, 'Kickoff', '2026-11-02', 420000), "
+            f"({stack.q(project)}, 'Go-live', '2027-01-29', 420000)"
+        )
+        return deal, project
+
+    def _milestones(self, stack, project: str) -> list[dict]:
+        return stack.sql(
+            "SELECT id, name, due_on, amount::text AS amount FROM project_milestones "
+            f"WHERE project_id = {stack.q(project)} ORDER BY due_on"
+        )
+
+    def _won(self, stack, labs, manager, deal, **project):
+        return _move(
+            stack,
+            _actor(labs, manager),
+            _plan(
+                stack,
+                deal,
+                "closed_won",
+                values={"probability": 100, "won_on": "2026-10-14"},
+                project={
+                    "action": "confirm",
+                    "category": "client",
+                    "lead_id": manager,
+                    "probability": 100,
+                    "phases": {"delivery": {"starts_on": "2026-11-02", "ends_on": "2027-01-29"}},
+                    **project,
+                },
+            ),
+        )
+
+    def test_the_prefilled_milestones_sent_back_keep_one_copy(self, stack, labs, manager):
+        deal, project = self._tentative_with_milestones(stack, labs, manager)
+        before = self._milestones(stack, project)
+        self._won(stack, labs, manager, deal, milestones=before)
+        assert self._milestones(stack, project) == before
+        actions = {a["action"] for a in _tva_audit(stack, before[0]["id"])}
+        assert actions == set()
+
+    def test_left_out_is_removed_changed_is_updated_new_is_added(self, stack, labs, manager):
+        deal, project = self._tentative_with_milestones(stack, labs, manager)
+        kickoff, golive = self._milestones(stack, project)
+        self._won(
+            stack,
+            labs,
+            manager,
+            deal,
+            milestones=[
+                {**kickoff, "amount": "500000.00"},
+                {"name": "Support", "due_on": "2027-03-01", "amount": "340000.00"},
+            ],
+        )
+        after = self._milestones(stack, project)
+        assert [(m["name"], m["amount"]) for m in after] == [
+            ("Kickoff", "500000.00"),
+            ("Support", "340000.00"),
+        ]
+        assert after[0]["id"] == kickoff["id"]
+        assert [a["action"] for a in _tva_audit(stack, golive["id"])] == ["milestone.removed"]
+        assert [a["action"] for a in _tva_audit(stack, kickoff["id"])] == ["milestone.updated"]
+
+    def test_an_invoiced_milestone_is_never_removed_or_changed(self, stack, labs, manager):
+        deal, project = self._tentative_with_milestones(stack, labs, manager)
+        kickoff, golive = self._milestones(stack, project)
+        stack.sql(
+            "UPDATE project_milestones SET invoiced_on = '2026-10-01' "
+            f"WHERE id = {stack.q(golive['id'])}"
+        )
+        for milestones, said in (
+            ([kickoff], "“Go-live” is invoiced, so the handoff cannot remove it."),
+            (
+                [kickoff, {**golive, "amount": "1.00"}],
+                "“Go-live” is invoiced, so the handoff cannot change it.",
+            ),
+        ):
+            message = _refused(
+                stack,
+                _move_sql(
+                    stack,
+                    _actor(labs, manager),
+                    _plan(
+                        stack,
+                        deal,
+                        "closed_won",
+                        values={"probability": 100},
+                        project={
+                            "action": "confirm",
+                            "lead_id": manager,
+                            "probability": 100,
+                            "milestones": milestones,
+                        },
+                    ),
+                ),
+                "CRM22",
+            )
+            assert message == said
+        assert len(self._milestones(stack, project)) == 2
+        assert _row(stack, "crm_opportunities", deal)["stage"] == "proposal"
+
+    def test_a_milestone_of_another_project_is_refused(self, stack, labs, manager):
+        deal, _ = self._tentative_with_milestones(stack, labs, manager)
+        other = _project(stack)
+        stray = stack.sql(
+            "INSERT INTO project_milestones (project_id, name, due_on, amount) "
+            f"VALUES ({stack.q(other)}, 'Stray', '2026-12-01', 1) RETURNING id"
+        )[0]["id"]
+        _refused(
+            stack,
+            _move_sql(
+                stack,
+                _actor(labs, manager),
+                _plan(
+                    stack,
+                    deal,
+                    "closed_won",
+                    values={"probability": 100},
+                    project={
+                        "action": "confirm",
+                        "lead_id": manager,
+                        "probability": 100,
+                        "milestones": [
+                            {"id": stray, "name": "X", "due_on": "2026-12-01", "amount": "2"}
+                        ],
+                    },
+                ),
+            ),
+            "CRM04",
+        )
+        assert _row(stack, "project_milestones", stray)["name"] == "Stray"
+
+    def test_an_empty_list_from_a_tva_user_is_refused(self, stack, labs, manager, seller):
+        deal, project = self._tentative_with_milestones(stack, labs, manager)
+        _refused(
+            stack,
+            _move_sql(
+                stack,
+                _actor(labs, seller),
+                _plan(
+                    stack,
+                    deal,
+                    "closed_won",
+                    values={"probability": 100},
+                    project={"action": "confirm", "lead_id": manager, "milestones": []},
+                ),
+            ),
+            "CRM22",
+        )
+        assert len(self._milestones(stack, project)) == 2
+
+    def test_a_manager_adopts_a_project_at_the_handoff(self, stack, labs, manager):
+        target = _project(stack, probability=30)
+        deal, company = _deal(
+            stack, labs, manager, stage="qualification", proposal_sent_on="2026-10-01"
+        )
+        self._won(stack, labs, manager, deal, project_id=target)
+        adopted = _row(stack, "projects", target)
+        assert (adopted["source_opportunity_id"], adopted["crm_company_id"]) == (deal, company)
+        assert adopted["status"] == "confirmed"
+
+    def test_adopting_by_anyone_else_writes_nothing(self, stack, labs, seller):
+        target = _project(stack)
+        deal, _ = _deal(stack, labs, seller, stage="qualification")
+        message = _refused(
+            stack,
+            _move_sql(
+                stack,
+                _actor(labs, seller),
+                _plan(
+                    stack,
+                    deal,
+                    "closed_won",
+                    values={"probability": 100},
+                    project={"action": "confirm", "project_id": target, "lead_id": seller},
+                ),
+            ),
+            "CRM22",
+        )
+        assert message == "Ask a TVA manager to link it."
+        assert _row(stack, "projects", target)["source_opportunity_id"] is None
+
+
+class TestProjectFollowsCompany:
+    """FR-CRM-TVA-01, -02: whatever write moves a deal to another company,
+    its project's company and client follow, with a TVA audit row."""
+
+    def test_an_edit_moves_the_project(self, stack, labs, manager):
+        deal, old = _deal(stack, labs, manager, stage="qualification")
+        _move(
+            stack,
+            _actor(labs, manager),
+            _plan(stack, deal, "proposal", project={"action": "create", "name": _name()}),
+        )
+        new_name = _name("Globex")
+        new = _apply(
+            stack,
+            _actor(labs, manager),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": new_name, "owner_id": manager, "lead_stage": "deal_open"},
+                }
+            ],
+        )[0]["id"]
+        _apply(
+            stack,
+            _actor(labs, manager),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_opportunities",
+                    "id": deal,
+                    "values": {"company_id": new},
+                }
+            ],
+        )
+        project = _project_of(stack, deal)
+        assert (project["crm_company_id"], project["client"]) == (new, new_name)
+        moved = stack.sql(
+            "SELECT actor_id, actor_label, after FROM audit_log "
+            f"WHERE target_id = {stack.q(project['id'])} AND workspace_id IS NULL "
+            "AND after ? 'crm_company_id' AND after ->> 'crm_company_id' = "
+            f"{stack.q(new)}"
+        )
+        assert [(m["actor_id"], m["actor_label"]) for m in moved] == [(manager, "system")]
+        assert old != new
+
+
 class TestLostAndReopen:
     """FR-CRM-TVA-12 to -14, PIPE-13, D5; re-check 4."""
 

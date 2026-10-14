@@ -561,6 +561,8 @@ export interface HandoffPreview {
 }
 
 export interface HandoffMilestone {
+  /** The project's existing milestone; absent on one added in the dialog. */
+  id?: string;
   name: string;
   due_on: string;
   /** INR, decimal string. */

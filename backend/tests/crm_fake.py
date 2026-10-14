@@ -1071,11 +1071,12 @@ class FakeCrmStore:
                 raise store.refusal_for("CRM22", "That is not a TVA project action.")
             if not self.rows["crm_workspaces"][ws].get("tva_linked"):
                 raise store.refusal_for("CRM22", "This workspace is not connected to TVA projects.")
-            if act == "link" and not self._tva_manager(who):
+            adopt = act == "link" or (act == "confirm" and "project_id" in pa)
+            if adopt and not self._tva_manager(who):
                 raise store.refusal_for("CRM22", "Ask a TVA manager to link it.")
             if (
                 act == "confirm"
-                and ("revenue" in pa or pa.get("milestones"))
+                and ("revenue" in pa or "milestones" in pa)
                 and not self._tva_manager(who)
             ):
                 raise store.refusal_for(
@@ -1163,7 +1164,7 @@ class FakeCrmStore:
         project = self.get_project_by_source_opportunity(opp["id"]) if pa else None
         project = self.rows["projects"][project["id"]] if project else None
         target_project = None
-        if act == "link":
+        if act == "link" or (act == "confirm" and "project_id" in pa):
             if project:
                 raise store.refusal_for("CRM09", "This deal already has a TVA project.")
             target_project = self.rows["projects"].get(pa.get("project_id"))
@@ -1330,6 +1331,17 @@ class FakeCrmStore:
                 actor, "project.updated", "projects", project["id"], None, {"linked": opp["id"]}
             )
         elif act == "confirm":
+            if target_project is not None:
+                # FR-CRM-TVA-10 with -05: the handoff adopts the project.
+                project = target_project
+                project.update(
+                    source_opportunity_id=opp["id"],
+                    crm_company_id=company["id"],
+                    client=company["name"],
+                )
+                self._tva_audit(
+                    actor, "project.updated", "projects", project["id"], None, {"linked": opp["id"]}
+                )
             if project is None:
                 project = self._create_project(actor, opp, company, pa, "confirmed")
             else:
@@ -1389,7 +1401,39 @@ class FakeCrmStore:
                     None,
                     {"revenue": pa["revenue"]},
                 )
+            if "milestones" in pa:
+                # The full set, matched by id; invoiced ones never change.
+                kept = {m["id"] for m in pa["milestones"] if m.get("id")}
+                for old in self.list_project_milestones(project["id"]):
+                    if old["id"] in kept:
+                        continue
+                    if old.get("invoiced_on"):
+                        raise store.refusal_for(
+                            "CRM22",
+                            f"“{old['name']}” is invoiced, so the handoff cannot remove it.",
+                        )
+                    del self.rows["project_milestones"][old["id"]]
+                    self._tva_audit(
+                        actor, "milestone.removed", "project_milestones", old["id"], old, None
+                    )
             for m in pa.get("milestones") or []:
+                if m.get("id"):
+                    old = self.rows["project_milestones"].get(m["id"])
+                    if old is None or old["project_id"] != project["id"]:
+                        raise store.refusal_for("CRM04", "No such milestone on this project.")
+                    new = {k: m[k] for k in ("name", "due_on", "amount")}
+                    if all(str(old[k]) == str(v) for k, v in new.items()):
+                        continue
+                    if old.get("invoiced_on"):
+                        raise store.refusal_for(
+                            "CRM22",
+                            f"“{old['name']}” is invoiced, so the handoff cannot change it.",
+                        )
+                    old.update(new)
+                    self._tva_audit(
+                        actor, "milestone.updated", "project_milestones", old["id"], None, new
+                    )
+                    continue
                 made = self.add(
                     "project_milestones", project_id=project["id"], invoiced_on=None, **m
                 )
@@ -1734,6 +1778,26 @@ class FakeCrmStore:
         # 026: a change to nothing but bookkeeping writes no audit row.
         if changed and not changed <= {"position"}:
             self._audit(actor, op, row, before, {k: row.get(k) for k in changed})
+        if op["table"] == "crm_opportunities" and "company_id" in changed:
+            self._project_follows_company(actor, row)
+
+    def _project_follows_company(self, actor, opp: dict[str, Any]) -> None:
+        """033's `crm_opportunities_project_company` trigger: the deal's
+        project moves to its new company, with a TVA audit row."""
+        company = self.rows["crm_companies"].get(opp["company_id"])
+        for project in self.rows["projects"].values():
+            if project.get("source_opportunity_id") != opp["id"]:
+                continue
+            before = {"crm_company_id": project.get("crm_company_id"), "client": project["client"]}
+            project.update(crm_company_id=opp["company_id"], client=company and company["name"])
+            self._tva_audit(
+                actor,
+                "project.updated",
+                "projects",
+                project["id"],
+                before,
+                {"crm_company_id": opp["company_id"], "client": project["client"]},
+            )
 
     def _delete(self, actor, table: str, row: dict[str, Any], action: str | None = None) -> None:
         del self.rows[table][row["id"]]

@@ -355,7 +355,7 @@ def _plan(
             target=target,
             probability=move.would["probability"],
             project_name=body.project_name,
-            link_project_id=getattr(body, "link_project_id", None),
+            link_project_id=body.link_project_id,
             lost_reason_label=ws.facts.option_label(reason),
         )
         move.would["project"] = found.would
@@ -499,12 +499,33 @@ def handoff_confirm(ctx: Any, deal_id: str, body: HandoffIn) -> dict[str, Any]:
         raise CrmRefused(422, won)
 
     project = tva.project_of(deal_id)
+    adopted = None
+    if body.link_project_id:
+        # FR-CRM-TVA-10 with -05: a deal won without a project may adopt an
+        # existing tentative one, by a staff TVA manager or admin.
+        if not tva.may_link(ctx.user):
+            raise CrmRefused(409, tva.ASK_A_MANAGER)
+        if project:
+            raise CrmRefused(409, "This deal already has a TVA project.")
+        adopted = next(
+            (p for p in db.list_linkable_projects("tentative") if p["id"] == body.link_project_id),
+            None,
+        )
+        if adopted is None:
+            raise CrmRefused(
+                409,
+                "That project cannot be linked: only an unlinked, unarchived tentative "
+                "project can.",
+            )
+        project = adopted
     name = (body.project_name or (project["name"] if project else row["name"])).strip()
     found = tva.clash(name, exclude=project["id"] if project else None)
     if found:
+        way = " or link the deal to it" if tva.may_link(ctx.user) and not project else ""
         raise CrmRefused(
             409,
-            f"A project called “{found['name']}” already exists. Give the project another name.",
+            f"A project called “{found['name']}” already exists. Give the project another "
+            f"name{way}.",
         )
     category = body.category or (
         project["category"]
@@ -525,12 +546,24 @@ def handoff_confirm(ctx: Any, deal_id: str, body: HandoffIn) -> dict[str, Any]:
             for kind, span in phases.items()
         },
     }
+    if adopted:
+        action["project_id"] = adopted["id"]
     may_set = handoff.can_set_revenue(ctx.user.profile)
     if may_set and body.revenue is not None:
         action["revenue"] = format(body.revenue, "f")
-    if may_set and body.milestones:
+    if may_set and body.milestones is not None:
+        # The project's full set (FR-CRM-TVA-07): an existing milestone keeps
+        # its id, so the pre-fill sent back unchanged adds nothing.
+        known = {m["id"] for m in db.list_project_milestones(project["id"])} if project else set()
+        if any(m.id and m.id not in known for m in body.milestones):
+            raise CrmRefused(404, "No such milestone on this project.")
         action["milestones"] = [
-            {"name": m.name, "due_on": m.due_on.isoformat(), "amount": format(m.amount, "f")}
+            {
+                **({"id": m.id} if m.id else {}),
+                "name": m.name,
+                "due_on": m.due_on.isoformat(),
+                "amount": format(m.amount, "f"),
+            }
             for m in body.milestones
         ]
 

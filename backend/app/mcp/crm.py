@@ -245,7 +245,7 @@ async def crm_move_stage(
         body["company_on_loss"] = company_on_loss
     if project_name is not None:
         body["project_name"] = project_name
-    if link_project_id is not None and not preview:
+    if link_project_id is not None:
         body["link_project_id"] = link_project_id
     path = f"/crm/opportunities/{_id('opportunity', opportunity_id)}/stage"
     return await _api(
@@ -280,8 +280,11 @@ async def crm_handoff(
     when you are a TVA manager or admin; otherwise the project is confirmed
     without them and Labs admins get a task. link attaches an imported deal
     to an existing TVA project (link_project_id) and needs a TVA manager or
-    admin. Revenue and milestone amounts are INR, decimal strings;
-    milestones are [{name, due_on, amount}]."""
+    admin; confirm with link_project_id adopts that existing tentative
+    project for a deal that has none (a name clash; TVA managers and admins
+    only). Revenue and milestone amounts are INR, decimal strings;
+    milestones are [{id?, name, due_on, amount}], the project's full set:
+    keep each pre-filled milestone's id; one left out is removed."""
     deal = _id("opportunity", opportunity_id)
     params = {"workspace": workspace}
     path = f"/crm/opportunities/{deal}"
@@ -305,6 +308,7 @@ async def crm_handoff(
         ("category", category),
         ("revenue", revenue),
         ("milestones", milestones),
+        ("link_project_id", link_project_id),
     ):
         if value is not None:
             body[name] = value

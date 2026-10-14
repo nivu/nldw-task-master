@@ -16,10 +16,11 @@
 --       (FR-CRM-WS-05), else CRM22;
 --    4. the project is always the deal's own, `projects WHERE
 --       source_opportunity_id = deal`, locked; a `project_id` in the plan is
---       read only as the target of `link`;
---    5. `link` needs the actor to be an active staff profile with TVA role
---       manager or admin (FR-CRM-TVA-05): linking lets a later Closed Lost
---       archive that project and release its people;
+--       read only as the project a `link`, or a `confirm` of a deal with
+--       none, adopts;
+--    5. adopting a project needs the actor to be an active staff profile
+--       with TVA role manager or admin (FR-CRM-TVA-05): linking lets a later
+--       Closed Lost archive that project and release its people;
 --    6. revenue or milestones in a `confirm` need the same (FR-CRM-TVA-08,
 --       D8): Python leaves them out for anyone else, and this is the backstop
 --       against a new caller.
@@ -31,10 +32,14 @@
 --    - `sync_probability`: the linked tentative project follows the deal's
 --      probability (TVA-06).
 --    - `confirm`: the handoff (TVA-07 to -10): create the project when there
---      is none, else update it, to confirmed with its name, category, lead
---      and phases (one per kind, never spillover), and revenue and milestones
---      in INR when the plan carries them. The deal gets a `handoff` timeline
---      entry.
+--      is none (or adopt the plan's `project_id`, as `link` does: TVA-10 on a
+--      name clash), else update it, to confirmed with its name, category,
+--      lead and phases (one per kind, never spillover), and revenue and
+--      milestones in INR when the plan carries them. The plan's milestones
+--      are the project's full set, matched by `id`: one left out is removed,
+--      one with an `id` is updated, one without is added; an invoiced one is
+--      never changed or removed (CRM22). So the pre-fill sent back unchanged
+--      writes nothing twice. The deal gets a `handoff` timeline entry.
 --    - `archive_release`: archive the project and release every unreleased
 --      allocation on it, recording when, by whom and why (TVA-12, D5).
 --    - `unarchive_unrelease`: undo exactly that: unarchive only a project
@@ -60,12 +65,18 @@
 --    with a project is never purged (FR-CRM-DEL-03 blocks its soft delete
 --    already, so this is a backstop).
 --
+-- 4. A deal's project follows the deal to another company (FR-CRM-TVA-01,
+--    -02, FR-CRM-CO-02): a trigger on the deal's `company_id`, whatever
+--    write moved it (an edit, a move, a merge), sets the project's
+--    `crm_company_id` and client to the new company, with a TVA audit row.
+--
 -- Errors: CRM04 (404), CRM09 (409), CRM22 (422), each one sentence.
 --
 -- Reversible: restore 031's crm_deal_transition() and 030's crm_purge();
--- DROP FUNCTION crm_link_project(jsonb, jsonb), crm_tva_audit(jsonb, text,
--- text, text, jsonb, jsonb), crm_tva_manager(uuid), crm_tva_create_project(
--- jsonb, uuid, text, jsonb, text).
+-- DROP TRIGGER crm_opportunities_project_company ON crm_opportunities;
+-- DROP FUNCTION crm_project_follows_company(), crm_link_project(jsonb, jsonb),
+-- crm_tva_audit(jsonb, text, text, text, jsonb, jsonb), crm_tva_manager(uuid),
+-- crm_tva_create_project(jsonb, uuid, text, jsonb, text).
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -185,6 +196,8 @@ DECLARE
     before_p    jsonb;
     prob        smallint;
     tva_id      uuid;
+    adopt       boolean := false;
+    old_m       project_milestones%ROWTYPE;
 BEGIN
     IF ws IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'A CRM change needs a workspace.';
@@ -207,10 +220,11 @@ BEGIN
     END IF;
     -- 5, 6. Linking a project, and revenue or milestones, are a staff TVA
     -- manager's or admin's alone.
-    IF act = 'link' AND NOT crm_tva_manager(who) THEN
+    adopt := act = 'link' OR (act = 'confirm' AND pa ? 'project_id');
+    IF adopt AND NOT crm_tva_manager(who) THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Ask a TVA manager to link it.';
     END IF;
-    IF act = 'confirm' AND (pa ? 'revenue' OR jsonb_array_length(coalesce(pa -> 'milestones', '[]')) > 0)
+    IF act = 'confirm' AND (pa ? 'revenue' OR pa ? 'milestones')
        AND NOT crm_tva_manager(who) THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22',
             MESSAGE = 'Only a TVA manager or admin can set revenue and milestones.';
@@ -272,7 +286,7 @@ BEGIN
     IF pa IS NOT NULL THEN
         SELECT * INTO proj FROM projects WHERE source_opportunity_id = opp.id FOR UPDATE;
         has_proj := FOUND;
-        IF act = 'link' THEN
+        IF adopt THEN
             IF has_proj THEN
                 RAISE EXCEPTION USING ERRCODE = 'CRM09',
                     MESSAGE = 'This deal already has a TVA project.';
@@ -477,6 +491,20 @@ BEGIN
                 'probability', proj.probability));
 
     ELSIF act = 'confirm' THEN
+        IF adopt THEN
+            -- FR-CRM-TVA-10 with -05: a name clash at the handoff, resolved
+            -- by adopting that project (re-checks 4 and 5 above).
+            before_p := jsonb_build_object('source_opportunity_id', NULL,
+                'crm_company_id', target_proj.crm_company_id, 'client', target_proj.client);
+            UPDATE projects
+            SET source_opportunity_id = opp.id, crm_company_id = comp.id, client = comp.name
+            WHERE id = target_proj.id
+            RETURNING * INTO proj;
+            has_proj := true;
+            PERFORM crm_tva_audit(p_actor, 'project.updated', 'projects', proj.id::text,
+                before_p, jsonb_build_object('source_opportunity_id', proj.source_opportunity_id,
+                    'crm_company_id', proj.crm_company_id, 'client', proj.client));
+        END IF;
         IF NOT has_proj THEN
             -- FR-CRM-TVA-10: straight to Closed Won, created confirmed.
             proj := crm_tva_create_project(p_actor, opp.id, comp.id::text,
@@ -539,7 +567,58 @@ BEGIN
             PERFORM crm_tva_audit(p_actor, 'project.updated', 'projects', proj.id::text, before_p,
                 jsonb_build_object('revenue', proj.revenue));
         END IF;
+        -- The plan's milestones are the full set, matched by id: the
+        -- pre-fill sent back unchanged adds nothing (TVA-07). Invoiced ones
+        -- are never changed or removed.
+        IF pa ? 'milestones' THEN
+            FOR old_m IN
+                SELECT * FROM project_milestones
+                WHERE project_id = proj.id
+                  AND id::text NOT IN (
+                      SELECT v ->> 'id' FROM jsonb_array_elements(pa -> 'milestones') AS x(v)
+                      WHERE v ->> 'id' IS NOT NULL)
+                FOR UPDATE
+            LOOP
+                IF old_m.invoiced_on IS NOT NULL THEN
+                    RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = format(
+                        '“%s” is invoiced, so the handoff cannot remove it.', old_m.name);
+                END IF;
+                DELETE FROM project_milestones WHERE id = old_m.id;
+                PERFORM crm_tva_audit(p_actor, 'milestone.removed', 'project_milestones',
+                    old_m.id::text,
+                    jsonb_build_object('project_id', proj.id, 'name', old_m.name,
+                        'due_on', old_m.due_on, 'amount', old_m.amount), NULL);
+            END LOOP;
+        END IF;
         FOR m IN SELECT value FROM jsonb_array_elements(coalesce(pa -> 'milestones', '[]')) LOOP
+            IF m ->> 'id' IS NOT NULL THEN
+                SELECT * INTO old_m FROM project_milestones
+                WHERE id::text = m ->> 'id' AND project_id = proj.id
+                FOR UPDATE;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION USING ERRCODE = 'CRM04',
+                        MESSAGE = 'No such milestone on this project.';
+                END IF;
+                IF (old_m.name, old_m.due_on, old_m.amount) IS NOT DISTINCT FROM
+                   (btrim(m ->> 'name'), (m ->> 'due_on')::date, (m ->> 'amount')::numeric) THEN
+                    CONTINUE;
+                END IF;
+                IF old_m.invoiced_on IS NOT NULL THEN
+                    RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = format(
+                        '“%s” is invoiced, so the handoff cannot change it.', old_m.name);
+                END IF;
+                UPDATE project_milestones
+                SET name = btrim(m ->> 'name'), due_on = (m ->> 'due_on')::date,
+                    amount = (m ->> 'amount')::numeric
+                WHERE id = old_m.id;
+                PERFORM crm_tva_audit(p_actor, 'milestone.updated', 'project_milestones',
+                    old_m.id::text,
+                    jsonb_build_object('name', old_m.name, 'due_on', old_m.due_on,
+                        'amount', old_m.amount),
+                    jsonb_build_object('name', btrim(m ->> 'name'), 'due_on', m ->> 'due_on',
+                        'amount', m ->> 'amount'));
+                CONTINUE;
+            END IF;
             INSERT INTO project_milestones (project_id, name, due_on, amount)
             VALUES (proj.id, btrim(m ->> 'name'), (m ->> 'due_on')::date,
                     (m ->> 'amount')::numeric)
@@ -855,6 +934,42 @@ BEGIN
 END;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 4. A deal's project follows it to another company — FR-CRM-TVA-01, -02
+-- ---------------------------------------------------------------------------
+
+-- Whatever write moves the deal (crm_apply, crm_deal_transition, a merge),
+-- under that write's actor (`crm.actor`, set by every CRM write function).
+CREATE OR REPLACE FUNCTION public.crm_project_follows_company() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, extensions
+AS $$
+DECLARE
+    who  jsonb := coalesce(nullif(current_setting('crm.actor', true), '')::jsonb, '{}');
+    nm   text;
+    proj projects%ROWTYPE;
+BEGIN
+    SELECT name INTO nm FROM crm_companies WHERE id = NEW.company_id;
+    FOR proj IN
+        SELECT * FROM projects WHERE source_opportunity_id = NEW.id FOR UPDATE
+    LOOP
+        UPDATE projects SET crm_company_id = NEW.company_id, client = nm
+        WHERE id = proj.id;
+        PERFORM crm_tva_audit(who, 'project.updated', 'projects', proj.id::text,
+            jsonb_build_object('crm_company_id', proj.crm_company_id, 'client', proj.client),
+            jsonb_build_object('crm_company_id', NEW.company_id, 'client', nm));
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS crm_opportunities_project_company ON crm_opportunities;
+CREATE TRIGGER crm_opportunities_project_company
+    AFTER UPDATE OF company_id ON crm_opportunities
+    FOR EACH ROW WHEN (OLD.company_id IS DISTINCT FROM NEW.company_id)
+    EXECUTE FUNCTION public.crm_project_follows_company();
+
+REVOKE ALL ON FUNCTION public.crm_project_follows_company() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_tva_audit(jsonb, text, text, text, jsonb, jsonb)
     FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_tva_manager(uuid) FROM PUBLIC, anon, authenticated;
