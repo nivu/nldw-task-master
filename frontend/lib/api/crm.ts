@@ -16,15 +16,24 @@ import type {
   CrmBootstrap,
   CrmCapacity,
   CrmColor,
+  CrmDriveLink,
+  CrmDuplicates,
   CrmFxRate,
   CrmLists,
   CrmMember,
+  CrmObject,
   CrmOption,
+  CrmPage,
+  CrmRecord,
+  CrmRecordPage,
   CrmRole,
   CrmSettings,
+  CrmTimelineEntry,
+  CrmTrashRow,
   CrmWorkspace,
   InvitationIn,
   InvitationResult,
+  NotCreated,
   OptionUpdate,
   TvaCrmAuditEntry,
   TvaCrmWorkspace,
@@ -213,3 +222,88 @@ export const getCrmAudit = (workspace: string, filters: CrmAuditFilters = {}) =>
 
 export const getCrmCapacity = (workspace: string, weeks?: number) =>
   call<CrmCapacity>(`/capacity${query(workspace, { weeks })}`);
+
+// ---------------------------------------------------------------------------
+// Records — §2.5 (companies, people, Drive links, Trash)
+// ---------------------------------------------------------------------------
+
+export const listCrmRecords = <T extends CrmRecord>(
+  workspace: string,
+  object: CrmObject,
+  options: { q?: string; limit?: number; after?: string | null } = {}
+) =>
+  call<CrmPage<T>>(
+    `/${object}${query(workspace, { q: options.q, limit: options.limit, after: options.after ?? undefined })}`
+  );
+
+export const getCrmRecord = <T extends CrmRecord>(workspace: string, object: CrmObject, id: string) =>
+  call<CrmRecordPage<T>>(`/${object}/${id}${query(workspace)}`);
+
+/** With `checkDuplicates`, names alike come back instead and nothing is
+ *  created (FR-CRM-DUP-02); call again without it to continue. */
+export const createCrmRecord = <T extends CrmRecord>(
+  workspace: string,
+  object: CrmObject,
+  fields: Record<string, unknown>,
+  checkDuplicates: boolean
+) =>
+  call<T | NotCreated>(
+    `/${object}${query(workspace, { check_duplicates: String(checkDuplicates) })}`,
+    { method: "POST", ...body(fields) }
+  );
+
+/** `expect_updated_at` is the record's `updated_at` as last read: a change
+ *  made meanwhile is refused (409) rather than overwritten. */
+export const updateCrmRecord = <T extends CrmRecord>(
+  workspace: string,
+  object: CrmObject,
+  id: string,
+  changes: Record<string, unknown>,
+  expectUpdatedAt: string
+) =>
+  call<T>(`/${object}/${id}${query(workspace)}`, {
+    method: "PATCH",
+    ...body({ ...changes, expect_updated_at: expectUpdatedAt }),
+  });
+
+/** A company says what happens to its people (FR-CRM-DEL-02). */
+export const deleteCrmRecord = (
+  workspace: string,
+  object: CrmObject,
+  id: string,
+  choice?: { people: "unlink" | "delete" }
+) =>
+  call<{ deleted_group: string }>(`/${object}/${id}${query(workspace)}`, {
+    method: "DELETE",
+    ...(choice ? body(choice) : {}),
+  });
+
+export const restoreCrmRecord = <T extends CrmRecord>(workspace: string, object: CrmObject, id: string) =>
+  call<T>(`/${object}/${id}/restore${query(workspace)}`, { method: "POST" });
+
+export const purgeCrmRecord = (workspace: string, object: CrmObject, id: string) =>
+  call<{ purged: number }>(`/${object}/${id}/permanent${query(workspace)}`, { method: "DELETE" });
+
+export const getCrmTimeline = (
+  workspace: string,
+  object: CrmObject,
+  id: string,
+  options: { types?: string; before?: number; limit?: number } = {}
+) => call<CrmTimelineEntry[]>(`/${object}/${id}/timeline${query(workspace, options)}`);
+
+export const findCrmDuplicates = (
+  workspace: string,
+  object: CrmObject,
+  typed: { name?: string; domain?: string; email?: string }
+) => call<CrmDuplicates>(`/${object}/duplicates${query(workspace)}`, { method: "POST", ...body(typed) });
+
+export const getCrmTrash = (workspace: string, object: CrmObject, after?: string | null) =>
+  call<CrmPage<CrmTrashRow>>(`/trash${query(workspace, { object, after: after ?? undefined })}`);
+
+export const addCrmDriveLink = (
+  workspace: string,
+  link: { record_type: CrmDriveLink["record_type"]; record_id: string; url: string; label: string }
+) => call<CrmDriveLink>(`/links${query(workspace)}`, { method: "POST", ...body(link) });
+
+export const removeCrmDriveLink = (workspace: string, id: string) =>
+  call<{ deleted_group: string }>(`/links/${id}${query(workspace)}`, { method: "DELETE" });

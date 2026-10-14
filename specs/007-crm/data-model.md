@@ -19,7 +19,7 @@ order of §1. Existing migrations are not edited.
 | `026_crm_workspaces.sql` | S1b | `crm_workspaces`, `crm_memberships`, `crm_workspace_settings`, `crm_select_options`, `crm_fx_rates`; `audit_log` + `workspace_id`, widened `actor_label`, `channel`; `crm_audit_row()` and its triggers; seeds (§7.1–7.3) written under the system actor |
 | `027_crm_write_functions.sql` | S1b | `crm_apply()`, `crm_check_refs()`, `crm_remove_membership()`, `crm_invite()`, `crm_convert_account()`; grants (§5.12) |
 | `028_allocation_release.sql` | S2 | `allocations` + `released_at`, `released_by`, `release_reason`, `released_by_opportunity_id` (FK added in 032); index for counting reads |
-| `029_crm_companies_people.sql` | S3 | `pg_trgm`; `crm_companies`, `crm_company_domains`, `crm_people`, `crm_drive_links`; trigram and filter indexes; `crm_purge()` first form (Drive links only, the one link table that exists) |
+| `029_crm_companies_people.sql` | S3 | `pg_trgm`; `crm_companies`, `crm_company_domains`, `crm_people`, `crm_drive_links`; trigram and filter indexes; `crm_purge()` first form (Drive links only, the one link table that exists); `crm_similar()` (the possible-duplicate query of FR-CRM-DUP-02, which PostgREST cannot express) |
 | `030_crm_deals_tasks_notes.sql` | S4 | `crm_opportunities`, `crm_opportunity_contacts`, `crm_stage_history`, `crm_tasks`, `crm_task_links`, `crm_notes`, `crm_note_links`, `crm_note_mentions`; `CREATE OR REPLACE crm_purge()` adding task and note links |
 | `031_crm_deal_transition.sql` | S4 | `crm_deal_transition()`, CRM-side branches only |
 | `032_crm_tva_links.sql` | S5 | `projects` + `crm_company_id`, `source_opportunity_id` (unique), `crm_archived_at`; FK on `allocations.released_by_opportunity_id` |

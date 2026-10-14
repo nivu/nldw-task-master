@@ -1,0 +1,271 @@
+"use client";
+
+import { ChevronDown, ChevronRight, Pencil } from "lucide-react";
+import { useState } from "react";
+
+import {
+  cleanValue,
+  FieldEditor,
+  FieldValue,
+  isEmpty,
+  type FieldSpec,
+} from "@/components/crm/field-editor";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { errorMessage } from "@/lib/api/portal";
+import type { CrmTimezone } from "@/lib/crm/format";
+
+/**
+ * The record page frame — spec 007 FR-CRM-REC-01 to -04, FR-CRM-UI-06.
+ *
+ * A header with the name, key fields as chips and the actions; a left panel
+ * with every field, grouped and inline-editable, empty ones folded away; and
+ * the tabs Timeline, Tasks, Notes, Files and Related. On a phone the panel
+ * stacks above the tabs. Companies and people use it now; deals, tasks and
+ * campaigns reuse it as they arrive.
+ */
+
+export interface FieldGroup {
+  title: string;
+  fields: FieldSpec[];
+}
+
+function FieldRow({
+  spec,
+  value,
+  canEdit,
+  timeZone,
+  onSave,
+}: {
+  spec: FieldSpec;
+  value: unknown;
+  canEdit: boolean;
+  timeZone: CrmTimezone;
+  onSave: (name: string, value: unknown) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<unknown>(value);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const editable = canEdit && !spec.readOnly;
+  const id = `field-${spec.name}`;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave(spec.name, cleanValue(spec.type, draft));
+      setEditing(false);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="space-y-2 rounded-md bg-muted/40 p-2">
+        <label htmlFor={id} className="text-xs text-muted-foreground">
+          {spec.label}
+        </label>
+        <FieldEditor id={id} spec={spec} value={draft} onChange={setDraft} />
+        {error && (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-1.5">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setDraft(value);
+              setError(null);
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button size="sm" onClick={save} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/40">
+      <span className="pt-0.5 text-xs text-muted-foreground">{spec.label}</span>
+      <div className="flex min-w-0 items-start justify-between gap-1 text-sm">
+        <div className="min-w-0 flex-1">
+          <FieldValue spec={spec} value={value} timeZone={timeZone} />
+        </div>
+        {editable && (
+          <button
+            type="button"
+            aria-label={`Edit ${spec.label}`}
+            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-60 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+            onClick={() => {
+              setDraft(value);
+              setEditing(true);
+            }}
+          >
+            <Pencil className="size-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FieldPanel({
+  groups,
+  values,
+  canEdit,
+  timeZone,
+  onSave,
+}: {
+  groups: FieldGroup[];
+  values: Record<string, unknown>;
+  canEdit: boolean;
+  timeZone: CrmTimezone;
+  onSave: (name: string, value: unknown) => Promise<void>;
+}) {
+  const [showEmpty, setShowEmpty] = useState(false);
+  const empty = groups.flatMap((g) => g.fields).filter((f) => isEmpty(values[f.name])).length;
+
+  return (
+    <div className="space-y-4">
+      {groups.map((group) => {
+        const fields = group.fields.filter((f) => showEmpty || !isEmpty(values[f.name]));
+        if (fields.length === 0) return null;
+        return (
+          <section key={group.title} className="space-y-0.5">
+            <h3 className="px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {group.title}
+            </h3>
+            {fields.map((spec) => (
+              <FieldRow
+                key={spec.name}
+                spec={spec}
+                value={values[spec.name]}
+                canEdit={canEdit}
+                timeZone={timeZone}
+                onSave={onSave}
+              />
+            ))}
+          </section>
+        );
+      })}
+      {empty > 0 && (
+        <button
+          type="button"
+          className="flex items-center gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+          aria-expanded={showEmpty}
+          onClick={() => setShowEmpty((s) => !s)}
+        >
+          {showEmpty ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          {showEmpty ? "Hide empty fields" : `Show ${empty} empty field${empty === 1 ? "" : "s"}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function RecordPage({
+  title,
+  subtitle,
+  chips,
+  actions,
+  notice,
+  groups,
+  values,
+  canEdit,
+  timeZone,
+  onSave,
+  timeline,
+  files,
+  related,
+}: {
+  title: string;
+  subtitle?: React.ReactNode;
+  chips: React.ReactNode[];
+  actions: React.ReactNode;
+  notice?: React.ReactNode;
+  groups: FieldGroup[];
+  values: Record<string, unknown>;
+  canEdit: boolean;
+  timeZone: CrmTimezone;
+  onSave: (name: string, value: unknown) => Promise<void>;
+  timeline: React.ReactNode;
+  files: React.ReactNode;
+  related: React.ReactNode;
+}) {
+  const [tab, setTab] = useState("timeline");
+
+  return (
+    <div className="space-y-4">
+      <header className="space-y-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="break-words font-heading text-xl font-semibold">{title}</h1>
+            {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
+          </div>
+          <div className="flex flex-wrap gap-1.5">{actions}</div>
+        </div>
+        {chips.length > 0 && <div className="flex flex-wrap gap-1.5">{chips}</div>}
+        {notice}
+      </header>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+        <aside className="min-w-0 lg:border-r lg:pr-4">
+          <FieldPanel
+            groups={groups}
+            values={values}
+            canEdit={canEdit}
+            timeZone={timeZone}
+            onSave={onSave}
+          />
+        </aside>
+        <div className="min-w-0">
+          <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
+            <TabsList className="max-w-full overflow-x-auto">
+              <TabsTrigger value="timeline">Timeline</TabsTrigger>
+              <TabsTrigger value="tasks">Tasks</TabsTrigger>
+              <TabsTrigger value="notes">Notes</TabsTrigger>
+              <TabsTrigger value="files">Files</TabsTrigger>
+              <TabsTrigger value="related">Related</TabsTrigger>
+            </TabsList>
+            <TabsContent value="timeline" className="pt-4">
+              {timeline}
+            </TabsContent>
+            <TabsContent value="tasks" className="pt-4">
+              <p className="text-sm text-muted-foreground">No tasks on this record.</p>
+            </TabsContent>
+            <TabsContent value="notes" className="pt-4">
+              <p className="text-sm text-muted-foreground">No notes on this record.</p>
+            </TabsContent>
+            <TabsContent value="files" className="pt-4">
+              {files}
+            </TabsContent>
+            <TabsContent value="related" className="pt-4">
+              {related}
+            </TabsContent>
+          </Tabs>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A key field in the header (FR-CRM-REC-01). */
+export function Chip({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
+    </span>
+  );
+}

@@ -110,4 +110,6 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=15),
     },
     "lapse-compoff": {"task": "ops.lapse_compoff", "schedule": crontab(hour=0, minute=20)},
+    # Spec 007 FR-CRM-DEL-01, plan §5.11: Trash older than 90 days, per workspace.
+    "crm-purge-trash": {"task": "crm.purge_trash", "schedule": crontab(hour=1, minute=10)},
 }

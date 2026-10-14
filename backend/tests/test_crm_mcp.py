@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from crm_fake import MEMBER, OWNER, FakeCrmStore, two_workspaces
+from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, two_workspaces
 from crm_fake import client as crm_client
 
 from app.mcp import crm, server
@@ -19,8 +19,11 @@ from app.mcp import crm, server
 #: Contracts §3, the tools built so far, with their caller line (FR-CRM-MCP-11).
 CALLER_LINES = {
     "crm_workspaces": "ANY MEMBER OF THE WORKSPACE.",
+    "crm_get": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
+    "crm_create": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_update": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
 }
-READS = {"crm_workspaces"}
+READS = {"crm_workspaces", "crm_get"}
 
 
 def _tools() -> dict:
@@ -50,7 +53,8 @@ class TestTools:
         imports = [line for line in source.splitlines() if line.startswith(("import ", "from "))]
         assert imports == [
             "from __future__ import annotations",
-            "from app.mcp.server import READ, Context, _api, mcp",
+            "from typing import Any, Literal",
+            "from app.mcp.server import READ, WRITE, Context, _api, mcp",
         ]
 
 
@@ -127,6 +131,124 @@ class TestThroughTheBridge:
                     body={"value": {}},
                 )
             )
+        assert str(refused.value) == (
+            "422: Name a workspace: Nunnari Academy B2B (academy), Nunnari Labs (labs)."
+        )
+
+
+class Recorder:
+    """Stands in for `_api`, to count and inspect a tool's calls."""
+
+    def __init__(self, answer=None) -> None:
+        self.calls: list[tuple] = []
+        self.answer = answer if answer is not None else {"ok": True}
+
+    async def __call__(self, ctx, method, path, *, params=None, body=None):
+        self.calls.append((method, path, params, body))
+        return self.answer
+
+
+class TestRecordTools:
+    """FR-CRM-MCP-01 (S3: crm_get, crm_create, crm_update), -10; plan §5.10."""
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_get(Ctx("u"), "person", "p1", workspace="labs"),
+                ("GET", "/crm/people/p1", {"workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_create(Ctx("u"), "company", {"name": "Acme"}),
+                (
+                    "POST",
+                    "/crm/companies",
+                    {"workspace": None, "check_duplicates": "true"},
+                    {"name": "Acme"},
+                ),
+            ),
+            (
+                lambda: crm.crm_create(
+                    Ctx("u"),
+                    "drive_link",
+                    {"record_type": "company", "record_id": "c1", "url": "https://x", "label": "L"},
+                    workspace="labs",
+                ),
+                (
+                    "POST",
+                    "/crm/links",
+                    {"workspace": "labs"},
+                    {"record_type": "company", "record_id": "c1", "url": "https://x", "label": "L"},
+                ),
+            ),
+            (
+                lambda: crm.crm_update(Ctx("u"), "company", "c1", {"city": "Pune"}),
+                ("PATCH", "/crm/companies/c1", {"workspace": None}, {"city": "Pune"}),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    def test_crm_update_passes_the_callers_expect_updated_at_and_fetches_none(self, monkeypatch):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(
+            crm.crm_update(
+                Ctx("u"),
+                "person",
+                "p1",
+                {"city": "Pune"},
+                expect_updated_at="2026-10-14T10:00:00+05:30",
+                workspace="labs",
+            )
+        )
+        assert recorder.calls == [
+            (
+                "PATCH",
+                "/crm/people/p1",
+                {"workspace": "labs"},
+                {"city": "Pune", "expect_updated_at": "2026-10-14T10:00:00+05:30"},
+            )
+        ]
+
+    def test_crm_create_returns_duplicates_before_creating(self, crm_store):
+        first = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}, workspace="labs")
+        )
+        assert first["name"] == "Acme"
+        again = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme Corp"}, workspace="labs")
+        )
+        assert again["created"] is False
+        assert [s["name"] for s in again["duplicates"]["similar"]] == ["Acme"]
+        assert [c["name"] for c in crm_store.rows["crm_companies"].values()] == ["Acme"]
+        made = asyncio.run(
+            crm.crm_create(
+                Ctx(OWNER["id"]),
+                "company",
+                {"name": "Acme Corp"},
+                workspace="labs",
+                check_duplicates=False,
+            )
+        )
+        assert made["name"] == "Acme Corp"
+
+    def test_a_viewer_reads_through_crm_get(self, crm_store):
+        made = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "person", {"first_name": "Deepa"}, workspace="labs")
+        )
+        got = asyncio.run(crm.crm_get(Ctx(VIEWER["id"]), "person", made["id"], workspace="labs"))
+        assert got["record"]["name"] == "Deepa"
+        assert got["timeline_head"][0]["channel"] == "mcp"
+
+    def test_a_write_naming_no_workspace_lists_them(self, crm_store):
+        """FR-CRM-MCP-04 for crm_create."""
+        with pytest.raises(Exception) as refused:
+            asyncio.run(crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}))
         assert str(refused.value) == (
             "422: Name a workspace: Nunnari Academy B2B (academy), Nunnari Labs (labs)."
         )

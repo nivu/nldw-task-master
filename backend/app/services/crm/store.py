@@ -50,6 +50,8 @@ ACCOUNT_LEVEL = frozenset(
         "list_workspaces",
         "find_membership",
         "list_account_audit",
+        # Purges only from the Trash of the actor's workspace (029).
+        "purge",
     }
 )
 
@@ -64,7 +66,17 @@ UNIQUE_MESSAGES = {
     "crm_fx_rates_workspace_currency_month": (
         "A rate for that month was set meanwhile; reload and try again."
     ),
+    # FR-CRM-DUP-01 — the routes name the record first; these catch a race.
+    "crm_company_domains_workspace_domain": (
+        "That domain was just given to another company in this workspace."
+    ),
+    "crm_company_domains_one_primary": "This company's domains changed meanwhile; reload.",
+    "crm_people_workspace_email": "That email was just given to another person in this workspace.",
 }
+
+#: A reference to a row that is not in the workspace: the composite foreign
+#: keys of data-model §2 answer it as a foreign-key violation.
+NOT_IN_WORKSPACE = "No such record in this workspace."
 
 _CONSTRAINT = re.compile(r'unique constraint "([^"]+)"')
 
@@ -77,6 +89,8 @@ def refusal_for(code: str | None, message: str | None) -> CrmRefused | None:
         found = _CONSTRAINT.search(message or "")
         name = found.group(1) if found else ""
         return CrmRefused(409, UNIQUE_MESSAGES.get(name, "That already exists."))
+    if code == "23503":
+        return CrmRefused(404, NOT_IN_WORKSPACE)
     return None
 
 
@@ -339,6 +353,175 @@ def list_audit(
         query = query.gte("at", since.isoformat())
     if until:
         query = query.lt("at", until.isoformat())
+    if before is not None:
+        query = query.lt("id", before)
+    return query.order("id", desc=True).limit(limit).execute().data or []
+
+
+# ---------------------------------------------------------------------------
+# Records — companies, people, Drive links (S3; data-model §3.6–§3.8, §3.14)
+# ---------------------------------------------------------------------------
+
+#: The record tables that exist so far; later slices add theirs.
+RECORD_TABLES = frozenset({"crm_companies", "crm_people", "crm_drive_links"})
+#: The plain list's `q` (contracts §2.5): a literal substring of these.
+_SEARCH = {
+    "crm_companies": ("name",),
+    "crm_people": ("first_name", "last_name", "primary_email"),
+    "crm_drive_links": ("label",),
+}
+
+
+def _table(table: str) -> str:
+    if table not in RECORD_TABLES:
+        raise ValueError(f"not a CRM record table: {table}")
+    return table
+
+
+def _literal(q: str) -> str:
+    """`q` as a literal for PostgREST: LIKE wildcards escaped, and the
+    characters that would end a filter dropped."""
+    text = "".join(c for c in q if c not in ',()"*\\')
+    return text.replace("%", "\\%").replace("_", "\\_").strip()
+
+
+def get_record(workspace_id: str, table: str, record_id: str) -> dict[str, Any] | None:
+    """One record of the workspace, in the Trash or not; the caller decides."""
+    rows = (
+        supabase.table(_table(table))
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("id", record_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_records(
+    workspace_id: str,
+    table: str,
+    *,
+    q: str | None = None,
+    filters: dict[str, Any] | None = None,
+    any_of: dict[str, list[str]] | None = None,
+    deleted: bool | None = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Records of one table, newest first; the Trash newest-deleted first.
+
+    `deleted`: False the live records, True the Trash, None both.
+    """
+    query = supabase.table(_table(table)).select("*").eq("workspace_id", workspace_id)
+    for column, value in (filters or {}).items():
+        query = query.eq(column, value)
+    for column, values in (any_of or {}).items():
+        if not values:
+            return []
+        query = query.in_(column, values)
+    if deleted is True:
+        query = query.not_.is_("deleted_at", "null").order("deleted_at", desc=True)
+    elif deleted is False:
+        query = query.is_("deleted_at", "null")
+    term = _literal(q or "")
+    if term:
+        query = query.or_(",".join(f"{c}.ilike.%{term}%" for c in _SEARCH[table]))
+    return (
+        query.order("updated_at", desc=True)
+        .order("id")
+        .range(offset, offset + limit - 1)
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_domains(
+    workspace_id: str,
+    *,
+    company_ids: list[str] | None = None,
+    domains: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Company domains, primary first. Trashed companies keep theirs
+    (FR-CRM-DUP-01)."""
+    query = (
+        supabase.table("crm_company_domains")
+        .select("id, company_id, domain, is_primary, created_at")
+        .eq("workspace_id", workspace_id)
+    )
+    if company_ids is not None:
+        if not company_ids:
+            return []
+        query = query.in_("company_id", company_ids)
+    if domains is not None:
+        if not domains:
+            return []
+        query = query.in_("domain", domains)
+    return query.order("is_primary", desc=True).order("domain").execute().data or []
+
+
+def similar(workspace_id: str, kind: str, name: str, limit: int = 5) -> list[dict[str, Any]]:
+    """FR-CRM-DUP-02 — live records whose name is alike (029 `crm_similar`)."""
+    return (
+        rpc(
+            "crm_similar",
+            {"p_workspace": workspace_id, "p_object": kind, "p_name": name, "p_limit": limit},
+        )
+        or []
+    )
+
+
+def list_expired(workspace_id: str, table: str, cutoff: datetime) -> list[dict[str, Any]]:
+    """Trash older than `cutoff`, for the purge job (FR-CRM-DEL-01)."""
+    return (
+        supabase.table(_table(table))
+        .select("id, deleted_at")
+        .eq("workspace_id", workspace_id)
+        .lt("deleted_at", cutoff.isoformat())
+        .execute()
+        .data
+        or []
+    )
+
+
+def purge(actor: dict[str, Any], items: list[dict[str, str]]) -> dict[str, Any]:
+    """Data-model §5.4 — `items` of `{table, id}`, each already in the Trash."""
+    return rpc("crm_purge", {"p_actor": actor, "p_plan": {"items": items}}) or {}
+
+
+def list_timeline(
+    workspace_id: str,
+    table: str,
+    record_id: str,
+    *,
+    record_type: str,
+    related_ids: list[str] | None = None,
+    before: int | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """FR-CRM-REC-03, FR-CRM-AUD-05 — the record's audit rows, newest first:
+    its own, its Drive links' (by id, and by the record they name, so a purged
+    link still shows) and, for a company, its domains'."""
+    ids = ",".join([record_id, *(related_ids or [])])
+    parts = [
+        f"and(target_table.eq.{_table(table)},target_id.eq.{record_id})",
+        f"and(target_table.eq.crm_drive_links,target_id.in.({ids}))",
+        "and(target_table.eq.crm_drive_links,"
+        f"or(after->>record_id.eq.{record_id},before->>record_id.eq.{record_id}),"
+        f"or(after->>record_type.eq.{record_type},before->>record_type.eq.{record_type}))",
+    ]
+    if table == "crm_companies":
+        parts.append(
+            "and(target_table.eq.crm_company_domains,"
+            f"or(after->>company_id.eq.{record_id},before->>company_id.eq.{record_id}))"
+        )
+    query = (
+        supabase.table("audit_log")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .or_(",".join(parts))
+    )
     if before is not None:
         query = query.lt("id", before)
     return query.order("id", desc=True).limit(limit).execute().data or []

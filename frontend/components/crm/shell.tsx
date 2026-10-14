@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ArrowLeft,
+  Building2,
   CalendarCheck,
   CircleHelp,
   LogOut,
@@ -13,6 +14,7 @@ import {
   PanelLeftOpen,
   Settings,
   User,
+  Users,
 } from "lucide-react";
 
 import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
@@ -31,8 +33,9 @@ import { cn } from "@/lib/utils";
  * screens, a bottom bar with a More sheet on a phone. A CRM-only seller sees
  * no TVA link anywhere; a staff member gets Back to TVA (FR-CRM-UI-03).
  *
- * The sidebar holds what exists so far: Today and, for admins, Settings.
- * Each later slice adds its own entry (Pipeline, Companies, People, …).
+ * The sidebar holds what exists so far: Today, Companies, People and, for
+ * admins, Settings. Each later slice adds its own entry (Pipeline,
+ * Opportunities, Tasks, …).
  */
 
 const COLLAPSED_KEY = "crm.sidebar.collapsed";
@@ -90,6 +93,8 @@ export function CrmShell({
   // Hiding a link is tidiness, not security: the server re-checks every route.
   const links = [
     { href: `/crm/${ws}`, label: "Today", icon: CalendarCheck, show: true },
+    { href: `/crm/${ws}/companies`, label: "Companies", icon: Building2, show: true },
+    { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
     {
       href: `/crm/${ws}/settings`,
       label: "Settings",
@@ -104,6 +109,10 @@ export function CrmShell({
     { href: "/home", label: "Back to TVA", icon: ArrowLeft, show: staff },
   ].filter((link) => link.show);
 
+  // A record page (/companies/<id>) keeps its section lit; Today is the root.
+  const isActive = (href: string) =>
+    pathname === href || (href !== `/crm/${ws}` && pathname.startsWith(`${href}/`));
+
   const navLink = (
     { href, label, icon: Icon }: (typeof links)[number],
     { onClick, compact = collapsed }: { onClick?: () => void; compact?: boolean } = {}
@@ -117,7 +126,7 @@ export function CrmShell({
       className={cn(
         "flex items-center gap-3 rounded-md px-2.5 py-1.5 text-sm transition-colors",
         compact && "justify-center px-0",
-        pathname === href
+        isActive(href)
           ? "bg-muted font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
@@ -217,7 +226,7 @@ export function CrmShell({
               href={href}
               className={cn(
                 "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px]",
-                pathname === href ? "text-foreground" : "text-muted-foreground"
+                isActive(href) ? "text-foreground" : "text-muted-foreground"
               )}
             >
               <Icon className="size-5" />

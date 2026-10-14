@@ -1,0 +1,178 @@
+"use client";
+
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
+import { DriveLinks } from "@/components/crm/drive-links";
+import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
+import { RelatedPanel } from "@/components/crm/related-panel";
+import { useCrm } from "@/components/crm/shell";
+import { Timeline } from "@/components/crm/timeline";
+import { Button } from "@/components/ui/button";
+import {
+  deleteCrmRecord,
+  getCrmMembers,
+  getCrmRecord,
+  listCrmRecords,
+  updateCrmRecord,
+} from "@/lib/api/crm";
+import type { CrmCompany, CrmMember, CrmPerson } from "@/lib/api/crm-types";
+import { useAsync } from "@/lib/use-async";
+
+/** Spec 007 §5.7, grouped for the field panel (FR-CRM-REC-02). */
+function personGroups(members: CrmMember[], companies: CrmCompany[], current: CrmPerson): FieldGroup[] {
+  const companyChoices = companies.map((c) => ({ value: c.id, label: c.name }));
+  if (current.company_id && !companies.some((c) => c.id === current.company_id)) {
+    companyChoices.push({ value: current.company_id, label: current.company_name ?? "Current company" });
+  }
+  return [
+    {
+      title: "Person",
+      fields: [
+        { name: "first_name", label: "First name", type: "text", required: true },
+        { name: "last_name", label: "Last name", type: "text" },
+        { name: "job_title", label: "Job title", type: "text" },
+        { name: "company_id", label: "Company", type: "relation", choices: companyChoices },
+        { name: "city", label: "City", type: "text" },
+      ],
+    },
+    {
+      title: "Reaching them",
+      fields: [
+        { name: "primary_email", label: "Email", type: "email" },
+        { name: "additional_emails", label: "Additional emails", type: "emails" },
+        { name: "phones", label: "Phones", type: "phones" },
+        { name: "linkedin", label: "LinkedIn", type: "links" },
+        { name: "do_not_contact", label: "Do not contact", type: "boolean" },
+      ],
+    },
+    {
+      title: "Ownership",
+      fields: [
+        {
+          name: "owner_id",
+          label: "Owner",
+          type: "relation",
+          choices: members.map((m) => ({ value: m.user_id, label: m.display_name })),
+        },
+      ],
+    },
+    {
+      title: "Contact history",
+      fields: [
+        { name: "last_inbound_at", label: "Last inbound", type: "datetime", readOnly: true },
+        { name: "last_outbound_at", label: "Last outbound", type: "datetime", readOnly: true },
+        { name: "last_contact_at", label: "Last contact", type: "datetime", readOnly: true },
+      ],
+    },
+  ];
+}
+
+/**
+ * A person — spec 007 FR-CRM-PER-01, FR-CRM-REC-01 to -04, FR-CRM-LINK-03,
+ * FR-CRM-DEL-04.
+ */
+export default function PersonPage() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const { bootstrap } = useCrm();
+  const ws = bootstrap.workspace.key;
+  const [version, setVersion] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const { data, error, reload } = useAsync(
+    () =>
+      Promise.all([
+        getCrmRecord<CrmPerson>(ws, "people", id),
+        getCrmMembers(ws),
+        listCrmRecords<CrmCompany>(ws, "companies", { limit: 200 }),
+      ]),
+    [ws, id]
+  );
+
+  if (error) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">{error}</p>
+        <Link href={`/crm/${ws}/people`} className="text-sm hover:underline">
+          Back to people
+        </Link>
+      </div>
+    );
+  }
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const [page, members, companies] = data;
+  const person = page.record;
+  const canEdit = bootstrap.role !== "viewer";
+  const me = bootstrap.me.id;
+  // FR-CRM-DEL-04: what they own, or created when nobody owns it.
+  const mine = person.owner_id ? person.owner_id === me : person.created_by === me;
+  const mayDelete = bootstrap.role === "admin" || (bootstrap.role === "member" && mine);
+  const refresh = () => {
+    reload();
+    setVersion((v) => v + 1);
+  };
+
+  async function save(name: string, value: unknown) {
+    await updateCrmRecord(ws, "people", person.id, { [name]: value }, person.updated_at);
+    refresh();
+  }
+
+  return (
+    <>
+      <RecordPage
+        title={person.name}
+        subtitle={[person.job_title, person.company_name].filter(Boolean).join(" at ") || undefined}
+        chips={[
+          <Chip key="owner" label="Owner" value={person.owner_name ?? "—"} />,
+          ...(person.do_not_contact ? [<Chip key="dnc" label="Do not contact" value="Yes" />] : []),
+        ]}
+        actions={
+          mayDelete && (
+            <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
+              Delete
+            </Button>
+          )
+        }
+        groups={personGroups(members, companies.rows, person)}
+        values={person as unknown as Record<string, unknown>}
+        canEdit={canEdit}
+        timeZone={bootstrap.me.timezone}
+        onSave={save}
+        timeline={
+          <Timeline
+            workspace={ws}
+            object="people"
+            recordId={person.id}
+            initial={page.timeline_head}
+            timeZone={bootstrap.me.timezone}
+            version={version}
+          />
+        }
+        files={
+          <DriveLinks
+            workspace={ws}
+            recordType="person"
+            recordId={person.id}
+            links={page.links}
+            canEdit={canEdit}
+            onChange={refresh}
+          />
+        }
+        related={<RelatedPanel workspace={ws} related={page.related} />}
+      />
+      <DeleteCompanyDialog
+        open={deleting}
+        onOpenChange={setDeleting}
+        name={person.name}
+        peopleCount={null}
+        onDelete={async () => {
+          await deleteCrmRecord(ws, "people", person.id);
+          router.push(`/crm/${ws}/people`);
+        }}
+      />
+    </>
+  );
+}

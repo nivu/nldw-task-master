@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { AuditTable } from "@/components/crm/audit-table";
@@ -54,7 +55,13 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="font-heading text-lg font-semibold">Settings</h1>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="flex-1 font-heading text-lg font-semibold">Settings</h1>
+        {/* FR-CRM-DEL-01: deleted records, restorable for 90 days. */}
+        <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/crm/${ws}/settings/trash`} />}>
+          Trash
+        </Button>
+      </div>
       <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
         <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="members">Members</TabsTrigger>

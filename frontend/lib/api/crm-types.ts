@@ -114,7 +114,16 @@ export interface CrmAuditEntry {
 }
 
 export interface CrmAuditFilters {
-  record_type?: "workspace" | "membership" | "setting" | "option" | "fx_rate";
+  record_type?:
+    | "workspace"
+    | "membership"
+    | "setting"
+    | "option"
+    | "fx_rate"
+    | "company"
+    | "company_domain"
+    | "person"
+    | "drive_link";
   record_id?: string;
   actor_id?: string;
   action?: string;
@@ -218,4 +227,211 @@ export type CrmCapacityWeek =
 
 export interface CrmCapacity {
   weeks: CrmCapacityWeek[];
+}
+
+// ---------------------------------------------------------------------------
+// Records — §2.5 (S3: companies, people, Drive links)
+// ---------------------------------------------------------------------------
+
+/** FR-CRM-LIST-02 — a company's fixed lead stages, by key. */
+export type LeadStage =
+  | "new"
+  | "contacted"
+  | "nurturing"
+  | "qualified"
+  | "deal_open"
+  | "customer"
+  | "partner"
+  | "disqualified";
+
+/** FR-CRM-WS-06 — Nunnari Labs only. */
+export type CrmEntity = "nunnari_labs" | "deepweaver";
+
+/** The objects with routes so far (contracts §2.5 "Objects in paths"). */
+export type CrmObject = "companies" | "people";
+
+export interface LinkValue {
+  url: string;
+  label?: string | null;
+}
+
+/** FR-CRM-LIST-07 "links" — a primary link and any others. */
+export interface Links {
+  primary?: LinkValue | null;
+  others?: LinkValue[];
+}
+
+export interface Address {
+  street?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  postal_code?: string | null;
+}
+
+/** Country code (default +91), number, and whether it takes WhatsApp. */
+export interface Phone {
+  country_code: string;
+  number: string;
+  whatsapp: boolean;
+}
+
+interface RecordStamps {
+  created_at: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  updated_at: string;
+  updated_by: string | null;
+  updated_by_name: string | null;
+  deleted_at: string | null;
+}
+
+/** Contracts §2.5.1 company. Option ids travel with their label. */
+export interface CrmCompany extends RecordStamps {
+  id: string;
+  record_type: "company";
+  name: string;
+  domain: string | null;
+  additional_domains: string[];
+  entities: CrmEntity[];
+  entity_labels: string[];
+  lead_stage: LeadStage;
+  lead_stage_label: string;
+  account_type_id: string | null;
+  account_type_label: string | null;
+  relationship_status_id: string | null;
+  relationship_status_label: string | null;
+  channel_ids: string[];
+  channel_labels: (string | null)[];
+  owner_id: string | null;
+  owner_name: string | null;
+  next_touch_on: string | null;
+  industry_id: string | null;
+  industry_label: string | null;
+  institution_type_id: string | null;
+  institution_type_label: string | null;
+  size_id: string | null;
+  size_label: string | null;
+  source_id: string | null;
+  source_label: string | null;
+  country: string | null;
+  city: string | null;
+  address: Address | null;
+  website: Links | null;
+  linkedin: Links | null;
+  description: string | null;
+  /** System-written (FR-CRM-CO-03): shown, never edited. */
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  last_contact_at: string | null;
+}
+
+/** Contracts §2.5.1 person. */
+export interface CrmPerson extends RecordStamps {
+  id: string;
+  record_type: "person";
+  /** First and last name together. */
+  name: string;
+  first_name: string;
+  last_name: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  primary_email: string | null;
+  additional_emails: string[];
+  phones: Phone[];
+  job_title: string | null;
+  city: string | null;
+  linkedin: Links | null;
+  owner_id: string | null;
+  owner_name: string | null;
+  do_not_contact: boolean;
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  last_contact_at: string | null;
+}
+
+export type CrmRecord = CrmCompany | CrmPerson;
+
+/** FR-CRM-LINK-01 — an address and a label; never the file. */
+export interface CrmDriveLink {
+  id: string;
+  record_type: "company" | "person" | "opportunity" | "task" | "note" | "campaign";
+  record_id: string;
+  url: string;
+  label: string;
+  created_at: string;
+  created_by_name: string | null;
+}
+
+export type CrmTimelineType =
+  | "create"
+  | "field"
+  | "stage"
+  | "note"
+  | "task"
+  | "link"
+  | "merge"
+  | "handoff"
+  | "email"
+  | "delete";
+
+/** FR-CRM-REC-03, -04 — every entry names its actor and channel. */
+export interface CrmTimelineEntry {
+  id: number;
+  at: string;
+  actor_name: string;
+  actor_kind: CrmActorKind;
+  channel: "web" | "mcp" | null;
+  type: CrmTimelineType;
+  summary: string;
+  changes: { field: string; label: string; before: unknown; after: unknown }[];
+}
+
+/** GET /crm/{object}/{id} — the record page in one call. */
+export interface CrmRecordPage<T extends CrmRecord> {
+  record: T;
+  related: {
+    people?: CrmPerson[];
+    company?: { id: string; name: string | null } | null;
+  };
+  timeline_head: CrmTimelineEntry[];
+  links: CrmDriveLink[];
+  /** A merged company answers with its survivor (FR-CRM-DUP-03). */
+  merged_from?: { id: string; name: string };
+}
+
+export interface CrmPage<T> {
+  rows: T[];
+  /** Pass as `after` for the next page; null at the end. */
+  next: string | null;
+}
+
+/** FR-CRM-DUP-02 — the exact clash, if any, and names alike. */
+export interface CrmDuplicates {
+  exact: {
+    id: string;
+    name: string | null;
+    field: "domain" | "primary_email";
+    value: string;
+    in_trash: boolean;
+  } | null;
+  similar: { id: string; name: string; similarity: number }[];
+}
+
+/** POST /crm/{object}?check_duplicates=true answers this instead of the
+ *  record when names are alike, having created nothing. */
+export interface NotCreated {
+  created: false;
+  duplicates: CrmDuplicates;
+}
+
+/** GET /crm/trash — FR-CRM-DEL-01. */
+export interface CrmTrashRow {
+  id: string;
+  record_type: "company" | "person";
+  name: string;
+  deleted_at: string;
+  deleted_by: string | null;
+  deleted_by_name: string | null;
+  days_left: number;
 }

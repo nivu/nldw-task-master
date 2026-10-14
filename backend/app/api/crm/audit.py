@@ -29,10 +29,24 @@ RECORD_TABLES = {
     "setting": "crm_workspace_settings",
     "option": "crm_select_options",
     "fx_rate": "crm_fx_rates",
+    "company": "crm_companies",
+    "company_domain": "crm_company_domains",
+    "person": "crm_people",
+    "drive_link": "crm_drive_links",
 }
 RECORD_TYPES = {table: kind for kind, table in RECORD_TABLES.items()}
 
-RecordType = Literal["workspace", "membership", "setting", "option", "fx_rate"]
+RecordType = Literal[
+    "workspace",
+    "membership",
+    "setting",
+    "option",
+    "fx_rate",
+    "company",
+    "company_domain",
+    "person",
+    "drive_link",
+]
 
 
 @router.get("/audit")

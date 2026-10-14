@@ -10,7 +10,7 @@ The one exception is `tva_admin.py`, the TVA admin panel, which is TVA's
 
 from __future__ import annotations
 
-from app.api.crm import audit, capacity, members, settings, tva_admin, workspaces
+from app.api.crm import audit, capacity, members, records, settings, tva_admin, workspaces
 
 ROUTERS = [
     workspaces.router,
@@ -19,4 +19,5 @@ ROUTERS = [
     audit.router,
     tva_admin.router,
     capacity.router,
+    records.router,
 ]

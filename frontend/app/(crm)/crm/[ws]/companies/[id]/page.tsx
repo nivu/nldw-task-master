@@ -1,0 +1,222 @@
+"use client";
+
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
+import { DriveLinks } from "@/components/crm/drive-links";
+import type { Choice } from "@/components/crm/field-editor";
+import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
+import { RelatedPanel } from "@/components/crm/related-panel";
+import { useCrm } from "@/components/crm/shell";
+import { Timeline } from "@/components/crm/timeline";
+import { Button } from "@/components/ui/button";
+import { deleteCrmRecord, getCrmMembers, getCrmRecord, updateCrmRecord } from "@/lib/api/crm";
+import type { CrmBootstrap, CrmCompany, CrmMember } from "@/lib/api/crm-types";
+import { useAsync } from "@/lib/use-async";
+
+/** Contracts §2.5.1 — chosen by hand; Deal open, Customer and Partner follow
+ *  from deals (FR-CRM-PIPE-04, -05). */
+const MANUAL_LEAD_STAGES = ["new", "contacted", "nurturing", "qualified", "disqualified"];
+
+const ENTITIES: Choice[] = [
+  { value: "nunnari_labs", label: "Nunnari Labs" },
+  { value: "deepweaver", label: "DeepWeaver" },
+];
+
+function options(bootstrap: CrmBootstrap, listKey: string): Choice[] {
+  return (bootstrap.lists[listKey] ?? []).map((o) => ({
+    value: o.id,
+    label: o.label,
+    inactive: !o.is_active,
+  }));
+}
+
+/** Spec 007 §5.6, grouped for the field panel (FR-CRM-REC-02). */
+function companyGroups(
+  bootstrap: CrmBootstrap,
+  members: CrmMember[],
+  current: CrmCompany
+): FieldGroup[] {
+  const stages = (bootstrap.lists["company.lead_stage"] ?? [])
+    .filter((o) => o.system_key && (MANUAL_LEAD_STAGES.includes(o.system_key) || o.system_key === current.lead_stage))
+    .map((o) => ({ value: o.system_key as string, label: o.label }));
+  const labs = bootstrap.workspace.has_entity;
+  return [
+    {
+      title: "Company",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "domain", label: "Domain", type: "domain" },
+        { name: "additional_domains", label: "Additional domains", type: "domains" },
+        ...(labs ? [{ name: "entities", label: "Entity", type: "multi_select" as const, choices: ENTITIES }] : []),
+        { name: "description", label: "Description", type: "long_text" },
+      ],
+    },
+    {
+      title: "Relationship",
+      fields: [
+        { name: "lead_stage", label: "Lead stage", type: "select", required: true, choices: stages },
+        {
+          name: "owner_id",
+          label: "Owner",
+          type: "relation",
+          required: true,
+          choices: members.map((m) => ({ value: m.user_id, label: m.display_name })),
+        },
+        { name: "account_type_id", label: "Account type", type: "select", choices: options(bootstrap, "company.account_type") },
+        {
+          name: "relationship_status_id",
+          label: "Relationship status",
+          type: "select",
+          choices: options(bootstrap, "company.relationship_status"),
+        },
+        { name: "channel_ids", label: "Channels", type: "multi_select", choices: options(bootstrap, "channel") },
+        { name: "next_touch_on", label: "Next touch", type: "date" },
+        { name: "source_id", label: "Source", type: "select", choices: options(bootstrap, "source") },
+      ],
+    },
+    {
+      title: "Profile",
+      fields: [
+        { name: "industry_id", label: "Industry", type: "select", choices: options(bootstrap, "company.industry") },
+        ...(!bootstrap.workspace.tva_linked
+          ? [
+              {
+                name: "institution_type_id",
+                label: "Institution type",
+                type: "select" as const,
+                choices: options(bootstrap, "company.institution_type"),
+              },
+            ]
+          : []),
+        { name: "size_id", label: "Size", type: "select", choices: options(bootstrap, "company.size") },
+        { name: "country", label: "Country", type: "text" },
+        { name: "city", label: "City", type: "text" },
+        { name: "address", label: "Address", type: "address" },
+        { name: "website", label: "Website", type: "links" },
+        { name: "linkedin", label: "LinkedIn", type: "links" },
+      ],
+    },
+    {
+      title: "Contact history",
+      fields: [
+        { name: "last_inbound_at", label: "Last inbound", type: "datetime", readOnly: true },
+        { name: "last_outbound_at", label: "Last outbound", type: "datetime", readOnly: true },
+        { name: "last_contact_at", label: "Last contact", type: "datetime", readOnly: true },
+      ],
+    },
+  ];
+}
+
+/**
+ * A company — spec 007 FR-CRM-CO-01 to -03, FR-CRM-REC-01 to -04,
+ * FR-CRM-LINK-03, FR-CRM-DEL-02. Deals and Labs's TVA projects join its
+ * Related tab with S4 and S5.
+ */
+export default function CompanyPage() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const { bootstrap } = useCrm();
+  const ws = bootstrap.workspace.key;
+  const [version, setVersion] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const { data, error, reload } = useAsync(
+    () => Promise.all([getCrmRecord<CrmCompany>(ws, "companies", id), getCrmMembers(ws)]),
+    [ws, id]
+  );
+
+  if (error) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">{error}</p>
+        <Link href={`/crm/${ws}/companies`} className="text-sm hover:underline">
+          Back to companies
+        </Link>
+      </div>
+    );
+  }
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  const [page, members] = data;
+  const company = page.record;
+  const canEdit = bootstrap.role !== "viewer";
+  const mayDelete =
+    bootstrap.role === "admin" || (bootstrap.role === "member" && company.owner_id === bootstrap.me.id);
+  const refresh = () => {
+    reload();
+    setVersion((v) => v + 1);
+  };
+
+  async function save(name: string, value: unknown) {
+    await updateCrmRecord(ws, "companies", company.id, { [name]: value }, company.updated_at);
+    refresh();
+  }
+
+  return (
+    <>
+      <RecordPage
+        title={company.name}
+        subtitle={company.domain ?? undefined}
+        notice={
+          page.merged_from && (
+            <p className="rounded-md bg-muted p-2 text-xs">
+              {page.merged_from.name} was merged into this company.
+            </p>
+          )
+        }
+        chips={[
+          <Chip key="stage" label="Lead stage" value={company.lead_stage_label} />,
+          <Chip key="owner" label="Owner" value={company.owner_name ?? "—"} />,
+          ...(company.entity_labels.length
+            ? [<Chip key="entity" label="Entity" value={company.entity_labels.join(", ")} />]
+            : []),
+        ]}
+        actions={
+          mayDelete && (
+            <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
+              Delete
+            </Button>
+          )
+        }
+        groups={companyGroups(bootstrap, members, company)}
+        values={company as unknown as Record<string, unknown>}
+        canEdit={canEdit}
+        timeZone={bootstrap.me.timezone}
+        onSave={save}
+        timeline={
+          <Timeline
+            workspace={ws}
+            object="companies"
+            recordId={company.id}
+            initial={page.timeline_head}
+            timeZone={bootstrap.me.timezone}
+            version={version}
+          />
+        }
+        files={
+          <DriveLinks
+            workspace={ws}
+            recordType="company"
+            recordId={company.id}
+            links={page.links}
+            canEdit={canEdit}
+            onChange={refresh}
+          />
+        }
+        related={<RelatedPanel workspace={ws} related={page.related} />}
+      />
+      <DeleteCompanyDialog
+        open={deleting}
+        onOpenChange={setDeleting}
+        name={company.name}
+        peopleCount={page.related.people?.length ?? 0}
+        onDelete={async (people) => {
+          await deleteCrmRecord(ws, "companies", company.id, people ? { people } : undefined);
+          router.push(`/crm/${ws}/companies`);
+        }}
+      />
+    </>
+  );
+}

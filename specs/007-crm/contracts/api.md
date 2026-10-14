@@ -136,7 +136,7 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | POST | `/crm/{object}/{id}/restore` | Admin | — | the record; restores its `deleted_group` |
 | DELETE | `/crm/{object}/{id}/permanent` | Admin | — | `{purged}` |
 | GET | `/crm/trash` | Admin | `object`, paging | trashed records with `deleted_at`, `deleted_by`, days left |
-| GET | `/crm/{object}/{id}/timeline` | Read | `types?=create,field,stage,note,task,link,merge,handoff,email`, `before?`, `limit` | `[{at, actor_name, actor_kind, channel, type, summary, changes}]`; amounts removed for Viewers (FR-CRM-AUD-05) |
+| GET | `/crm/{object}/{id}/timeline` | Read | `types?=create,field,stage,note,task,link,merge,handoff,email,delete` (`delete`: moved to and restored from the Trash) | `[{at, actor_name, actor_kind, channel, type, summary, changes}]`; amounts removed for Viewers (FR-CRM-AUD-05) |
 | POST | `/crm/companies/duplicates`, `/crm/people/duplicates` | Write | `{name?, domain?, email?}` | `{exact: {...}\|null, similar: [{id, name, similarity}]}` (FR-CRM-DUP-02) |
 | POST | `/crm/links` | Write (Viewer: no) | `{record_type, record_id, url, label}` | the Drive link; 422 if not `https://` |
 | DELETE | `/crm/links/{id}` | Write | — | soft-deletes |
@@ -147,7 +147,7 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 
 #### 2.5.1 Record fields (request names)
 
-- **company**: `name`, `domain`, `additional_domains[]`, `entities[]`,
+- **company** (`owner_id` defaults to the caller on create): `name`, `domain`, `additional_domains[]`, `entities[]`,
   `lead_stage` (create defaults to `new`; edits by hand among New, Contacted,
   Nurturing, Qualified, Disqualified, plus the rules of PIPE-04/05),
   `account_type_id`, `relationship_status_id`, `channel_ids[]`, `owner_id`,
