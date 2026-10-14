@@ -3,8 +3,8 @@
 FR-CRM-AUTO-01 automation 9; contracts §2.5, §2.6; spec §11 AC pipeline
 rules 1–5 and the history half of "Every stage change records its time".
 
-Academy has no TVA side, so its deals go through every stage here. A Labs
-deal stops before Proposal until the TVA link (S5). Routes run against
+Academy has no TVA side, so its deals go through every stage here; a Labs
+deal's TVA side is tested in test_crm_tva_lifecycle.py. Routes run against
 `tests/crm_fake.py`, whose `crm_deal_transition` keeps 031's re-checks and
 whose deal rows keep 030's CHECKs: a route that let a broken deal through
 would fail here with `CheckViolation`.
@@ -677,11 +677,11 @@ class TestReopen:
         assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "closed_lost"
 
 
-class TestLabsStopsBeforeProposal:
-    """Plan §5.6 — until the TVA link (S5)."""
+class TestLabsClosedWonNeedsTheHandoff:
+    """FR-CRM-PIPE-07, FR-CRM-TVA-07 — in Labs a deal is won through the
+    handoff, never a plain move (the TVA side is in test_crm_tva_lifecycle)."""
 
-    @pytest.mark.parametrize("stage", ["proposal", "negotiation", "closed_won"])
-    def test_refused(self, crm, stage):
+    def test_refused(self, crm):
         http, fake, *_ = crm
         company = _company(http, query=LABS)
         person = _person(http, query=LABS)
@@ -689,7 +689,7 @@ class TestLabsStopsBeforeProposal:
         r = _move(
             http,
             deal["id"],
-            stage,
+            "closed_won",
             query=LABS,
             changes={
                 "amount": "10",
@@ -700,7 +700,7 @@ class TestLabsStopsBeforeProposal:
         )
         assert (r.status_code, r.json()["detail"]) == (
             422,
-            "This move needs the TVA link, which is not built yet.",
+            "Closed Won in Nunnari Labs needs the handoff.",
         )
         assert fake.rows["crm_opportunities"][deal["id"]]["stage"] == "discovery"
 

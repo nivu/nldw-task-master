@@ -230,10 +230,13 @@ def opportunity(
     facts: Facts,
     companies: dict[str, dict[str, Any]] | None = None,
     people: dict[str, dict[str, Any]] | None = None,
+    projects: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Contracts §2.5.1 opportunity. Money is a decimal string; the weighted
-    amount is derived (spec §5.8). `project` is the deal's TVA project, which
-    S5 fills in for Labs. A Viewer receives none of the amounts."""
+    amount is derived (spec §5.8). `project` is a Labs deal's TVA project
+    (`services/crm/tva.block`: name, status, archived, phase dates, never an
+    amount), shown to every role, Viewers and CRM-only accounts included
+    (FR-CRM-TVA-02, FR-CRM-ACC-03). A Viewer receives none of the amounts."""
     company_row = (companies or {}).get(row.get("company_id") or "")
     contact = (people or {}).get(row.get("point_of_contact_id") or "")
     out: dict[str, Any] = {
@@ -272,8 +275,8 @@ def opportunity(
         "lost_from_stage": row.get("lost_from_stage"),
         "won_on": row.get("won_on"),
         "lost_on": row.get("lost_on"),
-        # FR-CRM-CO-02, REC-03: the Labs deal's TVA project arrives in S5.
-        "project": None,
+        # FR-CRM-CO-02, REC-03: the Labs deal's TVA project.
+        "project": (projects or {}).get(row["id"]),
         **_stamps(row, facts),
     }
     for name in (
@@ -571,6 +574,18 @@ def _entry(row, kind, facts, hidden, near: Around) -> dict[str, Any] | None:
         else:
             said = f"Removed domain {before.get('domain')}"
         return {"type": "field", "summary": said, "changes": []}
+
+    if verb == "handoff":
+        # FR-CRM-TVA-09: the deal's handoff event (033).
+        said = f"Handed off to TVA: project “{after.get('project_name')}” confirmed"
+        if after.get("lead_id"):
+            said += f", led by {facts.name(after['lead_id']) or 'a staff member'}"
+        return {"type": "handoff", "summary": f"{said}.", "changes": []}
+    if verb == "project_linked":
+        # FR-CRM-TVA-18.
+        made = "Created" if after.get("mode") == "create" else "Linked"
+        said = f"{made} TVA project “{after.get('project_name')}”"
+        return {"type": "handoff", "summary": said, "changes": []}
 
     noun = NOUNS.get(kind, "record")
     if verb == "created":

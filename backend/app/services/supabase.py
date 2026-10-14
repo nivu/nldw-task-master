@@ -413,6 +413,99 @@ def update_project(project_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("projects").update(data).eq("id", project_id).execute().data[0]
 
 
+# Spec 007 FR-CRM-TVA-01 — the reads the CRM makes of TVA projects (032's
+# `crm_company_id`, `source_opportunity_id`, `crm_archived_at` come with
+# every `select("*")` above). The CRM never writes a project here: its TVA
+# side is written by `crm_deal_transition` and `crm_link_project` (033).
+
+
+def get_project_by_source_opportunity(opportunity_id: str) -> dict[str, Any] | None:
+    """The deal's project: at most one, by the unique index (032)."""
+    rows = (
+        supabase.table("projects")
+        .select("*")
+        .eq("source_opportunity_id", opportunity_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_crm_projects(
+    *, opportunity_ids: list[str] | None = None, company_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Projects linked to any of these deals, or to any of these companies
+    (FR-CRM-CO-02, -REC-03), in one query, by name."""
+    parts = []
+    if opportunity_ids:
+        parts.append(f"source_opportunity_id.in.({','.join(opportunity_ids)})")
+    if company_ids:
+        parts.append(f"crm_company_id.in.({','.join(company_ids)})")
+    if not parts:
+        return []
+    return (
+        supabase.table("projects").select("*").or_(",".join(parts)).order("name").execute().data
+        or []
+    )
+
+
+def list_linkable_projects(status: str | None = None) -> list[dict[str, Any]]:
+    """FR-CRM-TVA-05, -18 — projects no deal is linked to, not archived."""
+    query = (
+        supabase.table("projects")
+        .select("id, name, status, client")
+        .is_("source_opportunity_id", "null")
+        .eq("is_archived", False)
+    )
+    if status is not None:
+        query = query.eq("status", status)
+    return query.order("name").execute().data or []
+
+
+def find_project_by_name(name: str) -> dict[str, Any] | None:
+    """The project whose name equals `name` ignoring case and outer spaces,
+    archived included — what `projects_name_unique` (008) compares."""
+    wanted = name.strip().lower()
+    if not wanted:
+        return None
+    pattern = wanted.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = supabase.table("projects").select("*").ilike("name", f"%{pattern}%").execute().data
+    return next((r for r in rows or [] if r["name"].strip().lower() == wanted), None)
+
+
+def list_project_phases(project_ids: list[str]) -> list[dict[str, Any]]:
+    """The phases of some projects, in one query."""
+    if not project_ids:
+        return []
+    return (
+        supabase.table("project_phases")
+        .select("*")
+        .in_("project_id", project_ids)
+        .order("starts_on")
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_project_milestones(project_id: str) -> list[dict[str, Any]]:
+    """For the handoff's pre-fill and the reopen-won check (FR-CRM-PIPE-13)."""
+    return (
+        supabase.table("project_milestones")
+        .select("*")
+        .eq("project_id", project_id)
+        .order("due_on")
+        .execute()
+        .data
+        or []
+    )
+
+
+def project_has_time_entries(project_id: str) -> bool:
+    return has_time_entries(project_id)
+
+
 def list_phases(project_id: str | None = None) -> list[dict[str, Any]]:
     query = supabase.table("project_phases").select("*")
     if project_id is not None:

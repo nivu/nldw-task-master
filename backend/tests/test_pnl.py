@@ -462,3 +462,85 @@ class TestArchivedProjectsInTheMonthlyProfit:
         books.projects[1]["is_archived"] = False
         again = next(p for p in self._report()["projects"] if p["project_id"] == "p-old")
         assert again["cells"][0] == old["cells"][0]
+
+
+class TestAWonDealCountsOnce:
+    """Spec 007 FR-CRM-TVA-08, -11; AC "Closed Won confirmed by a TVA manager or
+    admin makes the project confirmed with revenue in INR … nothing is
+    double-counted in the P&L". The handoff (033 `confirm`, as the fake
+    applies it) turns the tentative project into a confirmed one with the
+    handoff's revenue: the same row, so it leaves the pipeline block as it
+    enters the confirmed P&L, and its revenue counts once."""
+
+    def _won(self, books):
+        from crm_fake import OWNER, FakeCrmStore, two_workspaces
+
+        crm = FakeCrmStore()
+        crm.profiles = {OWNER["id"]: dict(OWNER)}
+        labs, _ = two_workspaces(crm)
+        company = crm.add(
+            "crm_companies", workspace_id=labs["id"], name="Flux", lead_stage="deal_open"
+        )
+        deal = crm.add(
+            "crm_opportunities",
+            workspace_id=labs["id"],
+            name="Flux",
+            company_id=company["id"],
+            stage="negotiation",
+            probability=75,
+            amount=None,
+            currency=None,
+            amount_in_inr=None,
+            fx_rate_used=None,
+            twenty_id="tw",
+            lost_reason_id=None,
+            deleted_at=None,
+        )
+        flux = next(p for p in books.projects if p["id"] == "p-flux")
+        crm.rows["projects"]["p-flux"] = {
+            **flux,
+            "lead_id": None,
+            "source_opportunity_id": deal["id"],
+            "crm_company_id": company["id"],
+            "crm_archived_at": None,
+        }
+        crm.deal_transition(
+            {"user_id": OWNER["id"], "kind": "user", "channel": "web", "workspace_id": labs["id"]},
+            {
+                "opportunity_id": deal["id"],
+                "expect_stage": "negotiation",
+                "opportunity": {
+                    "stage": "closed_won",
+                    "stage_entered_at": "now",
+                    "probability": 100,
+                    "won_on": "2026-10-05",
+                },
+                "history": {"from": "negotiation", "to": "closed_won"},
+                "project": {
+                    "action": "confirm",
+                    "name": "Flux",
+                    "category": "client",
+                    "lead_id": None,
+                    "probability": 100,
+                    "phases": {"delivery": {"starts_on": "2026-11-01", "ends_on": "2026-11-30"}},
+                    "revenue": "150000.00",
+                },
+            },
+        )
+        books.projects = [
+            {k: crm.rows["projects"]["p-flux"][k] for k in p} if p["id"] == "p-flux" else p
+            for p in books.projects
+        ]
+
+    def test_the_won_project_leaves_the_pipeline_and_counts_once(self, books):
+        from app.services import pnl as pnl_service
+
+        before = pnl_service.monthly("2026-09", "2026-11")
+        assert [p["project_id"] for p in before["pipeline"]["projects"]] == ["p-flux"]
+        self._won(books)
+        after = pnl_service.monthly("2026-09", "2026-11")
+        assert after["pipeline"]["projects"] == []
+        confirmed = [p["project_id"] for p in after["projects"]]
+        assert confirmed.count("p-flux") == 1
+        flux = next(p for p in after["projects"] if p["project_id"] == "p-flux")
+        assert flux["cells"][2]["revenue"] == "150000.00"

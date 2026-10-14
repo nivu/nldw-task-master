@@ -21,6 +21,7 @@ from app.schemas import TimesheetDay
 from app.services import analytics as analytics_service
 from app.services import supabase as db
 from app.services import timesheets as timesheet_service
+from app.services.crm.tva import ProjectLinks
 
 router = APIRouter(prefix="/timesheet", tags=["timesheet"])
 
@@ -148,10 +149,17 @@ def project_list(user: LeadDep) -> list[dict]:
 
 @analytics.get("/projects/{project_id}")
 def project_detail(project_id: str, user: LeadDep) -> dict:
-    """FR-ANALYTICS-02/03 — the budget conversation."""
+    """FR-ANALYTICS-02/03 — the budget conversation. Spec 007 FR-CRM-TVA-02:
+    a deal-managed project says so, and names its company and deal to Labs
+    members only, as `/admin/projects` does."""
     result = analytics_service.project_effort(project_id)
     if not result:
         raise ProblemDetail(404, "No such project.")
+    row = db.get_project(project_id) or {}
+    result["project"]["crm_managed"] = bool(row.get("source_opportunity_id"))
+    block = ProjectLinks(user, [row]).block(row)
+    if block is not None:
+        result["project"]["crm"] = block
     return result
 
 

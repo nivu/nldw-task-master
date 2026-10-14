@@ -32,9 +32,13 @@ CALLER_LINES = {
         "WORKSPACE ADMINS AND MEMBERS (reopening a won deal: WORKSPACE ADMINS ONLY;\n"
         "reopening a lost deal: ADMINS OR THE DEAL'S OWNER). CONFIRM FIRST."
     ),
+    "crm_handoff": (
+        "WORKSPACE ADMINS AND MEMBERS, LABS (link mode: WORKSPACE ADMINS WHO ARE TVA\n"
+        "MANAGERS OR ADMINS, LABS). CONFIRM FIRST"
+    ),
 }
 READS = {"crm_workspaces", "crm_get"}
-DESTRUCTIVE = {"crm_move_stage"}
+DESTRUCTIVE = {"crm_move_stage", "crm_handoff"}
 
 
 def _tools() -> dict:
@@ -83,6 +87,7 @@ class TestInstructions:
             "must name it",
             "CONFIRM FIRST",
             "closed_won",
+            "closed_won is done with crm_handoff",
         ],
     )
     def test_the_crm_paragraph(self, phrase):
@@ -429,3 +434,91 @@ class TestDealTools:
         assert str(refused.value) == (
             "422: Name a workspace: Nunnari Academy B2B (academy), Nunnari Labs (labs)."
         )
+
+
+class TestHandoffTool:
+    """FR-CRM-MCP-01 (S5: crm_handoff), -02; contracts §3 tool 10."""
+
+    PHASES = {"delivery": {"starts_on": "2026-11-02", "ends_on": "2027-01-29"}}
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_handoff(Ctx("u"), D1, workspace="labs"),
+                ("GET", f"/crm/opportunities/{D1}/handoff", {"workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_handoff(
+                    Ctx("u"),
+                    D1,
+                    "confirm",
+                    lead_id="u-lead",
+                    phases=TestHandoffTool.PHASES,
+                    revenue="1500000.00",
+                    milestones=[{"name": "Kickoff", "due_on": "2026-11-02", "amount": "500000"}],
+                ),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/handoff",
+                    {"workspace": None},
+                    {
+                        "lead_id": "u-lead",
+                        "phases": PHASES,
+                        "revenue": "1500000.00",
+                        "milestones": [
+                            {"name": "Kickoff", "due_on": "2026-11-02", "amount": "500000"}
+                        ],
+                    },
+                ),
+            ),
+            (
+                lambda: crm.crm_handoff(Ctx("u"), D1, "link", link_project_id="p-1"),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/link-project",
+                    {"workspace": None},
+                    {"mode": "link", "project_id": "p-1"},
+                ),
+            ),
+            (
+                lambda: crm.crm_move_stage(
+                    Ctx("u"), D1, "proposal", project_name="Acme - Phase 2", link_project_id="p-1"
+                ),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/stage",
+                    {"workspace": None},
+                    {
+                        "stage": "proposal",
+                        "changes": {},
+                        "project_name": "Acme - Phase 2",
+                        "link_project_id": "p-1",
+                    },
+                ),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: crm.crm_handoff(Ctx("u"), D1, "link"),
+            lambda: crm.crm_handoff(Ctx("u"), D1, "confirm", lead_id="u-lead"),
+            lambda: crm.crm_handoff(Ctx("u"), "../members", "preview"),
+        ],
+    )
+    def test_an_incomplete_call_reaches_no_route(self, monkeypatch, call):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        with pytest.raises(server.ToolError):
+            asyncio.run(call())
+        assert recorder.calls == []
+
+    def test_amounts_are_described_as_inr(self):
+        assert "Revenue and milestone amounts are INR" in _tools()["crm_handoff"].description

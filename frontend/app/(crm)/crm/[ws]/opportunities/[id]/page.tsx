@@ -9,8 +9,10 @@ import { ContactsPanel } from "@/components/crm/contacts-panel";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import type { Choice } from "@/components/crm/field-editor";
+import { LinkProjectDialog } from "@/components/crm/link-project-dialog";
 import { LostDialog } from "@/components/crm/lost-dialog";
 import { NotesTab } from "@/components/crm/note-composer";
+import { ProjectChip } from "@/components/crm/project-chip";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
 import { useCrm } from "@/components/crm/shell";
 import { STAGE_ORDER, StageDialog } from "@/components/crm/stage-dialog";
@@ -151,8 +153,11 @@ function dealGroups(bootstrap: CrmBootstrap, members: CrmMember[], deal: CrmOppo
  * FR-CRM-FX-06, FR-CRM-REC-01 to -04, FR-CRM-LINK-03.
  *
  * Move stage asks the server what the move needs and asks for exactly that
- * (`stage-dialog.tsx`); Closed Lost takes a reason (`lost-dialog.tsx`). The
- * Labs deal's TVA project joins Related with the TVA link (S5).
+ * (`stage-dialog.tsx`); Closed Lost takes a reason (`lost-dialog.tsx`). In
+ * Labs (FR-CRM-TVA) the deal's TVA project is in Related, with its status and
+ * phase dates for every role; Closed Won goes through the handoff; a Labs
+ * admin may Link TVA project on a deal at Proposal or later that has none
+ * (FR-CRM-TVA-18).
  */
 export default function OpportunityPage() {
   const { id } = useParams<{ id: string }>();
@@ -163,6 +168,7 @@ export default function OpportunityPage() {
   const [version, setVersion] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [target, setTarget] = useState<StageKey | null>(null);
+  const [linking, setLinking] = useState(false);
   const { data, error, reload } = useAsync(
     () => Promise.all([getCrmRecord<CrmOpportunity>(ws, "opportunities", id), getCrmMembers(ws)]),
     [ws, id]
@@ -215,6 +221,13 @@ export default function OpportunityPage() {
   }
 
   const stages = STAGE_ORDER.filter((s) => s !== deal.stage);
+  const labs = bootstrap.workspace.tva_linked;
+  // FR-CRM-TVA-18: imported deals reach their projects this way.
+  const mayLinkProject =
+    labs &&
+    bootstrap.role === "admin" &&
+    !deal.project &&
+    ["proposal", "negotiation", "closed_won"].includes(deal.stage);
 
   return (
     <>
@@ -245,6 +258,15 @@ export default function OpportunityPage() {
               ]
             : []),
           <Chip key="probability" label="Probability" value={`${deal.probability}%`} />,
+          ...(deal.project
+            ? [
+                <Chip
+                  key="project"
+                  label="TVA project"
+                  value={`${deal.project.name} · ${deal.project.is_archived ? "archived" : deal.project.status}`}
+                />,
+              ]
+            : []),
           ...(deal.entity_label ? [<Chip key="entity" label="Entity" value={deal.entity_label} />] : []),
         ]}
         actions={
@@ -266,6 +288,11 @@ export default function OpportunityPage() {
                   ))}
                 </SelectContent>
               </Select>
+            )}
+            {mayLinkProject && (
+              <Button variant="outline" size="sm" onClick={() => setLinking(true)}>
+                Link TVA project
+              </Button>
             )}
             {mayDelete && (
               <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
@@ -341,6 +368,18 @@ export default function OpportunityPage() {
                 <p className="text-sm text-muted-foreground">None yet; Qualification needs one.</p>
               )}
             </section>
+            {labs && (
+              <section className="space-y-2">
+                <h3 className="text-sm font-medium">TVA project</h3>
+                {page.related.project ? (
+                  <ProjectChip project={page.related.project} timeZone={bootstrap.me.timezone} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    None yet; moving to Proposal creates a tentative one.
+                  </p>
+                )}
+              </section>
+            )}
             <ContactsPanel
               workspace={ws}
               dealId={deal.id}
@@ -360,7 +399,15 @@ export default function OpportunityPage() {
         stage={target !== "closed_lost" ? target : null}
         stageLabel={target ? stageLabel(bootstrap, target) : ""}
         numberFormat={numberFormat}
+        labs={labs}
         onMoved={moved}
+      />
+      <LinkProjectDialog
+        open={linking}
+        onOpenChange={setLinking}
+        workspace={ws}
+        deal={deal}
+        onLinked={refresh}
       />
       <LostDialog
         open={target === "closed_lost"}

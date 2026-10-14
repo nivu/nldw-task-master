@@ -344,17 +344,82 @@ class MoveChanges(BaseModel):
 
 
 class StagePreviewIn(BaseModel):
+    """`project_name` names the TVA project a Labs move into Proposal creates,
+    when it is not to be the deal's name (a clash, FR-CRM-TVA-05)."""
+
     model_config = ConfigDict(extra="forbid")
 
     stage: Stage
     changes: MoveChanges = Field(default_factory=MoveChanges)
     company_on_loss: Literal["nurturing", "disqualified"] | None = None
+    project_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class StageMoveIn(StagePreviewIn):
     """`expect_updated_at` is the deal's `updated_at` as last read; the web app
-    always sends it, an MCP caller may not."""
+    always sends it, an MCP caller may not. `link_project_id` links the deal
+    to an existing tentative project instead of creating one (FR-CRM-TVA-05:
+    a staff TVA manager or admin only)."""
 
+    expect_updated_at: datetime | None = None
+    link_project_id: str | None = None
+
+
+ProjectCategory = Literal["client", "poc", "product"]
+
+
+class PhaseSpan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    starts_on: date
+    ends_on: date
+
+
+class HandoffPhases(BaseModel):
+    """FR-CRM-TVA-07 — TVA's pre, delivery and support phases; never spillover."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pre: PhaseSpan | None = None
+    delivery: PhaseSpan | None = None
+    support: PhaseSpan | None = None
+
+
+class MilestoneIn(BaseModel):
+    """A billing milestone, in INR (TVA is single-currency)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    due_on: date
+    amount: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+
+
+class HandoffIn(BaseModel):
+    """Contracts §2.6 `POST …/handoff`. `revenue` and milestone amounts are
+    INR whatever the deal's currency, and are written only for a staff TVA
+    manager or admin (FR-CRM-TVA-08)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_name: str | None = Field(default=None, min_length=1, max_length=200)
+    category: ProjectCategory | None = None
+    lead_id: str
+    phases: HandoffPhases
+    revenue: Decimal | None = Money
+    milestones: list[MilestoneIn] = Field(default_factory=list, max_length=50)
+    expect_updated_at: datetime | None = None
+
+
+class LinkProjectIn(BaseModel):
+    """Contracts §2.6 `POST …/link-project` (FR-CRM-TVA-18)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    mode: Literal["link", "create"]
+    project_id: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    category: ProjectCategory | None = None
     expect_updated_at: datetime | None = None
 
 

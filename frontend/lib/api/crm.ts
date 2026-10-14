@@ -36,10 +36,15 @@ import type {
   CrmTimelineEntry,
   CrmTrashRow,
   CrmWorkspace,
+  HandoffIn,
+  HandoffPreview,
+  HandoffResult,
   InvitationIn,
   InvitationResult,
+  LinkableProject,
   NotCreated,
   OptionUpdate,
+  ProjectCategory,
   StageChanges,
   StageKey,
   StageMoveResult,
@@ -347,17 +352,31 @@ export const removeCrmDriveLink = (workspace: string, id: string) =>
 // Deals, tasks — §2.5, §2.6
 // ---------------------------------------------------------------------------
 
+/** Labs: how a move into Proposal meets a project name clash (FR-CRM-TVA-05). */
+export interface ProjectChoice {
+  /** Name the new project something other than the deal. */
+  project_name?: string;
+  /** Link an existing tentative project instead (TVA managers and admins). */
+  link_project_id?: string;
+}
+
 /** What a move would do, writing nothing (contracts §2.6). */
 export const previewCrmStage = (
   workspace: string,
   dealId: string,
   stage: StageKey,
   changes: StageChanges = {},
-  companyOnLoss?: "nurturing" | "disqualified"
+  companyOnLoss?: "nurturing" | "disqualified",
+  project: Pick<ProjectChoice, "project_name"> = {}
 ) =>
   call<StagePreview>(`/opportunities/${dealId}/stage/preview${query(workspace)}`, {
     method: "POST",
-    ...body({ stage, changes, ...(companyOnLoss ? { company_on_loss: companyOnLoss } : {}) }),
+    ...body({
+      stage,
+      changes,
+      ...(companyOnLoss ? { company_on_loss: companyOnLoss } : {}),
+      ...project,
+    }),
   });
 
 /** The move and its side effects; a 422 names every missing field. */
@@ -367,7 +386,8 @@ export const moveCrmStage = (
   stage: StageKey,
   changes: StageChanges,
   expectUpdatedAt: string,
-  companyOnLoss?: "nurturing" | "disqualified"
+  companyOnLoss?: "nurturing" | "disqualified",
+  project: ProjectChoice = {}
 ) =>
   call<StageMoveResult>(`/opportunities/${dealId}/stage${query(workspace)}`, {
     method: "POST",
@@ -376,8 +396,36 @@ export const moveCrmStage = (
       changes,
       expect_updated_at: expectUpdatedAt,
       ...(companyOnLoss ? { company_on_loss: companyOnLoss } : {}),
+      ...project,
     }),
   });
+
+/** FR-CRM-TVA-07 — the Closed Won handoff, pre-filled. */
+export const getCrmHandoff = (workspace: string, dealId: string) =>
+  call<HandoffPreview>(`/opportunities/${dealId}/handoff${query(workspace)}`);
+
+/** Closed Won and the project confirmed, in one step. */
+export const confirmCrmHandoff = (workspace: string, dealId: string, handoff: HandoffIn) =>
+  call<HandoffResult>(`/opportunities/${dealId}/handoff${query(workspace)}`, {
+    method: "POST",
+    ...body(handoff),
+  });
+
+/** FR-CRM-TVA-18 — Link TVA project (Labs admins). */
+export const linkCrmProject = (
+  workspace: string,
+  dealId: string,
+  link: { mode: "link" | "create"; project_id?: string; name?: string; category?: ProjectCategory },
+  expectUpdatedAt?: string
+) =>
+  call<{ opportunity: CrmOpportunity; project: StageMoveResult["project"] }>(
+    `/opportunities/${dealId}/link-project${query(workspace)}`,
+    { method: "POST", ...body({ ...link, ...(expectUpdatedAt ? { expect_updated_at: expectUpdatedAt } : {}) }) }
+  );
+
+/** Projects a deal may be linked to; refused (403) to anyone but a TVA manager or admin. */
+export const listLinkableProjects = (workspace: string, status?: "tentative" | "confirmed") =>
+  call<LinkableProject[]>(`/projects/linkable${query(workspace, { status })}`);
 
 export const addCrmContact = (
   workspace: string,

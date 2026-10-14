@@ -219,24 +219,34 @@ async def crm_move_stage(
     changes: dict[str, Any] | None = None,
     company_on_loss: Literal["nurturing", "disqualified"] | None = None,
     preview: bool = False,
+    project_name: str | None = None,
+    link_project_id: str | None = None,
     workspace: str | None = None,
 ) -> dict:
     """WORKSPACE ADMINS AND MEMBERS (reopening a won deal: WORKSPACE ADMINS ONLY;
     reopening a lost deal: ADMINS OR THE DEAL'S OWNER). CONFIRM FIRST. Moves a
     deal. Call with preview=true first, show the person what will happen
-    (probability, the company's lead stage, open tasks closed), then call
-    again with preview=false. changes holds the fields the stage needs in the
-    same save: amount (decimal string), currency (INR, AUD, USD),
-    expected_close_on, proposal_sent_on, point_of_contact_id, next_step,
-    next_step_on, lost_reason_id, lost_notes, probability. closed_lost needs
-    lost_reason_id and closes the deal's open tasks with a note; when it is the
-    company's last open deal, company_on_loss picks nurturing (the default) or
-    disqualified. In Nunnari Labs, moves into proposal, negotiation and
-    closed_won are refused until the TVA link is built. A refusal names every
-    missing field."""
+    (probability, the company's lead stage, open tasks closed, and in Nunnari
+    Labs the TVA project effect under would.project), then call again with
+    preview=false. changes holds the fields the stage needs in the same save:
+    amount (decimal string), currency (INR, AUD, USD), expected_close_on,
+    proposal_sent_on, point_of_contact_id, next_step, next_step_on,
+    lost_reason_id, lost_notes, probability. closed_lost needs lost_reason_id
+    and closes the deal's open tasks with a note; when it is the company's
+    last open deal, company_on_loss picks nurturing (the default) or
+    disqualified. In Nunnari Labs, a move to proposal creates a tentative TVA
+    project (project_name names it when the deal's name clashes with an
+    existing project; link_project_id links an existing tentative project
+    instead, TVA managers and admins only); closed_lost archives the project
+    and frees its people; reopening restores them. closed_won in Labs needs
+    crm_handoff. A refusal names every missing field."""
     body: dict[str, Any] = {"stage": stage, "changes": changes or {}}
     if company_on_loss is not None:
         body["company_on_loss"] = company_on_loss
+    if project_name is not None:
+        body["project_name"] = project_name
+    if link_project_id is not None and not preview:
+        body["link_project_id"] = link_project_id
     path = f"/crm/opportunities/{_id('opportunity', opportunity_id)}/stage"
     return await _api(
         ctx,
@@ -245,3 +255,57 @@ async def crm_move_stage(
         params={"workspace": workspace},
         body=body,
     )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def crm_handoff(
+    ctx: Context,
+    opportunity_id: str,
+    mode: Literal["preview", "confirm", "link"] = "preview",
+    project_name: str | None = None,
+    category: Literal["client", "poc", "product"] | None = None,
+    lead_id: str | None = None,
+    phases: dict[str, dict[str, str]] | None = None,
+    revenue: str | None = None,
+    milestones: list[dict[str, str]] | None = None,
+    link_project_id: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """WORKSPACE ADMINS AND MEMBERS, LABS (link mode: WORKSPACE ADMINS WHO ARE TVA
+    MANAGERS OR ADMINS, LABS). CONFIRM FIRST, showing every line. preview
+    returns the handoff pre-filled; confirm marks the deal Closed Won and
+    confirms the TVA project with its lead (lead_id, an active staff member
+    from the preview's leads) and phases ({delivery: {starts_on, ends_on},
+    support?, pre?}, dates YYYY-MM-DD). Revenue and milestones are written only
+    when you are a TVA manager or admin; otherwise the project is confirmed
+    without them and Labs admins get a task. link attaches an imported deal
+    to an existing TVA project (link_project_id) and needs a TVA manager or
+    admin. Revenue and milestone amounts are INR, decimal strings;
+    milestones are [{name, due_on, amount}]."""
+    deal = _id("opportunity", opportunity_id)
+    params = {"workspace": workspace}
+    path = f"/crm/opportunities/{deal}"
+    if mode == "preview":
+        return await _api(ctx, "GET", f"{path}/handoff", params=params)
+    if mode == "link":
+        if not link_project_id:
+            raise ToolError("Name the project to link: link_project_id.")
+        return await _api(
+            ctx,
+            "POST",
+            f"{path}/link-project",
+            params=params,
+            body={"mode": "link", "project_id": link_project_id},
+        )
+    if not lead_id or not phases:
+        raise ToolError("A handoff needs lead_id and phases with the delivery dates.")
+    body: dict[str, Any] = {"lead_id": lead_id, "phases": phases}
+    for name, value in (
+        ("project_name", project_name),
+        ("category", category),
+        ("revenue", revenue),
+        ("milestones", milestones),
+    ):
+        if value is not None:
+            body[name] = value
+    return await _api(ctx, "POST", f"{path}/handoff", params=params, body=body)

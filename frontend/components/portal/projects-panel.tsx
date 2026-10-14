@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +62,13 @@ const today = () => isoDate(new Date());
  *
  * A project may name its lead (spec 002 FR-PROJ-07). `leads` is that same
  * list plus the viewer; the lead is a label and grants nobody any access.
+ *
+ * Spec 007 FR-CRM-CHG-05, -TVA-15, D15: a project linked to a CRM deal takes
+ * its status and probability from the deal, and its archived state too while
+ * tentative, so those show read-only with "Managed by CRM deal …" (the
+ * server refuses them anyway). A won linked project archives here as any
+ * other. Members of the Labs workspace also see its CRM company and deal
+ * (FR-CRM-TVA-02), never an amount.
  */
 export function ProjectsPanel({
   projects,
@@ -282,7 +290,11 @@ export function ProjectsPanel({
                           : ""}
                       </Badge>
                     )}
-                    <StatusControl project={project} onDone={onDone} onError={onError} />
+                    {project.crm_managed ? (
+                      <CrmManaged project={project} />
+                    ) : (
+                      <StatusControl project={project} onDone={onDone} onError={onError} />
+                    )}
                     <select
                       aria-label={`Category of ${project.name}`}
                       className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
@@ -323,24 +335,28 @@ export function ProjectsPanel({
                             ? "Phases, people & revenue"
                             : "Phases & people"}
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={async () => {
-                          try {
-                            await updateProject(project.id, { is_archived: !project.is_archived });
-                            onDone(
-                              `${project.name} ${project.is_archived ? "restored" : "archived"}.`
-                            );
-                          } catch (err) {
-                            onError(errorMessage(err));
-                          }
-                        }}
-                      >
-                        {project.is_archived ? "Restore" : "Archive"}
-                      </Button>
+                      {!(project.crm_managed && project.status === "tentative") && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              await updateProject(project.id, { is_archived: !project.is_archived });
+                              onDone(
+                                `${project.name} ${project.is_archived ? "restored" : "archived"}.`
+                              );
+                            } catch (err) {
+                              onError(errorMessage(err));
+                            }
+                          }}
+                        >
+                          {project.is_archived ? "Restore" : "Archive"}
+                        </Button>
+                      )}
                     </div>
                   </div>
+
+                  {project.crm && <CrmBlock crm={project.crm} />}
 
                   {(project.phases ?? []).length > 0 && (
                     <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -502,6 +518,51 @@ function StatusControl({
         </form>
       )}
     </>
+  );
+}
+
+/** Spec 007 FR-CRM-CHG-05 — status and probability are the deal's; shown,
+ *  not edited. The deal is named only to Labs members (`project.crm`). */
+function CrmManaged({ project }: { project: Project }) {
+  const deal = project.crm?.opportunity?.name;
+  return (
+    <span className="text-xs text-muted-foreground" title="Change it by moving the deal in the CRM.">
+      {project.status === "tentative" ? "Tentative" : "Confirmed"}
+      {project.status === "tentative" && project.probability !== null && project.probability !== undefined
+        ? ` · ${project.probability}%`
+        : ""}
+      {" · "}
+      {deal ? `Managed by CRM deal ${deal}` : "Managed by a CRM deal"}
+    </span>
+  );
+}
+
+/** Spec 007 FR-CRM-TVA-02 — the CRM company and source deal, Labs members only. */
+function CrmBlock({ crm }: { crm: NonNullable<Project["crm"]> }) {
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      {crm.company && (
+        <span>
+          CRM company:{" "}
+          <Link href={`/crm/${crm.workspace}/companies/${crm.company.id}`} className="hover:underline">
+            {crm.company.name}
+          </Link>
+        </span>
+      )}
+      {crm.opportunity && (
+        <span>
+          Deal:{" "}
+          <Link
+            href={`/crm/${crm.workspace}/opportunities/${crm.opportunity.id}`}
+            className="hover:underline"
+          >
+            {crm.opportunity.name}
+          </Link>
+          {crm.opportunity.owner_name && ` · ${crm.opportunity.owner_name}`}
+          {crm.opportunity.won_on && ` · won ${crm.opportunity.won_on}`}
+        </span>
+      )}
+    </div>
   );
 }
 

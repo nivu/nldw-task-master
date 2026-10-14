@@ -121,7 +121,8 @@ function companyGroups(
 /**
  * A company — spec 007 FR-CRM-CO-01 to -03, FR-CRM-REC-01 to -04,
  * FR-CRM-LINK-03, FR-CRM-DEL-02. Its deals are in Related, its tasks and
- * notes in their tabs; Labs's TVA projects join Related with S5.
+ * notes in their tabs; a Labs company's TVA projects are in Related with
+ * their status and phase dates (FR-CRM-CO-02).
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -235,7 +236,12 @@ export default function CompanyPage() {
           />
         }
         related={
-          <RelatedPanel workspace={ws} related={page.related} numberFormat={bootstrap.me.number_format} />
+          <RelatedPanel
+            workspace={ws}
+            related={page.related}
+            numberFormat={bootstrap.me.number_format}
+            timeZone={bootstrap.me.timezone}
+          />
         }
       />
       <DeleteCompanyDialog

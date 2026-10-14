@@ -435,6 +435,20 @@ export interface Project {
   logged_hours?: string;
   /** Spec 003 FR-FIN-02 — present only for managers and admins. */
   revenue?: string | null;
+  /**
+   * Spec 007 FR-CRM-CHG-05 — linked to a CRM deal, which controls the
+   * status, the probability and, while tentative, the archived state.
+   */
+  crm_managed?: boolean;
+  /** Spec 007 FR-CRM-TVA-02 — the company and source deal, for Labs members only; never an amount. */
+  crm?: ProjectCrm;
+}
+
+export interface ProjectCrm {
+  /** The workspace key, for links into the CRM. */
+  workspace: string;
+  company: { id: string; name: string } | null;
+  opportunity: { id: string; name: string; owner_name: string | null; won_on: string | null } | null;
 }
 
 export interface ProjectEffort {

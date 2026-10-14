@@ -103,6 +103,25 @@ TABLES = (
     "crm_notes",
     "crm_note_links",
     "crm_note_mentions",
+    # TVA tables the deal lifecycle writes (033), kept here so a failed
+    # transition rolls them back with the rest.
+    "projects",
+    "project_phases",
+    "project_milestones",
+    "allocations",
+    "time_entries",
+)
+#: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
+#: rows above. Only names the CRM alone calls, so a test that fakes the rest
+#: of TVA itself is not overridden.
+TVA_READS = (
+    "get_project_by_source_opportunity",
+    "list_crm_projects",
+    "list_linkable_projects",
+    "find_project_by_name",
+    "list_project_phases",
+    "list_project_milestones",
+    "project_has_time_entries",
 )
 #: The soft-deletable record tables (data-model §2).
 RECORDS = (
@@ -363,10 +382,103 @@ class FakeCrmStore:
                     is_fixed=fixed,
                 )
 
+    def add_project(self, name: str, **values: Any) -> dict[str, Any]:
+        """A TVA project, as `admin.create_project` would leave it."""
+        defaults = {
+            "client": None,
+            "category": "client",
+            "status": "tentative",
+            "probability": None,
+            "revenue": None,
+            "lead_id": None,
+            "is_archived": False,
+            "crm_company_id": None,
+            "source_opportunity_id": None,
+            "crm_archived_at": None,
+        }
+        return self.add("projects", name=name, **{**defaults, **values})
+
+    def add_allocation(self, project: dict[str, Any], user_id: str, **values: Any) -> dict:
+        defaults = {
+            "starts_on": "2026-11-02",
+            "ends_on": "2026-12-31",
+            "percent": "50",
+            "released_at": None,
+            "released_by": None,
+            "release_reason": None,
+            "released_by_opportunity_id": None,
+        }
+        return self.add(
+            "allocations", project_id=project["id"], user_id=user_id, **{**defaults, **values}
+        )
+
     def install(self, monkeypatch) -> FakeCrmStore:
         for name in public_store_names():
             monkeypatch.setattr(store, name, getattr(self, name))
+        for name in TVA_READS:
+            monkeypatch.setattr(db, name, getattr(self, name))
         return self
+
+    # -- TVA reads (services/supabase.py, S5) --------------------------------
+
+    def get_project_by_source_opportunity(self, opportunity_id: str) -> dict[str, Any] | None:
+        return next(
+            (
+                dict(p)
+                for p in self.rows["projects"].values()
+                if p.get("source_opportunity_id") == opportunity_id
+            ),
+            None,
+        )
+
+    def list_crm_projects(
+        self, *, opportunity_ids: list[str] | None = None, company_ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        rows = [
+            dict(p)
+            for p in self.rows["projects"].values()
+            if (opportunity_ids and p.get("source_opportunity_id") in opportunity_ids)
+            or (company_ids and p.get("crm_company_id") in company_ids)
+        ]
+        return sorted(rows, key=lambda p: p["name"])
+
+    def list_linkable_projects(self, status: str | None = None) -> list[dict[str, Any]]:
+        rows = [
+            {k: p.get(k) for k in ("id", "name", "status", "client")}
+            for p in self.rows["projects"].values()
+            if not p.get("source_opportunity_id")
+            and not p["is_archived"]
+            and (status is None or p["status"] == status)
+        ]
+        return sorted(rows, key=lambda p: p["name"])
+
+    def find_project_by_name(self, name: str) -> dict[str, Any] | None:
+        wanted = name.strip().lower()
+        return next(
+            (
+                dict(p)
+                for p in self.rows["projects"].values()
+                if p["name"].strip().lower() == wanted
+            ),
+            None,
+        )
+
+    def list_project_phases(self, project_ids: list[str]) -> list[dict[str, Any]]:
+        rows = [
+            dict(p) for p in self.rows["project_phases"].values() if p["project_id"] in project_ids
+        ]
+        return sorted(rows, key=lambda p: p["starts_on"])
+
+    def list_project_milestones(self, project_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(m)
+            for m in self.rows["project_milestones"].values()
+            if m["project_id"] == project_id
+        ]
+        return sorted(rows, key=lambda m: m["due_on"])
+
+    def project_has_time_entries(self, project_id: str) -> bool:
+        return any(t["project_id"] == project_id for t in self.rows["time_entries"].values())
 
     # -- store: workspaces and memberships ----------------------------------
 
@@ -743,6 +855,24 @@ class FakeCrmStore:
                 row = self.rows[table].get(target)
                 if row is None or row["workspace_id"] != ws or not row.get("deleted_at"):
                     raise store.refusal_for("CRM04", "No such record in the Trash.")
+                # 033: a deal with a project is never purged; a company's
+                # projects lose the link, as TVA rows.
+                if table == "crm_opportunities" and self.get_project_by_source_opportunity(target):
+                    raise store.refusal_for(
+                        "CRM22", "This deal has a TVA project; mark it Closed Lost instead."
+                    )
+                if table == "crm_companies":
+                    for project in self.rows["projects"].values():
+                        if project.get("crm_company_id") == target:
+                            project["crm_company_id"] = None
+                            self._tva_audit(
+                                actor,
+                                "project.updated",
+                                "projects",
+                                project["id"],
+                                {"crm_company_id": target},
+                                {"crm_company_id": None},
+                            )
                 if kinds[table]:
                     for links in ("crm_drive_links", "crm_task_links", "crm_note_links"):
                         for link in list(self.rows[links].values()):
@@ -849,12 +979,108 @@ class FakeCrmStore:
             self.rows, self.audit[audit_len:] = snapshot, []
             raise
 
+    def _tva_manager(self, user_id: str | None) -> bool:
+        """033 `crm_tva_manager`: an active staff manager or admin."""
+        p = self.profiles.get(user_id or "")
+        return bool(
+            p
+            and p.get("is_active", True)
+            and p.get("account_type", "staff") == "staff"
+            and p.get("role") in ("manager", "admin")
+        )
+
+    def _tva_audit(self, actor, action, table, target_id, before, after) -> None:
+        """033 `crm_tva_audit`: a TVA row (no workspace), the system acting
+        for the person."""
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor["user_id"],
+                "actor_label": "system",
+                "channel": actor.get("channel"),
+                "workspace_id": None,
+                "action": action,
+                "target_table": table,
+                "target_id": target_id,
+                "before": before,
+                "after": after,
+            }
+        )
+
+    def _deal_audit(self, actor, action: str, opp: dict[str, Any], after: dict) -> None:
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor["user_id"],
+                "actor_label": actor["kind"],
+                "channel": actor.get("channel"),
+                "workspace_id": opp["workspace_id"],
+                "action": action,
+                "target_table": "crm_opportunities",
+                "target_id": opp["id"],
+                "before": None,
+                "after": after,
+            }
+        )
+
+    def _create_project(self, actor, opp, company, spec: dict[str, Any], status: str) -> dict:
+        """033 `crm_tva_create_project`."""
+        name = (spec.get("name") or "").strip()
+        if not name:
+            raise store.refusal_for("CRM22", "A project needs a name.")
+        clash = self.find_project_by_name(name)
+        if clash:
+            raise store.refusal_for("CRM09", f"A project called “{clash['name']}” already exists.")
+        made = self.add_project(
+            name,
+            client=company["name"],
+            category=spec.get("category") or "client",
+            status=status,
+            probability=spec.get("probability"),
+            lead_id=spec.get("lead_id"),
+            crm_company_id=company["id"],
+            source_opportunity_id=opp["id"],
+            created_by=actor["user_id"],
+        )
+        self._tva_audit(
+            actor,
+            "project.created",
+            "projects",
+            made["id"],
+            None,
+            {"name": made["name"], "status": status, "source_opportunity_id": opp["id"]},
+        )
+        return made
+
     def _transition(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
         ws, who = actor["workspace_id"], actor["user_id"]
-        if isinstance(plan.get("project"), dict):
-            raise store.refusal_for(
-                "CRM22", "This move needs the TVA link, which is not built yet."
-            )
+        pa = plan.get("project") if isinstance(plan.get("project"), dict) else None
+        act = (pa or {}).get("action")
+        if pa is not None:
+            if act not in (
+                "create",
+                "link",
+                "sync_probability",
+                "confirm",
+                "archive_release",
+                "unarchive_unrelease",
+                "retentative",
+            ):
+                raise store.refusal_for("CRM22", "That is not a TVA project action.")
+            if not self.rows["crm_workspaces"][ws].get("tva_linked"):
+                raise store.refusal_for("CRM22", "This workspace is not connected to TVA projects.")
+            if act == "link" and not self._tva_manager(who):
+                raise store.refusal_for("CRM22", "Ask a TVA manager to link it.")
+            if (
+                act == "confirm"
+                and ("revenue" in pa or pa.get("milestones"))
+                and not self._tva_manager(who)
+            ):
+                raise store.refusal_for(
+                    "CRM22", "Only a TVA manager or admin can set revenue and milestones."
+                )
         opp = self.rows["crm_opportunities"].get(plan["opportunity_id"])
         if opp is None or opp["workspace_id"] != ws or opp.get("deleted_at"):
             raise store.refusal_for("CRM04", "No such opportunity.")
@@ -932,6 +1158,39 @@ class FakeCrmStore:
                 raise store.refusal_for(
                     "CRM04", "A task's assignee must be a member of this workspace."
                 )
+        # Re-check 4: the deal's own project; a plan's project id only as the
+        # target of a link.
+        project = self.get_project_by_source_opportunity(opp["id"]) if pa else None
+        project = self.rows["projects"][project["id"]] if project else None
+        target_project = None
+        if act == "link":
+            if project:
+                raise store.refusal_for("CRM09", "This deal already has a TVA project.")
+            target_project = self.rows["projects"].get(pa.get("project_id"))
+            if target_project is None:
+                raise store.refusal_for("CRM04", "No such project.")
+            if (
+                target_project.get("source_opportunity_id")
+                or target_project["is_archived"]
+                or target_project["status"] != "tentative"
+            ):
+                raise store.refusal_for(
+                    "CRM09",
+                    f"“{target_project['name']}” cannot be linked: only an unlinked, "
+                    "unarchived tentative project can.",
+                )
+        if act == "retentative" and project:
+            if self.project_has_time_entries(project["id"]):
+                raise store.refusal_for(
+                    "CRM22",
+                    f"{project['name']} has time logged against it, so it cannot be made "
+                    "tentative.",
+                )
+            if any(m.get("invoiced_on") for m in self.list_project_milestones(project["id"])):
+                raise store.refusal_for(
+                    "CRM22",
+                    f"{project['name']} has invoiced milestones, so it cannot be made tentative.",
+                )
 
         values = dict(plan.get("opportunity") or {})
         if values.get("stage_entered_at") == "now":
@@ -993,13 +1252,320 @@ class FakeCrmStore:
                 },
                 refs,
             )
+        created = []
+        for t in plan.get("create_tasks") or []:
+            refs = {}
+            category = next(
+                (
+                    o["id"]
+                    for o in self.rows["crm_select_options"].values()
+                    if o["workspace_id"] == ws
+                    and o["list_key"] == "task.category"
+                    and t.get("category_key")
+                    and o.get("system_key") == t["category_key"]
+                ),
+                None,
+            )
+            task = self._one(
+                actor,
+                {
+                    "op": "insert",
+                    "table": "crm_tasks",
+                    "values": {
+                        "title": t["title"],
+                        "body": t.get("body"),
+                        "assignee_id": t["assignee_id"],
+                        "due_on": t.get("due_on"),
+                        "bucket": t.get("bucket"),
+                        "category_id": category,
+                    },
+                },
+                refs,
+            )
+            if not t.get("links"):
+                raise store.refusal_for("CRM22", "A task must be linked to at least one record.")
+            for link in t["links"]:
+                self._one(
+                    actor,
+                    {
+                        "op": "insert",
+                        "table": "crm_task_links",
+                        "values": {"task_id": task["id"], **link},
+                    },
+                    refs,
+                )
+            created.append(task["id"])
+
+        released = restored = 0
+        if pa is not None:
+            project, released, restored = self._tva_side(
+                actor, pa, opp, company, project, target_project
+            )
         return {
             "opportunity": dict(opp),
             "company": company_row,
-            "tasks_created": [],
+            "project": dict(project) if project else None,
+            "tasks_created": created,
             "tasks_closed": closed,
             "note_id": note_id,
+            "allocations_released": released,
+            "allocations_restored": restored,
         }
+
+    def _tva_side(self, actor, pa, opp, company, project, target_project):
+        """033's TVA branches, by `project.action`."""
+        act, prob = pa["action"], pa.get("probability")
+        released = restored = 0
+        if act == "create" and project is None:
+            project = self._create_project(actor, opp, company, pa, "tentative")
+        elif act == "link":
+            project = target_project
+            project.update(
+                source_opportunity_id=opp["id"],
+                crm_company_id=company["id"],
+                client=company["name"],
+                probability=prob if prob is not None else project["probability"],
+            )
+            self._tva_audit(
+                actor, "project.updated", "projects", project["id"], None, {"linked": opp["id"]}
+            )
+        elif act == "confirm":
+            if project is None:
+                project = self._create_project(actor, opp, company, pa, "confirmed")
+            else:
+                name = (pa.get("name") or project["name"]).strip()
+                clash = self.find_project_by_name(name)
+                if clash and clash["id"] != project["id"]:
+                    raise store.refusal_for("CRM09", f"A project called “{name}” already exists.")
+                project.update(
+                    name=name,
+                    category=pa.get("category") or project["category"],
+                    status="confirmed",
+                    probability=prob if prob is not None else project["probability"],
+                    lead_id=pa.get("lead_id"),
+                )
+                self._tva_audit(
+                    actor,
+                    "project.updated",
+                    "projects",
+                    project["id"],
+                    None,
+                    {"status": "confirmed"},
+                )
+            for kind, span in (pa.get("phases") or {}).items():
+                if kind not in ("pre", "delivery", "support"):
+                    raise store.refusal_for(
+                        "CRM22", "The handoff sets only pre, delivery and support phases."
+                    )
+                found = next(
+                    (
+                        p
+                        for p in self.rows["project_phases"].values()
+                        if p["project_id"] == project["id"] and p["phase"] == kind
+                    ),
+                    None,
+                )
+                if found:
+                    found.update(starts_on=span["starts_on"], ends_on=span["ends_on"])
+                else:
+                    found = self.add(
+                        "project_phases",
+                        project_id=project["id"],
+                        phase=kind,
+                        starts_on=span["starts_on"],
+                        ends_on=span["ends_on"],
+                        budget_hours=None,
+                    )
+                self._tva_audit(
+                    actor, "project.phase_set", "project_phases", found["id"], None, span
+                )
+            if "revenue" in pa:
+                project["revenue"] = pa["revenue"]
+                self._tva_audit(
+                    actor,
+                    "project.updated",
+                    "projects",
+                    project["id"],
+                    None,
+                    {"revenue": pa["revenue"]},
+                )
+            for m in pa.get("milestones") or []:
+                made = self.add(
+                    "project_milestones", project_id=project["id"], invoiced_on=None, **m
+                )
+                self._tva_audit(actor, "milestone.added", "project_milestones", made["id"], None, m)
+            self._deal_audit(
+                actor,
+                "opportunity.handoff",
+                opp,
+                {
+                    "project_id": project["id"],
+                    "project_name": project["name"],
+                    "lead_id": project.get("lead_id"),
+                    "revenue_written": "revenue" in pa,
+                },
+            )
+        elif act == "sync_probability" and project and project["status"] == "tentative":
+            if project["probability"] != prob:
+                project["probability"] = prob
+                self._tva_audit(
+                    actor, "project.updated", "projects", project["id"], None, {"probability": prob}
+                )
+        elif act == "archive_release" and project:
+            if not project["is_archived"]:
+                project.update(
+                    is_archived=True,
+                    crm_archived_at=_now(),
+                    probability=prob if prob is not None else project["probability"],
+                )
+                self._tva_audit(
+                    actor, "project.updated", "projects", project["id"], None, {"is_archived": True}
+                )
+            for a in self.rows["allocations"].values():
+                if a["project_id"] == project["id"] and a["released_at"] is None:
+                    a.update(
+                        released_at=_now(),
+                        released_by=actor["user_id"],
+                        release_reason=pa.get("reason") or "Deal lost",
+                        released_by_opportunity_id=opp["id"],
+                    )
+                    released += 1
+                    self._tva_audit(
+                        actor,
+                        "allocation.released",
+                        "allocations",
+                        a["id"],
+                        None,
+                        {"released": True},
+                    )
+        elif act == "unarchive_unrelease" and project:
+            if project.get("crm_archived_at"):
+                project.update(is_archived=False, crm_archived_at=None)
+                self._tva_audit(
+                    actor,
+                    "project.updated",
+                    "projects",
+                    project["id"],
+                    None,
+                    {"is_archived": False},
+                )
+            if project["status"] == "tentative" and prob is not None:
+                project["probability"] = prob
+            for a in self.rows["allocations"].values():
+                if a.get("released_by_opportunity_id") == opp["id"]:
+                    a.update(
+                        released_at=None,
+                        released_by=None,
+                        release_reason=None,
+                        released_by_opportunity_id=None,
+                    )
+                    restored += 1
+                    self._tva_audit(
+                        actor,
+                        "allocation.unreleased",
+                        "allocations",
+                        a["id"],
+                        None,
+                        {"released": False},
+                    )
+        elif act == "retentative" and project:
+            project.update(
+                status="tentative",
+                probability=prob if prob is not None else project["probability"],
+            )
+            self._tva_audit(
+                actor, "project.updated", "projects", project["id"], None, {"status": "tentative"}
+            )
+        return project, released, restored
+
+    def link_project(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_link_project (033): all of it or none."""
+        self.applied.append((actor, [{"op": "link_project", **plan}]))
+        snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
+        audit_len = len(self.audit)
+        try:
+            return self._link(actor, plan)
+        except Exception:
+            self.rows, self.audit[audit_len:] = snapshot, []
+            raise
+
+    def _link(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        ws, who, mode = actor["workspace_id"], actor["user_id"], plan.get("mode")
+        if mode not in ("link", "create"):
+            raise store.refusal_for("CRM22", "Link or create a project.")
+        if not self.rows["crm_workspaces"][ws].get("tva_linked"):
+            raise store.refusal_for("CRM22", "This workspace is not connected to TVA projects.")
+        if not any(
+            m["workspace_id"] == ws and m["user_id"] == who and m["role"] == "admin"
+            for m in self.rows["crm_memberships"].values()
+        ):
+            raise store.refusal_for("CRM22", "Only a workspace admin can link a TVA project.")
+        if mode == "link" and not self._tva_manager(who):
+            raise store.refusal_for("CRM22", "Ask a TVA manager to link it.")
+        opp = self.rows["crm_opportunities"].get(plan["opportunity_id"])
+        if opp is None or opp["workspace_id"] != ws or opp.get("deleted_at"):
+            raise store.refusal_for("CRM04", "No such opportunity.")
+        if plan.get("expect_updated_at") and _at(plan["expect_updated_at"]) != _at(
+            opp["updated_at"]
+        ):
+            raise store.refusal_for(
+                "CRM09", "This record changed while you were editing it; reload and try again."
+            )
+        company = self.rows["crm_companies"][opp["company_id"]]
+        if self.get_project_by_source_opportunity(opp["id"]):
+            raise store.refusal_for("CRM09", "This deal already has a TVA project.")
+        if opp["stage"] not in ("proposal", "negotiation", "closed_won"):
+            raise store.refusal_for(
+                "CRM22", "Only a deal at Proposal or later, or a won deal, gets a TVA project."
+            )
+        if opp["stage"] == "closed_won" and mode == "create":
+            raise store.refusal_for(
+                "CRM22", "A won deal is linked to its existing confirmed project."
+            )
+        if mode == "create":
+            project = self._create_project(
+                actor,
+                opp,
+                company,
+                {
+                    "name": plan.get("name") or opp["name"],
+                    "category": plan.get("category") or opp.get("project_category") or "client",
+                    "probability": opp["probability"],
+                },
+                "tentative",
+            )
+        else:
+            project = self.rows["projects"].get(plan.get("project_id"))
+            if project is None:
+                raise store.refusal_for("CRM04", "No such project.")
+            wanted = "confirmed" if opp["stage"] == "closed_won" else "tentative"
+            if (
+                project.get("source_opportunity_id")
+                or project["is_archived"]
+                or project["status"] != wanted
+            ):
+                raise store.refusal_for(
+                    "CRM09",
+                    f"“{project['name']}” cannot be linked: it must be unlinked, unarchived "
+                    f"and {wanted}.",
+                )
+            project.update(
+                source_opportunity_id=opp["id"],
+                crm_company_id=company["id"],
+                client=company["name"],
+            )
+            if wanted == "tentative":
+                project["probability"] = opp["probability"]
+            self._tva_audit(
+                actor, "project.updated", "projects", project["id"], None, {"linked": opp["id"]}
+            )
+        self._deal_audit(
+            actor,
+            "opportunity.project_linked",
+            opp,
+            {"project_id": project["id"], "project_name": project["name"], "mode": mode},
+        )
+        return {"opportunity": dict(opp), "project": dict(project)}
 
     def list_timeline(
         self,
@@ -1077,7 +1643,7 @@ class FakeCrmStore:
 
     def _one(self, actor: dict[str, Any], op: dict[str, Any], refs: dict[str, str]) -> dict:
         ws = actor["workspace_id"]
-        table = self.rows.get(op["table"])
+        table = self.rows.get(op["table"]) if op["table"].startswith("crm_") else None
         if table is None:
             raise store.refusal_for("CRM22", "That is not a CRM table.")
         values = {

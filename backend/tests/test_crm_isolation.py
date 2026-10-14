@@ -6,7 +6,8 @@ role: a record of Academy named while acting in Labs is simply not found, and
 Labs's lists contain nothing of Academy. A record id is answered 404 whether
 it is absent or belongs to another workspace, so its existence is never
 disclosed. Later slices add their objects' routes here; S4 added deals,
-tasks, notes, deal contacts and stage moves.
+tasks, notes, deal contacts and stage moves, S5 the handoff and project
+links.
 """
 
 from __future__ import annotations
@@ -111,6 +112,18 @@ class TestForeignIdsAreNotFound:
             ("POST", f"{base}/stage/preview{LABS}", {"stage": "qualification"}),
             ("POST", f"{base}/contacts{LABS}", {"person_id": person}),
             ("DELETE", f"{base}/contacts/{person}{LABS}", None),
+        ]:
+            r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
+            assert r.status_code == 404, (method, url, r.text)
+
+    def test_the_handoff_and_project_links(self, crm):
+        """S5: an Academy deal named from Labs is not found there either."""
+        http, made = crm
+        base = f"/api/v1/crm/opportunities/{made['opportunities']['id']}"
+        for method, url, body in [
+            ("GET", f"{base}/handoff{LABS}", None),
+            ("POST", f"{base}/handoff{LABS}", {"lead_id": OWNER["id"], "phases": {}}),
+            ("POST", f"{base}/link-project{LABS}", {"mode": "create"}),
         ]:
             r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
             assert r.status_code == 404, (method, url, r.text)

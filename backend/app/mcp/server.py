@@ -92,7 +92,10 @@ amount_in_inr beside them; totals use INR. Stages, lead stages and other
 fixed options are passed and returned by their keys (discovery,
 qualification, proposal, negotiation, closed_won, closed_lost), with a label
 beside them. CRM dates are YYYY-MM-DD; CRM timestamps carry their offset.
-Every crm_* tool that changes something needs the same CONFIRM FIRST: say
+In Nunnari Labs a deal's move changes its TVA project in the same step: to
+proposal creates a tentative project, closed_won is done with crm_handoff
+(which confirms the project), and closed_lost archives it and frees its
+people; preview first and say so. Every crm_* tool that changes something needs the same CONFIRM FIRST: say
 exactly what will change and get the person's yes before calling it.
 """
 
@@ -553,7 +556,10 @@ async def update_project(ctx: Context, project_id: str, changes: dict[str, Any])
     active person who leads it; null clears it), status (confirmed |
     tentative — set confirmed when the work is won; a project with logged
     time or an invoiced milestone cannot be made tentative), probability
-    (0-100 or null) and is_archived (archive, never delete)."""
+    (0-100 or null) and is_archived (archive, never delete). A project linked
+    to a CRM deal (crm_managed) takes its status and probability from the
+    deal, and its archived state too while tentative: those are refused here
+    ("Managed by CRM deal …"); change the deal in the CRM instead."""
     return await _api(ctx, "PATCH", f"/admin/projects/{project_id}", body=changes)
 
 

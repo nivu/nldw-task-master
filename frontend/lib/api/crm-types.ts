@@ -401,8 +401,8 @@ export interface CrmOpportunity extends RecordStamps {
   lost_from_stage: StageKey | null;
   won_on: string | null;
   lost_on: string | null;
-  /** The Labs deal's TVA project; arrives with the TVA link (S5). */
-  project: null;
+  /** The Labs deal's TVA project (FR-CRM-TVA-02): every role sees it. */
+  project: CrmProjectBlock | null;
 }
 
 /** A task's or note's link, with the linked record's name. */
@@ -486,7 +486,8 @@ export interface StagePreview {
     company_lead_stage?: LeadStage;
     company_lead_stage_label?: string;
     tasks_closed?: number;
-    project?: null;
+    /** Labs: what the move does to the deal's TVA project (FR-CRM-TVA). */
+    project?: ProjectEffect | null;
   };
 }
 
@@ -494,8 +495,100 @@ export interface StagePreview {
 export interface StageMoveResult {
   opportunity: CrmOpportunity;
   company?: CrmCompany;
-  project: null;
+  project: CrmProjectBlock | null;
   tasks_closed: number;
+  allocations_released?: number;
+  allocations_restored?: number;
+}
+
+// ---------------------------------------------------------------------------
+// The TVA side of a Labs deal — contracts §2.6, FR-CRM-TVA
+// ---------------------------------------------------------------------------
+
+export type ProjectCategory = "client" | "poc" | "product";
+
+/** A linked TVA project as the CRM shows it: never an amount. */
+export interface CrmProjectBlock {
+  id: string;
+  name: string;
+  status: "tentative" | "confirmed";
+  is_archived: boolean;
+  phases: { phase: "pre" | "delivery" | "support" | "spillover"; label: string; starts_on: string; ends_on: string }[];
+}
+
+/** `would.project` of a stage preview. */
+export interface ProjectEffect {
+  action:
+    | "create"
+    | "link"
+    | "sync_probability"
+    | "archive_release"
+    | "unarchive_unrelease"
+    | "retentative";
+  name: string;
+  category: string | null;
+  probability: number;
+  /** A project already has that name (FR-CRM-TVA-05). `linkable`: by this caller. */
+  clash: { project_id: string; name: string; linkable: boolean } | null;
+}
+
+export interface PhaseSpan {
+  starts_on: string;
+  ends_on: string;
+}
+
+/** GET …/handoff. Revenue keys are present only for a TVA manager or admin. */
+export interface HandoffPreview {
+  project: {
+    id?: string;
+    status?: string;
+    name: string;
+    category: ProjectCategory | "internal";
+    lead_id: string | null;
+    phases: Partial<Record<"pre" | "delivery" | "support", PhaseSpan>>;
+  };
+  revenue: {
+    suggested_inr: string | null;
+    won_fx_rate: string | null;
+    won_fx_month: string | null;
+    existing_tva_revenue?: string;
+    message?: string;
+  };
+  milestones: HandoffMilestone[];
+  can_set_revenue: boolean;
+  offer_pre_phase: boolean;
+  leads: { id: string; display_name: string }[];
+}
+
+export interface HandoffMilestone {
+  name: string;
+  due_on: string;
+  /** INR, decimal string. */
+  amount: string;
+}
+
+/** POST …/handoff. */
+export interface HandoffIn {
+  project_name?: string;
+  category?: ProjectCategory;
+  lead_id: string;
+  phases: Partial<Record<"pre" | "delivery" | "support", PhaseSpan>>;
+  revenue?: string;
+  milestones?: HandoffMilestone[];
+  expect_updated_at?: string;
+}
+
+export interface HandoffResult extends StageMoveResult {
+  revenue_written: boolean;
+  tasks_created: { id: string; title: string; assignee: { id: string; name: string | null } }[];
+}
+
+/** GET /crm/projects/linkable — TVA managers and admins only. */
+export interface LinkableProject {
+  id: string;
+  name: string;
+  status: "tentative" | "confirmed";
+  client: string | null;
 }
 
 /** FR-CRM-LINK-01 — an address and a label; never the file. */
@@ -542,7 +635,10 @@ export interface CrmRecordPage<T extends CrmRecord> {
     opportunities?: CrmOpportunity[];
     point_of_contact?: { id: string; name: string | null } | null;
     contacts?: CrmContact[];
-    project?: null;
+    /** A Labs deal's TVA project. */
+    project?: CrmProjectBlock | null;
+    /** A Labs company's TVA projects (FR-CRM-CO-02). */
+    projects?: CrmProjectBlock[];
   };
   timeline_head: CrmTimelineEntry[];
   links: CrmDriveLink[];

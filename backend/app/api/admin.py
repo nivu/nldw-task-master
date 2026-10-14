@@ -37,6 +37,7 @@ from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
 from app.services import pnl as pnl_service
 from app.services import supabase as db
+from app.services.crm.tva import ProjectLinks
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -929,7 +930,8 @@ def list_projects(user: LeadDep) -> list[dict]:
             }
         )
     names = {p["id"]: p["display_name"] for p in db.list_profiles()}
-    return [_present_project(p, user, phases.get(p["id"], []), names) for p in projects]
+    crm = ProjectLinks(user, projects)
+    return [_present_project(p, user, phases.get(p["id"], []), names, crm) for p in projects]
 
 
 def _present_project(
@@ -937,12 +939,16 @@ def _present_project(
     user,  # noqa: ANN001
     phases: list[dict] | None = None,
     names: dict[str, str] | None = None,
+    crm: ProjectLinks | None = None,
 ) -> dict:
     """Money — FR-FIN-02. Revenue goes to managers and admins only; a lead
     gets the project without the key (FR-ROLE-07).
 
     `names` maps profile id to display name for the lead (spec 002
-    FR-PROJ-07); without it the one lead is looked up."""
+    FR-PROJ-07); without it the one lead is looked up. Spec 007: `crm_managed`
+    says a CRM deal controls the status, probability and (while tentative)
+    archived state (FR-CRM-CHG-05), and `crm`, for Labs members only, names
+    the company and the deal (FR-CRM-TVA-02)."""
     lead_id = row.get("lead_id")
     if lead_id and names is None:
         lead = db.get_profile(lead_id)
@@ -958,11 +964,16 @@ def _present_project(
         # Spec 002 FR-PROJ-08 — pipeline, and the chance it is won. Not money.
         "status": row.get("status", "confirmed"),
         "probability": row.get("probability"),
+        "crm_managed": bool(row.get("source_opportunity_id")),
     }
     if user.is_manager:
         out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
     if phases is not None:
         out["phases"] = phases
+    crm = crm or ProjectLinks(user, [row])
+    block = crm.block(row)
+    if block is not None:
+        out["crm"] = block
     return out
 
 
@@ -1029,6 +1040,15 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
         del changes["status"]  # nor a status; probability can be cleared
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
+    if existing.get("source_opportunity_id"):
+        # Spec 007 FR-CRM-CHG-05, -TVA-15, D15: a CRM deal controls status and
+        # probability, and archive while the project is tentative. A
+        # confirmed linked project archives here as any other.
+        controlled = ["status", "probability"]
+        if rules.is_tentative(existing):
+            controlled.append("is_archived")
+        if any(k in changes and changes[k] != existing.get(k) for k in controlled):
+            raise ProblemDetail(422, ProjectLinks(user, [existing]).managed_by(existing))
     if "revenue" in changes and not user.is_manager:
         raise ProblemDetail(403, "Only a manager or admin can set revenue.")
     if "revenue" in changes and changes["revenue"] is not None:

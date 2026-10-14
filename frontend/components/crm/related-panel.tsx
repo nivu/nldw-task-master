@@ -3,17 +3,19 @@
 import Link from "next/link";
 
 import { AmountText } from "@/components/crm/amount-field";
+import { ProjectsSection } from "@/components/crm/project-chip";
 import type { CrmOpportunity, CrmRecord, CrmRecordPage } from "@/lib/api/crm-types";
-import type { NumberFormat } from "@/lib/crm/format";
+import type { CrmTimezone, NumberFormat } from "@/lib/crm/format";
 
 /**
  * Related — spec 007 FR-CRM-REC-03, FR-CRM-CO-02.
  *
  * A company lists its people and deals; a person shows their company and the
  * deals they are on. A deal's company, point of contact and other contacts
- * are on its own page. For Labs, the TVA projects with their status and phase
- * dates join with the TVA link (S5); campaign memberships in 1b. A Viewer's
- * deals arrive without amounts and show none.
+ * are on its own page. A Labs company lists its TVA projects with their
+ * status and phase dates, for every role (FR-CRM-CO-02, FR-CRM-TVA-02);
+ * campaign memberships in 1b. A Viewer's deals arrive without amounts and
+ * show none.
  */
 
 function Deals({
@@ -65,10 +67,12 @@ export function RelatedPanel({
   workspace,
   related,
   numberFormat = "indian_short",
+  timeZone = "Asia/Kolkata",
 }: {
   workspace: string;
   related: CrmRecordPage<CrmRecord>["related"];
   numberFormat?: NumberFormat;
+  timeZone?: CrmTimezone;
 }) {
   if (related.people !== undefined) {
     return (
@@ -97,6 +101,14 @@ export function RelatedPanel({
         </section>
         {related.opportunities && (
           <Deals workspace={workspace} deals={related.opportunities} numberFormat={numberFormat} />
+        )}
+        {related.projects && (
+          <ProjectsSection
+            title={`TVA projects (${related.projects.length})`}
+            projects={related.projects}
+            timeZone={timeZone}
+            empty="No TVA projects yet."
+          />
         )}
       </div>
     );

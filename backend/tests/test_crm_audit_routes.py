@@ -14,9 +14,11 @@ shows that workspace's rows only, and filters by record, person and action.
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 import pytest
-from crm_fake import MEMBER, OUTSIDER, OWNER, FakeCrmStore, as_, two_workspaces
+from crm_fake import MEMBER, OUTSIDER, OWNER, PEOPLE, FakeCrmStore, as_, two_workspaces
+from crm_fake import SELLER as TAMIL
 from crm_fake import client as crm_client
 from fastapi.testclient import TestClient
 
@@ -24,6 +26,7 @@ from app.api.deps import CurrentUser, current_user
 from app.main import app
 from app.mcp import server
 from app.services import supabase as db
+from app.services.crm import deals
 
 ADMIN = {
     "id": "u-admin",
@@ -232,3 +235,62 @@ class TestCrmAudit:
         r = http.get("/api/v1/crm/audit?workspace=labs", headers=as_(OUTSIDER["id"]))
         assert r.status_code == 404
         assert r.json()["detail"] == "No such workspace."
+
+
+class TestTvaRowsFromADealMove:
+    """FR-CRM-TVA-03, FR-CRM-AUD-04, D8 — a Proposal move by a CRM-only seller
+    writes the project's TVA rows as the system acting for them, and TVA's
+    audit names them, not a raw id."""
+
+    def test_a_sellers_proposal_reads_as_the_seller_via_the_crm(self, monkeypatch):
+        fake = FakeCrmStore().install(monkeypatch)
+        labs, _ = two_workspaces(fake)
+        fake.add_deal_lists(labs)
+        monkeypatch.setattr(deals, "today_in_company_tz", lambda: date(2026, 10, 14))
+        http = crm_client(monkeypatch, fake=fake)
+        company = http.post(
+            "/api/v1/crm/companies?workspace=labs", json={"name": "Acme"}, headers=as_(OWNER["id"])
+        ).json()
+        http.patch(
+            f"/api/v1/crm/companies/{company['id']}?workspace=labs",
+            json={"lead_stage": "qualified"},
+            headers=as_(OWNER["id"]),
+        )
+        person = http.post(
+            "/api/v1/crm/people?workspace=labs",
+            json={"first_name": "Priya"},
+            headers=as_(OWNER["id"]),
+        ).json()
+        deal = http.post(
+            "/api/v1/crm/opportunities?workspace=labs",
+            json={
+                "name": "Acme - Phase 1",
+                "company_id": company["id"],
+                "point_of_contact_id": person["id"],
+                "owner_id": TAMIL["id"],
+                "next_step": "Call",
+                "next_step_on": "2026-10-20",
+            },
+            headers=as_(TAMIL["id"]),
+        ).json()
+        r = http.post(
+            f"/api/v1/crm/opportunities/{deal['id']}/stage?workspace=labs",
+            json={
+                "stage": "proposal",
+                "changes": {"amount": "10", "currency": "INR", "expected_close_on": "2026-12-01"},
+            },
+            headers=as_(TAMIL["id"]),
+        )
+        assert r.status_code == 200, r.text
+
+        monkeypatch.setattr(
+            db,
+            "list_audit",
+            lambda limit, *, tva_only=True: [
+                r for r in reversed(fake.audit) if not tva_only or r["workspace_id"] is None
+            ],
+        )
+        rows = http.get("/api/v1/admin/audit", headers=as_(OUTSIDER["id"])).json()
+        [created] = [r for r in rows if r["action"] == "project.created"]
+        assert created["actor"] == f"{PEOPLE[TAMIL['id']]['display_name']} (via CRM deal)"
+        assert all(r["target_table"] in ("projects",) for r in rows)

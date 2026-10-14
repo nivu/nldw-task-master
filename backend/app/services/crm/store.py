@@ -52,8 +52,9 @@ ACCOUNT_LEVEL = frozenset(
         "list_account_audit",
         # Purges only from the Trash of the actor's workspace (029).
         "purge",
-        # Locks the deal and its company in the actor's workspace (031).
+        # Locks the deal and its company in the actor's workspace (031, 033).
         "deal_transition",
+        "link_project",
     }
 )
 
@@ -78,6 +79,8 @@ UNIQUE_MESSAGES = {
     "crm_task_links_target": "The task is already linked to that record.",
     "crm_note_links_target": "The note is already linked to that record.",
     "crm_note_mentions_pair": "That member is already mentioned.",
+    # FR-CRM-TVA-01 — one project per deal (032); 033 checks it first.
+    "projects_source_opportunity_unique": "This deal already has a TVA project.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -589,8 +592,14 @@ def list_stage_history(workspace_id: str, opportunity_id: str) -> list[dict[str,
 
 
 def deal_transition(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
-    """Data-model §5.5 — a stage move and its side effects in one transaction."""
+    """Data-model §5.5 — a stage move and its side effects, CRM and TVA, in one
+    transaction."""
     return rpc("crm_deal_transition", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+def link_project(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Data-model §5.6 — Link TVA project (FR-CRM-TVA-18), audited on both sides."""
+    return rpc("crm_link_project", {"p_actor": actor, "p_plan": plan}) or {}
 
 
 def list_timeline(

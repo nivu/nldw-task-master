@@ -40,7 +40,7 @@ from app.schemas.crm import (
     TaskUpdate,
 )
 from app.services import supabase as db
-from app.services.crm import CrmRefused, store
+from app.services.crm import CrmRefused, store, tva
 from app.services.crm import present as show
 from app.services.crm.context import actor
 
@@ -410,7 +410,15 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
     if kind == "opportunity":
         companies = by_id(ws.id, "crm_companies", {r["company_id"] for r in rows})
         people = by_id(ws.id, "crm_people", {r.get("point_of_contact_id") or "" for r in rows})
-        return [show.opportunity(r, ws.facts, companies, people) for r in rows]
+        projects = {
+            b["source_opportunity_id"]: _project(b)
+            for b in (
+                tva.blocks(opportunity_ids=[r["id"] for r in rows])
+                if rows and ws.ctx.workspace.get("tva_linked")
+                else []
+            )
+        }
+        return [show.opportunity(r, ws.facts, companies, people, projects) for r in rows]
     if kind in LINKS_OF:
         links = store.list_links(ws.id, LINKS_OF[kind], owner_ids=[r["id"] for r in rows])
         names = link_names(ws.id, links)
@@ -433,6 +441,11 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
         ]
     companies = by_id(ws.id, "crm_companies", {r.get("company_id") or "" for r in rows})
     return [show.person(r, ws.facts, companies) for r in rows]
+
+
+def _project(found: dict[str, Any]) -> dict[str, Any]:
+    """A project block without the link it was found by."""
+    return {k: v for k, v in found.items() if k not in ("source_opportunity_id", "crm_company_id")}
 
 
 def list_records(
@@ -534,10 +547,15 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
         people = store.list_records(
             ws.id, "crm_people", filters={"company_id": row["id"]}, limit=200
         )
-        return {
+        out: dict[str, Any] = {
             "people": [show.person(p, ws.facts) for p in people],
             "opportunities": _deals_of(ws, company_id=row["id"]),
         }
+        if ws.ctx.workspace.get("tva_linked"):
+            # FR-CRM-CO-02: a Labs company's TVA projects, with status and
+            # phase dates, for every role.
+            out["projects"] = [_project(b) for b in tva.blocks(company_ids=[row["id"]])]
+        return out
     if kind == "person":
         on = {c["opportunity_id"] for c in store.list_contacts(ws.id, person_ids=[row["id"]])}
         deals = {d["id"]: d for d in _deals_of(ws, point_of_contact_id=row["id"])}
@@ -565,8 +583,8 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
                 else None
             ),
             "contacts": [show.contact(c, ws.facts, people) for c in contacts],
-            # FR-CRM-REC-03: a Labs deal's TVA project arrives in S5.
-            "project": None,
+            # FR-CRM-REC-03: a Labs deal's TVA project, as on the record.
+            "project": record.get("project"),
         }
     return {}
 
@@ -806,6 +824,8 @@ def soft_delete(
         raise CrmRefused(
             403, f"Only a workspace admin or its owner can delete this {show.NOUNS[kind]}."
         )
+    if ctx.workspace.get("tva_linked"):
+        _tva_delete_guard(ctx, kind, row)
     group = str(uuid.uuid4())
     ops: list[dict[str, Any]] = [
         {"op": "soft_delete", "table": KINDS[kind].table, "id": record_id, "deleted_group": group}
@@ -858,12 +878,42 @@ def soft_delete(
     return {"deleted_group": group}
 
 
+def _tva_delete_guard(ctx: Any, kind: str, row: dict[str, Any]) -> None:
+    """FR-CRM-DEL-02, -03 — a deal linked to a TVA project, tentative or
+    confirmed, is never deleted, and neither is a company with one, whatever
+    was chosen for its deals: nothing is partly deleted."""
+    if kind == "opportunity" and tva.project_of(row["id"]):
+        raise CrmRefused(422, tva.HAS_PROJECT)
+    if kind != "company":
+        return
+    deals = store.list_records(
+        ctx.workspace_id, "crm_opportunities", filters={"company_id": row["id"]}, limit=2000
+    )
+    linked = {
+        b["source_opportunity_id"]
+        for b in (tva.blocks(opportunity_ids=[d["id"] for d in deals]) if deals else [])
+    }
+    names = sorted(d["name"] for d in deals if d["id"] in linked)
+    if names:
+        verb = "has" if len(names) == 1 else "have"
+        raise CrmRefused(
+            422,
+            f"{row['name']} cannot be deleted: {_listed(names)} {verb} a TVA project. "
+            "Mark the deal Closed Lost instead.",
+        )
+
+
+def _listed(names: list[str]) -> str:
+    quoted = [f"“{n}”" for n in names]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
 def _company_deals(
     ctx: Any, company: dict[str, Any], group: str, *, deals: str | None, move_to: str | None
 ) -> list[dict[str, Any]]:
     """FR-CRM-DEL-02 — a company's deals move to another company of the
-    workspace or go to the Trash with it. The TVA refusal for a deal with a
-    project arrives with the TVA link (S5)."""
+    workspace or go to the Trash with it. A company with a deal linked to a
+    TVA project is refused before this (`_tva_delete_guard`)."""
     rows = store.list_records(
         ctx.workspace_id, "crm_opportunities", filters={"company_id": company["id"]}, limit=2000
     )

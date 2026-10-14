@@ -562,11 +562,14 @@ class TestTransition:
             "23514",
         )
 
-    def test_a_project_action_is_refused_until_the_tva_side(self, stack, workspace, owner):
+    def test_a_project_action_outside_a_tva_linked_workspace_is_refused(
+        self, stack, workspace, owner
+    ):
+        """033 re-check 3; the TVA side itself is in test_crm_lifecycle_db.py."""
         deal = _deal(stack, workspace, owner)
         plan = _plan(stack, deal, "discovery", project={"action": "create", "name": "Acme"})
         message = _refused(stack, _move_sql(stack, _actor(workspace, owner), plan), "CRM22")
-        assert message == "This move needs the TVA link, which is not built yet."
+        assert message == "This workspace is not connected to TVA projects."
 
 
 class TestTheTransitionTrustsNoId:

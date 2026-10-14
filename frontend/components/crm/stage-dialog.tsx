@@ -4,6 +4,8 @@ import { useState } from "react";
 
 import { AmountField } from "@/components/crm/amount-field";
 import { FieldEditor } from "@/components/crm/field-editor";
+import { HandoffDialog } from "@/components/crm/handoff-dialog";
+import { NameClashDialog } from "@/components/crm/name-clash-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { moveCrmStage, previewCrmStage, searchPersonChoices } from "@/lib/api/crm";
+import { moveCrmStage, previewCrmStage, searchPersonChoices, type ProjectChoice } from "@/lib/api/crm";
 import type {
   CrmCurrency,
   CrmOpportunity,
@@ -36,6 +38,11 @@ import { useAsync } from "@/lib/use-async";
  * more. What the move will do — the probability, the company's lead stage —
  * is said before it happens. A refusal is the server's one sentence, shown
  * verbatim. Closed Lost has its own dialog (`lost-dialog.tsx`).
+ *
+ * In Nunnari Labs (FR-CRM-TVA) the preview also says what happens to the
+ * deal's TVA project, and a project name clash at Proposal is resolved in
+ * `name-clash-dialog.tsx` (another name, or a link by a TVA manager). Closed
+ * Won in Labs is the handoff (`handoff-dialog.tsx`), not a plain move.
  */
 
 export const STAGE_ORDER: StageKey[] = [
@@ -71,6 +78,26 @@ function asked(missing: StagePreview["missing"]): (typeof ASKABLE)[number][] {
   return ASKABLE.filter((f) => wanted.has(f));
 }
 
+/** FR-CRM-TVA-04 to -14 — the move's effect on the deal's TVA project. */
+function projectSentence(project: NonNullable<StagePreview["would"]["project"]>): string | null {
+  switch (project.action) {
+    case "create":
+      return project.clash
+        ? null
+        : `A tentative TVA project “${project.name}” will be created at ${project.probability}%.`;
+    case "link":
+      return `The deal will be linked to the TVA project “${project.name}”.`;
+    case "sync_probability":
+      return `The TVA project “${project.name}” follows to ${project.probability}%.`;
+    case "archive_release":
+      return `The TVA project “${project.name}” will be archived and its people released.`;
+    case "unarchive_unrelease":
+      return `The TVA project “${project.name}” comes back, with the people its loss released.`;
+    case "retentative":
+      return `The TVA project “${project.name}” goes back to tentative; its revenue and milestones are kept.`;
+  }
+}
+
 /** A one-line account of what the move does besides the stage. */
 export function WouldLine({ would, companyName }: { would: StagePreview["would"]; companyName: string | null }) {
   const parts: string[] = [];
@@ -81,11 +108,43 @@ export function WouldLine({ would, companyName }: { would: StagePreview["would"]
     parts.push(
       `${would.tasks_closed} open task${would.tasks_closed === 1 ? "" : "s"} will be closed with a note.`
     );
+  const project = would.project ? projectSentence(would.project) : null;
+  if (project) parts.push(project);
   if (parts.length === 0) return null;
   return <p className="text-xs text-muted-foreground">{parts.join(" ")}</p>;
 }
 
-export function StageDialog({
+export function StageDialog(props: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  workspace: string;
+  deal: CrmOpportunity;
+  stage: StageKey | null;
+  stageLabel: string;
+  numberFormat: NumberFormat;
+  /** The workspace is connected to TVA projects (Nunnari Labs). */
+  labs?: boolean;
+  onMoved: (result: StageMoveResult) => void;
+}) {
+  if (props.labs && props.stage === "closed_won") {
+    return (
+      <HandoffDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        workspace={props.workspace}
+        deal={props.deal}
+        numberFormat={props.numberFormat}
+        onDone={(result) => {
+          props.onMoved(result);
+          props.onOpenChange(false);
+        }}
+      />
+    );
+  }
+  return <MoveDialog {...props} />;
+}
+
+function MoveDialog({
   open,
   onOpenChange,
   workspace,
@@ -102,23 +161,35 @@ export function StageDialog({
   stage: StageKey | null;
   stageLabel: string;
   numberFormat: NumberFormat;
+  labs?: boolean;
   onMoved: (result: StageMoveResult) => void;
 }) {
   const [changes, setChanges] = useState<StageChanges>({});
+  const [choice, setChoice] = useState<ProjectChoice>({});
+  const [resolving, setResolving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { data: preview, error: previewError } = useAsync<StagePreview | null>(
-    () => (open && stage ? previewCrmStage(workspace, deal.id, stage) : Promise.resolve(null)),
-    [open, stage, workspace, deal.id, deal.updated_at]
+    () =>
+      open && stage
+        ? previewCrmStage(workspace, deal.id, stage, {}, undefined, {
+            ...(choice.project_name ? { project_name: choice.project_name } : {}),
+          })
+        : Promise.resolve(null),
+    [open, stage, workspace, deal.id, deal.updated_at, choice.project_name]
   );
   const fields = preview ? asked(preview.missing) : [];
-  // A refusal no field here can fix (the TVA link, who may reopen): say it
-  // and offer nothing to fill in.
-  const blocked = preview !== null && !preview.allowed && fields.length === 0;
+  // FR-CRM-TVA-05: a name clash the person resolves here. A link chosen
+  // settles it; another name is previewed again.
+  const clash = choice.link_project_id ? null : (preview?.would.project?.clash ?? null);
+  // A refusal no field here can fix (who may reopen, a reopen-won the
+  // project's history refuses): say it and offer nothing to fill in.
+  const blocked = preview !== null && !preview.allowed && fields.length === 0 && !clash && !choice.link_project_id;
 
   function close(next: boolean) {
     if (!next) {
       setChanges({});
+      setChoice({});
       setError(null);
     }
     onOpenChange(next);
@@ -133,7 +204,7 @@ export function StageDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await moveCrmStage(workspace, deal.id, stage, changes, deal.updated_at);
+      const result = await moveCrmStage(workspace, deal.id, stage, changes, deal.updated_at, undefined, choice);
       onMoved(result);
       close(false);
     } catch (err) {
@@ -218,6 +289,19 @@ export function StageDialog({
               </div>
             ))}
             <WouldLine would={preview.would} companyName={deal.company_name} />
+            {clash && (
+              <div role="alert" className="space-y-2 rounded-md bg-destructive/10 p-2 text-sm text-destructive">
+                <p>A project called “{clash.name}” already exists.</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => setResolving(true)}>
+                  Rename or link…
+                </Button>
+              </div>
+            )}
+            {choice.link_project_id && (
+              <p className="text-xs text-muted-foreground">
+                The deal will be linked to the existing TVA project instead of creating one.
+              </p>
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}
@@ -231,11 +315,23 @@ export function StageDialog({
             Cancel
           </Button>
           {!blocked && (
-            <Button type="submit" form="stage-form" disabled={busy || !preview}>
+            <Button type="submit" form="stage-form" disabled={busy || !preview || clash !== null}>
               {busy ? "Moving…" : `Move to ${stageLabel}`}
             </Button>
           )}
         </DialogFooter>
+        {clash && (
+          <NameClashDialog
+            open={resolving}
+            onOpenChange={setResolving}
+            clash={clash}
+            dealName={deal.name}
+            onChoose={(next) => {
+              setChoice(next);
+              setResolving(false);
+            }}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );

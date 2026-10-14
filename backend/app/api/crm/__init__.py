@@ -30,4 +30,5 @@ ROUTERS = [
     capacity.router,
     records.router,
     deals.router,
+    deals.projects_router,
 ]
