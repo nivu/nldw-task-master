@@ -114,6 +114,15 @@ class FakeCrmStore:
         self.rows: dict[str, dict[str, dict[str, Any]]] = {t: {} for t in TABLES}
         self.audit: list[dict[str, Any]] = []
         self.applied: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        # The profiles the membership functions read and write: `client()`
+        # shares its rows here, so a profile crm_invite creates is the one
+        # the next request signs in as.
+        self.profiles: dict[str, dict[str, Any]] = {}
+        # TVA facts crm_convert_account re-checks (data-model §5.15).
+        self.project_leads: set[str] = set()
+        self.allocated: set[str] = set()
+        # Personal and OAuth tokens crm_remove_membership revokes, by user.
+        self.tokens: dict[str, int] = {}
 
     # -- set-up helpers (not store names) -----------------------------------
 
@@ -207,6 +216,204 @@ class FakeCrmStore:
 
     def touch_last_used(self, membership_id: str, at: datetime) -> None:
         self.rows["crm_memberships"][membership_id]["last_used_at"] = at.isoformat()
+
+    # -- store: members, invitations, account type -------------------------
+
+    _MEMBERSHIP = ("id", "workspace_id", "user_id", "role", "created_at")
+
+    def _membership(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {k: row.get(k) for k in self._MEMBERSHIP}
+
+    def list_members(self, workspace_id: str) -> list[dict[str, Any]]:
+        return [
+            self._membership(m)
+            for m in self.rows["crm_memberships"].values()
+            if m["workspace_id"] == workspace_id
+        ]
+
+    def get_membership(self, workspace_id: str, membership_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_memberships"].get(membership_id)
+        return self._membership(row) if row and row["workspace_id"] == workspace_id else None
+
+    def find_membership(self, membership_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_memberships"].get(membership_id)
+        return self._membership(row) if row else None
+
+    def list_workspaces(self) -> list[dict[str, Any]]:
+        rows = [dict(w) for w in self.rows["crm_workspaces"].values()]
+        return sorted(rows, key=lambda w: w["name"])
+
+    def list_account_audit(
+        self, *, workspace_id: str | None = None, before: int | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        rows = [
+            r
+            for r in self.audit
+            if r["action"].startswith("membership.") or r["action"] in store.ACCOUNT_ACTIONS
+        ]
+        if workspace_id:
+            rows = [r for r in rows if r["workspace_id"] == workspace_id]
+        if before is not None:
+            rows = [r for r in rows if r["id"] < before]
+        return sorted(rows, key=lambda r: r["id"], reverse=True)[:limit]
+
+    def _is_tva_admin(self, user_id: str | None) -> bool:
+        p = self.profiles.get(user_id or "")
+        return bool(
+            p
+            and p.get("role") == "admin"
+            and p.get("account_type", "staff") == "staff"
+            and p.get("is_active", True)
+        )
+
+    def _tva_row(self, actor, action, target_id, before=None, after=None, *, ws=None) -> None:
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor["user_id"],
+                "actor_label": actor.get("kind", "user"),
+                "channel": actor.get("channel"),
+                "workspace_id": ws,
+                "action": action,
+                "target_table": "profiles",
+                "target_id": target_id,
+                "before": before,
+                "after": after,
+            }
+        )
+
+    def invite(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_invite (data-model §5.13)."""
+        ws, who, uid = actor["workspace_id"], actor["user_id"], plan["user_id"]
+        created = reactivated = False
+        if plan.get("create_profile"):
+            self.profiles[uid] = {
+                "id": uid,
+                "email": plan["email"],
+                "display_name": plan["display_name"],
+                "role": "user",
+                "lead_id": None,
+                "is_active": True,
+                "logs_time": False,
+                "account_type": "crm_only",
+                "timezone": plan.get("timezone") or "Asia/Kolkata",
+            }
+            created = True
+            self._tva_row(
+                actor,
+                "user.created",
+                uid,
+                after={"account_type": "crm_only", "email": plan["email"]},
+            )
+        else:
+            person = self.profiles.get(uid)
+            if person is None:
+                raise store.refusal_for("CRM04", "No such person.")
+            if not person.get("is_active", True):
+                if (
+                    not plan.get("reactivate")
+                    or person.get("account_type") != "crm_only"
+                    or (
+                        person.get("deactivated_reason") != "crm_no_membership"
+                        and not self._is_tva_admin(who)
+                    )
+                ):
+                    raise store.refusal_for(
+                        "CRM22", "This person's portal account is inactive; ask a TVA admin."
+                    )
+                person.update(is_active=True, deactivated_reason=None)
+                reactivated = True
+                self._tva_row(actor, "user.reactivated", uid, after={"is_active": True})
+        if any(
+            m["workspace_id"] == ws and m["user_id"] == uid
+            for m in self.rows["crm_memberships"].values()
+        ):
+            raise store.refusal_for(
+                "23505",
+                'duplicate key value violates unique constraint "crm_memberships_workspace_user"',
+            )
+        m = self.add("crm_memberships", workspace_id=ws, user_id=uid, role=plan["role"])
+        self._audit(actor, {"action": "membership.invited", "table": "crm_memberships"}, m, None, m)
+        return {
+            "membership_id": m["id"],
+            "user_id": uid,
+            "created_profile": created,
+            "reactivated": reactivated,
+        }
+
+    def remove_membership(self, actor: dict[str, Any], membership_id: str) -> dict[str, Any]:
+        """crm_remove_membership (data-model §5.3)."""
+        ws, who = actor["workspace_id"], actor["user_id"]
+        m = self.rows["crm_memberships"].get(membership_id)
+        if m is None or m["workspace_id"] != ws:
+            raise store.refusal_for("CRM04", "No such member in this workspace.")
+        if m["role"] == "admin" and not any(
+            o["workspace_id"] == ws and o["role"] == "admin" and o["id"] != m["id"]
+            for o in self.rows["crm_memberships"].values()
+        ):
+            raise store.refusal_for("CRM22", "A workspace needs at least one admin.")
+        person = self.profiles.get(m["user_id"], {})
+        if (person.get("is_owner") or self._is_tva_admin(m["user_id"])) and not self._is_tva_admin(
+            who
+        ):
+            raise store.refusal_for("CRM22", "Ask a TVA admin to change this membership.")
+        del self.rows["crm_memberships"][m["id"]]
+        self._audit(
+            actor, {"action": "membership.removed", "table": "crm_memberships"}, m, dict(m), None
+        )
+        deactivated = False
+        if (
+            person.get("account_type") == "crm_only"
+            and person.get("is_active", True)
+            and not any(o["user_id"] == m["user_id"] for o in self.rows["crm_memberships"].values())
+        ):
+            person.update(is_active=False, deactivated_reason="crm_no_membership")
+            self.tokens[m["user_id"]] = 0
+            deactivated = True
+            self._tva_row(
+                actor, "user.deactivated", m["user_id"], {"is_active": True}, {"is_active": False}
+            )
+        return {"deactivated": deactivated}
+
+    def convert_account(self, actor: dict[str, Any], user_id: str, to: str) -> dict[str, Any]:
+        """crm_convert_account (data-model §5.15)."""
+        person = self.profiles.get(user_id)
+        if person is None:
+            raise store.refusal_for("CRM04", "No such person.")
+        current = person.get("account_type", "staff")
+        if to == current:
+            return {"id": user_id, "account_type": current, "changed": False}
+        if to == "crm_only":
+            if person.get("is_owner"):
+                raise store.refusal_for("CRM22", "The owner's account cannot be CRM-only.")
+            if any(p.get("lead_id") == user_id for p in self.profiles.values()):
+                raise store.refusal_for(
+                    "CRM22",
+                    "This person is someone's lead; give their reports another lead first.",
+                )
+            if user_id in self.project_leads:
+                raise store.refusal_for(
+                    "CRM22", "This person leads a project; give it another lead first."
+                )
+            if user_id in self.allocated:
+                raise store.refusal_for(
+                    "CRM22",
+                    "This person is allocated to a project; remove the allocation first.",
+                )
+            before = {k: person.get(k) for k in ("account_type", "role", "dashboard_access")}
+            person.update(
+                account_type="crm_only",
+                role="user",
+                lead_id=None,
+                logs_time=False,
+                dashboard_access=False,
+            )
+        else:
+            before = {"account_type": current}
+            person["account_type"] = "staff"
+        self._tva_row(actor, "user.account_type", user_id, before, {"account_type": to})
+        return {"id": user_id, "account_type": to, "role": person["role"], "changed": True}
 
     # -- store: settings, lists, FX -----------------------------------------
 
@@ -369,10 +576,22 @@ def two_workspaces(fake: FakeCrmStore) -> tuple[dict[str, Any], dict[str, Any]]:
     return labs, academy
 
 
-def client(monkeypatch, people: dict[str, dict] | None = None) -> TestClient:
+def client(
+    monkeypatch, people: dict[str, dict] | None = None, *, fake: FakeCrmStore | None = None
+) -> TestClient:
     """Sessions are tokens named after the profile id: 'Bearer u-owner'. The
-    real dependency chain runs; only GoTrue and the profile read are faked."""
+    real dependency chain runs; only GoTrue and the profile read are faked.
+    With `fake`, the store's membership functions share these profiles."""
     rows = {k: dict(v) for k, v in (people or PEOPLE).items()}
+    if fake is not None:
+        fake.profiles = rows
+    monkeypatch.setattr(
+        db,
+        "get_profile_by_email_ignoring_case",
+        lambda email: next(
+            (dict(p) for p in rows.values() if p["email"].lower() == email.strip().lower()), None
+        ),
+    )
     monkeypatch.setattr(deps, "_verify", lambda token: token)
     monkeypatch.setattr(db, "get_profile", lambda uid: dict(rows[uid]) if uid in rows else None)
     monkeypatch.setattr(

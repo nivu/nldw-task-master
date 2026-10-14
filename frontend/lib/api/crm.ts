@@ -10,16 +10,24 @@
 
 import { backendFetch } from "@/lib/api/backend";
 import type {
+  AccountTypeResult,
   CrmAuditEntry,
   CrmAuditFilters,
   CrmBootstrap,
   CrmColor,
   CrmFxRate,
   CrmLists,
+  CrmMember,
   CrmOption,
+  CrmRole,
   CrmSettings,
   CrmWorkspace,
+  InvitationIn,
+  InvitationResult,
   OptionUpdate,
+  TvaCrmAuditEntry,
+  TvaCrmWorkspace,
+  TvaInvitationIn,
 } from "@/lib/api/crm-types";
 import type { MePreferences } from "@/lib/api/types";
 import { createClient } from "@/lib/supabase/client";
@@ -69,6 +77,74 @@ export const getCrmPreferences = () => call<MePreferences>("/me/preferences");
 
 export const updateCrmPreferences = (changes: Partial<MePreferences>) =>
   call<MePreferences>("/me/preferences", { method: "PATCH", ...body(changes) });
+
+// ---------------------------------------------------------------------------
+// Members and invitations — §2.2
+// ---------------------------------------------------------------------------
+
+export const getCrmMembers = (workspace: string) =>
+  call<CrmMember[]>(`/members${query(workspace)}`);
+
+export const inviteCrmMember = (workspace: string, invitation: InvitationIn) =>
+  call<InvitationResult>(`/invitations${query(workspace)}`, {
+    method: "POST",
+    ...body(invitation),
+  });
+
+export const updateCrmMember = (workspace: string, membershipId: string, role: CrmRole) =>
+  call<{ membership_id: string; user_id: string; role: CrmRole }>(
+    `/members/${membershipId}${query(workspace)}`,
+    { method: "PATCH", ...body({ role }) }
+  );
+
+export const removeCrmMember = (workspace: string, membershipId: string) =>
+  call<{ removed: boolean; account_deactivated: boolean }>(
+    `/members/${membershipId}${query(workspace)}`,
+    { method: "DELETE" }
+  );
+
+// ---------------------------------------------------------------------------
+// TVA admin panel — §2.4. No `workspace` parameter: a TVA admin needs no
+// membership, and the workspace is in the path.
+// ---------------------------------------------------------------------------
+
+export const getTvaCrmWorkspaces = () => call<TvaCrmWorkspace[]>("/tva-admin/workspaces");
+
+export const getTvaCrmMembers = (workspaceId: string) =>
+  call<CrmMember[]>(`/tva-admin/workspaces/${workspaceId}/members`);
+
+export const setTvaAllowedDomains = (workspaceId: string, domains: string[]) =>
+  call<{ id: string; key: string; allowed_domains: string[] }>(
+    `/tva-admin/workspaces/${workspaceId}/allowed-domains`,
+    { method: "PUT", ...body({ domains }) }
+  );
+
+export const tvaInviteCrmMember = (workspaceId: string, invitation: TvaInvitationIn) =>
+  call<InvitationResult>(`/tva-admin/workspaces/${workspaceId}/invitations`, {
+    method: "POST",
+    ...body(invitation),
+  });
+
+export const tvaRemoveCrmMembership = (membershipId: string) =>
+  call<{ removed: boolean; account_deactivated: boolean }>(
+    `/tva-admin/memberships/${membershipId}`,
+    { method: "DELETE" }
+  );
+
+export const tvaSetAccountType = (userId: string, accountType: "staff" | "crm_only") =>
+  call<AccountTypeResult>(`/tva-admin/accounts/${userId}`, {
+    method: "PATCH",
+    ...body({ account_type: accountType }),
+  });
+
+export const getTvaCrmAudit = (filters: { workspace_id?: string; before?: number; limit?: number } = {}) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return call<TvaCrmAuditEntry[]>(`/tva-admin/audit${qs ? `?${qs}` : ""}`);
+};
 
 // ---------------------------------------------------------------------------
 // Settings, lists, FX rates, audit — §2.3

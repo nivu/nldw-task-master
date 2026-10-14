@@ -10,6 +10,8 @@ export const PEOPLE = {
   manager: "sriram.nl@gmail.com",
   user: "deepika.nl@gmail.com",
   otherUser: "tarun.nl@gmail.com",
+  /** Spec 007 — a CRM-only seller, a Member of Labs (quickstart §1). */
+  crmOnly: "tamil.crm@deepweaver.example",
 } as const;
 
 export const PASSWORD = "portal123";
@@ -29,6 +31,18 @@ export const PASSWORD = "portal123";
  * sentence naming the actual cause.
  */
 export async function signIn(page: Page, email: string) {
+  // Sign-in lands on Home (spec 007 FR-CRM-UI-04 moved the default from the
+  // calendar); these tests start from the calendar (FR-CAL-01).
+  await submitSignIn(page, email, "**/home");
+  await page.goto("/calendar");
+  await expect(page.getByText(/Work from home/).first()).toBeVisible();
+}
+
+/**
+ * Fill the password form and wait until the browser reaches `landing`, a URL
+ * glob. A CRM-only seller lands on `/crm/<workspace>`; staff on `/home`.
+ */
+export async function submitSignIn(page: Page, email: string, landing: string) {
   await page.goto("/auth/login");
 
   if ((await page.locator("#password").count()) === 0) {
@@ -43,9 +57,7 @@ export async function signIn(page: Page, email: string) {
   await page.fill("#email", email);
   await page.fill("#password", PASSWORD);
   await page.click('button[type="submit"]');
-  // Sign-in lands on the calendar (FR-CAL-01); Home is one tap away.
-  await page.waitForURL("**/calendar");
-  await expect(page.getByText(/Work from home/).first()).toBeVisible();
+  await page.waitForURL(landing);
 }
 
 /**

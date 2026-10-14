@@ -148,7 +148,10 @@ class TestProfileShape:
         )
 
     def test_existing_profiles_are_staff(self, stack):
+        # seed.sql's two CRM-only sellers (S1c) are `*.crm@…`; everyone else
+        # it seeds predates the column and defaulted to staff.
         rows = stack.sql(
-            "SELECT DISTINCT account_type FROM profiles WHERE email NOT LIKE 'crm-db-%'"
+            "SELECT DISTINCT account_type FROM profiles "
+            "WHERE email NOT LIKE 'crm-db-%' AND email NOT LIKE '%.crm@%'"
         )
         assert {r["account_type"] for r in rows} <= {"staff"}

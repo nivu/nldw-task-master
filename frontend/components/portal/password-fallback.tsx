@@ -42,7 +42,7 @@ export function PasswordFallback() {
       return;
     }
     // A full page load so the proxy sees the new session cookie immediately.
-    window.location.href = "/calendar";
+    window.location.href = "/";
   }
 
   return (

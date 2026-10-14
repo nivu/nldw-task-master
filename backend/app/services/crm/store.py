@@ -35,7 +35,23 @@ logger = logging.getLogger("nldw-task-master")
 #: Functions that do not take a workspace first: they read the caller's own
 #: memberships (to find their workspaces), or write through a database
 #: function that scopes by the actor's workspace itself.
-ACCOUNT_LEVEL = frozenset({"memberships_for_user", "touch_last_used", "apply", "rpc"})
+ACCOUNT_LEVEL = frozenset(
+    {
+        "memberships_for_user",
+        "touch_last_used",
+        "apply",
+        "rpc",
+        # The membership functions scope by the actor's workspace themselves.
+        "invite",
+        "remove_membership",
+        "convert_account",
+        # The TVA admin panel (CT-3): account administration across
+        # workspaces, never a CRM record table.
+        "list_workspaces",
+        "find_membership",
+        "list_account_audit",
+    }
+)
 
 #: SQLSTATE raised by the CRM's database functions → HTTP status.
 STATUS_BY_CODE = {"CRM04": 404, "CRM09": 409, "CRM22": 422}
@@ -109,6 +125,101 @@ def touch_last_used(membership_id: str, at: datetime) -> None:
     supabase.table("crm_memberships").update({"last_used_at": at.isoformat()}).eq(
         "id", membership_id
     ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Members, invitations, account type — FR-CRM-ACC
+# ---------------------------------------------------------------------------
+
+_MEMBERSHIP_COLUMNS = "id, workspace_id, user_id, role, created_at"
+
+
+def list_members(workspace_id: str) -> list[dict[str, Any]]:
+    return (
+        supabase.table("crm_memberships")
+        .select(_MEMBERSHIP_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .execute()
+        .data
+        or []
+    )
+
+
+def get_membership(workspace_id: str, membership_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_memberships")
+        .select(_MEMBERSHIP_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", membership_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def find_membership(membership_id: str) -> dict[str, Any] | None:
+    """For the TVA admin panel, which names a membership without a workspace."""
+    rows = (
+        supabase.table("crm_memberships")
+        .select(_MEMBERSHIP_COLUMNS)
+        .eq("id", membership_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def invite(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Data-model §5.13 — profile (created or reactivated), membership and
+    their audit rows in one transaction, after the GoTrue step (CT-5)."""
+    return rpc("crm_invite", {"p_actor": actor, "p_plan": plan})
+
+
+def remove_membership(actor: dict[str, Any], membership_id: str) -> dict[str, Any]:
+    """Data-model §5.3 — `{deactivated}`; tokens are revoked with it (Q-44)."""
+    return rpc("crm_remove_membership", {"p_actor": actor, "p_membership_id": membership_id})
+
+
+def convert_account(actor: dict[str, Any], user_id: str, to: str) -> dict[str, Any]:
+    """Data-model §5.15 — under the profile lock tva_staff_only() waits for."""
+    return rpc("crm_convert_account", {"p_actor": actor, "p_user_id": user_id, "p_to": to})
+
+
+def list_workspaces() -> list[dict[str, Any]]:
+    return (
+        supabase.table("crm_workspaces").select(_WORKSPACE_COLUMNS).order("name").execute().data
+        or []
+    )
+
+
+#: Contracts §2.4 — account administration, never record content.
+ACCOUNT_ACTIONS = (
+    "user.created",
+    "user.account_type",
+    "user.deactivated",
+    "user.reactivated",
+    "workspace.allowed_domains",
+)
+
+
+def list_account_audit(
+    *, workspace_id: str | None = None, before: int | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Membership events of every workspace and the account events around
+    them, newest first (plan CT-3)."""
+    query = (
+        supabase.table("audit_log")
+        .select(
+            "id, at, actor_id, actor_label, workspace_id, action, target_table, target_id, "
+            "before, after"
+        )
+        .or_(f"action.like.membership.*,action.in.({','.join(ACCOUNT_ACTIONS)})")
+    )
+    if workspace_id:
+        query = query.eq("workspace_id", workspace_id)
+    if before is not None:
+        query = query.lt("id", before)
+    return query.order("id", desc=True).limit(limit).execute().data or []
 
 
 # ---------------------------------------------------------------------------

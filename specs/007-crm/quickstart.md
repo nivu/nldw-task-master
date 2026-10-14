@@ -56,8 +56,9 @@ Seeded accounts after S1 (password `portal123`, local only):
 026's owner seeding finds no profiles locally. `seed.sql` itself adds the two
 `crm_only` profiles (auth users and identities included, as it does for the
 others) and every membership above, inside a `DO` block that sets the system
-actor first. `db push` never runs `seed.sql`, so none of this reaches
-production.)
+actor first. No seeded person has the owner's email, so `seed.sql` marks
+Sriram as the local owner; his two Admin memberships are the owner's.
+`db push` never runs `seed.sql`, so none of this reaches production.)
 
 ## 2. Get a token for curl
 

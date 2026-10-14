@@ -1,5 +1,5 @@
 /**
- * Sales CRM types — spec 007 contracts/api.md §2.1, §2.3.
+ * Sales CRM types — spec 007 contracts/api.md §2.1 to §2.4.
  *
  * Mirrored by hand from `backend/app/schemas/crm.py` and the CRM routes'
  * answers, as `types.ts` mirrors `schemas/__init__.py`. Change one, change
@@ -132,4 +132,80 @@ export interface OptionUpdate {
   position?: number;
   is_default?: boolean;
   is_active?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Members and invitations — §2.2 (FR-CRM-ACC)
+// ---------------------------------------------------------------------------
+
+/** GET /crm/members. `email` is present for admins only. */
+export interface CrmMember {
+  membership_id: string;
+  user_id: string;
+  display_name: string;
+  email?: string;
+  role: CrmRole;
+  account_type: "staff" | "crm_only";
+}
+
+/** POST /crm/invitations — a CRM role only, never a TVA field (FR-CRM-ACC-09). */
+export interface InvitationIn {
+  email: string;
+  display_name: string;
+  role: CrmRole;
+  /** Defaults to Sydney for deepweaver.ai, Kolkata otherwise (FR-CRM-ACC-15). */
+  timezone?: MePreferences["timezone"];
+}
+
+/** The TVA admin panel's invitation may bypass the allow-list for an
+ *  existing staff account (FR-CRM-ACC-05). */
+export interface TvaInvitationIn extends InvitationIn {
+  bypass_allow_list?: boolean;
+}
+
+export interface InvitationResult {
+  membership_id: string;
+  user_id: string;
+  created_account: boolean;
+  reactivated: boolean;
+  /** Always shown, to share by hand (FR-CRM-ACC-08). */
+  sign_in_url: string;
+  /** Empty when no message could be sent. */
+  delivered_via: ("slack" | "email")[];
+  /** Google sign-in only (FR-CRM-ACC-07). */
+  note: string;
+}
+
+// ---------------------------------------------------------------------------
+// TVA admin panel — §2.4 (FR-CRM-ACC-13, FR-CRM-CHG-11)
+// ---------------------------------------------------------------------------
+
+export interface TvaCrmWorkspace {
+  id: string;
+  key: string;
+  name: string;
+  member_count: number;
+  allowed_domains: string[];
+}
+
+/** Account administration only: never a record's content. */
+export interface TvaCrmAuditEntry {
+  id: number;
+  at: string;
+  workspace_key: string | null;
+  actor_name: string;
+  action: string;
+  target_name: string | null;
+  role: CrmRole | null;
+}
+
+export interface AccountTypeResult {
+  id: string;
+  display_name: string | null;
+  account_type: "staff" | "crm_only";
+  role: string | null;
+  logs_time: boolean | null;
+  lead_id: string | null;
+  dashboard_access: boolean | null;
+  changed: boolean;
 }
