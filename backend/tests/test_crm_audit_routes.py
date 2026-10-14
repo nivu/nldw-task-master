@@ -68,6 +68,15 @@ def calls(monkeypatch) -> list[dict]:
                 "action": "project.updated",
                 "target_table": "projects",
             },
+            # What crm_remove_membership writes (027): the removing admin's
+            # own kind, so no "(via CRM deal)".
+            {
+                "id": 4,
+                "actor_id": "u-admin",
+                "actor_label": "user",
+                "action": "user.deactivated",
+                "target_table": "profiles",
+            },
         ]
 
     monkeypatch.setattr(db, "list_audit", list_audit)
@@ -93,6 +102,10 @@ class TestReadAudit:
     def test_a_system_row_names_the_person_via_the_crm(self, calls):
         rows = TestClient(app).get("/api/v1/admin/audit").json()
         assert {r["id"]: r["actor"] for r in rows}[3] == "Admin (via CRM deal)"
+
+    def test_a_membership_removal_deactivation_is_the_admins_own(self, calls):
+        rows = TestClient(app).get("/api/v1/admin/audit").json()
+        assert {r["id"]: r["actor"] for r in rows}[4] == "Admin"
 
 
 class _Recorder:

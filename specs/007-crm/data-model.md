@@ -764,9 +764,14 @@ AFTER INSERT OR UPDATE OR DELETE ON each audited crm_* table, FOR EACH ROW
   -- 1. skip first, so a skippable write never needs an actor
   diff   := changed keys only (jsonb_each(new_j) vs old_j), excluding updated_at, updated_by
   IF TG_OP = 'UPDATE' AND (diff = '{}' OR diff ⊆ {last_used_at}
-       OR diff ⊆ {flag_level, flags, flags_computed_at} OR diff ⊆ {position}) THEN RETURN NULL
+       OR diff ⊆ {flag_level, flags, flags_computed_at}
+       OR (diff ⊆ {position} AND TG_TABLE_NAME <> 'crm_select_options')) THEN RETURN NULL
   -- 2. then require an actor
   actor  := nullif(current_setting('crm.actor', true), '')::jsonb
+  -- a referential action from deleting a profile is recorded as the system
+  IF actor IS NULL AND (DELETE of crm_memberships whose user_id is no longer
+     in profiles OR an UPDATE whose diff ⊆ {created_by} setting it NULL, the
+     old author no longer in profiles) THEN actor := system
   IF actor IS NULL THEN RAISE EXCEPTION USING ERRCODE='CRM22',
      MESSAGE='A CRM change must be made through the CRM.'           -- refuses unaudited writes
   -- crm_workspaces has no workspace_id column: NEW.workspace_id would raise
@@ -783,7 +788,12 @@ AFTER INSERT OR UPDATE OR DELETE ON each audited crm_* table, FOR EACH ROW
 
 Skipped writes, which the backend makes directly without an actor:
 `crm_memberships.last_used_at` (`POST /crm/workspaces/{key}/use`), kanban
-`position` (ordering, not data) and the three flag columns. Every other change
+`position` (ordering, not data) and the three flag columns. A select option's
+`position` is not kanban order: reordering a list is an admin settings change
+(FR-CRM-LIST-01) and is audited like any other. Deleting a profile, or the
+auth user it cascades from, removes its memberships and clears `created_by`
+on what it authored with no actor set; those referential actions are recorded
+as `system` rows rather than refused, so a TVA account stays deletable. Every other change
 needs an actor and is audited, including email sync's `last_inbound_at`,
 `last_outbound_at` and `last_contact_at`, which go through `crm_apply` with
 actor kind `sync`. db tests cover `/use` without an actor and an
@@ -805,6 +815,11 @@ actor kind `sync`. db tests cover `/use` without an actor and an
   the trigger `<table>_crm_audit` (looked up in `pg_trigger`), or `CRM22`.
   Columns come from `pg_attribute`. Unknown keys raise `CRM22`. `id`,
   `workspace_id`, `created_at` and `created_by` cannot be set by `values`.
+  Access is changed only by §5.3 and §5.13: an insert or upsert into
+  `crm_memberships`, a change of its `user_id` and its delete raise `CRM22`.
+  Of `crm_workspaces`, only `name` and `allowed_domains` can be updated, the
+  latter only by an actor who is an active staff TVA admin; a workspace
+  delete raises `CRM22`.
 - Isolation: on insert `workspace_id := p_actor.workspace_id`. Update, delete,
   restore and soft delete use `WHERE id = $1 AND workspace_id = $2`; zero rows
   raises `CRM04`. `crm_workspaces` is the one table keyed by `id =
@@ -833,8 +848,9 @@ membership (audited `membership.removed`); from 037, also delete the person's
 membership left: `profiles.is_active = false`, `deactivated_reason =
 'crm_no_membership'`, `api_tokens.revoked_at = now()` for unrevoked tokens,
 `oauth_refresh_tokens.revoked_at = now()`, plus TVA audit rows
-`user.deactivated` and `token.revoked` (`actor_label 'system'`, actor = the
-admin). Returns `{deactivated: bool}`. The service then calls
+`user.deactivated` and `token.revoked` (`actor_label` = the actor's kind,
+normally `'user'`, actor = the admin; not `'system'`, which TVA's audit reads
+as a D8 change "*Name* (via CRM deal)"). Returns `{deactivated: bool}`. The service then calls
 `deps.forget_personal_tokens()` so cached tokens stop working on the next
 request.
 

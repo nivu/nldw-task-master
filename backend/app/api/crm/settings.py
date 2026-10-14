@@ -141,12 +141,13 @@ def update_option(list_key: str, option_id: str, payload: OptionUpdate, ctx: Crm
     if not changes:
         return _option(option)
 
+    siblings = [o for o in store.list_options(ctx.workspace_id) if o["list_key"] == list_key]
     ops: list[dict[str, Any]] = []
     if changes.get("is_default") is True and not option["is_default"]:
         # One default per list: the old one gives way first, in the same
         # transaction, so the unique index never sees two.
-        for other in store.list_options(ctx.workspace_id):
-            if other["list_key"] == list_key and other["is_default"] and other["id"] != option_id:
+        for other in siblings:
+            if other["is_default"] and other["id"] != option_id:
                 ops.append(
                     {
                         "op": "update",
@@ -155,9 +156,26 @@ def update_option(list_key: str, option_id: str, payload: OptionUpdate, ctx: Crm
                         "values": {"is_default": False},
                     }
                 )
-    ops.append({"op": "update", "table": "crm_select_options", "id": option_id, "values": changes})
+    if "position" in changes:
+        # A reorder renumbers the whole list in the same call, so no two
+        # options share a place and the order asked for is the order shown.
+        moves = rules.reorder(siblings, option_id, changes.pop("position"))
+        ops.extend(
+            {"op": "update", "table": "crm_select_options", "id": oid, "values": {"position": n}}
+            for oid, n in moves.items()
+            if oid != option_id
+        )
+        if option_id in moves:
+            changes["position"] = moves[option_id]
+    if not changes and not ops:
+        return _option(option)
+    if changes:
+        ops.append(
+            {"op": "update", "table": "crm_select_options", "id": option_id, "values": changes}
+        )
     done = store.apply(actor(ctx), ops)
-    return _option(done[-1]["row"])
+    row = next((d["row"] for d in reversed(done) if d["id"] == option_id), None)
+    return _option(row or store.get_option(ctx.workspace_id, option_id))
 
 
 def _check_list(ctx: CrmContext, list_key: str) -> None:

@@ -46,7 +46,11 @@
 --    unaudited (FR-CRM-AUD-06, Q-21). Three kinds of update need no actor and
 --    write no row: a membership's `last_used_at` (switching workspace), a
 --    kanban `position` and the follow-up flag columns (1b), which are
---    ordering and derived state, not data.
+--    ordering and derived state, not data. A select option's `position` is
+--    not among them: reordering a list is a settings change. The one write
+--    with no actor that is still recorded, as the system, is a referential
+--    action from deleting a profile (a membership cascading away, an author
+--    column set to NULL), so that delete is not refused.
 --
 -- 4. Seeds (data-model §7), inside a DO block that first sets the system
 --    actor, so the trigger records them as system rows rather than refusing
@@ -240,9 +244,11 @@ BEGIN
         FROM jsonb_each(new_j) AS n
         WHERE n.key NOT IN ('updated_at', 'updated_by')
           AND n.value IS DISTINCT FROM old_j -> n.key;
+        -- A select option's position is not kanban order: reordering a list
+        -- is an admin settings change and is audited (FR-CRM-LIST-01, AUD-01).
         IF changed <@ ARRAY['last_used_at']
            OR changed <@ ARRAY['flag_level', 'flags', 'flags_computed_at']
-           OR changed <@ ARRAY['position'] THEN
+           OR (changed <@ ARRAY['position'] AND TG_TABLE_NAME <> 'crm_select_options') THEN
             RETURN NULL;
         END IF;
         SELECT jsonb_object_agg(k, old_j -> k), jsonb_object_agg(k, new_j -> k)
@@ -255,6 +261,20 @@ BEGIN
     END IF;
 
     actor := nullif(current_setting('crm.actor', true), '')::jsonb;
+    -- Deleting a profile (or its auth user) cascades to its memberships and
+    -- clears created_by on what it authored, with no actor set. Those
+    -- referential actions are recorded as the system, not refused, so a TVA
+    -- account can still be deleted. They are told apart by the profile being
+    -- gone already: a direct write about a person who still exists is not one.
+    IF actor IS NULL
+       AND ((TG_OP = 'DELETE' AND TG_TABLE_NAME = 'crm_memberships'
+             AND NOT EXISTS (SELECT 1 FROM profiles WHERE id = (old_j ->> 'user_id')::uuid))
+            OR (TG_OP = 'UPDATE' AND changed <@ ARRAY['created_by']
+                AND new_j ->> 'created_by' IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM profiles WHERE id = (old_j ->> 'created_by')::uuid))) THEN
+        actor := '{"kind": "system", "user_id": null, "channel": null}';
+    END IF;
     IF actor IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22',
             MESSAGE = 'A CRM change must be made through the CRM.';

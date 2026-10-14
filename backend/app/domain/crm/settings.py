@@ -126,7 +126,29 @@ def option_change_refusal(option: dict[str, Any], changes: dict[str, Any]) -> st
             f"“{option['label']}” is used by a rule; it can be renamed and recoloured "
             "but not deactivated."
         )
+    # A deactivated option leaves the pickers, so it cannot be what a new
+    # record is pre-filled with.
+    is_default = changes.get("is_default", option["is_default"])
+    is_active = changes.get("is_active", option["is_active"])
+    if is_default and not is_active:
+        if option["is_default"]:
+            return (
+                f"“{option['label']}” is this list's default; choose another default "
+                "before deactivating it."
+            )
+        return f"“{option['label']}” is inactive; reactivate it before making it the default."
     return None
+
+
+def reorder(options: list[dict[str, Any]], option_id: str, position: int) -> dict[str, int]:
+    """FR-CRM-LIST-01 — move one option to `position` (1 is first) and number
+    the whole list 1, 2, 3… again. Returns the new position of every option
+    whose position changes."""
+    ordered = sorted(options, key=lambda o: o["position"])
+    moving = next(o for o in ordered if o["id"] == option_id)
+    ordered.remove(moving)
+    ordered.insert(min(max(position, 1), len(ordered) + 1) - 1, moving)
+    return {o["id"]: n for n, o in enumerate(ordered, start=1) if o["position"] != n}
 
 
 def stage_probabilities_refusal(value: Any) -> str | None:

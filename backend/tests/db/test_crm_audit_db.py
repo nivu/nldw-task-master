@@ -179,7 +179,7 @@ class TestAuditTrigger:
         """crm_workspaces has no workspace_id column: the trigger uses its id."""
         _apply(
             stack,
-            _actor(workspace, person()),
+            _actor(workspace, person(role="admin")),
             [
                 {
                     "op": "update",
@@ -209,6 +209,77 @@ class TestAuditTrigger:
             f"UPDATE crm_memberships SET role = 'viewer' WHERE id = {stack.q(membership)}",
             "CRM22",
         )
+
+    def test_reordering_a_list_is_audited(self, stack, workspace, person):
+        """FR-CRM-LIST-01, AUD-01: an option's position is a settings change,
+        not kanban order, so it needs an actor and writes a row."""
+        who = person()
+        option = _apply(
+            stack,
+            _actor(workspace, who),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_select_options",
+                    "values": {"list_key": "channel", "label": "Moved", "position": 3},
+                }
+            ],
+        )[0]["id"]
+        _apply(
+            stack,
+            _actor(workspace, who),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_select_options",
+                    "id": option,
+                    "values": {"position": 1},
+                }
+            ],
+        )
+        row = _audit(stack, option)[-1]
+        assert (row["action"], row["actor_id"]) == ("option.updated", who)
+        assert (row["before"], row["after"]) == ({"position": 3}, {"position": 1})
+        message = _refused(
+            stack,
+            f"UPDATE crm_select_options SET position = 2 WHERE id = {stack.q(option)}",
+            "CRM22",
+        )
+        assert message == "A CRM change must be made through the CRM."
+
+    def test_deleting_a_profile_is_not_refused(self, stack, workspace, make_profile):
+        """The cascade to its membership and the SET NULL on what it authored
+        run with no actor; they are recorded as the system."""
+        seller = make_profile(account_type="crm_only", role="user", logs_time=False)
+        membership = _member(stack, workspace, seller, "member")
+        option = _as_system(
+            stack,
+            "INSERT INTO crm_select_options (workspace_id, list_key, label, position, created_by) "
+            f"VALUES ({stack.q(workspace)}, 'channel', 'Authored', 1, {stack.q(seller)}) "
+            "RETURNING id",
+        )[-1]["id"]
+
+        stack.sql(f"DELETE FROM auth.users WHERE id = {stack.q(seller)}")
+
+        assert not stack.sql(f"SELECT 1 FROM profiles WHERE id = {stack.q(seller)}")
+        assert not stack.sql(f"SELECT 1 FROM crm_memberships WHERE id = {stack.q(membership)}")
+        authored = stack.sql(
+            f"SELECT created_by FROM crm_select_options WHERE id = {stack.q(option)}"
+        )
+        assert authored == [{"created_by": None}]
+        gone = _audit(stack, membership)[-1]
+        assert (gone["action"], gone["actor_label"], gone["actor_id"]) == (
+            "membership.purged",
+            "system",
+            None,
+        )
+        cleared = _audit(stack, option)[-1]
+        assert (cleared["actor_label"], cleared["after"]) == ("system", {"created_by": None})
+
+    def test_a_direct_membership_delete_is_still_refused(self, stack, workspace, person):
+        """Only a membership whose person is gone is let through without an actor."""
+        membership = _member(stack, workspace, person(), "member")
+        _refused(stack, f"DELETE FROM crm_memberships WHERE id = {stack.q(membership)}", "CRM22")
 
     def test_the_seeds_are_audited_as_system(self, stack):
         rows = stack.sql(
@@ -356,6 +427,93 @@ class TestApply:
         )
         assert message == "A workspace needs at least one admin."
 
+    @pytest.mark.parametrize("kind", ["insert", "upsert"])
+    def test_a_membership_is_never_added_here(self, stack, workspace, person, kind):
+        """Q-68, Q-75: only crm_invite grants access."""
+        values = {"user_id": person(), "role": "admin"}
+        ops = [{"op": kind, "table": "crm_memberships", "values": values}]
+        message = _refused(
+            stack,
+            f"SELECT crm_apply({_j(stack, _actor(workspace, person(role='admin')))}, "
+            f"{_j(stack, ops)})",
+            "CRM22",
+        )
+        assert message == "Invite a member through the members page."
+
+    def test_a_membership_is_never_moved_to_another_person(self, stack, workspace, person):
+        who = person()
+        _member(stack, workspace, who, "admin")
+        membership = _member(stack, workspace, person(), "viewer")
+        ops = [
+            {
+                "op": "update",
+                "table": "crm_memberships",
+                "id": membership,
+                "values": {"user_id": person()},
+            }
+        ]
+        message = _refused(
+            stack,
+            f"SELECT crm_apply({_j(stack, _actor(workspace, who))}, {_j(stack, ops)})",
+            "CRM22",
+        )
+        assert message == "Invite a member through the members page."
+
+    @pytest.mark.parametrize(
+        "values", [{"key": "renamed"}, {"tva_linked": True}, {"has_entity": True}]
+    )
+    def test_only_a_workspaces_name_and_allow_list_change(self, stack, workspace, person, values):
+        ops = [{"op": "update", "table": "crm_workspaces", "id": workspace, "values": values}]
+        message = _refused(
+            stack,
+            f"SELECT crm_apply({_j(stack, _actor(workspace, person(role='admin')))}, "
+            f"{_j(stack, ops)})",
+            "CRM22",
+        )
+        assert message == "Only a workspace's name and allow-list can change here."
+
+    def test_a_workspace_admin_cannot_change_the_allow_list(self, stack, workspace, person):
+        """FR-CRM-ACC-06: the allow-list limits whom they may invite."""
+        ops = [
+            {
+                "op": "update",
+                "table": "crm_workspaces",
+                "id": workspace,
+                "values": {"allowed_domains": ["gmail.com"]},
+            }
+        ]
+        message = _refused(
+            stack,
+            f"SELECT crm_apply({_j(stack, _actor(workspace, person()))}, {_j(stack, ops)})",
+            "CRM22",
+        )
+        assert message == "Only a TVA admin can change the domain allow-list."
+
+    def test_a_workspace_can_be_renamed(self, stack, workspace, person):
+        name = f"Renamed {workspace[:8]}"
+        _apply(
+            stack,
+            _actor(workspace, person()),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_workspaces",
+                    "id": workspace,
+                    "values": {"name": name},
+                }
+            ],
+        )
+        assert _audit(stack, workspace)[-1]["after"] == {"name": name}
+
+    def test_a_workspace_is_never_deleted_here(self, stack, workspace, person):
+        ops = [{"op": "delete", "table": "crm_workspaces", "id": workspace}]
+        _refused(
+            stack,
+            f"SELECT crm_apply({_j(stack, _actor(workspace, person(role='admin')))}, "
+            f"{_j(stack, ops)})",
+            "CRM22",
+        )
+
 
 # ---------------------------------------------------------------------------
 # crm_remove_membership — FR-CRM-ACC-12, Q-44
@@ -396,9 +554,11 @@ class TestRemoveMembership:
             f"WHERE target_id = {stack.q(seller)} ORDER BY id"
         )
         assert [(r["action"], r["actor_label"], r["workspace_id"]) for r in tva_rows] == [
-            ("user.deactivated", "system", None),
-            ("token.revoked", "system", None),
+            # The admin's own kind: a `system` row would read "(via CRM deal)".
+            ("user.deactivated", "user", None),
+            ("token.revoked", "user", None),
         ]
+        assert {r["actor_id"] for r in _audit(stack, seller)} == {admin}
 
     def test_a_staff_member_keeps_their_account(self, stack, workspace, person):
         admin = person()

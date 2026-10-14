@@ -19,7 +19,10 @@
 --    protected column. It stamps `workspace_id` from the actor on insert, and
 --    every update, delete and restore matches `workspace_id` too, so a row of
 --    another workspace answers "not found" (CRM04) whatever the caller sent
---    (FR-CRM-WS-02). `expect_updated_at` refuses a stale edit (CRM09). A
+--    (FR-CRM-WS-02). Memberships are never added, removed or moved to
+--    another person here (only crm_invite and crm_remove_membership do
+--    that), and of a workspace only the name, and the allow-list by a TVA
+--    admin, can change. `expect_updated_at` refuses a stale edit (CRM09). A
 --    role change that would leave a workspace with no admin is refused under
 --    a lock on the workspace's admin memberships, so two admins demoting each
 --    other at once cannot both succeed.
@@ -160,9 +163,33 @@ BEGIN
         IF tbl = 'crm_opportunities' AND kind IN ('update', 'upsert') AND vals ? 'stage' THEN
             RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Use a stage move.';
         END IF;
+        -- Access is granted and taken away only by crm_invite and
+        -- crm_remove_membership, which hold Q-75 and FR-CRM-ACC-12 (Q-68).
         IF tbl = 'crm_memberships' AND kind = 'delete' THEN
             RAISE EXCEPTION USING ERRCODE = 'CRM22',
                 MESSAGE = 'Remove a member through the members page.';
+        END IF;
+        IF tbl = 'crm_memberships' AND (kind IN ('insert', 'upsert') OR vals ? 'user_id') THEN
+            RAISE EXCEPTION USING ERRCODE = 'CRM22',
+                MESSAGE = 'Invite a member through the members page.';
+        END IF;
+        -- A workspace's key, TVA link and entity are set by migration; its
+        -- allow-list limits whom a workspace admin may invite, so only a TVA
+        -- admin changes it (FR-CRM-ACC-06).
+        IF tbl = 'crm_workspaces' AND kind = 'delete' THEN
+            RAISE EXCEPTION USING ERRCODE = 'CRM22',
+                MESSAGE = 'Workspaces are created and removed by migration.';
+        END IF;
+        IF tbl = 'crm_workspaces' AND kind = 'update' THEN
+            IF EXISTS (SELECT 1 FROM jsonb_object_keys(vals) AS c
+                       WHERE c NOT IN ('name', 'allowed_domains')) THEN
+                RAISE EXCEPTION USING ERRCODE = 'CRM22',
+                    MESSAGE = 'Only a workspace''s name and allow-list can change here.';
+            END IF;
+            IF vals ? 'allowed_domains' AND NOT crm_is_tva_admin(who) THEN
+                RAISE EXCEPTION USING ERRCODE = 'CRM22',
+                    MESSAGE = 'Only a TVA admin can change the domain allow-list.';
+            END IF;
         END IF;
 
         IF kind = 'audit_only' THEN
@@ -441,17 +468,21 @@ BEGIN
         GET DIAGNOSTICS oauth_n = ROW_COUNT;
         deactivated := true;
 
-        -- TVA rows (no workspace): the account and its tokens are TVA's.
+        -- TVA rows (no workspace): the account and its tokens are TVA's. The
+        -- admin who removed the membership did this themselves, so the rows
+        -- carry their own kind: a `system` row would read "(via CRM deal)".
         INSERT INTO audit_log (actor_id, actor_label, channel, action, target_table,
                                target_id, before, after)
-        VALUES (who, 'system', p_actor ->> 'channel', 'user.deactivated', 'profiles',
+        VALUES (who, coalesce(p_actor ->> 'kind', 'user'), p_actor ->> 'channel',
+                'user.deactivated', 'profiles',
                 person.id::text, jsonb_build_object('is_active', true),
                 jsonb_build_object('is_active', false,
                                    'deactivated_reason', 'crm_no_membership'));
         IF tokens_n + oauth_n > 0 THEN
             INSERT INTO audit_log (actor_id, actor_label, channel, action, target_table,
                                    target_id, after)
-            VALUES (who, 'system', p_actor ->> 'channel', 'token.revoked', 'api_tokens',
+            VALUES (who, coalesce(p_actor ->> 'kind', 'user'), p_actor ->> 'channel',
+                    'token.revoked', 'api_tokens',
                     person.id::text,
                     jsonb_build_object('personal_tokens', tokens_n, 'oauth_tokens', oauth_n));
         END IF;

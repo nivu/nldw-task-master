@@ -160,14 +160,72 @@ class TestEditableLists:
         _, ops = fake.applied[-1]
         assert [op["values"] for op in ops] == [{"is_default": False}, {"is_default": True}]
 
+    def _channels(self, http) -> list[tuple[str, int]]:
+        lists = http.get(f"/api/v1/crm/lists{LABS}", headers=as_(OWNER["id"])).json()
+        return [(o["label"], o["position"]) for o in lists["channel"]]
+
     def test_reorder(self, crm):
         http, fake, labs, _ = crm
+        http.post(
+            f"/api/v1/crm/lists/channel/options{LABS}",
+            json={"label": "Event"},
+            headers=as_(OWNER["id"]),
+        )
         r = http.patch(
             _option_url(fake, labs, "channel", "Inbound"),
             json={"position": 1},
             headers=as_(OWNER["id"]),
         )
-        assert r.json()["position"] == 1
+        assert (r.status_code, r.json()["position"]) == (200, 1)
+        assert self._channels(http) == [("Inbound", 1), ("Referral", 2), ("Event", 3)]
+        # The whole list is renumbered in one audited call.
+        _, ops = fake.applied[-1]
+        assert {op["id"]: op["values"]["position"] for op in ops} == {
+            fake.option(labs, "Referral")["id"]: 2,
+            fake.option(labs, "Inbound")["id"]: 1,
+        }
+
+    def test_reorder_down_and_past_the_end(self, crm):
+        http, fake, labs, _ = crm
+        http.post(
+            f"/api/v1/crm/lists/channel/options{LABS}",
+            json={"label": "Event"},
+            headers=as_(OWNER["id"]),
+        )
+        http.patch(
+            _option_url(fake, labs, "channel", "Referral"),
+            json={"position": 99},
+            headers=as_(OWNER["id"]),
+        )
+        assert self._channels(http) == [("Inbound", 1), ("Event", 2), ("Referral", 3)]
+
+    def test_the_default_cannot_be_deactivated(self, crm):
+        http, fake, labs, _ = crm
+        url = _option_url(fake, labs, "channel", "Referral")
+        http.patch(url, json={"is_default": True}, headers=as_(OWNER["id"]))
+        r = http.patch(url, json={"is_active": False}, headers=as_(OWNER["id"]))
+        assert r.status_code == 422
+        assert r.json()["detail"] == (
+            "“Referral” is this list's default; choose another default before deactivating it."
+        )
+        # Unsetting it in the same change is fine.
+        r = http.patch(
+            url, json={"is_active": False, "is_default": False}, headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200
+        assert (r.json()["is_active"], r.json()["is_default"]) == (False, False)
+
+    def test_an_inactive_option_cannot_be_the_default(self, crm):
+        http, fake, labs, _ = crm
+        url = _option_url(fake, labs, "channel", "Inbound")
+        http.patch(url, json={"is_active": False}, headers=as_(OWNER["id"]))
+        r = http.patch(url, json={"is_default": True}, headers=as_(OWNER["id"]))
+        assert r.status_code == 422
+        assert r.json()["detail"] == (
+            "“Inbound” is inactive; reactivate it before making it the default."
+        )
+        r = http.patch(url, json={"is_default": True, "is_active": True}, headers=as_(OWNER["id"]))
+        assert r.status_code == 200
 
     def test_another_workspaces_option_is_not_found(self, crm):
         http, fake, _, academy = crm
