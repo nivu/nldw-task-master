@@ -7,9 +7,9 @@ Viewer), used in one workspace only, sortable, and which select list its
 options come from. The services validate writes from it and the presenter
 redacts from it, so a field's rules live in one place. Pure.
 
-Opportunities, tasks and notes join in S4, campaigns in 1b; their amount
-fields are listed already, because redaction must never depend on a slice
-remembering to add them (plan §5.5).
+Opportunities, tasks and notes joined in S4, campaigns join in 1b; the
+campaign's amount fields are listed already, because redaction must never
+depend on a slice remembering to add them (plan §5.5).
 """
 
 from __future__ import annotations
@@ -128,6 +128,74 @@ PERSON: Final = (
     _system("twenty_id", "Twenty id", "text"),
 )
 
+#: Spec §5.8. `stage` and `lost_reason_id` change only through a stage move
+#: (contracts §2.6); the rest of the system-written fields are set by a move,
+#: the FX conversion or the handoff.
+OPPORTUNITY: Final = (
+    Field("name", "Name", "text", required=True, max_length=200),
+    Field("company_id", "Company", "relation", required=True),
+    Field("point_of_contact_id", "Point of contact", "relation"),
+    Field("entity", "Entity", "select", scope="labs"),
+    Field("stage", "Stage", "select", list_key="opportunity.stage"),
+    Field("amount", "Amount", "currency", amount=True),
+    Field("currency", "Currency", "select"),
+    Field("probability", "Probability", "number"),
+    Field("expected_close_on", "Expected close date", "date"),
+    Field("next_step", "Next step", "text", max_length=500),
+    Field("next_step_on", "Next step date", "date"),
+    Field("owner_id", "Owner", "relation", required=True),
+    Field("channel_id", "Channel", "select", list_key="channel"),
+    Field("deal_type_id", "Deal type", "select", list_key="opportunity.deal_type"),
+    Field("project_category", "Project category", "select", scope="labs"),
+    Field(
+        "engagement_model_id",
+        "Engagement model",
+        "select",
+        list_key="opportunity.engagement_model",
+    ),
+    Field("programme_id", "Programme", "select", scope="academy", list_key="opportunity.programme"),
+    Field("proposal_sent_on", "Proposal sent on", "date"),
+    Field("lost_reason_id", "Lost reason", "select", list_key="opportunity.lost_reason"),
+    Field("lost_notes", "Lost notes", "long_text", sortable=False, max_length=20_000),
+    _system("stage_entered_at", "Stage entered at"),
+    Field("amount_in_inr", "Amount in INR", "currency", system=True, amount=True),
+    Field("fx_rate_used", "FX rate used", "number", system=True, amount=True),
+    _system("fx_month", "FX month", "date"),
+    Field("won_fx_rate", "FX rate at win", "number", system=True, amount=True),
+    _system("won_fx_month", "FX month at win", "date"),
+    Field("weighted_amount", "Weighted amount", "currency", system=True, amount=True),
+    _system("won_on", "Won on", "date"),
+    _system("lost_on", "Lost on", "date"),
+    _system("lost_from_stage", "Lost from stage", "select"),
+    _system("flag_level", "Deal health flag", "select"),
+    _system("flags", "Deal health flags", "array"),
+    _system("flags_computed_at", "Deal health computed"),
+    _system("twenty_id", "Twenty id", "text"),
+)
+
+#: Spec §5.9. A task links to at least one record (FR-CRM-TASK-01).
+TASK: Final = (
+    Field("title", "Title", "text", required=True, max_length=200),
+    Field("body", "Body", "long_text", sortable=False, max_length=20_000),
+    Field("status", "Status", "select", list_key="task.status"),
+    Field("due_on", "Due date", "date"),
+    Field("bucket", "Priority bucket", "select", list_key="task.bucket"),
+    Field("category_id", "Category", "select", list_key="task.category"),
+    Field("assignee_id", "Assignee", "relation", required=True),
+    _system("completed_at", "Completed at"),
+    _system("flag_level", "Follow-up flag", "select"),
+    _system("flags", "Follow-up flags", "array"),
+    _system("flags_computed_at", "Follow-up flags computed"),
+)
+
+#: Spec §5.10. A typed note is a logged activity with its date
+#: (FR-CRM-NOTE-03).
+NOTE: Final = (
+    Field("body", "Text", "long_text", required=True, sortable=False, max_length=20_000),
+    Field("kind", "Kind", "select"),
+    Field("occurred_on", "Date", "date"),
+)
+
 #: FR-CRM-LINK-01, D4.
 DRIVE_LINK: Final = (
     Field("record_type", "Record type", "select", required=True),
@@ -139,6 +207,9 @@ DRIVE_LINK: Final = (
 FIELDS: Final[dict[str, tuple[Field, ...]]] = {
     "company": COMPANY,
     "person": PERSON,
+    "opportunity": OPPORTUNITY,
+    "task": TASK,
+    "note": NOTE,
     "drive_link": DRIVE_LINK,
 }
 
@@ -148,6 +219,8 @@ FIELDS: Final[dict[str, tuple[Field, ...]]] = {
 AMOUNT_FIELDS: Final[dict[str, frozenset[str]]] = {
     "company": frozenset(),
     "person": frozenset(),
+    "task": frozenset(),
+    "note": frozenset(),
     "drive_link": frozenset(),
     "opportunity": frozenset(
         {"amount", "amount_in_inr", "fx_rate_used", "won_fx_rate", "weighted_amount"}
@@ -170,12 +243,28 @@ TVA_AMOUNT_KEYS: Final = frozenset({"revenue", "suggested_inr", "existing_tva_re
 TABLES: Final = {
     "company": "crm_companies",
     "person": "crm_people",
+    "opportunity": "crm_opportunities",
+    "task": "crm_tasks",
+    "note": "crm_notes",
     "drive_link": "crm_drive_links",
 }
-#: The records a Drive link may hang on (FR-CRM-LINK-01). Opportunities,
-#: tasks and notes arrive in S4, campaigns in 1b; a link to one of them is
-#: refused until its table exists.
-LINKABLE: Final = ("company", "person")
+#: The records a Drive link may hang on (FR-CRM-LINK-01). Campaigns arrive
+#: in 1b; a link to one is refused until its table exists.
+LINKABLE: Final = ("company", "person", "opportunity", "task", "note")
+#: The records a task or a note links to (FR-CRM-TASK-01, FR-CRM-NOTE-01);
+#: campaigns join in 1b.
+TASK_NOTE_TARGETS: Final = ("company", "person", "opportunity")
+
+#: FR-CRM-OPP-01 and the fixed task and note lists.
+CURRENCIES: Final = ("INR", "AUD", "USD")
+PROJECT_CATEGORIES: Final = {"client": "Client", "poc": "POC", "product": "Product"}
+NOTE_KINDS: Final = {
+    "note": "Note",
+    "call": "Call",
+    "meeting": "Meeting",
+    "whatsapp": "WhatsApp",
+    "other": "Other",
+}
 
 #: FR-CRM-LIST-02 — the fixed lead stages, in order.
 LEAD_STAGES: Final = (
@@ -244,7 +333,14 @@ def required_refusal(kind: str, values: dict) -> str | None:
     ]
     if not missing:
         return None
-    article = {"company": "A company", "person": "A person", "drive_link": "A Drive link"}
+    article = {
+        "company": "A company",
+        "person": "A person",
+        "opportunity": "A deal",
+        "task": "A task",
+        "note": "A note",
+        "drive_link": "A Drive link",
+    }
     return f"{article.get(kind, 'A record')} needs {_and([m.lower() for m in missing])}."
 
 

@@ -5,7 +5,8 @@ The owner is an Admin of both workspaces, so nothing here is refused for
 role: a record of Academy named while acting in Labs is simply not found, and
 Labs's lists contain nothing of Academy. A record id is answered 404 whether
 it is absent or belongs to another workspace, so its existence is never
-disclosed. Later slices add their objects' routes here.
+disclosed. Later slices add their objects' routes here; S4 added deals,
+tasks, notes, deal contacts and stage moves.
 """
 
 from __future__ import annotations
@@ -48,7 +49,37 @@ def crm(monkeypatch):
         f"/api/v1/crm/companies{ACADEMY}", json={"name": "Gone College"}, headers=me
     ).json()
     http.delete(f"/api/v1/crm/companies/{trashed['id']}{ACADEMY}", headers=me)
-    return http, {"companies": company, "people": person, "link": link, "trashed": trashed}
+    http.patch(
+        f"/api/v1/crm/companies/{company['id']}{ACADEMY}",
+        json={"lead_stage": "qualified"},
+        headers=me,
+    )
+    deal = http.post(
+        f"/api/v1/crm/opportunities{ACADEMY}",
+        json={
+            "name": "College - AI course",
+            "company_id": company["id"],
+            "next_step": "Call",
+            "next_step_on": "2026-10-20",
+        },
+        headers=me,
+    ).json()
+    links = [{"record_type": "opportunity", "record_id": deal["id"]}]
+    task = http.post(
+        f"/api/v1/crm/tasks{ACADEMY}", json={"title": "Call", "links": links}, headers=me
+    ).json()
+    note = http.post(
+        f"/api/v1/crm/notes{ACADEMY}", json={"body": "Met them.", "links": links}, headers=me
+    ).json()
+    return http, {
+        "companies": company,
+        "people": person,
+        "link": link,
+        "trashed": trashed,
+        "opportunities": deal,
+        "tasks": task,
+        "notes": note,
+    }
 
 
 def _routes(plural: str, record_id: str) -> list[tuple[str, str, dict | None]]:
@@ -64,12 +95,84 @@ def _routes(plural: str, record_id: str) -> list[tuple[str, str, dict | None]]:
 
 
 class TestForeignIdsAreNotFound:
-    @pytest.mark.parametrize("plural", ["companies", "people"])
+    @pytest.mark.parametrize("plural", ["companies", "people", "opportunities", "tasks", "notes"])
     def test_every_record_route(self, crm, plural):
         http, made = crm
         for method, url, body in _routes(plural, made[plural]["id"]):
             r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
             assert r.status_code == 404, (method, url, r.text)
+
+    def test_deal_contacts_and_stage_moves(self, crm):
+        http, made = crm
+        deal, person = made["opportunities"]["id"], made["people"]["id"]
+        base = f"/api/v1/crm/opportunities/{deal}"
+        for method, url, body in [
+            ("POST", f"{base}/stage{LABS}", {"stage": "closed_lost"}),
+            ("POST", f"{base}/stage/preview{LABS}", {"stage": "qualification"}),
+            ("POST", f"{base}/contacts{LABS}", {"person_id": person}),
+            ("DELETE", f"{base}/contacts/{person}{LABS}", None),
+        ]:
+            r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
+            assert r.status_code == 404, (method, url, r.text)
+
+    def test_completing_a_task(self, crm):
+        http, made = crm
+        r = http.post(
+            f"/api/v1/crm/tasks/{made['tasks']['id']}/complete{LABS}", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 404
+
+    def test_references_to_its_records(self, crm):
+        """A Labs deal, task or note naming an Academy record."""
+        http, made = crm
+        me = as_(OWNER["id"])
+        labs_company = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Acme"}, headers=me
+        ).json()
+        http.patch(
+            f"/api/v1/crm/companies/{labs_company['id']}{LABS}",
+            json={"lead_stage": "qualified"},
+            headers=me,
+        )
+        for url, body in [
+            (
+                f"/api/v1/crm/opportunities{LABS}",
+                {
+                    "name": "X",
+                    "company_id": made["companies"]["id"],
+                    "next_step": "Call",
+                    "next_step_on": "2026-10-20",
+                },
+            ),
+            (
+                f"/api/v1/crm/opportunities{LABS}",
+                {
+                    "name": "X",
+                    "company_id": labs_company["id"],
+                    "point_of_contact_id": made["people"]["id"],
+                    "next_step": "Call",
+                    "next_step_on": "2026-10-20",
+                },
+            ),
+            (
+                f"/api/v1/crm/tasks{LABS}",
+                {
+                    "title": "X",
+                    "links": [
+                        {"record_type": "opportunity", "record_id": made["opportunities"]["id"]}
+                    ],
+                },
+            ),
+            (
+                f"/api/v1/crm/notes{LABS}",
+                {
+                    "body": "X",
+                    "links": [{"record_type": "person", "record_id": made["people"]["id"]}],
+                },
+            ),
+        ]:
+            r = http.post(url, json=body, headers=me)
+            assert r.status_code == 404, (url, r.text)
 
     def test_a_trashed_record_of_another_workspace(self, crm):
         http, made = crm
@@ -115,7 +218,7 @@ class TestForeignIdsAreNotFound:
 
 
 class TestListsHoldNothingOfIt:
-    @pytest.mark.parametrize("plural", ["companies", "people"])
+    @pytest.mark.parametrize("plural", ["companies", "people", "opportunities", "tasks", "notes"])
     def test_plain_lists(self, crm, plural):
         http, _ = crm
         listed = http.get(f"/api/v1/crm/{plural}{LABS}", headers=as_(OWNER["id"])).json()

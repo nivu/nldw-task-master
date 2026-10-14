@@ -1,5 +1,5 @@
-"""The CRM's MCP tools — spec 007 FR-CRM-MCP-01, -03, -05, -07, -09, -11;
-FR-CRM-CHG-07; contracts §3.
+"""The CRM's MCP tools — spec 007 FR-CRM-MCP-01, -03, -04, -05, -07, -09,
+-10, -11; FR-CRM-CHG-07; contracts §3.
 
 Each slice asserts the tools it has added so far; S12 asserts all eighteen.
 The tool runs through the real in-process bridge (`server._api`), so the
@@ -22,8 +22,19 @@ CALLER_LINES = {
     "crm_get": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
     "crm_create": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
     "crm_update": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_set_next_step": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_add_task": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_complete_task": (
+        "ADMINS AND MEMBERS, OR A VIEWER ON A TASK ASSIGNED TO THEM. CONFIRM FIRST."
+    ),
+    "crm_add_note": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_move_stage": (
+        "WORKSPACE ADMINS AND MEMBERS (reopening a won deal: WORKSPACE ADMINS ONLY;\n"
+        "reopening a lost deal: ADMINS OR THE DEAL'S OWNER). CONFIRM FIRST."
+    ),
 }
 READS = {"crm_workspaces", "crm_get"}
+DESTRUCTIVE = {"crm_move_stage"}
 
 
 def _tools() -> dict:
@@ -40,10 +51,11 @@ class TestTools:
 
     @pytest.mark.parametrize("name", sorted(CALLER_LINES))
     def test_annotation(self, name):
-        hint = _tools()[name].annotations.read_only_hint
-        assert hint is (name in READS)
-        if not hint:
+        annotations = _tools()[name].annotations
+        assert annotations.read_only_hint is (name in READS)
+        if not annotations.read_only_hint:
             assert "CONFIRM FIRST" in _tools()[name].description
+            assert annotations.destructive_hint is (name in DESTRUCTIVE)
 
     def test_crm_workspaces_takes_no_arguments(self):
         assert set(_tools()["crm_workspaces"].input_schema.get("properties", {})) == set()
@@ -55,7 +67,7 @@ class TestTools:
             "from __future__ import annotations",
             "import uuid",
             "from typing import Any, Literal",
-            "from app.mcp.server import READ, WRITE, Context, ToolError, _api, mcp",
+            "from app.mcp.server import DESTRUCTIVE, READ, WRITE, Context, ToolError, _api, mcp",
         ]
 
 
@@ -267,6 +279,153 @@ class TestRecordTools:
         """FR-CRM-MCP-04 for crm_create."""
         with pytest.raises(Exception) as refused:
             asyncio.run(crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}))
+        assert str(refused.value) == (
+            "422: Name a workspace: Nunnari Academy B2B (academy), Nunnari Labs (labs)."
+        )
+
+
+#: A deal id for the S4 tool tests.
+D1 = "00000000-0000-4000-8000-0000000000d1"
+T1 = "00000000-0000-4000-8000-0000000000e1"
+
+
+class TestDealTools:
+    """FR-CRM-MCP-01 (S4: crm_set_next_step, crm_add_task, crm_complete_task,
+    crm_add_note, crm_move_stage), -04, -10."""
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_set_next_step(Ctx("u"), D1, "Demo", "2026-10-30"),
+                (
+                    "PATCH",
+                    f"/crm/opportunities/{D1}",
+                    {"workspace": None},
+                    {"next_step": "Demo", "next_step_on": "2026-10-30"},
+                ),
+            ),
+            (
+                lambda: crm.crm_add_task(
+                    Ctx("u"),
+                    "Call",
+                    [{"record_type": "opportunity", "record_id": D1}],
+                    bucket="today",
+                    category="Sales",
+                    workspace="labs",
+                ),
+                (
+                    "POST",
+                    "/crm/tasks",
+                    {"workspace": "labs"},
+                    {
+                        "title": "Call",
+                        "links": [{"record_type": "opportunity", "record_id": D1}],
+                        "bucket": "today",
+                        "category": "Sales",
+                    },
+                ),
+            ),
+            (
+                lambda: crm.crm_complete_task(Ctx("u"), T1, workspace="labs"),
+                ("POST", f"/crm/tasks/{T1}/complete", {"workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_add_note(
+                    Ctx("u"),
+                    "Called.",
+                    [{"record_type": "person", "record_id": P1}],
+                    kind="call",
+                    occurred_on="2026-10-14",
+                ),
+                (
+                    "POST",
+                    "/crm/notes",
+                    {"workspace": None},
+                    {
+                        "body": "Called.",
+                        "links": [{"record_type": "person", "record_id": P1}],
+                        "kind": "call",
+                        "occurred_on": "2026-10-14",
+                    },
+                ),
+            ),
+            (
+                lambda: crm.crm_move_stage(Ctx("u"), D1, "qualification", preview=True),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/stage/preview",
+                    {"workspace": None},
+                    {"stage": "qualification", "changes": {}},
+                ),
+            ),
+            (
+                lambda: crm.crm_move_stage(
+                    Ctx("u"),
+                    D1,
+                    "closed_lost",
+                    changes={"lost_reason_id": "r"},
+                    company_on_loss="disqualified",
+                    workspace="academy",
+                ),
+                (
+                    "POST",
+                    f"/crm/opportunities/{D1}/stage",
+                    {"workspace": "academy"},
+                    {
+                        "stage": "closed_lost",
+                        "changes": {"lost_reason_id": "r"},
+                        "company_on_loss": "disqualified",
+                    },
+                ),
+            ),
+            (
+                lambda: crm.crm_get(Ctx("u"), "opportunity", D1),
+                ("GET", f"/crm/opportunities/{D1}", {"workspace": None}, None),
+            ),
+            (
+                lambda: crm.crm_create(Ctx("u"), "note", {"body": "x"}, workspace="labs"),
+                (
+                    "POST",
+                    "/crm/notes",
+                    {"workspace": "labs", "check_duplicates": "true"},
+                    {"body": "x"},
+                ),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    def test_crm_move_stage_is_destructive(self):
+        assert _tools()["crm_move_stage"].annotations.destructive_hint is True
+
+    @pytest.mark.parametrize("bad", ["../stage", f"{D1}/../../members", ""])
+    def test_ids_that_are_not_uuids_reach_no_route(self, monkeypatch, bad):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        for call in (
+            lambda: crm.crm_move_stage(Ctx("u"), bad, "discovery"),
+            lambda: crm.crm_complete_task(Ctx("u"), bad),
+            lambda: crm.crm_set_next_step(Ctx("u"), bad, "x", "2026-10-30"),
+        ):
+            with pytest.raises(server.ToolError):
+                asyncio.run(call())
+        assert recorder.calls == []
+
+    def test_a_two_workspace_members_add_task_without_workspace_lists_both(self, crm_store):
+        """FR-CRM-MCP-04, contracts §3.1 `test_write_without_workspace_lists_them`."""
+        with pytest.raises(Exception) as refused:
+            asyncio.run(
+                crm.crm_add_task(
+                    Ctx(MEMBER["id"]),
+                    "Call",
+                    [{"record_type": "company", "record_id": C1}],
+                )
+            )
         assert str(refused.value) == (
             "422: Name a workspace: Nunnari Academy B2B (academy), Nunnari Labs (labs)."
         )

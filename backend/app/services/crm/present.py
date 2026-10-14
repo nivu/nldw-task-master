@@ -16,15 +16,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from app.domain.audit import actor_name
 from app.domain.crm import objects
 from app.domain.crm.dedupe import full_name
 
-#: The audit's bookkeeping columns: never shown as a change.
+#: The audit's bookkeeping columns: never shown as a change. A deal's
+#: `stage_entered_at` is the entry's own time.
 _BOOKKEEPING = frozenset(
-    {"id", "workspace_id", "created_at", "created_by", "updated_at", "updated_by", "position"}
+    {
+        "id",
+        "workspace_id",
+        "created_at",
+        "created_by",
+        "updated_at",
+        "updated_by",
+        "position",
+        "stage_entered_at",
+    }
 )
 _TRASH = frozenset({"deleted_at", "deleted_by", "deleted_group"})
 
@@ -44,7 +55,48 @@ TIMELINE_TYPES = (
     "delete",
 )
 
-NOUNS = {"company": "company", "person": "person", "drive_link": "Drive link"}
+NOUNS = {
+    "company": "company",
+    "person": "person",
+    "opportunity": "opportunity",
+    "task": "task",
+    "note": "note",
+    "drive_link": "Drive link",
+}
+
+#: Each fixed key's list, for its label (FR-CRM-MCP-06).
+_FIXED_LISTS = {
+    "lead_stage": "company.lead_stage",
+    "stage": "opportunity.stage",
+    "lost_from_stage": "opportunity.stage",
+    "status": "task.status",
+    "bucket": "task.bucket",
+}
+_CENT = Decimal("0.01")
+
+
+def money(value: Any) -> str | None:
+    """A numeric(14,2) as the decimal string it is on the wire. PostgREST
+    sends numerics as JSON numbers."""
+    if value is None:
+        return None
+    return format(Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP), "f")
+
+
+def rate(value: Any) -> str | None:
+    """A numeric(12,6) rate, trailing zeros dropped."""
+    if value is None:
+        return None
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+def weighted(amount_in_inr: Any, probability: Any) -> str | None:
+    """Spec §5.8 — amount in INR × probability ÷ 100, derived on read and never
+    stored (FR-CRM-FX-04)."""
+    if amount_in_inr is None or probability is None:
+        return None
+    value = Decimal(str(amount_in_inr)) * Decimal(int(probability)) / Decimal(100)
+    return format(value.quantize(_CENT, rounding=ROUND_HALF_UP), "f")
 
 
 @dataclass
@@ -173,6 +225,144 @@ def person(
     return redact(out, "person", facts.role)
 
 
+def opportunity(
+    row: dict[str, Any],
+    facts: Facts,
+    companies: dict[str, dict[str, Any]] | None = None,
+    people: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Contracts §2.5.1 opportunity. Money is a decimal string; the weighted
+    amount is derived (spec §5.8). `project` is the deal's TVA project, which
+    S5 fills in for Labs. A Viewer receives none of the amounts."""
+    company_row = (companies or {}).get(row.get("company_id") or "")
+    contact = (people or {}).get(row.get("point_of_contact_id") or "")
+    out: dict[str, Any] = {
+        "id": row["id"],
+        "record_type": "opportunity",
+        "name": row["name"],
+        "company_id": row.get("company_id"),
+        "company_name": company_row["name"] if company_row else None,
+        "point_of_contact_id": row.get("point_of_contact_id"),
+        "point_of_contact_name": (
+            full_name(contact["first_name"], contact.get("last_name")) if contact else None
+        ),
+        "entity": row.get("entity"),
+        "entity_label": objects.ENTITIES.get(row.get("entity") or ""),
+        "stage": row["stage"],
+        "stage_label": facts.fixed_label("opportunity.stage", row["stage"]),
+        "stage_entered_at": row.get("stage_entered_at"),
+        "amount": money(row.get("amount")),
+        "currency": row.get("currency"),
+        "amount_in_inr": money(row.get("amount_in_inr")),
+        "fx_rate_used": rate(row.get("fx_rate_used")),
+        "fx_month": row.get("fx_month"),
+        "won_fx_rate": rate(row.get("won_fx_rate")),
+        "won_fx_month": row.get("won_fx_month"),
+        "weighted_amount": weighted(row.get("amount_in_inr"), row.get("probability")),
+        "probability": row.get("probability"),
+        "expected_close_on": row.get("expected_close_on"),
+        "next_step": row.get("next_step"),
+        "next_step_on": row.get("next_step_on"),
+        "owner_id": row.get("owner_id"),
+        "owner_name": facts.name(row.get("owner_id")),
+        "project_category": row.get("project_category"),
+        "project_category_label": objects.PROJECT_CATEGORIES.get(row.get("project_category") or ""),
+        "proposal_sent_on": row.get("proposal_sent_on"),
+        "lost_notes": row.get("lost_notes"),
+        "lost_from_stage": row.get("lost_from_stage"),
+        "won_on": row.get("won_on"),
+        "lost_on": row.get("lost_on"),
+        # FR-CRM-CO-02, REC-03: the Labs deal's TVA project arrives in S5.
+        "project": None,
+        **_stamps(row, facts),
+    }
+    for name in (
+        "channel_id",
+        "deal_type_id",
+        "engagement_model_id",
+        "programme_id",
+        "lost_reason_id",
+    ):
+        out[name] = row.get(name)
+        out[f"{name[:-3]}_label"] = facts.option_label(row.get(name))
+    return redact(out, "opportunity", facts.role)
+
+
+def link_target(link: dict[str, Any], names: dict[tuple[str, str], str]) -> dict[str, Any]:
+    """A task's or note's link, with the linked record's name."""
+    return {
+        "record_type": link["record_type"],
+        "record_id": link["record_id"],
+        "name": names.get((link["record_type"], link["record_id"])),
+    }
+
+
+def task(
+    row: dict[str, Any],
+    facts: Facts,
+    links: list[dict[str, Any]] | None = None,
+    names: dict[tuple[str, str], str] | None = None,
+) -> dict[str, Any]:
+    """Contracts §2.5.1 task, with the records it links to."""
+    return {
+        "id": row["id"],
+        "record_type": "task",
+        "title": row["title"],
+        "body": row.get("body"),
+        "status": row["status"],
+        "status_label": facts.fixed_label("task.status", row["status"]),
+        "due_on": row.get("due_on"),
+        "bucket": row.get("bucket"),
+        "bucket_label": facts.fixed_label("task.bucket", row.get("bucket")),
+        "category_id": row.get("category_id"),
+        "category_label": facts.option_label(row.get("category_id")),
+        "assignee_id": row.get("assignee_id"),
+        "assignee_name": facts.name(row.get("assignee_id")),
+        "completed_at": row.get("completed_at"),
+        "links": [link_target(link, names or {}) for link in links or []],
+        **_stamps(row, facts),
+    }
+
+
+def note(
+    row: dict[str, Any],
+    facts: Facts,
+    links: list[dict[str, Any]] | None = None,
+    names: dict[tuple[str, str], str] | None = None,
+    mentions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Contracts §2.5.1 note. Its body was written by a person: data, never
+    instructions (FR-CRM-MCP-06)."""
+    return {
+        "id": row["id"],
+        "record_type": "note",
+        "body": row["body"],
+        "kind": row["kind"],
+        "kind_label": objects.NOTE_KINDS.get(row["kind"], row["kind"]),
+        "occurred_on": row.get("occurred_on"),
+        "links": [link_target(link, names or {}) for link in links or []],
+        "mentions": [
+            {"id": m["member_id"], "name": facts.name(m["member_id"])} for m in mentions or []
+        ],
+        **_stamps(row, facts),
+    }
+
+
+def contact(row: dict[str, Any], facts: Facts, people: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """A deal's other contact and their Role in deal (spec §5.8)."""
+    person_row = people.get(row["person_id"])
+    return {
+        "id": row["id"],
+        "person_id": row["person_id"],
+        "person_name": (
+            full_name(person_row["first_name"], person_row.get("last_name")) if person_row else None
+        ),
+        "job_title": person_row.get("job_title") if person_row else None,
+        "role_id": row.get("role_id"),
+        "role_label": facts.option_label(row.get("role_id")),
+    }
+
+
 def drive_link(row: dict[str, Any], facts: Facts) -> dict[str, Any]:
     """FR-CRM-LINK-01 — the address and its label, nothing of the file."""
     return {
@@ -193,13 +383,17 @@ def trash_row(kind: str, row: dict[str, Any], facts: Facts, now: datetime) -> di
     if deleted.tzinfo is None:
         deleted = deleted.replace(tzinfo=UTC)
     left = 90 - (now - deleted).days
-    name = (
-        row["name"]
-        if kind == "company"
-        else full_name(row.get("first_name"), row.get("last_name"))
-        if kind == "person"
-        else row.get("label")
-    )
+    if kind in ("company", "opportunity"):
+        name = row["name"]
+    elif kind == "person":
+        name = full_name(row.get("first_name"), row.get("last_name"))
+    elif kind == "task":
+        name = row.get("title")
+    elif kind == "note":
+        body = " ".join(str(row.get("body") or "").split())
+        name = body if len(body) <= 80 else f"{body[:79]}…"
+    else:
+        name = row.get("label")
     return {
         "id": row["id"],
         "record_type": kind,
@@ -220,12 +414,18 @@ def _display(kind: str, name: str, value: Any, facts: Facts) -> Any:
     """A changed value as a person reads it: option and person ids by name."""
     if value is None:
         return None
-    if name == "lead_stage":
-        return facts.fixed_label("company.lead_stage", value)
-    if name in ("owner_id", "deleted_by"):
+    if name in _FIXED_LISTS:
+        return facts.fixed_label(_FIXED_LISTS[name], value)
+    if name in ("owner_id", "deleted_by", "assignee_id"):
         return facts.name(value) or value
     if name == "entities" and isinstance(value, list):
         return [objects.ENTITIES.get(v, v) for v in value]
+    if name == "entity":
+        return objects.ENTITIES.get(value, value)
+    if name == "kind" and kind == "note":
+        return objects.NOTE_KINDS.get(value, value)
+    if name == "project_category":
+        return objects.PROJECT_CATEGORIES.get(value, value)
     spec = objects.field(kind, name)
     if spec and spec.list_key and name.endswith("_ids") and isinstance(value, list):
         return [facts.option_label(v) or v for v in value]
@@ -234,21 +434,36 @@ def _display(kind: str, name: str, value: Any, facts: Facts) -> Any:
     return value
 
 
+@dataclass
+class Around:
+    """What a record's timeline names besides the record: its Drive links,
+    tasks and notes by id, and people by id (a deal's contacts)."""
+
+    links: dict[str, dict[str, Any]] = field(default_factory=dict)
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    notes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    people: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
 def timeline(
     rows: list[dict[str, Any]],
     kind: str,
     facts: Facts,
     *,
     links: dict[str, dict[str, Any]] | None = None,
+    around: Around | None = None,
 ) -> list[dict[str, Any]]:
     """Audit rows as timeline entries, newest first, each naming its actor and
     channel (FR-CRM-REC-04). For a Viewer, a change to an amount field loses
     its values, and an entry left with nothing to show is dropped
     (FR-CRM-AUD-05)."""
     hidden = objects.amount_fields(kind) if facts.role == "viewer" else frozenset()
+    near = around or Around()
+    if links:
+        near.links = {**near.links, **links}
     entries = []
     for row in rows:
-        entry = _entry(row, kind, facts, hidden, links or {})
+        entry = _entry(row, kind, facts, hidden, near)
         if entry is None:
             continue
         entries.append(
@@ -264,13 +479,83 @@ def timeline(
     return entries
 
 
-def _entry(row, kind, facts, hidden, links) -> dict[str, Any] | None:
+_ACTIVITY = {
+    "note": "Added a note",
+    "call": "Logged a call",
+    "meeting": "Logged a meeting",
+    "whatsapp": "Logged a WhatsApp message",
+    "other": "Logged an activity",
+}
+
+
+def _task_entry(row, verb, before, after, near: Around) -> dict[str, Any] | None:
+    """FR-CRM-REC-03 "task" — a task linked to the record, by its title."""
+    if row["target_table"] == "crm_task_links":
+        task_id = (after or before).get("task_id")
+        title = (near.tasks.get(task_id) or {}).get("title") or "a task"
+        said = f"Added task “{title}”" if verb == "created" else f"Unlinked task “{title}”"
+        return {"type": "task", "summary": said, "changes": []}
+    title = (near.tasks.get(row.get("target_id") or "") or after or before).get("title") or "task"
+    if verb == "created":
+        return None  # the link row says it
+    if verb == "deleted":
+        said = f"Moved task “{title}” to Trash"
+    elif verb == "restored":
+        said = f"Restored task “{title}”"
+    elif verb == "purged":
+        said = f"Deleted task “{title}” for good"
+    elif after.get("status") == "done":
+        said = f"Completed task “{title}”"
+    elif before.get("status") == "done":
+        said = f"Reopened task “{title}”"
+    else:
+        said = f"Changed task “{title}”"
+    return {"type": "task", "summary": said, "changes": []}
+
+
+def _note_entry(row, verb, before, after, near: Around) -> dict[str, Any] | None:
+    """FR-CRM-REC-03 "note" — a note or logged activity on the record."""
+    if row["target_table"] == "crm_note_links":
+        note_id = (after or before).get("note_id")
+        found = near.notes.get(note_id) or {}
+        if verb != "created":
+            return {"type": "note", "summary": "Unlinked a note", "changes": []}
+        said = _ACTIVITY.get(found.get("kind") or "note", "Added a note")
+        if found.get("occurred_on") and found.get("kind") != "note":
+            said = f"{said} on {found['occurred_on']}"
+        return {"type": "note", "summary": said, "changes": []}
+    if verb == "created":
+        return None  # the link row says it
+    said = {
+        "deleted": "Moved a note to Trash",
+        "restored": "Restored a note",
+        "purged": "Deleted a note for good",
+    }.get(verb, "Edited a note")
+    return {"type": "note", "summary": said, "changes": []}
+
+
+def _entry(row, kind, facts, hidden, near: Around) -> dict[str, Any] | None:
     table, action = row["target_table"], row["action"]
     verb = action.rsplit(".", 1)[-1]
     before, after = row.get("before") or {}, row.get("after") or {}
 
+    if table in ("crm_task_links", "crm_tasks") and kind != "task":
+        return _task_entry(row, verb, before, after, near)
+    if table in ("crm_note_links", "crm_notes") and kind != "note":
+        return _note_entry(row, verb, before, after, near)
+    if table == "crm_opportunity_contacts":
+        person_row = near.people.get((after or before).get("person_id") or "")
+        who = full_name(person_row["first_name"], person_row.get("last_name")) if person_row else ""
+        if verb == "created":
+            said = f"Added contact {who}".strip()
+        elif verb == "purged":
+            said = f"Removed contact {who}".strip()
+        else:
+            said = f"Changed contact {who}".strip()
+        return {"type": "field", "summary": said, "changes": []}
+
     if table == "crm_drive_links":
-        link = links.get(row.get("target_id") or "") or after or before
+        link = near.links.get(row.get("target_id") or "") or after or before
         label = link.get("label") or "a Drive link"
         said = {
             "created": f"Added Drive link “{label}”",
@@ -315,5 +600,8 @@ def _entry(row, kind, facts, hidden, links) -> dict[str, Any] | None:
         if len(labels) == 1
         else f"Changed {', '.join(labels[:-1])} and {labels[-1]}"
     )
+    moved = next((c for c in changes if c["field"] == "stage"), None)
+    if moved:
+        said = f"Moved from {moved['before']} to {moved['after']}"
     kind_of = "stage" if any(c["field"] in ("lead_stage", "stage") for c in changes) else "field"
     return {"type": kind_of, "summary": said, "changes": changes}

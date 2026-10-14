@@ -61,6 +61,12 @@ class TestOnEveryRecord:
 
     def test_a_record_type_not_built_yet_is_not_found(self, crm):
         http, _, made = crm
+        r = _link(http, "campaign", made["company"]["id"])
+        assert r.status_code == 404
+        assert r.json()["detail"] == "No such campaign."
+
+    def test_a_record_of_another_type_is_not_found(self, crm):
+        http, _, made = crm
         r = _link(http, "opportunity", made["company"]["id"])
         assert r.status_code == 404
         assert r.json()["detail"] == "No such opportunity."

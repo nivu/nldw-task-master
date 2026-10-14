@@ -6,13 +6,21 @@ import { useState } from "react";
 
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { NotesTab } from "@/components/crm/note-composer";
 import type { Choice } from "@/components/crm/field-editor";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
 import { RelatedPanel } from "@/components/crm/related-panel";
 import { useCrm } from "@/components/crm/shell";
+import { TasksTab } from "@/components/crm/task-dialog";
 import { Timeline } from "@/components/crm/timeline";
 import { Button } from "@/components/ui/button";
-import { deleteCrmRecord, getCrmMembers, getCrmRecord, updateCrmRecord } from "@/lib/api/crm";
+import {
+  deleteCrmRecord,
+  getCrmMembers,
+  getCrmRecord,
+  searchCompanyChoices,
+  updateCrmRecord,
+} from "@/lib/api/crm";
 import type { CrmBootstrap, CrmCompany, CrmMember } from "@/lib/api/crm-types";
 import { useAsync } from "@/lib/use-async";
 
@@ -112,8 +120,8 @@ function companyGroups(
 
 /**
  * A company — spec 007 FR-CRM-CO-01 to -03, FR-CRM-REC-01 to -04,
- * FR-CRM-LINK-03, FR-CRM-DEL-02. Deals and Labs's TVA projects join its
- * Related tab with S4 and S5.
+ * FR-CRM-LINK-03, FR-CRM-DEL-02. Its deals are in Related, its tasks and
+ * notes in their tabs; Labs's TVA projects join Related with S5.
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -205,15 +213,46 @@ export default function CompanyPage() {
             onChange={refresh}
           />
         }
-        related={<RelatedPanel workspace={ws} related={page.related} />}
+        tasks={
+          <TasksTab
+            workspace={ws}
+            bootstrap={bootstrap}
+            members={members}
+            tasks={page.tasks ?? []}
+            link={{ record_type: "company", record_id: company.id, name: company.name }}
+            onChange={refresh}
+          />
+        }
+        notes={
+          <NotesTab
+            workspace={ws}
+            canEdit={canEdit}
+            members={members}
+            notes={page.notes ?? []}
+            link={{ record_type: "company", record_id: company.id }}
+            timeZone={bootstrap.me.timezone}
+            onChange={refresh}
+          />
+        }
+        related={
+          <RelatedPanel workspace={ws} related={page.related} numberFormat={bootstrap.me.number_format} />
+        }
       />
       <DeleteCompanyDialog
         open={deleting}
         onOpenChange={setDeleting}
         name={company.name}
         peopleCount={page.related.people?.length ?? 0}
-        onDelete={async (people) => {
-          await deleteCrmRecord(ws, "companies", company.id, people ? { people } : undefined);
+        dealsCount={page.related.opportunities?.length ?? 0}
+        searchCompanies={async (q, after) => {
+          const found = await searchCompanyChoices(ws, q, after);
+          return { ...found, choices: found.choices.filter((c) => c.value !== company.id) };
+        }}
+        onDelete={async (people, deals) => {
+          await deleteCrmRecord(ws, "companies", company.id, {
+            ...(people ? { people } : {}),
+            ...(deals ? { deals } : {}),
+          });
           router.push(`/crm/${ws}/companies`);
         }}
       />

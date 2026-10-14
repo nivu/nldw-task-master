@@ -10,7 +10,9 @@ because an unfaked name would call the real Supabase client.
 The fake keeps the database's rules that a route test can trip — workspace
 isolation (CRM04), stale edits (CRM09), the last admin (CRM22), unique labels
 (23505) — and raises them through `store.refusal_for`, so the HTTP answer is
-the one production gives.
+the one production gives. A deal's CHECK constraints (030), which production
+answers with a 500, raise `CheckViolation` here: a route that lets one
+through has missed a rule it must check first.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import inspect
 import itertools
 import uuid
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -91,16 +94,46 @@ TABLES = (
     "crm_company_domains",
     "crm_people",
     "crm_drive_links",
+    "crm_opportunities",
+    "crm_opportunity_contacts",
+    "crm_stage_history",
+    "crm_tasks",
+    "crm_task_links",
+    "crm_notes",
+    "crm_note_links",
+    "crm_note_mentions",
 )
 #: The soft-deletable record tables (data-model §2).
-RECORDS = ("crm_companies", "crm_people", "crm_drive_links")
+RECORDS = (
+    "crm_companies",
+    "crm_people",
+    "crm_drive_links",
+    "crm_opportunities",
+    "crm_tasks",
+    "crm_notes",
+)
 #: The audit trigger's noun per table (026 `crm_audit_row`).
 NOUNS = {
     "crm_companies": "company",
     "crm_people": "person",
+    "crm_opportunities": "opportunity",
     "crm_workspace_settings": "setting",
     "crm_select_options": "option",
 }
+#: A polymorphic link's record type → its table (027 `crm_check_refs`).
+TARGETS = {
+    "company": "crm_companies",
+    "person": "crm_people",
+    "opportunity": "crm_opportunities",
+    "task": "crm_tasks",
+    "note": "crm_notes",
+}
+OPEN_STAGES = ("discovery", "qualification", "proposal", "negotiation")
+
+
+class CheckViolation(AssertionError):
+    """A CHECK constraint of 030 that the route should have refused first."""
+
 
 #: Column defaults the database would fill on insert.
 _TRASH = {"deleted_at": None, "deleted_by": None, "deleted_group": None}
@@ -139,6 +172,47 @@ DEFAULTS = {
         **_TRASH,
     },
     "crm_drive_links": dict(_TRASH),
+    "crm_opportunities": {
+        "point_of_contact_id": None,
+        "entity": None,
+        "stage": "discovery",
+        "amount": None,
+        "currency": None,
+        "amount_in_inr": None,
+        "fx_rate_used": None,
+        "fx_month": None,
+        "won_fx_rate": None,
+        "won_fx_month": None,
+        "expected_close_on": None,
+        "next_step": None,
+        "next_step_on": None,
+        "channel_id": None,
+        "deal_type_id": None,
+        "engagement_model_id": None,
+        "programme_id": None,
+        "lost_reason_id": None,
+        "project_category": None,
+        "proposal_sent_on": None,
+        "lost_notes": None,
+        "lost_from_stage": None,
+        "won_on": None,
+        "lost_on": None,
+        "twenty_id": None,
+        "position": 0,
+        **_TRASH,
+    },
+    "crm_opportunity_contacts": {"role_id": None},
+    "crm_tasks": {
+        "body": None,
+        "status": "todo",
+        "due_on": None,
+        "bucket": None,
+        "category_id": None,
+        "completed_at": None,
+        "position": 0,
+        **_TRASH,
+    },
+    "crm_notes": {"kind": "note", "occurred_on": None, **_TRASH},
 }
 
 _clock = itertools.count(1)
@@ -232,6 +306,61 @@ class FakeCrmStore:
             for o in self.rows["crm_select_options"].values()
             if o["workspace_id"] == workspace["id"] and o["label"] == label
         )
+
+    def add_deal_lists(self, workspace: dict[str, Any]) -> None:
+        """The fixed and rule-bearing lists deals, tasks and notes read
+        (026 seeds every one; `add_workspace` keeps only a few)."""
+        lists = [
+            (
+                "company.lead_stage",
+                True,
+                [
+                    ("new", "New"),
+                    ("contacted", "Contacted"),
+                    ("nurturing", "Nurturing"),
+                    ("qualified", "Qualified"),
+                    ("deal_open", "Deal open"),
+                    ("customer", "Customer"),
+                    ("partner", "Partner"),
+                    ("disqualified", "Disqualified"),
+                ],
+            ),
+            (
+                "opportunity.stage",
+                True,
+                [
+                    ("qualification", "Qualification"),
+                    ("negotiation", "Negotiation"),
+                    ("closed_won", "Closed Won"),
+                    ("closed_lost", "Closed Lost"),
+                ],
+            ),
+            (
+                "task.status",
+                True,
+                [("todo", "To do"), ("in_progress", "In progress"), ("done", "Done")],
+            ),
+            ("task.bucket", True, [("today", "Today"), ("this_week", "This week")]),
+            ("opportunity.lost_reason", False, [("price", "Price"), ("other", "Other")]),
+            ("opportunity.contact_role", False, [(None, "Champion"), (None, "Decision maker")]),
+            ("task.category", False, [(None, "Sales"), ("delivery_handoff", "Delivery handoff")]),
+            ("opportunity.deal_type", False, [(None, "New business")]),
+        ]
+        start = len(self.rows["crm_select_options"])
+        for list_key, fixed, items in lists:
+            for pos, (key_, label) in enumerate(items, start=start + 1):
+                self.add(
+                    "crm_select_options",
+                    workspace_id=workspace["id"],
+                    list_key=list_key,
+                    system_key=key_,
+                    label=label,
+                    color=None,
+                    position=pos,
+                    is_default=False,
+                    is_active=True,
+                    is_fixed=fixed,
+                )
 
     def install(self, monkeypatch) -> FakeCrmStore:
         for name in public_store_names():
@@ -524,6 +653,7 @@ class FakeCrmStore:
         q: str | None = None,
         filters: dict[str, Any] | None = None,
         any_of: dict[str, list[str]] | None = None,
+        not_equal: dict[str, Any] | None = None,
         deleted: bool | None = False,
         limit: int = 50,
         offset: int = 0,
@@ -531,6 +661,8 @@ class FakeCrmStore:
         rows = self._of(table, workspace_id)
         for column, value in (filters or {}).items():
             rows = [r for r in rows if r.get(column) == value]
+        for column, value in (not_equal or {}).items():
+            rows = [r for r in rows if r.get(column) != value]
         for column, values in (any_of or {}).items():
             rows = [r for r in rows if r.get(column) in values]
         if deleted is True:
@@ -542,6 +674,9 @@ class FakeCrmStore:
                 "crm_companies": ("name",),
                 "crm_people": ("first_name", "last_name", "primary_email"),
                 "crm_drive_links": ("label",),
+                "crm_opportunities": ("name",),
+                "crm_tasks": ("title",),
+                "crm_notes": ("body",),
             }[table]
             rows = [r for r in rows if any(q.lower() in (r.get(c) or "").lower() for c in columns)]
         key = "deleted_at" if deleted is True else "updated_at"
@@ -589,7 +724,14 @@ class FakeCrmStore:
         Drive links that point at the record."""
         self.applied.append((actor, [{"op": "purge", **i} for i in items]))
         ws = actor["workspace_id"]
-        kinds = {"crm_companies": "company", "crm_people": "person", "crm_drive_links": None}
+        kinds = {
+            "crm_companies": "company",
+            "crm_people": "person",
+            "crm_opportunities": "opportunity",
+            "crm_tasks": "task",
+            "crm_notes": "note",
+            "crm_drive_links": None,
+        }
         snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
         audit_len = len(self.audit)
         try:
@@ -601,21 +743,229 @@ class FakeCrmStore:
                 if row is None or row["workspace_id"] != ws or not row.get("deleted_at"):
                     raise store.refusal_for("CRM04", "No such record in the Trash.")
                 if kinds[table]:
-                    for link in list(self.rows["crm_drive_links"].values()):
-                        if link["record_type"] == kinds[table] and link["record_id"] == target:
-                            self._delete(actor, "crm_drive_links", link)
-                if table == "crm_companies":
-                    for d in list(self.rows["crm_company_domains"].values()):
-                        if d["company_id"] == target:
-                            self._delete(actor, "crm_company_domains", d)
-                    for p in self.rows["crm_people"].values():
-                        if p.get("company_id") == target:
-                            self._update(actor, {"table": "crm_people"}, p, {"company_id": None})
+                    for links in ("crm_drive_links", "crm_task_links", "crm_note_links"):
+                        for link in list(self.rows[links].values()):
+                            if link["record_type"] == kinds[table] and link["record_id"] == target:
+                                self._delete(actor, links, link)
+                self._cascade(actor, table, target)
                 self._delete(actor, table, row)
         except Exception:
             self.rows, self.audit[audit_len:] = snapshot, []
             raise
         return {"purged": len(items)}
+
+    def _cascade(self, actor, table: str, target: str) -> None:
+        """The foreign-key actions a purge sets off (029, 030)."""
+        if table == "crm_companies":
+            if any(d["company_id"] == target for d in self.rows["crm_opportunities"].values()):
+                raise store.refusal_for("23503", "violates foreign key constraint")
+            for d in list(self.rows["crm_company_domains"].values()):
+                if d["company_id"] == target:
+                    self._delete(actor, "crm_company_domains", d)
+            for p in self.rows["crm_people"].values():
+                if p.get("company_id") == target:
+                    self._update(actor, {"table": "crm_people"}, p, {"company_id": None})
+        if table == "crm_people":
+            for c in list(self.rows["crm_opportunity_contacts"].values()):
+                if c["person_id"] == target:
+                    self._delete(actor, "crm_opportunity_contacts", c)
+            for d in self.rows["crm_opportunities"].values():
+                if d.get("point_of_contact_id") == target:
+                    self._update(
+                        actor, {"table": "crm_opportunities"}, d, {"point_of_contact_id": None}
+                    )
+        if table == "crm_opportunities":
+            for c in list(self.rows["crm_opportunity_contacts"].values()):
+                if c["opportunity_id"] == target:
+                    self._delete(actor, "crm_opportunity_contacts", c)
+            for h in list(self.rows["crm_stage_history"].values()):
+                if h["opportunity_id"] == target:
+                    del self.rows["crm_stage_history"][h["id"]]
+        if table == "crm_tasks":
+            for link in list(self.rows["crm_task_links"].values()):
+                if link["task_id"] == target:
+                    self._delete(actor, "crm_task_links", link)
+        if table == "crm_notes":
+            for links in ("crm_note_links", "crm_note_mentions"):
+                for link in list(self.rows[links].values()):
+                    if link["note_id"] == target:
+                        self._delete(actor, links, link)
+
+    # -- store: deals, tasks, notes (S4) -------------------------------------
+
+    def list_links(
+        self,
+        workspace_id: str,
+        table: str,
+        *,
+        owner_ids: list[str] | None = None,
+        record_type: str | None = None,
+        record_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        owner = store.LINK_TABLES[table]
+        rows = self._of(table, workspace_id)
+        if owner_ids is not None:
+            rows = [r for r in rows if r[owner] in owner_ids]
+        if record_type is not None:
+            rows = [r for r in rows if r["record_type"] == record_type]
+        if record_ids is not None:
+            rows = [r for r in rows if r["record_id"] in record_ids]
+        return sorted(rows, key=lambda r: r["created_at"])
+
+    def list_mentions(self, workspace_id: str, note_ids: list[str]) -> list[dict[str, Any]]:
+        return [r for r in self._of("crm_note_mentions", workspace_id) if r["note_id"] in note_ids]
+
+    def list_contacts(
+        self,
+        workspace_id: str,
+        *,
+        opportunity_ids: list[str] | None = None,
+        person_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self._of("crm_opportunity_contacts", workspace_id)
+        if opportunity_ids is not None:
+            rows = [r for r in rows if r["opportunity_id"] in opportunity_ids]
+        if person_ids is not None:
+            rows = [r for r in rows if r["person_id"] in person_ids]
+        return sorted(rows, key=lambda r: r["created_at"])
+
+    def list_stage_history(self, workspace_id: str, opportunity_id: str) -> list[dict[str, Any]]:
+        rows = [
+            r
+            for r in self._of("crm_stage_history", workspace_id)
+            if r["opportunity_id"] == opportunity_id
+        ]
+        return sorted(rows, key=lambda r: r["at"])
+
+    def deal_transition(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_deal_transition (031): all of it or none."""
+        self.applied.append((actor, [{"op": "deal_transition", **plan}]))
+        snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
+        audit_len = len(self.audit)
+        try:
+            return self._transition(actor, plan)
+        except Exception:
+            self.rows, self.audit[audit_len:] = snapshot, []
+            raise
+
+    def _transition(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        ws, who = actor["workspace_id"], actor["user_id"]
+        if isinstance(plan.get("project"), dict):
+            raise store.refusal_for(
+                "CRM22", "This move needs the TVA link, which is not built yet."
+            )
+        opp = self.rows["crm_opportunities"].get(plan["opportunity_id"])
+        if opp is None or opp["workspace_id"] != ws or opp.get("deleted_at"):
+            raise store.refusal_for("CRM04", "No such opportunity.")
+        if plan.get("expect_stage") and opp["stage"] != plan["expect_stage"]:
+            raise store.refusal_for(
+                "CRM09", "This deal moved while you were editing it; reload and try again."
+            )
+        if plan.get("expect_updated_at") and _at(plan["expect_updated_at"]) != _at(
+            opp["updated_at"]
+        ):
+            raise store.refusal_for(
+                "CRM09", "This record changed while you were editing it; reload and try again."
+            )
+        company = self.rows["crm_companies"].get(opp["company_id"])
+        if company is None or company["workspace_id"] != ws or company.get("deleted_at"):
+            raise store.refusal_for("CRM04", "No such company.")
+        wanted = plan.get("company")
+        if wanted:
+            if wanted.get("id") != company["id"]:
+                raise store.refusal_for("CRM04", "No such company.")
+            if wanted.get("expect_updated_at") and _at(wanted["expect_updated_at"]) != _at(
+                company["updated_at"]
+            ):
+                raise store.refusal_for(
+                    "CRM09", "The company changed meanwhile; reload and try again."
+                )
+        for task_id in plan.get("close_tasks") or []:
+            task = self.rows["crm_tasks"].get(task_id)
+            on_deal = any(
+                link["task_id"] == task_id
+                and link["record_type"] == "opportunity"
+                and link["record_id"] == opp["id"]
+                for link in self.rows["crm_task_links"].values()
+            )
+            if task is None or task["workspace_id"] != ws or task.get("deleted_at") or not on_deal:
+                raise store.refusal_for("CRM04", "No such task on this deal.")
+        for t in plan.get("create_tasks") or []:
+            if not any(
+                m["workspace_id"] == ws and m["user_id"] == t["assignee_id"]
+                for m in self.rows["crm_memberships"].values()
+            ):
+                raise store.refusal_for(
+                    "CRM04", "A task's assignee must be a member of this workspace."
+                )
+
+        values = dict(plan.get("opportunity") or {})
+        if values.get("stage_entered_at") == "now":
+            values["stage_entered_at"] = _now()
+        op = {"table": "crm_opportunities"}
+        if plan.get("history"):
+            op["action"] = "opportunity.stage_changed"
+        self._update(actor, op, opp, {**values, "updated_by": who})
+        self._check_rows("crm_opportunities", opp)
+        if plan.get("history"):
+            self.add(
+                "crm_stage_history",
+                workspace_id=ws,
+                opportunity_id=opp["id"],
+                from_stage=plan["history"]["from"],
+                to_stage=plan["history"]["to"],
+                at=opp["stage_entered_at"],
+                by=who,
+                actor_kind=actor["kind"],
+            )
+        company_row = None
+        if wanted and wanted.get("changes"):
+            self._update(actor, {"table": "crm_companies"}, company, dict(wanted["changes"]))
+            company_row = dict(company)
+        closed = 0
+        for task_id in plan.get("close_tasks") or []:
+            task = self.rows["crm_tasks"][task_id]
+            if task["status"] != "done":
+                self._update(
+                    actor,
+                    {"table": "crm_tasks"},
+                    task,
+                    {"status": "done", "completed_at": _now()},
+                )
+                closed += 1
+        note_id = None
+        if plan.get("close_note"):
+            refs: dict[str, str] = {}
+            made = self._one(
+                actor,
+                {
+                    "op": "insert",
+                    "table": "crm_notes",
+                    "values": {"body": plan["close_note"]["body"], "kind": "note"},
+                },
+                refs,
+            )
+            note_id = made["id"]
+            self._one(
+                actor,
+                {
+                    "op": "insert",
+                    "table": "crm_note_links",
+                    "values": {
+                        "note_id": note_id,
+                        "record_type": "opportunity",
+                        "record_id": opp["id"],
+                    },
+                },
+                refs,
+            )
+        return {
+            "opportunity": dict(opp),
+            "company": company_row,
+            "tasks_created": [],
+            "tasks_closed": closed,
+            "note_id": note_id,
+        }
 
     def list_timeline(
         self,
@@ -624,25 +974,25 @@ class FakeCrmStore:
         record_id: str,
         *,
         record_type: str,
-        related_ids: list[str] | None = None,
+        related: dict[str, list[str]] | None = None,
         before: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        ids = {record_id, *(related_ids or [])}
-
         def about(r: dict[str, Any]) -> bool:
             sides = [r.get("after") or {}, r.get("before") or {}]
             if r["target_table"] == table and r["target_id"] == record_id:
                 return True
-            if r["target_table"] == "crm_drive_links":
-                if r["target_id"] in ids:
-                    return True
-                return any(
-                    x.get("record_id") == record_id and x.get("record_type") == record_type
-                    for x in sides
-                )
+            if r["target_table"] in ("crm_drive_links", "crm_task_links", "crm_note_links") and any(
+                x.get("record_id") == record_id and x.get("record_type") == record_type
+                for x in sides
+            ):
+                return True
+            if r["target_id"] in (related or {}).get(r["target_table"], []):
+                return True
             if r["target_table"] == "crm_company_domains" and table == "crm_companies":
                 return any(x.get("company_id") == record_id for x in sides)
+            if r["target_table"] == "crm_opportunity_contacts" and table == "crm_opportunities":
+                return any(x.get("opportunity_id") == record_id for x in sides)
             return False
 
         rows = [r for r in self.audit if r["workspace_id"] == workspace_id and about(r)]
@@ -668,6 +1018,24 @@ class FakeCrmStore:
                 if op.get("ref"):
                     refs[op["ref"]] = result["id"]
                 done.append(result)
+            # FR-CRM-TASK-01, checked after every op as crm_apply does.
+            for op, result in zip(ops, done, strict=True):
+                if (
+                    op["op"] == "insert"
+                    and op["table"] == "crm_tasks"
+                    and not any(
+                        link["task_id"] == result["id"]
+                        for link in self.rows["crm_task_links"].values()
+                    )
+                ):
+                    raise store.refusal_for(
+                        "CRM22", "A task must be linked to at least one record."
+                    )
+            for op, result in zip(ops, done, strict=True):
+                row = self.rows.get(op["table"], {}).get(result["id"])
+                if row is not None:
+                    self._check_rows(op["table"], row)
+                    result["row"] = dict(row)
             return done
         except Exception:
             self.rows, self.audit[audit_len:] = snapshot, []
@@ -685,6 +1053,8 @@ class FakeCrmStore:
         for k in ("id", "workspace_id", "created_at", "created_by"):
             if k in values:
                 raise store.refusal_for("CRM22", f"{k} cannot be set here.")
+        if op["table"] == "crm_opportunities" and op["op"] == "update" and "stage" in values:
+            raise store.refusal_for("CRM22", "Use a stage move.")
         if op["op"] == "insert":
             row = {
                 "id": str(uuid.uuid4()),
@@ -696,10 +1066,23 @@ class FakeCrmStore:
                 **DEFAULTS.get(op["table"], {}),
                 **values,
             }
+            if op["table"] == "crm_opportunities":
+                row.setdefault("stage_entered_at", row["created_at"])
             self._check_refs(op["table"], row)
             self._check_unique(op["table"], row)
             table[row["id"]] = row
             self._audit(actor, op, row, None, dict(row))
+            if op["table"] == "crm_opportunities":
+                self.add(
+                    "crm_stage_history",
+                    workspace_id=ws,
+                    opportunity_id=row["id"],
+                    from_stage=None,
+                    to_stage=row["stage"],
+                    at=row["stage_entered_at"],
+                    by=actor["user_id"],
+                    actor_kind=actor["kind"],
+                )
             return {"ref": op.get("ref"), "id": row["id"], "row": dict(row)}
         if op["op"] not in ("update", "soft_delete", "restore", "delete"):
             raise AssertionError(f"FakeCrmStore does not fake op {op['op']!r} yet.")
@@ -713,6 +1096,7 @@ class FakeCrmStore:
             )
         if op["op"] == "delete":
             self._delete(actor, op["table"], row, op.get("action"))
+            self._cascade(actor, op["table"], row["id"])
             return {"ref": op.get("ref"), "id": row["id"], "row": dict(row)}
         if op["op"] in ("soft_delete", "restore"):
             if op["table"] not in RECORDS:
@@ -766,16 +1150,85 @@ class FakeCrmStore:
             company = self.rows["crm_companies"].get(row["company_id"])
             if company is None or company["workspace_id"] != ws:
                 raise store.refusal_for("23503", "violates foreign key constraint")
-        if table == "crm_drive_links":
-            target = {"company": "crm_companies", "person": "crm_people"}.get(row["record_type"])
+        if table in ("crm_drive_links", "crm_task_links", "crm_note_links"):
+            target = TARGETS.get(row["record_type"])
             found = target and self.rows[target].get(row["record_id"])
             if not found or found["workspace_id"] != ws:
                 raise store.refusal_for("CRM04", f"No such {row['record_type']} in this workspace.")
+        composite = {
+            "crm_opportunities": (
+                ("company_id", "crm_companies"),
+                ("point_of_contact_id", "crm_people"),
+            ),
+            "crm_opportunity_contacts": (
+                ("opportunity_id", "crm_opportunities"),
+                ("person_id", "crm_people"),
+            ),
+            "crm_task_links": (("task_id", "crm_tasks"),),
+            "crm_note_links": (("note_id", "crm_notes"),),
+            "crm_note_mentions": (("note_id", "crm_notes"),),
+        }
+        for column, parent in composite.get(table, ()):
+            if row.get(column):
+                found = self.rows[parent].get(row[column])
+                if found is None or found["workspace_id"] != ws:
+                    raise store.refusal_for("23503", "violates foreign key constraint")
         for column in ("channel_ids",):
             for option_id in row.get(column) or []:
                 option = self.rows["crm_select_options"].get(option_id)
                 if option is None or option["workspace_id"] != ws:
                     raise store.refusal_for("CRM04", "No such option in this workspace.")
+
+    def _check_rows(self, table: str, row: dict[str, Any]) -> None:
+        """030's CHECK constraints on deals, tasks and notes."""
+
+        def broken(name: str) -> None:
+            raise CheckViolation(f"{table} violates {name}: {row}")
+
+        if table == "crm_opportunities":
+            live = row.get("deleted_at") is None
+            if (
+                live
+                and row["stage"] in OPEN_STAGES
+                and not ((row.get("next_step") or "").strip() and row.get("next_step_on"))
+            ):
+                broken("crm_opportunities_open_next_step")
+            if row["stage"] == "closed_lost" and not row.get("lost_reason_id"):
+                broken("crm_opportunities_lost_reason_required")
+            if (
+                live
+                and row["stage"] in ("proposal", "negotiation", "closed_won")
+                and not row.get("twenty_id")
+                and (row.get("amount") is None or row.get("expected_close_on") is None)
+            ):
+                broken("crm_opportunities_proposal_fields")
+            amount = row.get("amount")
+            if (amount is None) != (row.get("currency") is None):
+                broken("crm_opportunities_amount_currency")
+            if (amount is None) != (row.get("amount_in_inr") is None):
+                broken("crm_opportunities_amount_in_inr")
+            if (amount is None) != (row.get("fx_rate_used") is None):
+                broken("crm_opportunities_fx_rate")
+            if amount is not None:
+                exact = (Decimal(str(amount)) * Decimal(str(row["fx_rate_used"]))).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if Decimal(str(row["amount_in_inr"])) != exact:
+                    broken("crm_opportunities_fx_inr")
+                if (row["currency"] == "INR") != (Decimal(str(row["fx_rate_used"])) == 1):
+                    broken("crm_opportunities_fx_inr_at_one")
+            if not 0 <= int(row.get("probability", -1)) <= 100:
+                broken("probability")
+        if table == "crm_tasks" and (row["status"] == "done") != (
+            row.get("completed_at") is not None
+        ):
+            broken("crm_tasks_completed")
+        if (
+            table == "crm_notes"
+            and row.get("kind", "note") != "note"
+            and not row.get("occurred_on")
+        ):
+            broken("crm_notes_activity_date")
 
     def _check_unique(self, table: str, row: dict[str, Any]) -> None:
         def clash(name: str) -> None:
@@ -783,6 +1236,23 @@ class FakeCrmStore:
                 "23505", f'duplicate key value violates unique constraint "{name}"'
             )
 
+        pairs = {
+            "crm_opportunity_contacts": (
+                ("opportunity_id", "person_id"),
+                "crm_opportunity_contacts_pair",
+            ),
+            "crm_task_links": (("task_id", "record_type", "record_id"), "crm_task_links_target"),
+            "crm_note_links": (("note_id", "record_type", "record_id"), "crm_note_links_target"),
+            "crm_note_mentions": (("note_id", "member_id"), "crm_note_mentions_pair"),
+        }
+        if table in pairs:
+            columns, name = pairs[table]
+            if any(
+                other["id"] != row["id"] and all(other[c] == row[c] for c in columns)
+                for other in self.rows[table].values()
+            ):
+                clash(name)
+            return
         if table not in ("crm_company_domains", "crm_people", "crm_select_options"):
             return
         for other in self.rows[table].values():
@@ -811,9 +1281,9 @@ class FakeCrmStore:
         action = op.get("action")
         if not action:
             noun = NOUNS.get(op["table"]) or op["table"].removeprefix("crm_").removesuffix("s")
-            if op["op"] == "insert":
+            if op.get("op") == "insert":
                 verb = "created"
-            elif op["op"] == "delete":
+            elif op.get("op") == "delete":
                 verb = "purged"
             elif (before or {}).get("deleted_at") is None and (after or {}).get("deleted_at"):
                 verb = "deleted"

@@ -5,8 +5,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ArrowLeft,
+  Briefcase,
   Building2,
   CalendarCheck,
+  CheckSquare,
   CircleHelp,
   LogOut,
   MoreHorizontal,
@@ -33,12 +35,15 @@ import { cn } from "@/lib/utils";
  * screens, a bottom bar with a More sheet on a phone. A CRM-only seller sees
  * no TVA link anywhere; a staff member gets Back to TVA (FR-CRM-UI-03).
  *
- * The sidebar holds what exists so far: Today, Companies, People and, for
- * admins, Settings. Each later slice adds its own entry (Pipeline,
- * Opportunities, Tasks, …).
+ * The sidebar holds what exists so far: Today, Companies, People,
+ * Opportunities, Tasks and, for admins, Settings. Each later slice adds its
+ * own entry (Pipeline, …). On a phone the bottom bar has room for four; the
+ * rest are under More.
  */
 
 const COLLAPSED_KEY = "crm.sidebar.collapsed";
+/** How many sections fit the phone's bottom bar beside More. */
+const PHONE_BAR = 4;
 
 interface CrmState {
   bootstrap: CrmBootstrap;
@@ -95,6 +100,8 @@ export function CrmShell({
     { href: `/crm/${ws}`, label: "Today", icon: CalendarCheck, show: true },
     { href: `/crm/${ws}/companies`, label: "Companies", icon: Building2, show: true },
     { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
+    { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, show: true },
+    { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, show: true },
     {
       href: `/crm/${ws}/settings`,
       label: "Settings",
@@ -220,7 +227,7 @@ export function CrmShell({
         </div>
 
         <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t bg-background md:hidden">
-          {links.map(({ href, label, icon: Icon }) => (
+          {links.slice(0, PHONE_BAR).map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
               href={href}
@@ -250,6 +257,9 @@ export function CrmShell({
               <SheetTitle>{bootstrap.me.display_name}</SheetTitle>
             </SheetHeader>
             <div className="space-y-1 px-4 pb-6">
+              {links.slice(PHONE_BAR).map((link) =>
+                navLink(link, { onClick: () => setMoreOpen(false), compact: false })
+              )}
               {footer.map((link) =>
                 navLink(link, { onClick: () => setMoreOpen(false), compact: false })
               )}

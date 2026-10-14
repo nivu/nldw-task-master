@@ -67,9 +67,12 @@ export default function TrashPage() {
         Deleted records stay here for 90 days. Restoring one brings back everything deleted with it.
       </p>
       <Tabs value={object} onValueChange={(value) => setObject(value as CrmObject)}>
-        <TabsList>
+        <TabsList className="max-w-full overflow-x-auto">
           <TabsTrigger value="companies">Companies</TabsTrigger>
           <TabsTrigger value="people">People</TabsTrigger>
+          <TabsTrigger value="opportunities">Deals</TabsTrigger>
+          <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          <TabsTrigger value="notes">Notes</TabsTrigger>
         </TabsList>
       </Tabs>
       {message && (

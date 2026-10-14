@@ -22,6 +22,8 @@ const TYPES: { key: CrmTimelineType; label: string }[] = [
   { key: "create", label: "Created" },
   { key: "field", label: "Field changes" },
   { key: "stage", label: "Stage" },
+  { key: "note", label: "Notes" },
+  { key: "task", label: "Tasks" },
   { key: "link", label: "Drive links" },
   { key: "delete", label: "Trash" },
 ];

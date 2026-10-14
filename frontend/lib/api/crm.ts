@@ -17,18 +17,22 @@ import type {
   CrmCapacity,
   CrmColor,
   CrmCompany,
+  CrmContact,
   CrmDriveLink,
   CrmDuplicates,
   CrmFxRate,
   CrmLists,
   CrmMember,
   CrmObject,
+  CrmOpportunity,
   CrmOption,
   CrmPage,
+  CrmPerson,
   CrmRecord,
   CrmRecordPage,
   CrmRole,
   CrmSettings,
+  CrmTask,
   CrmTimelineEntry,
   CrmTrashRow,
   CrmWorkspace,
@@ -36,6 +40,11 @@ import type {
   InvitationResult,
   NotCreated,
   OptionUpdate,
+  StageChanges,
+  StageKey,
+  StageMoveResult,
+  StagePreview,
+  TaskStatus,
   TvaCrmAuditEntry,
   TvaCrmWorkspace,
   TvaInvitationIn,
@@ -244,6 +253,24 @@ export const searchCompanyChoices = (workspace: string, q: string, after: string
     (page) => ({ choices: page.rows.map((c) => ({ value: c.id, label: c.name })), next: page.next })
   );
 
+/** People as relation choices (a deal's point of contact and contacts). */
+export const searchPersonChoices = (workspace: string, q: string, after: string | null) =>
+  listCrmRecords<CrmPerson>(workspace, "people", { q: q || undefined, limit: 50, after }).then(
+    (page) => ({
+      choices: page.rows.map((p) => ({
+        value: p.id,
+        label: p.company_name ? `${p.name} · ${p.company_name}` : p.name,
+      })),
+      next: page.next,
+    })
+  );
+
+/** Deals as relation choices (a task's or note's link). */
+export const searchDealChoices = (workspace: string, q: string, after: string | null) =>
+  listCrmRecords<CrmOpportunity>(workspace, "opportunities", { q: q || undefined, limit: 50, after }).then(
+    (page) => ({ choices: page.rows.map((d) => ({ value: d.id, label: d.name })), next: page.next })
+  );
+
 export const getCrmRecord = <T extends CrmRecord>(workspace: string, object: CrmObject, id: string) =>
   call<CrmRecordPage<T>>(`/${object}/${id}${query(workspace)}`);
 
@@ -274,12 +301,12 @@ export const updateCrmRecord = <T extends CrmRecord>(
     ...body({ ...changes, expect_updated_at: expectUpdatedAt }),
   });
 
-/** A company says what happens to its people (FR-CRM-DEL-02). */
+/** A company says what happens to its people and its deals (FR-CRM-DEL-02). */
 export const deleteCrmRecord = (
   workspace: string,
   object: CrmObject,
   id: string,
-  choice?: { people: "unlink" | "delete" }
+  choice?: { people?: "unlink" | "delete"; deals?: "delete" | { move_to: string } }
 ) =>
   call<{ deleted_group: string }>(`/${object}/${id}${query(workspace)}`, {
     method: "DELETE",
@@ -315,3 +342,69 @@ export const addCrmDriveLink = (
 
 export const removeCrmDriveLink = (workspace: string, id: string) =>
   call<{ deleted_group: string }>(`/links/${id}${query(workspace)}`, { method: "DELETE" });
+
+// ---------------------------------------------------------------------------
+// Deals, tasks — §2.5, §2.6
+// ---------------------------------------------------------------------------
+
+/** What a move would do, writing nothing (contracts §2.6). */
+export const previewCrmStage = (
+  workspace: string,
+  dealId: string,
+  stage: StageKey,
+  changes: StageChanges = {},
+  companyOnLoss?: "nurturing" | "disqualified"
+) =>
+  call<StagePreview>(`/opportunities/${dealId}/stage/preview${query(workspace)}`, {
+    method: "POST",
+    ...body({ stage, changes, ...(companyOnLoss ? { company_on_loss: companyOnLoss } : {}) }),
+  });
+
+/** The move and its side effects; a 422 names every missing field. */
+export const moveCrmStage = (
+  workspace: string,
+  dealId: string,
+  stage: StageKey,
+  changes: StageChanges,
+  expectUpdatedAt: string,
+  companyOnLoss?: "nurturing" | "disqualified"
+) =>
+  call<StageMoveResult>(`/opportunities/${dealId}/stage${query(workspace)}`, {
+    method: "POST",
+    ...body({
+      stage,
+      changes,
+      expect_updated_at: expectUpdatedAt,
+      ...(companyOnLoss ? { company_on_loss: companyOnLoss } : {}),
+    }),
+  });
+
+export const addCrmContact = (
+  workspace: string,
+  dealId: string,
+  contact: { person_id: string; role_id?: string | null }
+) => call<CrmContact>(`/opportunities/${dealId}/contacts${query(workspace)}`, { method: "POST", ...body(contact) });
+
+export const removeCrmContact = (workspace: string, dealId: string, personId: string) =>
+  call<{ removed: boolean }>(`/opportunities/${dealId}/contacts/${personId}${query(workspace)}`, {
+    method: "DELETE",
+  });
+
+/** The Tasks page: narrowed to an assignee and a status (`open` is not Done). */
+export const listCrmTasks = (
+  workspace: string,
+  filters: { assignee_id?: string; status?: TaskStatus | "open"; q?: string; after?: string | null } = {}
+) =>
+  call<CrmPage<CrmTask>>(
+    `/tasks${query(workspace, {
+      assignee_id: filters.assignee_id,
+      status: filters.status,
+      q: filters.q,
+      after: filters.after ?? undefined,
+      limit: 100,
+    })}`
+  );
+
+/** Q-57 — a Viewer may complete a task assigned to them. */
+export const completeCrmTask = (workspace: string, taskId: string) =>
+  call<CrmTask>(`/tasks/${taskId}/complete${query(workspace)}`, { method: "POST" });

@@ -52,6 +52,8 @@ ACCOUNT_LEVEL = frozenset(
         "list_account_audit",
         # Purges only from the Trash of the actor's workspace (029).
         "purge",
+        # Locks the deal and its company in the actor's workspace (031).
+        "deal_transition",
     }
 )
 
@@ -72,6 +74,10 @@ UNIQUE_MESSAGES = {
     ),
     "crm_company_domains_one_primary": "This company's domains changed meanwhile; reload.",
     "crm_people_workspace_email": "That email was just given to another person in this workspace.",
+    "crm_opportunity_contacts_pair": "That person is already a contact on this deal.",
+    "crm_task_links_target": "The task is already linked to that record.",
+    "crm_note_links_target": "The note is already linked to that record.",
+    "crm_note_mentions_pair": "That member is already mentioned.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -359,17 +365,32 @@ def list_audit(
 
 
 # ---------------------------------------------------------------------------
-# Records — companies, people, Drive links (S3; data-model §3.6–§3.8, §3.14)
+# Records — companies, people, Drive links (S3; data-model §3.6–§3.8, §3.14),
+# deals, tasks and notes (S4; §3.9, §3.12, §3.13)
 # ---------------------------------------------------------------------------
 
 #: The record tables that exist so far; later slices add theirs.
-RECORD_TABLES = frozenset({"crm_companies", "crm_people", "crm_drive_links"})
+RECORD_TABLES = frozenset(
+    {
+        "crm_companies",
+        "crm_people",
+        "crm_drive_links",
+        "crm_opportunities",
+        "crm_tasks",
+        "crm_notes",
+    }
+)
 #: The plain list's `q` (contracts §2.5): a literal substring of these.
 _SEARCH = {
     "crm_companies": ("name",),
     "crm_people": ("first_name", "last_name", "primary_email"),
     "crm_drive_links": ("label",),
+    "crm_opportunities": ("name",),
+    "crm_tasks": ("title",),
+    "crm_notes": ("body",),
 }
+#: The polymorphic link tables of tasks and notes, by their owner column.
+LINK_TABLES = {"crm_task_links": "task_id", "crm_note_links": "note_id"}
 
 
 def _table(table: str) -> str:
@@ -405,6 +426,7 @@ def list_records(
     q: str | None = None,
     filters: dict[str, Any] | None = None,
     any_of: dict[str, list[str]] | None = None,
+    not_equal: dict[str, Any] | None = None,
     deleted: bool | None = False,
     limit: int = 50,
     offset: int = 0,
@@ -416,6 +438,8 @@ def list_records(
     query = supabase.table(_table(table)).select("*").eq("workspace_id", workspace_id)
     for column, value in (filters or {}).items():
         query = query.eq(column, value)
+    for column, value in (not_equal or {}).items():
+        query = query.neq(column, value)
     for column, values in (any_of or {}).items():
         if not values:
             return []
@@ -490,31 +514,119 @@ def purge(actor: dict[str, Any], items: list[dict[str, str]]) -> dict[str, Any]:
     return rpc("crm_purge", {"p_actor": actor, "p_plan": {"items": items}}) or {}
 
 
+def list_links(
+    workspace_id: str,
+    table: str,
+    *,
+    owner_ids: list[str] | None = None,
+    record_type: str | None = None,
+    record_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Task or note links (data-model §3.12, §3.13): those of some tasks or
+    notes (`owner_ids`), or those naming some records."""
+    if table not in LINK_TABLES:
+        raise ValueError(f"not a CRM link table: {table}")
+    query = supabase.table(table).select("*").eq("workspace_id", workspace_id)
+    if owner_ids is not None:
+        if not owner_ids:
+            return []
+        query = query.in_(LINK_TABLES[table], owner_ids)
+    if record_type is not None:
+        query = query.eq("record_type", record_type)
+    if record_ids is not None:
+        if not record_ids:
+            return []
+        query = query.in_("record_id", record_ids)
+    return query.order("created_at").execute().data or []
+
+
+def list_mentions(workspace_id: str, note_ids: list[str]) -> list[dict[str, Any]]:
+    """The members each note mentions (FR-CRM-NOTE-02)."""
+    if not note_ids:
+        return []
+    return (
+        supabase.table("crm_note_mentions")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .in_("note_id", note_ids)
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_contacts(
+    workspace_id: str,
+    *,
+    opportunity_ids: list[str] | None = None,
+    person_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Deal contacts with their Role in deal (data-model §3.10)."""
+    query = supabase.table("crm_opportunity_contacts").select("*").eq("workspace_id", workspace_id)
+    if opportunity_ids is not None:
+        if not opportunity_ids:
+            return []
+        query = query.in_("opportunity_id", opportunity_ids)
+    if person_ids is not None:
+        if not person_ids:
+            return []
+        query = query.in_("person_id", person_ids)
+    return query.order("created_at").execute().data or []
+
+
+def list_stage_history(workspace_id: str, opportunity_id: str) -> list[dict[str, Any]]:
+    """FR-CRM-OPP-02 — the deal's stages, oldest first."""
+    return (
+        supabase.table("crm_stage_history")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("opportunity_id", opportunity_id)
+        .order("at")
+        .execute()
+        .data
+        or []
+    )
+
+
+def deal_transition(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Data-model §5.5 — a stage move and its side effects in one transaction."""
+    return rpc("crm_deal_transition", {"p_actor": actor, "p_plan": plan}) or {}
+
+
 def list_timeline(
     workspace_id: str,
     table: str,
     record_id: str,
     *,
     record_type: str,
-    related_ids: list[str] | None = None,
+    related: dict[str, list[str]] | None = None,
     before: int | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """FR-CRM-REC-03, FR-CRM-AUD-05 — the record's audit rows, newest first:
-    its own, its Drive links' (by id, and by the record they name, so a purged
-    link still shows) and, for a company, its domains'."""
-    ids = ",".join([record_id, *(related_ids or [])])
-    parts = [
-        f"and(target_table.eq.{_table(table)},target_id.eq.{record_id})",
-        f"and(target_table.eq.crm_drive_links,target_id.in.({ids}))",
-        "and(target_table.eq.crm_drive_links,"
-        f"or(after->>record_id.eq.{record_id},before->>record_id.eq.{record_id}),"
-        f"or(after->>record_type.eq.{record_type},before->>record_type.eq.{record_type}))",
-    ]
+    its own; its Drive, task and note links' (by the record they name, so a
+    purged link still shows); the rows of the Drive links, tasks and notes in
+    `related` (table → ids); for a company, its domains'; and for a deal, its
+    contacts'."""
+    parts = [f"and(target_table.eq.{_table(table)},target_id.eq.{record_id})"]
+    for link_table in ("crm_drive_links", "crm_task_links", "crm_note_links"):
+        parts.append(
+            f"and(target_table.eq.{link_table},"
+            f"or(after->>record_id.eq.{record_id},before->>record_id.eq.{record_id}),"
+            f"or(after->>record_type.eq.{record_type},before->>record_type.eq.{record_type}))"
+        )
+    for other, ids in (related or {}).items():
+        if ids:
+            parts.append(f"and(target_table.eq.{_table(other)},target_id.in.({','.join(ids)}))")
     if table == "crm_companies":
         parts.append(
             "and(target_table.eq.crm_company_domains,"
             f"or(after->>company_id.eq.{record_id},before->>company_id.eq.{record_id}))"
+        )
+    if table == "crm_opportunities":
+        parts.append(
+            "and(target_table.eq.crm_opportunity_contacts,"
+            f"or(after->>opportunity_id.eq.{record_id},before->>opportunity_id.eq.{record_id}))"
         )
     query = (
         supabase.table("audit_log")

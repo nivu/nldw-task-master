@@ -6,10 +6,12 @@ import { useCallback, useState } from "react";
 
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { NotesTab } from "@/components/crm/note-composer";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
 import { RelatedPanel } from "@/components/crm/related-panel";
 import type { RelationSearch } from "@/components/crm/field-editor";
 import { useCrm } from "@/components/crm/shell";
+import { TasksTab } from "@/components/crm/task-dialog";
 import { Timeline } from "@/components/crm/timeline";
 import { Button } from "@/components/ui/button";
 import {
@@ -78,7 +80,7 @@ function personGroups(members: CrmMember[], searchCompanies: RelationSearch, cur
 
 /**
  * A person — spec 007 FR-CRM-PER-01, FR-CRM-REC-01 to -04, FR-CRM-LINK-03,
- * FR-CRM-DEL-04.
+ * FR-CRM-DEL-04. The deals they are on are in Related.
  */
 export default function PersonPage() {
   const { id } = useParams<{ id: string }>();
@@ -166,7 +168,30 @@ export default function PersonPage() {
             onChange={refresh}
           />
         }
-        related={<RelatedPanel workspace={ws} related={page.related} />}
+        tasks={
+          <TasksTab
+            workspace={ws}
+            bootstrap={bootstrap}
+            members={members}
+            tasks={page.tasks ?? []}
+            link={{ record_type: "person", record_id: person.id, name: person.name }}
+            onChange={refresh}
+          />
+        }
+        notes={
+          <NotesTab
+            workspace={ws}
+            canEdit={canEdit}
+            members={members}
+            notes={page.notes ?? []}
+            link={{ record_type: "person", record_id: person.id }}
+            timeZone={bootstrap.me.timezone}
+            onChange={refresh}
+          />
+        }
+        related={
+          <RelatedPanel workspace={ws} related={page.related} numberFormat={bootstrap.me.number_format} />
+        }
       />
       <DeleteCompanyDialog
         open={deleting}

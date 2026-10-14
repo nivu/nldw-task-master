@@ -21,8 +21,8 @@ import type { CrmTimezone } from "@/lib/crm/format";
  * A header with the name, key fields as chips and the actions; a left panel
  * with every field, grouped and inline-editable, empty ones folded away; and
  * the tabs Timeline, Tasks, Notes, Files and Related. On a phone the panel
- * stacks above the tabs. Companies and people use it now; deals, tasks and
- * campaigns reuse it as they arrive.
+ * stacks above the tabs. Companies, people and deals use it; campaigns reuse
+ * it as they arrive. The Move stage action is a deal's, passed in `actions`.
  */
 
 export interface FieldGroup {
@@ -186,6 +186,8 @@ export function RecordPage({
   timeZone,
   onSave,
   timeline,
+  tasks,
+  notes,
   files,
   related,
 }: {
@@ -200,6 +202,8 @@ export function RecordPage({
   timeZone: CrmTimezone;
   onSave: (name: string, value: unknown) => Promise<void>;
   timeline: React.ReactNode;
+  tasks?: React.ReactNode;
+  notes?: React.ReactNode;
   files: React.ReactNode;
   related: React.ReactNode;
 }) {
@@ -242,10 +246,10 @@ export function RecordPage({
               {timeline}
             </TabsContent>
             <TabsContent value="tasks" className="pt-4">
-              <p className="text-sm text-muted-foreground">No tasks on this record.</p>
+              {tasks ?? <p className="text-sm text-muted-foreground">No tasks on this record.</p>}
             </TabsContent>
             <TabsContent value="notes" className="pt-4">
-              <p className="text-sm text-muted-foreground">No notes on this record.</p>
+              {notes ?? <p className="text-sm text-muted-foreground">No notes on this record.</p>}
             </TabsContent>
             <TabsContent value="files" className="pt-4">
               {files}

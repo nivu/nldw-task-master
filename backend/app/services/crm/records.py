@@ -1,11 +1,15 @@
-"""Companies, people and Drive links — spec 007 FR-CRM-CO-01 to -03,
-FR-CRM-PER-01, FR-CRM-LINK-01 to -03, FR-CRM-DUP-01, -02, FR-CRM-DEL-01,
--02, -04, FR-CRM-PIPE-01, FR-CRM-REC-01 to -04; contracts §2.5; plan §5.3.
+"""Records — spec 007 FR-CRM-CO-01 to -03, FR-CRM-PER-01, FR-CRM-TASK-01,
+-02, FR-CRM-NOTE-01 to -03, FR-CRM-LINK-01 to -03, FR-CRM-DUP-01, -02,
+FR-CRM-DEL-01, -02, -04, FR-CRM-PIPE-01, FR-CRM-REC-01 to -04; Q-57, Q-63;
+contracts §2.5; plan §5.3.
 
 Generic create, update, soft delete (with a `deleted_group`), restore,
 permanent delete and list, each validated from the field registry
 (`domain/crm/objects.py`) and written in one `crm_apply` or `crm_purge` call,
-so the change and its audit rows land together (FR-CRM-AUD-06).
+so the change and its audit rows land together (FR-CRM-AUD-06). Companies,
+people, tasks and notes are created and edited here; deals in `deals.py`,
+whose stage moves have rules of their own, and read, deleted and restored
+here like every other record.
 
 Every read is of the caller's workspace, and a record of another workspace,
 or one in the Trash, is "No such company." (404), never "forbidden"
@@ -26,8 +30,14 @@ from app.schemas.crm import (
     CompanyFields,
     CompanyUpdate,
     DriveLinkIn,
+    NoteFields,
+    NoteUpdate,
+    OpportunityCreate,
+    OpportunityUpdate,
     PersonFields,
     PersonUpdate,
+    TaskFields,
+    TaskUpdate,
 )
 from app.services import supabase as db
 from app.services.crm import CrmRefused, store
@@ -50,11 +60,34 @@ class Kind:
 KINDS = {
     "company": Kind("company", "crm_companies", "company", CompanyFields, CompanyUpdate),
     "person": Kind("person", "crm_people", "person", PersonFields, PersonUpdate),
+    "opportunity": Kind(
+        "opportunity", "crm_opportunities", "deal", OpportunityCreate, OpportunityUpdate
+    ),
+    "task": Kind("task", "crm_tasks", "task", TaskFields, TaskUpdate),
+    "note": Kind("note", "crm_notes", "note", NoteFields, NoteUpdate),
 }
 #: URL segment → kind (contracts §2.5 "Objects in paths").
-PLURALS = {"companies": "company", "people": "person"}
-#: The record tables a soft delete, restore or purge may touch, in purge order.
-TRASH_TABLES = ("crm_drive_links", "crm_people", "crm_companies")
+PLURALS = {
+    "companies": "company",
+    "people": "person",
+    "opportunities": "opportunity",
+    "tasks": "task",
+    "notes": "note",
+}
+#: The record tables a soft delete, restore or purge may touch, in purge
+#: order: what points at a record goes before it (a deal before its company).
+TRASH_TABLES = (
+    "crm_drive_links",
+    "crm_notes",
+    "crm_tasks",
+    "crm_opportunities",
+    "crm_people",
+    "crm_companies",
+)
+#: A task's or note's link table, by kind.
+LINKS_OF = {"task": "crm_task_links", "note": "crm_note_links"}
+#: The records whose page has Tasks and Notes tabs (FR-CRM-REC-03).
+SHOW_TABS = objects.TASK_NOTE_TARGETS
 
 
 def no_such(kind: str) -> CrmRefused:
@@ -107,6 +140,10 @@ def parse(kind: str, payload: Any, *, creating: bool) -> dict[str, Any]:
     return values
 
 
+def _a(noun: str) -> str:
+    return f"{'an' if noun[0] in 'aeiou' else 'a'} {noun}"
+
+
 #: NOT NULL columns, and what clearing them means.
 _EMPTY: dict[str, Any] = {
     "entities": [],
@@ -137,7 +174,7 @@ def load(ctx: Any) -> Workspace:
     return Workspace(ctx, show.Facts(options=options, names=names, role=ctx.role), members)
 
 
-def _check(ws: Workspace, kind: str, values: dict[str, Any], existing: dict | None) -> None:
+def check_fields(ws: Workspace, kind: str, values: dict[str, Any], existing: dict | None) -> None:
     """FR-CRM-CO-01, FR-CRM-PER-01 — every rule a field's note states."""
     ctx = ws.ctx
     present = {k for k, v in values.items() if v not in (None, [], {}, "")}
@@ -296,34 +333,87 @@ def live(ws_id: str, kind: str, record_id: str) -> dict[str, Any]:
     return row
 
 
+def by_id(ws_id: str, table: str, ids: set[str] | list[str]) -> dict[str, dict[str, Any]]:
+    """Records of one table by id, Trash included (a name stays readable)."""
+    wanted = sorted(i for i in ids if i)
+    if not wanted:
+        return {}
+    rows = store.list_records(ws_id, table, any_of={"id": wanted}, deleted=None, limit=len(wanted))
+    return {r["id"]: r for r in rows}
+
+
+def link_names(ws_id: str, links: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """The name of every record some task or note links to."""
+    names: dict[tuple[str, str], str] = {}
+    for record_type, table in (
+        ("company", "crm_companies"),
+        ("person", "crm_people"),
+        ("opportunity", "crm_opportunities"),
+    ):
+        ids = {link["record_id"] for link in links if link["record_type"] == record_type}
+        for rid, row in by_id(ws_id, table, ids).items():
+            names[(record_type, rid)] = (
+                dedupe.full_name(row["first_name"], row.get("last_name"))
+                if record_type == "person"
+                else row["name"]
+            )
+    return names
+
+
 def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if kind == "company":
         domains = store.list_domains(ws.id, company_ids=[r["id"] for r in rows])
         return [show.company(r, ws.facts, domains) for r in rows]
-    company_ids = sorted({r["company_id"] for r in rows if r.get("company_id")})
-    companies = (
-        {
-            c["id"]: c
-            for c in store.list_records(
-                ws.id,
-                "crm_companies",
-                any_of={"id": company_ids},
-                deleted=None,
-                limit=len(company_ids) or 1,
+    if kind == "opportunity":
+        companies = by_id(ws.id, "crm_companies", {r["company_id"] for r in rows})
+        people = by_id(ws.id, "crm_people", {r.get("point_of_contact_id") or "" for r in rows})
+        return [show.opportunity(r, ws.facts, companies, people) for r in rows]
+    if kind in LINKS_OF:
+        links = store.list_links(ws.id, LINKS_OF[kind], owner_ids=[r["id"] for r in rows])
+        names = link_names(ws.id, links)
+        owner = "task_id" if kind == "task" else "note_id"
+        if kind == "task":
+            return [
+                show.task(r, ws.facts, [lk for lk in links if lk[owner] == r["id"]], names)
+                for r in rows
+            ]
+        mentions = store.list_mentions(ws.id, [r["id"] for r in rows])
+        return [
+            show.note(
+                r,
+                ws.facts,
+                [lk for lk in links if lk[owner] == r["id"]],
+                names,
+                [m for m in mentions if m["note_id"] == r["id"]],
             )
-        }
-        if company_ids
-        else {}
-    )
+            for r in rows
+        ]
+    companies = by_id(ws.id, "crm_companies", {r.get("company_id") or "" for r in rows})
     return [show.person(r, ws.facts, companies) for r in rows]
 
 
-def list_records(ctx: Any, kind: str, *, q: str | None, limit: int, after: str | None) -> dict:
-    """Contracts §2.5 `GET /crm/{object}` — newest first, paged by `next`."""
+def list_records(
+    ctx: Any,
+    kind: str,
+    *,
+    q: str | None,
+    limit: int,
+    after: str | None,
+    filters: dict[str, Any] | None = None,
+    open_only: bool = False,
+) -> dict:
+    """Contracts §2.5 `GET /crm/{object}` — newest first, paged by `next`.
+    The Tasks page narrows tasks to an assignee and to the open ones."""
     ws = load(ctx)
     offset = int(after) if after and after.isdigit() else 0
     rows = store.list_records(
-        ctx.workspace_id, KINDS[kind].table, q=q, limit=limit + 1, offset=offset
+        ctx.workspace_id,
+        KINDS[kind].table,
+        q=q,
+        filters=filters,
+        not_equal={"status": "done"} if open_only else None,
+        limit=limit + 1,
+        offset=offset,
     )
     more = len(rows) > limit
     return {
@@ -350,19 +440,7 @@ def get(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
         raise no_such(kind)
 
     record = present_rows(ws, kind, [row])[0]
-    if kind == "company":
-        people = store.list_records(
-            ctx.workspace_id, "crm_people", filters={"company_id": row["id"]}, limit=200
-        )
-        related: dict[str, Any] = {"people": [show.person(p, ws.facts) for p in people]}
-    else:
-        related = {
-            "company": (
-                {"id": record["company_id"], "name": record["company_name"]}
-                if record.get("company_id")
-                else None
-            )
-        }
+    related = _related(ws, kind, row, record)
     links = store.list_records(
         ctx.workspace_id,
         "crm_drive_links",
@@ -375,9 +453,79 @@ def get(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
         "timeline_head": timeline(ctx, kind, row["id"], ws=ws, limit=10),
         "links": [show.drive_link(link, ws.facts) for link in links],
     }
+    if kind in SHOW_TABS:
+        answer["tasks"] = present_rows(ws, "task", linked(ws.id, "task", kind, row["id"]))
+        answer["notes"] = present_rows(ws, "note", linked(ws.id, "note", kind, row["id"]))
     if merged_from:
         answer["merged_from"] = merged_from
     return answer
+
+
+def linked(ws_id: str, of: str, record_type: str, record_id: str) -> list[dict[str, Any]]:
+    """The live tasks or notes linked to a record: open tasks first, then by
+    due date; notes newest first."""
+    links = store.list_links(ws_id, LINKS_OF[of], record_type=record_type, record_ids=[record_id])
+    owner = "task_id" if of == "task" else "note_id"
+    ids = sorted({lk[owner] for lk in links})
+    if not ids:
+        return []
+    rows = store.list_records(ws_id, KINDS[of].table, any_of={"id": ids}, limit=len(ids))
+    if of == "task":
+        return sorted(
+            rows,
+            key=lambda r: (r["status"] == "done", r.get("due_on") or "9999-12-31", r["title"]),
+        )
+    return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+
+
+def _deals_of(ws: Workspace, **filters: Any) -> list[dict[str, Any]]:
+    rows = store.list_records(ws.id, "crm_opportunities", filters=filters, limit=200)
+    return present_rows(ws, "opportunity", rows)
+
+
+def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, Any]) -> dict:
+    """FR-CRM-REC-03 Related: a company's people and deals; a person's company
+    and the deals they are on; a deal's company, point of contact and other
+    contacts. A Viewer's deals carry no amounts (the presenter)."""
+    if kind == "company":
+        people = store.list_records(
+            ws.id, "crm_people", filters={"company_id": row["id"]}, limit=200
+        )
+        return {
+            "people": [show.person(p, ws.facts) for p in people],
+            "opportunities": _deals_of(ws, company_id=row["id"]),
+        }
+    if kind == "person":
+        on = {c["opportunity_id"] for c in store.list_contacts(ws.id, person_ids=[row["id"]])}
+        deals = {d["id"]: d for d in _deals_of(ws, point_of_contact_id=row["id"])}
+        if on - set(deals):
+            more = store.list_records(
+                ws.id, "crm_opportunities", any_of={"id": sorted(on - set(deals))}, limit=200
+            )
+            deals.update({d["id"]: d for d in present_rows(ws, "opportunity", more)})
+        return {
+            "company": (
+                {"id": record["company_id"], "name": record["company_name"]}
+                if record.get("company_id")
+                else None
+            ),
+            "opportunities": sorted(deals.values(), key=lambda d: d["updated_at"], reverse=True),
+        }
+    if kind == "opportunity":
+        contacts = store.list_contacts(ws.id, opportunity_ids=[row["id"]])
+        people = by_id(ws.id, "crm_people", {c["person_id"] for c in contacts})
+        return {
+            "company": {"id": record["company_id"], "name": record["company_name"]},
+            "point_of_contact": (
+                {"id": record["point_of_contact_id"], "name": record["point_of_contact_name"]}
+                if record.get("point_of_contact_id")
+                else None
+            ),
+            "contacts": [show.contact(c, ws.facts, people) for c in contacts],
+            # FR-CRM-REC-03: a Labs deal's TVA project arrives in S5.
+            "project": None,
+        }
+    return {}
 
 
 def timeline(
@@ -404,6 +552,22 @@ def timeline(
             limit=500,
         )
     }
+    around = show.Around(links=links)
+    related: dict[str, list[str]] = {"crm_drive_links": sorted(links)}
+    if kind in SHOW_TABS:
+        for of, attr in (("task", "tasks"), ("note", "notes")):
+            owner = "task_id" if of == "task" else "note_id"
+            ids = {
+                lk[owner]
+                for lk in store.list_links(
+                    ctx.workspace_id, LINKS_OF[of], record_type=kind, record_ids=[record_id]
+                )
+            }
+            setattr(around, attr, by_id(ctx.workspace_id, KINDS[of].table, ids))
+            related[KINDS[of].table] = sorted(ids)
+    if kind == "opportunity":
+        contacts = store.list_contacts(ctx.workspace_id, opportunity_ids=[record_id])
+        around.people = by_id(ctx.workspace_id, "crm_people", {c["person_id"] for c in contacts})
     # A type filter, and a Viewer's dropped entries, leave a batch of audit
     # rows short, so batches are read until `limit` entries are found or the
     # history ends. Every row skipped past the last entry shown matched
@@ -416,11 +580,11 @@ def timeline(
             KINDS[kind].table,
             record_id,
             record_type=kind,
-            related_ids=sorted(links),
+            related=related,
             before=before,
             limit=batch,
         )
-        found = show.timeline(rows, kind, ws.facts, links=links)
+        found = show.timeline(rows, kind, ws.facts, around=around)
         entries += [e for e in found if not types or e["type"] in types]
         if len(rows) < batch:
             break
@@ -479,13 +643,15 @@ def create(ctx: Any, kind: str, payload: Any, *, check_duplicates: bool) -> dict
     alike, nothing is written and the possible duplicates come back instead
     (FR-CRM-DUP-02): the web app shows them, and an MCP caller asks the
     person before calling again without it."""
+    if kind in LINKS_OF:
+        return _create_task_or_note(ctx, kind, payload)
     ws = load(ctx)
     values = parse(kind, payload, creating=True)
     # An owner defaults to the person creating the record, always a member:
     # Viewers cannot create.
     if kind == "company" and not values.get("owner_id"):
         values["owner_id"] = ctx.user.id
-    _check(ws, kind, values, None)
+    check_fields(ws, kind, values, None)
     domains: list[tuple[str, bool]] = []
     if kind == "company":
         values.setdefault("lead_stage", "new")
@@ -520,11 +686,13 @@ def create(ctx: Any, kind: str, payload: Any, *, check_duplicates: bool) -> dict
 def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
     """Contracts §2.5 `PATCH /crm/{object}/{id}`. `expect_updated_at`, when
     sent, refuses a change made meanwhile (CRM09 → 409)."""
+    if kind in LINKS_OF:
+        return _update_task_or_note(ctx, kind, record_id, payload)
     ws = load(ctx)
     row = live(ctx.workspace_id, kind, record_id)
     values = parse(kind, payload, creating=False)
     expect = values.pop("expect_updated_at", None)
-    _check(ws, kind, values, row)
+    check_fields(ws, kind, values, row)
 
     ops: list[dict[str, Any]] = []
     if kind == "company":
@@ -575,10 +743,20 @@ def _owns(row: dict[str, Any], user_id: str) -> bool:
     return owner == user_id if owner else row.get("created_by") == user_id
 
 
-def soft_delete(ctx: Any, kind: str, record_id: str, *, people: str | None = None) -> dict:
+def soft_delete(
+    ctx: Any,
+    kind: str,
+    record_id: str,
+    *,
+    people: str | None = None,
+    deals: str | None = None,
+    move_deals_to: str | None = None,
+) -> dict:
     """FR-CRM-DEL-01, -02, -04. A Member deletes only what they own (or, with
     no owner set, created); everything deleted in this one action shares a
-    `deleted_group`, so a restore brings it back together."""
+    `deleted_group`, so a restore brings it back together. A company says
+    what happens to its people (unlink or delete) and its deals (move to
+    another company, or delete: a deal cannot be unlinked, Q-54)."""
     row = live(ctx.workspace_id, kind, record_id)
     if not ctx.may("soft_delete", owns=_owns(row, ctx.user.id)):
         raise CrmRefused(
@@ -631,8 +809,57 @@ def soft_delete(ctx: Any, kind: str, record_id: str, *, people: str | None = Non
                         "values": {"company_id": None},
                     }
                 )
+        ops += _company_deals(ctx, row, group, deals=deals, move_to=move_deals_to)
     store.apply(actor(ctx), ops)
     return {"deleted_group": group}
+
+
+def _company_deals(
+    ctx: Any, company: dict[str, Any], group: str, *, deals: str | None, move_to: str | None
+) -> list[dict[str, Any]]:
+    """FR-CRM-DEL-02 — a company's deals move to another company of the
+    workspace or go to the Trash with it. The TVA refusal for a deal with a
+    project arrives with the TVA link (S5)."""
+    rows = store.list_records(
+        ctx.workspace_id, "crm_opportunities", filters={"company_id": company["id"]}, limit=2000
+    )
+    if not rows:
+        return []
+    if deals is None and move_to is None:
+        n = len(rows)
+        raise CrmRefused(
+            422,
+            f"{company['name']} has {n} {'deal' if n == 1 else 'deals'}; say whether to move "
+            "them to another company or delete them too.",
+        )
+    if move_to is not None:
+        target = (
+            store.get_record(ctx.workspace_id, "crm_companies", move_to) if _uuid(move_to) else None
+        )
+        if target is None or target.get("deleted_at"):
+            raise CrmRefused(404, "No such company.")
+        if target["id"] == company["id"]:
+            raise CrmRefused(422, "Move the deals to another company.")
+        return [
+            {
+                "op": "update",
+                "table": "crm_opportunities",
+                "id": d["id"],
+                "values": {"company_id": target["id"]},
+            }
+            for d in rows
+        ]
+    barred = [d["name"] for d in rows if not ctx.may("soft_delete", owns=_owns(d, ctx.user.id))]
+    if barred:
+        raise CrmRefused(
+            403,
+            f"Only a workspace admin or their owner can delete {', '.join(barred)}; "
+            "move them instead, or ask a workspace admin.",
+        )
+    return [
+        {"op": "soft_delete", "table": "crm_opportunities", "id": d["id"], "deleted_group": group}
+        for d in rows
+    ]
 
 
 def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
@@ -682,6 +909,14 @@ def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
         for p in people
         if p.get("company_id") in gone
     ]
+    # A deal cannot come back without its company (Company is required).
+    deals = [r for t, r in back if t == "crm_opportunities"]
+    held = sorted({d["company_id"] for d in deals} - coming)
+    for company in by_id(ctx.workspace_id, "crm_companies", held).values():
+        if company.get("deleted_at"):
+            raise CrmRefused(
+                422, f"This deal's company, {company['name']}, is in the Trash; restore it first."
+            )
     done = store.apply(actor(ctx), ops)
     restored = [d["row"] for d in done if d["id"] == record_id][-1]
     return present_rows(ws, kind, [restored])[0]
@@ -696,7 +931,34 @@ def purge(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
     )
     if row is None or not row.get("deleted_at"):
         raise CrmRefused(404, f"No such {show.NOUNS[kind]} in the Trash.")
-    return store.purge(actor(ctx), [{"table": KINDS[kind].table, "id": record_id}])
+    items = [{"table": KINDS[kind].table, "id": record_id}]
+    if kind == "company":
+        items = _deals_first(ctx.workspace_id, [record_id], items)
+    return store.purge(actor(ctx), items)
+
+
+def _deals_first(
+    ws_id: str, company_ids: list[str], items: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """A company goes with its deals, which are in the Trash with it: a deal
+    cannot outlive its company. A live deal still on the company is refused
+    by the foreign key instead."""
+    if not company_ids:
+        return items
+    queued = {i["id"] for i in items}
+    deals = [
+        {"table": "crm_opportunities", "id": d["id"]}
+        for d in store.list_records(
+            ws_id,
+            "crm_opportunities",
+            any_of={"company_id": sorted(company_ids)},
+            deleted=True,
+            limit=2000,
+        )
+        if d["id"] not in queued
+    ]
+    first = [i for i in items if i["table"] != "crm_companies"]
+    return first + deals + [i for i in items if i["table"] == "crm_companies"]
 
 
 def trash(ctx: Any, kind: str, *, limit: int, after: str | None) -> dict[str, Any]:
@@ -778,5 +1040,235 @@ def purge_expired(workspace_id: str, now: datetime) -> int:
     ]
     if not items:
         return 0
+    companies = [i["id"] for i in items if i["table"] == "crm_companies"]
+    items = _deals_first(workspace_id, companies, items)
     system = {"user_id": None, "kind": "system", "channel": None, "workspace_id": workspace_id}
     return int(store.purge(system, items).get("purged", 0))
+
+
+# ---------------------------------------------------------------------------
+# Tasks and notes — FR-CRM-TASK-01, -02, FR-CRM-NOTE-01 to -03, Q-57, Q-63
+# ---------------------------------------------------------------------------
+
+MUST_LINK = "A task must be linked to at least one record."
+
+
+def _targets(ws: Workspace, links: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The records a task or note links to: live records of this workspace,
+    each once. A campaign arrives in 1b, so it is not found yet."""
+    wanted: list[tuple[str, str]] = []
+    for link in links:
+        pair = (link["record_type"], link["record_id"])
+        if pair[0] not in objects.TASK_NOTE_TARGETS:
+            raise CrmRefused(404, f"No such {pair[0]}.")
+        live(ws.id, pair[0], pair[1])
+        if pair not in wanted:
+            wanted.append(pair)
+    return wanted
+
+
+def _category(ws: Workspace, values: dict[str, Any]) -> None:
+    """`category` by label or key, for an MCP caller (contracts §3 tool 6)."""
+    asked = values.pop("category", None)
+    if asked is None:
+        return
+    text = str(asked).strip().lower()
+    found = next(
+        (
+            o
+            for o in ws.facts.options.values()
+            if o["list_key"] == "task.category"
+            and o["is_active"]
+            and text in (o["label"].lower(), (o.get("system_key") or "").lower())
+        ),
+        None,
+    )
+    if found is None:
+        raise CrmRefused(422, f"“{asked}” is not a task category in this workspace.")
+    if values.get("category_id") not in (None, found["id"]):
+        raise CrmRefused(422, "Give the category once, by id or by name.")
+    values["category_id"] = found["id"]
+
+
+def _status(values: dict[str, Any], existing: dict[str, Any] | None) -> None:
+    """`completed_at` is written when the status becomes Done (spec §5.9)."""
+    if "status" not in values:
+        return
+    was = (existing or {}).get("status")
+    if values["status"] == "done" and was != "done":
+        values["completed_at"] = datetime.now(UTC).isoformat()
+    elif values["status"] != "done":
+        values["completed_at"] = None
+
+
+def _mentions(ws: Workspace, ids: list[str]) -> list[str]:
+    """FR-CRM-NOTE-02, Q-63 — a mention notifies its target, so only members
+    of the workspace can be mentioned."""
+    for member_id in ids:
+        if member_id not in ws.members:
+            who = ws.facts.name(member_id)
+            raise CrmRefused(
+                422,
+                f"{who} is not a member of this workspace; only members can be mentioned."
+                if who
+                else "Only members of this workspace can be mentioned.",
+            )
+    return list(dict.fromkeys(ids))
+
+
+def _task_or_note_values(
+    ws: Workspace, kind: str, payload: Any, existing: dict[str, Any] | None
+) -> tuple[dict[str, Any], list[tuple[str, str]] | None, list[str] | None]:
+    creating = existing is None
+    values = parse(kind, payload, creating=creating)
+    values.pop("expect_updated_at", None)
+    raw_links = values.pop("links", None)
+    mention_ids = values.pop("mention_ids", None)
+    if kind == "task":
+        _category(ws, values)
+        if creating and not values.get("assignee_id"):
+            values["assignee_id"] = ws.ctx.user.id
+        if creating:
+            values.setdefault("status", "todo")
+    else:
+        if creating and not values.get("kind"):
+            values["kind"] = "note"
+    check_fields(ws, kind, values, existing)
+    if kind == "task":
+        if "assignee_id" in values and values["assignee_id"] not in ws.members:
+            raise CrmRefused(422, "The assignee must be a member of this workspace.")
+        _status(values, existing)
+    else:
+        after = {**(existing or {}), **values}
+        if after.get("kind", "note") != "note" and not after.get("occurred_on"):
+            raise CrmRefused(422, "Log activity needs the date it happened.")
+    links = _targets(ws, raw_links) if raw_links is not None else None
+    if kind == "task" and (links == [] or (creating and not links)):
+        raise CrmRefused(422, MUST_LINK)
+    mentions = _mentions(ws, mention_ids) if mention_ids is not None else None
+    return values, links, mentions
+
+
+def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
+    """Contracts §2.5 `POST /crm/tasks`, `POST /crm/notes`: the record, its
+    links and (a note) its mentions in one `crm_apply` call."""
+    ws = load(ctx)
+    values, links, mentions = _task_or_note_values(ws, kind, payload, None)
+    owner = "task_id" if kind == "task" else "note_id"
+    ops: list[dict[str, Any]] = [
+        {"op": "insert", "table": KINDS[kind].table, "ref": "record", "values": values}
+    ]
+    ops += [
+        {
+            "op": "insert",
+            "table": LINKS_OF[kind],
+            "values": {owner: "$ref:record", "record_type": t, "record_id": i},
+        }
+        for t, i in links or []
+    ]
+    ops += [
+        {
+            "op": "insert",
+            "table": "crm_note_mentions",
+            "values": {"note_id": "$ref:record", "member_id": m},
+        }
+        for m in mentions or []
+    ]
+    done = store.apply(actor(ctx), ops)
+    return present_rows(ws, kind, [done[0]["row"]])[0]
+
+
+def _may_change_task(ctx: Any, row: dict[str, Any], sent: set[str]) -> None:
+    """Q-57 — a Viewer changes only the status of a task assigned to them."""
+    if ctx.may("edit_records"):
+        return
+    if not ctx.may("complete_task", is_assignee=row["assignee_id"] == ctx.user.id) or (
+        sent - {"status", "expect_updated_at"}
+    ):
+        raise CrmRefused(403, "Viewers may change only the status of a task assigned to them.")
+
+
+def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
+    """Contracts §2.5 `PATCH`. Links and mentions sent replace the ones there."""
+    ws = load(ctx)
+    row = live(ctx.workspace_id, kind, record_id)
+    if kind == "task":
+        _may_change_task(ctx, row, set(payload) if isinstance(payload, dict) else set())
+    elif not ctx.may("edit_records"):
+        raise CrmRefused(403, "Viewers cannot change records.")
+    expect = payload.get("expect_updated_at") if isinstance(payload, dict) else None
+    values, links, mentions = _task_or_note_values(ws, kind, payload, row)
+    owner = "task_id" if kind == "task" else "note_id"
+
+    ops: list[dict[str, Any]] = []
+    if links is not None:
+        current = store.list_links(ctx.workspace_id, LINKS_OF[kind], owner_ids=[record_id])
+        have = {(lk["record_type"], lk["record_id"]): lk for lk in current}
+        ops += [
+            {"op": "delete", "table": LINKS_OF[kind], "id": lk["id"]}
+            for pair, lk in have.items()
+            if pair not in links
+        ]
+        ops += [
+            {
+                "op": "insert",
+                "table": LINKS_OF[kind],
+                "values": {owner: record_id, "record_type": t, "record_id": i},
+            }
+            for t, i in links
+            if (t, i) not in have
+        ]
+    if mentions is not None:
+        current = store.list_mentions(ctx.workspace_id, [record_id])
+        have_m = {m["member_id"]: m for m in current}
+        ops += [
+            {"op": "delete", "table": "crm_note_mentions", "id": m["id"]}
+            for member, m in have_m.items()
+            if member not in mentions
+        ]
+        ops += [
+            {
+                "op": "insert",
+                "table": "crm_note_mentions",
+                "values": {"note_id": record_id, "member_id": m},
+            }
+            for m in mentions
+            if m not in have_m
+        ]
+
+    changes = {k: v for k, v in values.items() if row.get(k) != v}
+    if not changes and not ops:
+        return present_rows(ws, kind, [row])[0]
+    main = {
+        "op": "update",
+        "table": KINDS[kind].table,
+        "id": record_id,
+        "values": changes or {"updated_by": ctx.user.id},
+    }
+    if expect:
+        main["expect_updated_at"] = expect
+    done = store.apply(actor(ctx), [main, *ops])
+    return present_rows(ws, kind, [done[0]["row"]])[0]
+
+
+def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
+    """Contracts §2.5 `POST /crm/tasks/{id}/complete` — Admins and Members, or
+    a Viewer on a task assigned to them (Q-57)."""
+    ws = load(ctx)
+    row = live(ctx.workspace_id, "task", task_id)
+    if not ctx.may("complete_task", is_assignee=row["assignee_id"] == ctx.user.id):
+        raise CrmRefused(403, "Only the task's assignee or a member can mark it done.")
+    if row["status"] == "done":
+        return present_rows(ws, "task", [row])[0]
+    done = store.apply(
+        actor(ctx),
+        [
+            {
+                "op": "update",
+                "table": "crm_tasks",
+                "id": task_id,
+                "values": {"status": "done", "completed_at": datetime.now(UTC).isoformat()},
+            }
+        ],
+    )
+    return present_rows(ws, "task", [done[0]["row"]])[0]

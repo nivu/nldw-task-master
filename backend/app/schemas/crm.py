@@ -250,10 +250,154 @@ class DuplicatesIn(BaseModel):
     email: str | None = Field(default=None, max_length=320)
 
 
+class MoveDealsTo(BaseModel):
+    """FR-CRM-DEL-02 — a deal cannot be unlinked (Company is required), so
+    it moves to another company of the workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    move_to: str
+
+
 class CompanyDeleteIn(BaseModel):
-    """FR-CRM-DEL-02, Q-54 — what happens to the company's people. Deals join
-    in S4."""
+    """FR-CRM-DEL-02, Q-54 — what happens to the company's people and deals."""
 
     model_config = ConfigDict(extra="forbid")
 
     people: Literal["unlink", "delete"] | None = None
+    deals: MoveDealsTo | Literal["delete"] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Deals, tasks, notes — contracts §2.5.1, §2.6 (S4)
+# ---------------------------------------------------------------------------
+
+Stage = Literal[
+    "discovery", "qualification", "proposal", "negotiation", "closed_won", "closed_lost"
+]
+Currency = Literal["INR", "AUD", "USD"]
+Money = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+LinkTarget = Literal["company", "person", "opportunity", "campaign"]
+
+
+class ContactIn(BaseModel):
+    """Another person on the deal, with their Role in deal (spec §5.8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person_id: str
+    role_id: str | None = None
+
+
+class OpportunityFields(BaseModel):
+    """Contracts §2.5.1 opportunity, every field optional (the PATCH shape).
+    `stage` and `lost_reason_id` change through a stage move (§2.6)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=200)
+    company_id: str | None = None
+    point_of_contact_id: str | None = None
+    entity: Entity | None = None
+    amount: Decimal | None = Money
+    currency: Currency | None = None
+    probability: int | None = Field(default=None, ge=0, le=100)
+    expected_close_on: date | None = None
+    next_step: str | None = Field(default=None, max_length=500)
+    next_step_on: date | None = None
+    owner_id: str | None = None
+    channel_id: str | None = None
+    deal_type_id: str | None = None
+    project_category: Literal["client", "poc", "product"] | None = None
+    engagement_model_id: str | None = None
+    programme_id: str | None = None
+    proposal_sent_on: date | None = None
+    lost_notes: str | None = Field(default=None, max_length=20_000)
+
+
+class OpportunityCreate(OpportunityFields):
+    """Contacts are set on create; afterwards through
+    `/crm/opportunities/{id}/contacts`."""
+
+    contacts: list[ContactIn] = Field(default_factory=list, max_length=30)
+
+
+class OpportunityUpdate(OpportunityFields):
+    expect_updated_at: datetime | None = None
+
+
+class MoveChanges(BaseModel):
+    """Contracts §2.6 — the fields a stage may ask for, set in the same save."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: Decimal | None = Money
+    currency: Currency | None = None
+    expected_close_on: date | None = None
+    proposal_sent_on: date | None = None
+    point_of_contact_id: str | None = None
+    next_step: str | None = Field(default=None, max_length=500)
+    next_step_on: date | None = None
+    lost_reason_id: str | None = None
+    lost_notes: str | None = Field(default=None, max_length=20_000)
+    probability: int | None = Field(default=None, ge=0, le=100)
+
+
+class StagePreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: Stage
+    changes: MoveChanges = Field(default_factory=MoveChanges)
+    company_on_loss: Literal["nurturing", "disqualified"] | None = None
+
+
+class StageMoveIn(StagePreviewIn):
+    """`expect_updated_at` is the deal's `updated_at` as last read; the web app
+    always sends it, an MCP caller may not."""
+
+    expect_updated_at: datetime | None = None
+
+
+class TaskLinkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_type: LinkTarget
+    record_id: str
+
+
+class TaskFields(BaseModel):
+    """Contracts §2.5.1 task. `category` takes an option's label or key, for
+    an MCP caller who has not looked up its id."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str | None = Field(default=None, max_length=200)
+    body: str | None = Field(default=None, max_length=20_000)
+    status: Literal["todo", "in_progress", "done"] | None = None
+    due_on: date | None = None
+    bucket: Literal["today", "this_week", "this_month", "later"] | None = None
+    category_id: str | None = None
+    category: str | None = Field(default=None, max_length=60)
+    assignee_id: str | None = None
+    links: list[TaskLinkIn] | None = Field(default=None, max_length=20)
+
+
+class TaskUpdate(TaskFields):
+    expect_updated_at: datetime | None = None
+
+
+class NoteFields(BaseModel):
+    """Contracts §2.5.1 note. A kind other than `note` logs an activity on
+    `occurred_on` (FR-CRM-NOTE-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: str | None = Field(default=None, max_length=20_000)
+    kind: Literal["note", "call", "meeting", "whatsapp", "other"] | None = None
+    occurred_on: date | None = None
+    links: list[TaskLinkIn] | None = Field(default=None, max_length=20)
+    mention_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class NoteUpdate(NoteFields):
+    expect_updated_at: datetime | None = None

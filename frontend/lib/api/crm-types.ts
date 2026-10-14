@@ -248,7 +248,7 @@ export type LeadStage =
 export type CrmEntity = "nunnari_labs" | "deepweaver";
 
 /** The objects with routes so far (contracts §2.5 "Objects in paths"). */
-export type CrmObject = "companies" | "people";
+export type CrmObject = "companies" | "people" | "opportunities" | "tasks" | "notes";
 
 export interface LinkValue {
   url: string;
@@ -350,7 +350,153 @@ export interface CrmPerson extends RecordStamps {
   last_contact_at: string | null;
 }
 
-export type CrmRecord = CrmCompany | CrmPerson;
+/** FR-CRM-FX-01. */
+export type CrmCurrency = "INR" | "AUD" | "USD";
+
+/**
+ * Contracts §2.5.1 opportunity. Money is a decimal string. For a Viewer every
+ * amount key is absent, never zero (FR-CRM-ACC-11): hence the optional ones.
+ */
+export interface CrmOpportunity extends RecordStamps {
+  id: string;
+  record_type: "opportunity";
+  name: string;
+  company_id: string;
+  company_name: string | null;
+  point_of_contact_id: string | null;
+  point_of_contact_name: string | null;
+  entity: CrmEntity | null;
+  entity_label: string | null;
+  stage: StageKey;
+  stage_label: string;
+  stage_entered_at: string;
+  amount?: string | null;
+  currency: CrmCurrency | null;
+  amount_in_inr?: string | null;
+  fx_rate_used?: string | null;
+  fx_month: string | null;
+  won_fx_rate?: string | null;
+  won_fx_month: string | null;
+  weighted_amount?: string | null;
+  probability: number;
+  expected_close_on: string | null;
+  next_step: string | null;
+  next_step_on: string | null;
+  owner_id: string;
+  owner_name: string | null;
+  channel_id: string | null;
+  channel_label: string | null;
+  deal_type_id: string | null;
+  deal_type_label: string | null;
+  engagement_model_id: string | null;
+  engagement_model_label: string | null;
+  programme_id: string | null;
+  programme_label: string | null;
+  lost_reason_id: string | null;
+  lost_reason_label: string | null;
+  project_category: "client" | "poc" | "product" | null;
+  project_category_label: string | null;
+  proposal_sent_on: string | null;
+  lost_notes: string | null;
+  lost_from_stage: StageKey | null;
+  won_on: string | null;
+  lost_on: string | null;
+  /** The Labs deal's TVA project; arrives with the TVA link (S5). */
+  project: null;
+}
+
+/** A task's or note's link, with the linked record's name. */
+export interface CrmLinkRef {
+  record_type: "company" | "person" | "opportunity" | "campaign";
+  record_id: string;
+  name: string | null;
+}
+
+export type TaskStatus = "todo" | "in_progress" | "done";
+export type TaskBucket = "today" | "this_week" | "this_month" | "later";
+
+/** Contracts §2.5.1 task — linked to at least one record (FR-CRM-TASK-01). */
+export interface CrmTask extends RecordStamps {
+  id: string;
+  record_type: "task";
+  title: string;
+  body: string | null;
+  status: TaskStatus;
+  status_label: string;
+  due_on: string | null;
+  bucket: TaskBucket | null;
+  bucket_label: string | null;
+  category_id: string | null;
+  category_label: string | null;
+  assignee_id: string;
+  assignee_name: string | null;
+  completed_at: string | null;
+  links: CrmLinkRef[];
+}
+
+export type NoteKind = "note" | "call" | "meeting" | "whatsapp" | "other";
+
+/** Contracts §2.5.1 note — a typed note is a logged activity (FR-CRM-NOTE-03). */
+export interface CrmNote extends RecordStamps {
+  id: string;
+  record_type: "note";
+  body: string;
+  kind: NoteKind;
+  kind_label: string;
+  occurred_on: string | null;
+  links: CrmLinkRef[];
+  mentions: { id: string; name: string | null }[];
+}
+
+/** A deal's other contact and their Role in deal (spec §5.8). */
+export interface CrmContact {
+  id: string;
+  person_id: string;
+  person_name: string | null;
+  job_title: string | null;
+  role_id: string | null;
+  role_label: string | null;
+}
+
+export type CrmRecord = CrmCompany | CrmPerson | CrmOpportunity | CrmTask | CrmNote;
+
+/** The fields a stage move may set in the same save (contracts §2.6). */
+export interface StageChanges {
+  amount?: string | null;
+  currency?: CrmCurrency | null;
+  expected_close_on?: string | null;
+  proposal_sent_on?: string | null;
+  point_of_contact_id?: string | null;
+  next_step?: string | null;
+  next_step_on?: string | null;
+  lost_reason_id?: string | null;
+  lost_notes?: string | null;
+  probability?: number | null;
+}
+
+/** POST …/stage/preview — what a move would do; nothing is written. */
+export interface StagePreview {
+  allowed: boolean;
+  /** Field names, in the order the message names them. */
+  missing: (keyof StageChanges | "company_id" | "owner_id")[];
+  /** The one-sentence refusal, shown verbatim. */
+  message: string | null;
+  would: {
+    probability?: number;
+    company_lead_stage?: LeadStage;
+    company_lead_stage_label?: string;
+    tasks_closed?: number;
+    project?: null;
+  };
+}
+
+/** POST …/stage. */
+export interface StageMoveResult {
+  opportunity: CrmOpportunity;
+  company?: CrmCompany;
+  project: null;
+  tasks_closed: number;
+}
 
 /** FR-CRM-LINK-01 — an address and a label; never the file. */
 export interface CrmDriveLink {
@@ -393,9 +539,16 @@ export interface CrmRecordPage<T extends CrmRecord> {
   related: {
     people?: CrmPerson[];
     company?: { id: string; name: string | null } | null;
+    opportunities?: CrmOpportunity[];
+    point_of_contact?: { id: string; name: string | null } | null;
+    contacts?: CrmContact[];
+    project?: null;
   };
   timeline_head: CrmTimelineEntry[];
   links: CrmDriveLink[];
+  /** Companies, people and deals: the Tasks and Notes tabs (FR-CRM-REC-03). */
+  tasks?: CrmTask[];
+  notes?: CrmNote[];
   /** A merged company answers with its survivor (FR-CRM-DUP-03). */
   merged_from?: { id: string; name: string };
 }
@@ -428,7 +581,7 @@ export interface NotCreated {
 /** GET /crm/trash — FR-CRM-DEL-01. */
 export interface CrmTrashRow {
   id: string;
-  record_type: "company" | "person";
+  record_type: "company" | "person" | "opportunity" | "task" | "note";
   name: string;
   deleted_at: string;
   deleted_by: string | null;
