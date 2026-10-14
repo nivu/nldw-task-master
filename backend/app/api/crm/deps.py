@@ -52,18 +52,32 @@ class CrmContext:
         return may(self.role, action, owns=owns, is_assignee=is_assignee)
 
 
+WorkspaceParam = Annotated[
+    str | None,
+    Query(description="Workspace key (such as labs) or id. Reads default to the last used."),
+]
+
+
 def crm_context(
-    request: Request,
-    user: AnyAccountDep,
-    workspace: Annotated[
-        str | None,
-        Query(description="Workspace key (such as labs) or id. Reads default to the last used."),
-    ] = None,
+    request: Request, user: AnyAccountDep, workspace: WorkspaceParam = None
 ) -> CrmContext:
+    return _resolve(request, user, workspace, reading=request.method in READ_METHODS)
+
+
+def crm_query_context(
+    request: Request, user: AnyAccountDep, workspace: WorkspaceParam = None
+) -> CrmContext:
+    """`POST /crm/query` carries its question in a body but only reads, so
+    it defaults to the last-used workspace as a GET does (D13): `crm_list`
+    reads where `crm_get` would."""
+    return _resolve(request, user, workspace, reading=True)
+
+
+def _resolve(request: Request, user: Any, workspace: str | None, *, reading: bool) -> CrmContext:
     mine = workspaces_of(user.id)
     if workspace:
         chosen = next((w for w in mine if workspace in (w["key"], w["id"])), None)
-    elif request.method in READ_METHODS or len(mine) == 1:
+    elif reading or len(mine) == 1:
         chosen = next((w for w in mine if w["last_used"]), None)
     else:
         if len(mine) > 1:
@@ -83,6 +97,7 @@ def crm_context(
 
 
 CrmReadDep = Annotated[CrmContext, Depends(crm_context)]
+CrmQueryDep = Annotated[CrmContext, Depends(crm_query_context)]
 
 
 def crm_write(ctx: CrmReadDep) -> CrmContext:

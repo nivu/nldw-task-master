@@ -15,7 +15,7 @@ depend on a slice remembering to add them (plan §5.5).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 FieldType = Literal[
     "text",
@@ -373,3 +373,162 @@ def _and(items: list[str]) -> str:
     if len(items) == 1:
         return items[0]
     return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# The view registry — data-model §3.15, FR-CRM-VIEW-02, -03, -08, -10
+# ---------------------------------------------------------------------------
+
+#: `crm_object_fields.type`: how a field is filtered, sorted and grouped.
+#: Option ids are `select`, fixed keys (stage, lead stage) `fixed_select`,
+#: people `person`, records `relation`.
+ViewType = Literal[
+    "text",
+    "long_text",
+    "number",
+    "currency",
+    "date",
+    "datetime",
+    "boolean",
+    "select",
+    "multi_select",
+    "fixed_select",
+    "person",
+    "relation",
+    "flag",
+]
+#: Entity and Project category belong to the TVA-linked workspace,
+#: Institution type and Programme to the other (FR-CRM-WS-06, Q-40).
+ViewScope = Literal["all", "tva_linked", "not_tva_linked"]
+
+
+@dataclass(frozen=True)
+class ViewField:
+    """One row of `crm_object_fields`, which `crm_query()` reads; a test
+    holds the two equal (S6a)."""
+
+    field: str
+    column_sql: str
+    type: ViewType
+    is_amount: bool = False
+    filterable: bool = True
+    sortable: bool = True
+    groupable: bool = False
+    aggregatable: bool = False
+    workspace_scope: ViewScope = "all"
+
+
+def _v(field_: str, type_: ViewType, **flags: Any) -> ViewField:
+    """A field whose column has its name. Option, person and relation fields
+    group a list; money and numbers total."""
+    flags.setdefault(
+        "groupable", type_ in ("select", "fixed_select", "person", "relation", "boolean", "flag")
+    )
+    flags.setdefault("aggregatable", type_ in ("number", "currency"))
+    return ViewField(field_, flags.pop("column_sql", field_), type_, **flags)
+
+
+#: Every record has these.
+_STAMPS: Final = (
+    _v("created_at", "datetime"),
+    _v("updated_at", "datetime"),
+)
+#: Kanban order (data-model §2): sorted on, never filtered or totalled.
+_POSITION: Final = _v("position", "number", filterable=False, aggregatable=False)
+
+VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
+    "company": (
+        _v("name", "text"),
+        _v("domain", "text", column_sql="primary_domain"),
+        _v("entities", "multi_select", sortable=False, workspace_scope="tva_linked"),
+        _v("lead_stage", "fixed_select"),
+        _v("account_type_id", "select"),
+        _v("relationship_status_id", "select"),
+        _v("channel_ids", "multi_select", sortable=False),
+        _v("owner_id", "person"),
+        _v("next_touch_on", "date"),
+        _v("industry_id", "select"),
+        _v("institution_type_id", "select", workspace_scope="not_tva_linked"),
+        _v("size_id", "select"),
+        _v("country", "text"),
+        _v("city", "text"),
+        _v("description", "long_text", sortable=False),
+        _v("source_id", "select"),
+        _v("last_inbound_at", "datetime"),
+        _v("last_outbound_at", "datetime"),
+        _v("last_contact_at", "datetime"),
+        *_STAMPS,
+        _POSITION,
+    ),
+    "person": (
+        _v("name", "text", column_sql="full_name"),
+        _v("first_name", "text"),
+        _v("last_name", "text"),
+        _v("company_id", "relation"),
+        _v("primary_email", "text"),
+        _v("job_title", "text"),
+        _v("city", "text"),
+        _v("owner_id", "person"),
+        _v("do_not_contact", "boolean"),
+        _v("last_inbound_at", "datetime"),
+        _v("last_outbound_at", "datetime"),
+        _v("last_contact_at", "datetime"),
+        *_STAMPS,
+        _POSITION,
+    ),
+    "opportunity": (
+        _v("name", "text"),
+        _v("company_id", "relation"),
+        _v("point_of_contact_id", "relation"),
+        _v("entity", "fixed_select", workspace_scope="tva_linked"),
+        _v("stage", "fixed_select"),
+        _v("amount", "currency", is_amount=True),
+        _v("currency", "fixed_select"),
+        _v("amount_in_inr", "currency", is_amount=True),
+        _v("weighted_amount", "currency", is_amount=True),
+        _v("fx_rate_used", "number", is_amount=True, aggregatable=False),
+        _v("won_fx_rate", "number", is_amount=True, aggregatable=False),
+        _v("probability", "number"),
+        _v("expected_close_on", "date"),
+        _v("next_step", "text"),
+        _v("next_step_on", "date"),
+        _v("owner_id", "person"),
+        _v("channel_id", "select"),
+        _v("deal_type_id", "select"),
+        _v("project_category", "fixed_select", workspace_scope="tva_linked"),
+        _v("engagement_model_id", "select"),
+        _v("programme_id", "select", workspace_scope="not_tva_linked"),
+        _v("proposal_sent_on", "date"),
+        _v("lost_reason_id", "select"),
+        _v("lost_notes", "long_text", sortable=False),
+        _v("lost_from_stage", "fixed_select"),
+        _v("stage_entered_at", "datetime"),
+        _v("won_on", "date"),
+        _v("lost_on", "date"),
+        *_STAMPS,
+        _POSITION,
+    ),
+    "task": (
+        _v("title", "text"),
+        _v("body", "long_text", sortable=False),
+        _v("status", "fixed_select"),
+        _v("due_on", "date"),
+        _v("bucket", "fixed_select"),
+        _v("category_id", "select"),
+        _v("assignee_id", "person"),
+        _v("completed_at", "datetime"),
+        *_STAMPS,
+        _POSITION,
+    ),
+    "note": (
+        _v("body", "long_text", sortable=False),
+        _v("kind", "fixed_select"),
+        _v("occurred_on", "date"),
+        _v("created_by", "person"),
+        *_STAMPS,
+    ),
+}
+
+
+def view_field(kind: str, name: str) -> ViewField | None:
+    return next((f for f in VIEW_FIELDS.get(kind, ()) if f.field == name), None)

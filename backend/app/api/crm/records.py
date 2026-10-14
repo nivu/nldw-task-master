@@ -105,7 +105,8 @@ def _register(plural: str) -> None:
         limit: int = Query(default=50, ge=1, le=200),
         after: str | None = Query(default=None, max_length=20),
     ) -> dict:
-        """Newest first, paged. The plain list used before saved views."""
+        """Newest first, paged. The plain list of related panels and pickers;
+        tables and kanbans read through `POST /crm/query` (contracts §2.5)."""
         return service.list_records(ctx, kind, q=q, limit=limit, after=after)
 
     def create(

@@ -18,6 +18,7 @@ from app.api.crm import (
     records,
     settings,
     tva_admin,
+    views,
     workspaces,
 )
 
@@ -31,4 +32,5 @@ ROUTERS = [
     records.router,
     deals.router,
     deals.projects_router,
+    views.router,
 ]

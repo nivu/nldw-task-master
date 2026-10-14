@@ -474,3 +474,98 @@ class NoteFields(BaseModel):
 
 class NoteUpdate(NoteFields):
     expect_updated_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# Views — contracts §2.7 (S6a)
+# ---------------------------------------------------------------------------
+
+#: A list's object, by the name of its path (`companies`) or its record type.
+ViewObject = Literal[
+    "company",
+    "person",
+    "opportunity",
+    "task",
+    "note",
+    "companies",
+    "people",
+    "opportunities",
+    "tasks",
+    "notes",
+]
+
+
+class QuerySpec(BaseModel):
+    """What a list asks for; the fields and operators are checked by
+    `domain/crm/views.validate_spec` against the view registry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filters: dict[str, Any] | None = None
+    sorts: list[dict[str, Any]] | None = Field(default=None, max_length=10)
+    group_by: str | None = Field(default=None, max_length=64)
+    aggregates: list[dict[str, Any]] | None = Field(default=None, max_length=20)
+    columns: list[Any] | None = Field(default=None, max_length=60)
+    q: str | None = Field(default=None, max_length=200)
+    limit: int = Field(default=50, ge=1, le=200)
+    after: str | None = Field(default=None, max_length=4000)
+
+
+class QueryIn(BaseModel):
+    """`view` names a saved view the caller can see, by name or system key;
+    `spec` then narrows it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object: ViewObject
+    spec: QuerySpec = Field(default_factory=QuerySpec)
+    view_id: str | None = Field(default=None, max_length=64)
+    view: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class ViewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    object: ViewObject
+    name: str = Field(min_length=1, max_length=80)
+    icon: str | None = Field(default=None, max_length=40)
+    kind: Literal["table", "kanban"] = "table"
+    visibility: Literal["private", "shared"] = "private"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ViewUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    icon: str | None = Field(default=None, max_length=40)
+    kind: Literal["table", "kanban"] | None = None
+    visibility: Literal["private", "shared"] | None = None
+    config: dict[str, Any] | None = None
+    position: int | None = Field(default=None, ge=0, le=10_000)
+    is_default: bool | None = None
+    hidden: bool | None = None
+
+
+class FavouriteIn(BaseModel):
+    """FR-CRM-UI-02 — a pinned view, or a pinned record with its type."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: Literal["view", "record"]
+    target_id: str = Field(min_length=1, max_length=64)
+    record_type: Literal["company", "person", "opportunity", "task", "note"] | None = None
+
+
+class BulkIn(BaseModel):
+    """FR-CRM-VIEW-07 — one action on up to 500 records, each through the
+    same rules as on its own. `values`: the fields for `set`, `{owner_id}`
+    for `assign_owner`, the task for `add_task`, and for deleting companies
+    what happens to their people and deals."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object: ViewObject
+    ids: list[str] = Field(min_length=1, max_length=500)
+    action: Literal["set", "assign_owner", "add_task", "delete", "add_to_campaign"]
+    values: dict[str, Any] = Field(default_factory=dict)

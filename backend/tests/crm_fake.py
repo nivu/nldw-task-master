@@ -17,11 +17,15 @@ through has missed a rule it must check first.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import itertools
+import json
+import re
 import uuid
-from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -103,6 +107,8 @@ TABLES = (
     "crm_notes",
     "crm_note_links",
     "crm_note_mentions",
+    "crm_saved_views",
+    "crm_favourites",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -233,7 +239,71 @@ DEFAULTS = {
         **_TRASH,
     },
     "crm_notes": {"kind": "note", "occurred_on": None, **_TRASH},
+    "crm_saved_views": {
+        "icon": None,
+        "kind": "table",
+        "visibility": "private",
+        "owner_id": None,
+        "config": {},
+        "system_key": None,
+        "is_default": False,
+        "hidden": False,
+        "position": 0,
+    },
+    "crm_favourites": {"record_type": None, "position": 0},
 }
+
+
+#: Migration 034's seeds, read from the file itself, so the fake's registry
+#: and seeded views are the database's (data-model §3.15, §7.5).
+MIGRATION_034 = Path(__file__).resolve().parents[2] / "supabase/migrations/034_crm_views.sql"
+_BOOL = {"true": True, "false": False}
+
+
+def _read_034() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    text = MIGRATION_034.read_text()
+    field_rows = re.findall(
+        r"\('(\w+)', '(\w+)', '(\w+)', '(\w+)', (true|false), (true|false), (true|false), "
+        r"(true|false), (true|false), '(\w+)'\)",
+        text,
+    )
+    fields = [
+        {
+            "object": r[0],
+            "field": r[1],
+            "column_sql": r[2],
+            "type": r[3],
+            "is_amount": _BOOL[r[4]],
+            "filterable": _BOOL[r[5]],
+            "sortable": _BOOL[r[6]],
+            "groupable": _BOOL[r[7]],
+            "aggregatable": _BOOL[r[8]],
+            "workspace_scope": r[9],
+        }
+        for r in field_rows
+    ]
+    view_rows = re.findall(
+        r"\('(\w+)', '(\w+)', '([^']+)', '([^']+)', '(\w+)', (true|false), (\d+),\s*'(\{.*?\})'\)",
+        text,
+        re.DOTALL,
+    )
+    views = [
+        {
+            "system_key": r[0],
+            "object": r[1],
+            "name": r[2],
+            "icon": r[3],
+            "kind": r[4],
+            "is_default": _BOOL[r[5]],
+            "position": int(r[6]),
+            "config": json.loads(r[7]),
+        }
+        for r in view_rows
+    ]
+    return fields, views
+
+
+OBJECT_FIELDS, SEEDED_VIEWS = _read_034()
 
 _clock = itertools.count(1)
 
@@ -258,6 +328,8 @@ class FakeCrmStore:
         self.allocated: set[str] = set()
         # Personal and OAuth tokens crm_remove_membership revokes, by user.
         self.tokens: dict[str, int] = {}
+        # Every crm_query call, to check what reached the database.
+        self.queries: list[dict[str, Any]] = []
 
     # -- set-up helpers (not store names) -----------------------------------
 
@@ -307,6 +379,19 @@ class FakeCrmStore:
                     is_active=True,
                     is_fixed=fixed,
                 )
+        # 034's seeded views, read from the migration itself.
+        for view in SEEDED_VIEWS:
+            self.add(
+                "crm_saved_views",
+                workspace_id=ws["id"],
+                visibility="shared",
+                owner_id=None,
+                hidden=False,
+                created_at=_now(),
+                created_by=None,
+                updated_by=None,
+                **json.loads(json.dumps(view)),
+            )
         return ws
 
     def add_member(
@@ -878,6 +963,15 @@ class FakeCrmStore:
                         for link in list(self.rows[links].values()):
                             if link["record_type"] == kinds[table] and link["record_id"] == target:
                                 self._delete(actor, links, link)
+                    # 034: the favourites that pin it.
+                    for fav in list(self.rows["crm_favourites"].values()):
+                        if (
+                            fav["workspace_id"] == ws
+                            and fav["target_type"] == "record"
+                            and fav["record_type"] == kinds[table]
+                            and fav["target_id"] == target
+                        ):
+                            self._delete(actor, "crm_favourites", fav)
                 self._cascade(actor, table, target)
                 self._delete(actor, table, row)
         except Exception:
@@ -1644,6 +1738,48 @@ class FakeCrmStore:
             rows = [r for r in rows if r["id"] < before]
         return sorted(rows, key=lambda r: r["id"], reverse=True)[:limit]
 
+    # -- store: views (S6a) ---------------------------------------------------
+
+    def list_object_fields(self) -> list[dict[str, Any]]:
+        return [dict(f) for f in sorted(OBJECT_FIELDS, key=lambda f: (f["object"], f["field"]))]
+
+    def list_views(self, workspace_id: str, *, object: str | None = None) -> list[dict]:
+        rows = self._of("crm_saved_views", workspace_id)
+        if object is not None:
+            rows = [r for r in rows if r["object"] == object]
+        return sorted(rows, key=lambda r: (r["position"], r["name"]))
+
+    def get_view(self, workspace_id: str, view_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_saved_views"].get(view_id)
+        return dict(row) if row and row["workspace_id"] == workspace_id else None
+
+    def list_favourites(
+        self,
+        workspace_id: str,
+        *,
+        user_id: str | None = None,
+        target_type: str | None = None,
+        target_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self._of("crm_favourites", workspace_id)
+        if user_id is not None:
+            rows = [r for r in rows if r["user_id"] == user_id]
+        if target_type is not None:
+            rows = [r for r in rows if r["target_type"] == target_type]
+        if target_ids is not None:
+            rows = [r for r in rows if r["target_id"] in target_ids]
+        return sorted(rows, key=lambda r: (r["position"], r["created_at"]))
+
+    def query(
+        self, workspace_id: str, kind: str, spec: dict[str, Any], *, redact: bool
+    ) -> dict[str, Any]:
+        """crm_query (034) in Python: the same checks, filters, keyset paging,
+        groups and totals, over the registry the migration seeds."""
+        self.queries.append(
+            {"workspace_id": workspace_id, "kind": kind, "spec": spec, "redact": redact}
+        )
+        return FakeQuery(self, workspace_id, kind, json.loads(json.dumps(spec)), redact).run()
+
     # -- store: writes ------------------------------------------------------
 
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:
@@ -1819,6 +1955,12 @@ class FakeCrmStore:
             found = target and self.rows[target].get(row["record_id"])
             if not found or found["workspace_id"] != ws:
                 raise store.refusal_for("CRM04", f"No such {row['record_type']} in this workspace.")
+        if table == "crm_favourites":
+            rtype = row.get("record_type") or "view"
+            target = TARGETS.get(rtype) if row["target_type"] == "record" else "crm_saved_views"
+            found = target and self.rows[target].get(row["target_id"])
+            if not found or found["workspace_id"] != ws:
+                raise store.refusal_for("CRM04", f"No such {rtype} in this workspace.")
         composite = {
             "crm_opportunities": (
                 ("company_id", "crm_companies"),
@@ -1883,6 +2025,13 @@ class FakeCrmStore:
                     broken("crm_opportunities_fx_inr_at_one")
             if not 0 <= int(row.get("probability", -1)) <= 100:
                 broken("probability")
+        if table == "crm_saved_views":
+            if (row["visibility"] == "private") != (row.get("owner_id") is not None):
+                broken("crm_saved_views_owner")
+            if row.get("is_default") and row["visibility"] != "shared":
+                broken("crm_saved_views_default_shared")
+            if row.get("hidden") and not row.get("system_key"):
+                broken("crm_saved_views_hidden_seeded")
         if table == "crm_tasks" and (row["status"] == "done") != (
             row.get("completed_at") is not None
         ):
@@ -1909,6 +2058,35 @@ class FakeCrmStore:
             "crm_note_links": (("note_id", "record_type", "record_id"), "crm_note_links_target"),
             "crm_note_mentions": (("note_id", "member_id"), "crm_note_mentions_pair"),
         }
+        if table == "crm_saved_views":
+            for other in self.rows[table].values():
+                if other["id"] == row["id"] or other["workspace_id"] != row["workspace_id"]:
+                    continue
+                if (
+                    other["object"] == row["object"]
+                    and other["name"].lower() == row["name"].lower()
+                    and other.get("owner_id") == row.get("owner_id")
+                ):
+                    clash("crm_saved_views_name")
+                if (
+                    other["object"] == row["object"]
+                    and other.get("is_default")
+                    and row.get("is_default")
+                    and other["visibility"] == row["visibility"] == "shared"
+                ):
+                    clash("crm_saved_views_one_default")
+            return
+        if table == "crm_favourites":
+            if any(
+                other["id"] != row["id"]
+                and all(
+                    other[c] == row[c]
+                    for c in ("workspace_id", "user_id", "target_type", "target_id")
+                )
+                for other in self.rows[table].values()
+            ):
+                clash("crm_favourites_target")
+            return
         if table in pairs:
             columns, name = pairs[table]
             if any(
@@ -1990,6 +2168,410 @@ def _trigrams(text: str) -> set[str]:
 def trigram_similarity(a: str, b: str) -> float:
     x, y = _trigrams(a), _trigrams(b)
     return len(x & y) / len(x | y) if x | y else 0.0
+
+
+# ---------------------------------------------------------------------------
+# crm_query (034) in Python
+# ---------------------------------------------------------------------------
+
+_QUERY_TABLES = {
+    "company": "crm_companies",
+    "person": "crm_people",
+    "opportunity": "crm_opportunities",
+    "task": "crm_tasks",
+    "note": "crm_notes",
+}
+_AMOUNT = "Viewers cannot filter, sort or total by amount."
+_IDS = ("select", "person", "relation", "fixed_select", "flag")
+
+
+def _refuse(message: str, code: str = "CRM22") -> Exception:
+    return store.refusal_for(code, message)
+
+
+def _like(text: str, pattern: str) -> bool:
+    """LIKE with ESCAPE '\\', as Postgres matches it."""
+    out, chars = [], iter(pattern)
+    for c in chars:
+        if c == "\\":
+            out.append(re.escape(next(chars, "")))
+        elif c == "%":
+            out.append(".*")
+        elif c == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(c))
+    return re.fullmatch("".join(out), text, re.DOTALL) is not None
+
+
+def _midnight(day: date) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=UTC)
+
+
+class FakeQuery:
+    def __init__(self, fake: FakeCrmStore, workspace_id: str, kind: str, spec: dict, redact: bool):
+        self.fake, self.ws, self.kind, self.spec, self.redact = (
+            fake,
+            workspace_id,
+            kind,
+            spec,
+            redact,
+        )
+
+    # -- values ---------------------------------------------------------------
+
+    def raw(self, f: dict[str, Any], row: dict[str, Any]) -> Any:
+        col = f["column_sql"]
+        if col == "weighted_amount":
+            if row.get("amount_in_inr") is None or row.get("probability") is None:
+                return None
+            value = Decimal(str(row["amount_in_inr"])) * int(row["probability"]) / 100
+            return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if col == "full_name":
+            return f"{row['first_name']} {row.get('last_name') or ''}".strip()
+        if col == "primary_domain":
+            return next(
+                (
+                    d["domain"]
+                    for d in self.fake.rows["crm_company_domains"].values()
+                    if d["company_id"] == row["id"] and d["is_primary"]
+                ),
+                None,
+            )
+        return row.get(col)
+
+    def typed(self, kind: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if kind in ("number", "currency", "numeric"):
+            return Decimal(str(value))
+        if kind == "date":
+            return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+        if kind in ("datetime", "timestamptz"):
+            return value if isinstance(value, datetime) else _at(value)
+        if kind == "boolean":
+            return value if isinstance(value, bool) else str(value).lower() == "true"
+        if kind == "multi_select":
+            return [str(v) for v in value]
+        return str(value)
+
+    def value(self, f: dict[str, Any], row: dict[str, Any]) -> Any:
+        return self.typed(f["type"], self.raw(f, row))
+
+    def literal(self, kind: str, value: Any) -> Any:
+        if value is None or isinstance(value, (dict, list)):
+            raise _refuse("A condition needs a value.")
+        try:
+            return self.typed(kind, value)
+        except (ValueError, InvalidOperation):
+            raise _refuse("A condition's value does not fit its field.") from None
+
+    # -- filters --------------------------------------------------------------
+
+    def cond(self, node: Any, depth: int):
+        if depth > 8:
+            raise _refuse("Filters are nested too deeply.")
+        if not isinstance(node, dict):
+            raise _refuse("A filter is a condition or a group of them.")
+        if "items" in node:
+            joiner = node.get("op", "and")
+            if joiner not in ("and", "or") or not isinstance(node["items"], list):
+                raise _refuse("A filter group joins its conditions with and or or.")
+            parts = [self.cond(i, depth + 1) for i in node["items"]]
+            if not parts:
+                return lambda r: True
+            if joiner == "and":
+                return lambda r: all(p(r) for p in parts)
+            return lambda r: any(p(r) for p in parts)
+        f = self.fields.get(node.get("field"))
+        if f is None or not f["filterable"]:
+            raise _refuse("That field cannot be filtered on.")
+        if self.redact and f["is_amount"]:
+            raise _refuse(_AMOUNT)
+        typ, op, given = f["type"], node.get("operator"), node.get("value")
+        get = functools.partial(self.value, f)
+
+        if op in ("is_empty", "is_not_empty"):
+
+            def empty(r):
+                v = get(r)
+                return not v if typ in ("multi_select", "text", "long_text") else v is None
+
+            return empty if op == "is_empty" else (lambda r: not empty(r))
+        if op in ("any_of", "none_of"):
+            if typ not in (*_IDS, "multi_select") or not isinstance(given, list):
+                raise _refuse("Any of and none of take a list of options.")
+            wanted = {str(v) for v in given}
+
+            def hit(r):
+                v = get(r)
+                return bool(set(v or []) & wanted) if typ == "multi_select" else v in wanted
+
+            return hit if op == "any_of" else (lambda r: not hit(r))
+        if op in ("within_last_days", "within_next_days"):
+            if (
+                typ not in ("date", "datetime")
+                or isinstance(given, bool)
+                or not isinstance(given, int)
+                or not 0 <= given <= 3650
+            ):
+                raise _refuse("Within takes a date field and a number of days from 0 to 3650.")
+            lo, hi = (
+                (self.today - timedelta(days=given), self.today + timedelta(days=1))
+                if op == "within_last_days"
+                else (self.today, self.today + timedelta(days=given + 1))
+            )
+            return lambda r: self._day_between(get(r), typ, lo, hi)
+        if typ == "multi_select":
+            raise _refuse("That operator does not fit the field.")
+        if op in ("contains", "not_contains"):
+            if typ not in ("text", "long_text"):
+                raise _refuse("That operator does not fit the field.")
+            pattern = "%" + str(self.literal(typ, given)).lower() + "%"
+
+            def has(r):
+                v = get(r)
+                return v is not None and _like(v.lower(), pattern)
+
+            return has if op == "contains" else (lambda r: not has(r))
+        if op in ("is", "is_not"):
+            if typ in ("date", "datetime"):
+                raise _refuse("That operator does not fit the field.")
+            want = self.literal(typ, given)
+            if typ in ("text", "long_text"):
+                want = want.lower()
+
+            def same(r):
+                v = get(r)
+                if v is not None and typ in ("text", "long_text"):
+                    v = v.lower()
+                return v is not None and v == want
+
+            if op == "is":
+                return same
+            return lambda r: not same(r) if get(r) is not None else want is not None
+        if op in ("before", "after", "on") and typ in ("date", "datetime"):
+            day = self.literal("date", given)
+            if op == "before":
+                return lambda r: self._day_between(get(r), typ, date.min, day)
+            if op == "after":
+                return lambda r: self._day_between(get(r), typ, day + timedelta(days=1), date.max)
+            return lambda r: self._day_between(get(r), typ, day, day + timedelta(days=1))
+        if op in ("gt", "gte", "lt", "lte") and typ in ("number", "currency", "date", "datetime"):
+            want = self.literal("date" if typ == "datetime" else typ, given)
+            if typ == "datetime":
+                want = _midnight(want)
+            compare = {
+                "gt": lambda a, b: a > b,
+                "gte": lambda a, b: a >= b,
+                "lt": lambda a, b: a < b,
+                "lte": lambda a, b: a <= b,
+            }[op]
+            return lambda r: get(r) is not None and compare(get(r), want)
+        raise _refuse("That operator does not fit the field.")
+
+    @staticmethod
+    def _day_between(value: Any, typ: str, lo: date, hi: date) -> bool:
+        """lo <= value < hi, a timestamp read from midnight UTC as Postgres
+        compares it with a date."""
+        if value is None:
+            return False
+        if typ == "datetime":
+            low = _midnight(lo) if lo != date.min else None
+            high = _midnight(hi) if hi != date.max else None
+            return (low is None or value >= low) and (high is None or value < high)
+        return lo <= value < hi
+
+    # -- the query --------------------------------------------------------------
+
+    def run(self) -> dict[str, Any]:
+        table = _QUERY_TABLES.get(self.kind)
+        if table is None:
+            raise _refuse("There is no such list.")
+        workspace = self.fake.rows["crm_workspaces"].get(self.ws)
+        if workspace is None:
+            raise _refuse("No such workspace.", "CRM04")
+        linked = bool(workspace.get("tva_linked"))
+        self.fields = {
+            f["field"]: f
+            for f in OBJECT_FIELDS
+            if f["object"] == self.kind
+            and (f["workspace_scope"] == "all" or (f["workspace_scope"] == "tva_linked") == linked)
+        }
+        hidden = {f["column_sql"] for f in self.fields.values() if f["is_amount"]}
+        spec = self.spec
+        try:
+            self.today = date.fromisoformat(spec["today"]) if spec.get("today") else date.today()
+            limit = min(max(int(spec.get("limit") or 50), 1), 200)
+        except (TypeError, ValueError):
+            raise _refuse("That list request is not valid.") from None
+
+        keep = lambda r: True  # noqa: E731
+        if isinstance(spec.get("filters"), dict):
+            keep = self.cond(spec["filters"], 1)
+        if spec.get("q"):
+            pattern = "%" + spec["q"].lower() + "%"
+            columns = {
+                "company": ("name",),
+                "person": ("first_name", "primary_email"),
+                "opportunity": ("name",),
+                "task": ("title",),
+                "note": ("body",),
+            }[self.kind]
+            domains = self.fake.rows["crm_company_domains"].values()
+
+            def found(r):
+                texts = [r.get(c) or "" for c in columns]
+                if self.kind == "person":
+                    texts[0] = f"{r['first_name']} {r.get('last_name') or ''}"
+                if self.kind == "company":
+                    texts += [d["domain"] for d in domains if d["company_id"] == r["id"]]
+                return any(_like(t.lower(), pattern) for t in texts)
+
+            base_keep = keep
+            keep = lambda r: base_keep(r) and found(r)  # noqa: E731
+
+        for column in spec.get("columns") or []:
+            name = column.get("field") if isinstance(column, dict) else column
+            f = self.fields.get(name) if isinstance(name, str) else None
+            if self.redact and f and f["is_amount"]:
+                raise _refuse(_AMOUNT)
+
+        keys: list[tuple[Any, str, str]] = []
+        group = None
+        if spec.get("group_by"):
+            group = self.fields.get(spec["group_by"])
+            if self.redact and group and group["is_amount"]:
+                raise _refuse(_AMOUNT)
+            if group is None or not group["groupable"]:
+                raise _refuse("That field cannot group a list.")
+            keys.append((group, "asc", "boolean" if group["type"] == "boolean" else "text"))
+        sorts = spec.get("sorts") or [{"field": "updated_at", "dir": "desc"}]
+        for sort in sorts:
+            f = self.fields.get(sort.get("field"))
+            if f is None or not f["sortable"]:
+                raise _refuse("That field cannot be sorted on.")
+            if self.redact and f["is_amount"]:
+                raise _refuse(_AMOUNT)
+            if sort.get("dir", "asc") not in ("asc", "desc"):
+                raise _refuse("A sort is asc or desc.")
+            typ = f["type"]
+            keys.append(
+                (
+                    f,
+                    sort.get("dir", "asc"),
+                    {"number": "numeric", "currency": "numeric", "date": "date"}.get(
+                        typ,
+                        "timestamptz"
+                        if typ == "datetime"
+                        else "boolean"
+                        if typ == "boolean"
+                        else "text",
+                    ),
+                )
+            )
+
+        def key_of(r):
+            out = []
+            for f, _, kind in keys:
+                v = self.value(f, r)
+                if v is not None and kind == "text":
+                    v = str(v).lower() if f["type"] in ("text", "long_text") else str(v)
+                out.append(v)
+            return out
+
+        def compare(a: list, b: list) -> int:
+            for (_, direction, _), x, y in zip(keys, a, b, strict=False):
+                if x == y:
+                    continue
+                if x is None:
+                    return 1
+                if y is None:
+                    return -1
+                lower = x < y
+                return (-1 if lower else 1) * (1 if direction == "asc" else -1)
+            return (a[-1] > b[-1]) - (a[-1] < b[-1])
+
+        aggs = []
+        for total in spec.get("aggregates") or []:
+            fn = total.get("fn")
+            if fn not in ("count", "sum", "avg", "min", "max"):
+                raise _refuse("A total is a count, sum, average, minimum or maximum.")
+            if total.get("field") is None:
+                if fn != "count":
+                    raise _refuse("Which field is totalled?")
+                aggs.append(("count", None))
+                continue
+            f = self.fields.get(total["field"])
+            if self.redact and f and f["is_amount"]:
+                raise _refuse(_AMOUNT)
+            if f is None or not (fn == "count" or f["aggregatable"]):
+                raise _refuse("That field cannot be totalled.")
+            aggs.append((f"{fn}_{f['field']}", f))
+
+        def totals(rows):
+            out = {}
+            for name, f in aggs:
+                if f is None:
+                    out[name] = len(rows)
+                    continue
+                values = [v for v in (self.value(f, r) for r in rows) if v is not None]
+                fn = name.split("_", 1)[0]
+                if fn == "count":
+                    out[name] = len(values)
+                elif not values:
+                    out[name] = None
+                else:
+                    out[name] = {
+                        "sum": lambda: sum(values, Decimal(0)),
+                        "avg": lambda: sum(values, Decimal(0)) / len(values),
+                        "min": lambda: min(values),
+                        "max": lambda: max(values),
+                    }[fn]()
+            return out
+
+        live = [
+            dict(r)
+            for r in self.fake._of(table, self.ws)
+            if not r.get("deleted_at") and not (self.kind == "company" and r.get("merged_into_id"))
+        ]
+        matched = [r for r in live if keep(r)]
+        ordered = sorted(
+            ((key_of(r) + [r["id"]], r) for r in matched),
+            key=functools.cmp_to_key(lambda a, b: compare(a[0], b[0])),
+        )
+        after = spec.get("after")
+        if after is not None:
+            if not isinstance(after, list) or len(after) != len(keys) + 1:
+                raise _refuse("That page does not belong to this list.")
+            try:
+                cursor = [
+                    self.typed(kind, v) for (_, _, kind), v in zip(keys, after, strict=False)
+                ] + [str(after[-1])]
+            except (ValueError, InvalidOperation):
+                raise _refuse("That page does not belong to this list.") from None
+            ordered = [(k, r) for k, r in ordered if compare(k, cursor) > 0]
+        page = ordered[: limit + 1]
+        rows = [
+            {k: v for k, v in r.items() if not (self.redact and k in hidden)}
+            for _, r in page[:limit]
+        ]
+        groups = None
+        if group is not None:
+            buckets: dict[Any, list] = {}
+            for r in matched:
+                buckets.setdefault(key_of(r)[0], []).append(r)
+            groups = [
+                {"key": k, "count": len(v), "aggregates": totals(v)}
+                for k, v in sorted(buckets.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))
+            ]
+        return {
+            "rows": rows,
+            "total": len(matched) if len(matched) <= 10_000 else None,
+            "groups": groups,
+            "aggregates": totals(matched) if aggs else None,
+            "next": page[limit - 1][0] if len(page) > limit else None,
+        }
 
 
 def public_store_names() -> list[str]:

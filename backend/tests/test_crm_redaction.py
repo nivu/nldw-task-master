@@ -1,6 +1,7 @@
 """Viewer redaction — spec 007 FR-CRM-ACC-11, FR-CRM-AUD-05, FR-CRM-MCP-07;
 plan §5.5; spec §11 AC "Viewers receive no amount field" (so far: every deal
-read route and `crm_get`).
+read route, `crm_get`, and lists through `POST /crm/query` and `crm_list`
+with their group and footer totals).
 
 A recursive walk over each answer a Viewer gets, looking for any amount key,
 and for any timeline change naming an amount field. The denylist is written
@@ -20,6 +21,7 @@ from crm_fake import client as crm_client
 
 from app.mcp import crm as tools
 from app.services.crm import deals
+from app.services.crm import views as view_service
 
 ACADEMY = "?workspace=academy"
 
@@ -76,6 +78,7 @@ def crm(monkeypatch):
         "crm_fx_rates", workspace_id=academy["id"], currency="USD", month="2026-10-01", rate=84
     )
     monkeypatch.setattr(deals, "today_in_company_tz", lambda: date(2026, 10, 14))
+    monkeypatch.setattr(view_service, "today_for", lambda user: date(2026, 10, 14))
     http = crm_client(monkeypatch, fake=fake)
     me = as_(OWNER["id"])
     company = http.post(
@@ -175,3 +178,46 @@ class TestAViewerGetsNone:
             headers=as_(VIEWER["id"]),
         )
         assert r.status_code == 403
+
+
+#: Lists through POST /crm/query: the seeded kanban with its sum headers, a
+#: table with footer totals, a grouped table.
+QUERIES = [
+    {"object": "opportunities", "view": "pipeline"},
+    {"object": "opportunities", "view": "closing_this_month"},
+    {"object": "opportunities", "spec": {"group_by": "stage", "aggregates": [{"fn": "count"}]}},
+    {"object": "companies", "view": "companies_all"},
+]
+
+
+class TestListsAndTotals:
+    """FR-CRM-VIEW-08 with FR-CRM-ACC-11 — group headers and footers carry
+    no sum of an amount for a Viewer, whichever view asks for them."""
+
+    def test_an_admin_gets_the_sums(self, crm):
+        http, _ = crm
+        r = http.post(f"/api/v1/crm/query{ACADEMY}", json=QUERIES[0], headers=as_(OWNER["id"]))
+        found = _walk(r.json())
+        assert any(f.endswith(".sum_amount_in_inr") for f in found)
+        assert any(f.endswith(".sum_weighted_amount") for f in found)
+        assert any(f.endswith(".amount") for f in found)
+
+    @pytest.mark.parametrize("index", range(len(QUERIES)))
+    def test_a_viewer_gets_none(self, crm, index):
+        http, _ = crm
+        r = http.post(f"/api/v1/crm/query{ACADEMY}", json=QUERIES[index], headers=as_(VIEWER["id"]))
+        assert r.status_code == 200, r.text
+        assert _walk(r.json()) == [], QUERIES[index]
+
+    def test_the_view_list_a_viewer_reads_names_no_amount(self, crm):
+        http, _ = crm
+        r = http.get(f"/api/v1/crm/views{ACADEMY}", headers=as_(VIEWER["id"]))
+        assert _walk(r.json()) == []
+
+    def test_crm_list(self, crm):
+        for view in ("pipeline", "Pipeline", None):
+            got = asyncio.run(
+                tools.crm_list(Ctx(VIEWER["id"]), "opportunity", view=view, workspace="academy")
+            )
+            assert got["rows"], view
+            assert _walk(got) == [], view

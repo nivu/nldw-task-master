@@ -55,6 +55,8 @@ ACCOUNT_LEVEL = frozenset(
         # Locks the deal and its company in the actor's workspace (031, 033).
         "deal_transition",
         "link_project",
+        # The view registry is not workspace data (data-model §3.15).
+        "list_object_fields",
     }
 )
 
@@ -81,6 +83,10 @@ UNIQUE_MESSAGES = {
     "crm_note_mentions_pair": "That member is already mentioned.",
     # FR-CRM-TVA-01 — one project per deal (032); 033 checks it first.
     "projects_source_opportunity_unique": "This deal already has a TVA project.",
+    # FR-CRM-VIEW-05 (034).
+    "crm_saved_views_name": "There is already a view with that name here.",
+    "crm_saved_views_one_default": "This list's default view changed meanwhile; reload.",
+    "crm_favourites_target": "That is already a favourite.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -646,3 +652,76 @@ def list_timeline(
     if before is not None:
         query = query.lt("id", before)
     return query.order("id", desc=True).limit(limit).execute().data or []
+
+
+# ---------------------------------------------------------------------------
+# Views, saved views, favourites — S6a (data-model §3.15, §3.16, §5.8)
+# ---------------------------------------------------------------------------
+
+
+def query(workspace_id: str, kind: str, spec: dict[str, Any], *, redact: bool) -> dict[str, Any]:
+    """Data-model §5.8 — one page of a list with its total, groups and
+    totals. `redact` (a Viewer) refuses every amount field again and leaves
+    the amount columns out of the rows."""
+    return (
+        rpc(
+            "crm_query",
+            {"p_workspace": workspace_id, "p_object": kind, "p_spec": spec, "p_redact": redact},
+        )
+        or {}
+    )
+
+
+def list_object_fields() -> list[dict[str, Any]]:
+    """The view registry `crm_query()` reads (034); `domain/crm/objects`
+    mirrors it, and a test holds the two equal."""
+    return (
+        supabase.table("crm_object_fields")
+        .select("*")
+        .order("object")
+        .order("field")
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_views(workspace_id: str, *, object: str | None = None) -> list[dict[str, Any]]:
+    """Every saved view of the workspace, private ones included; the service
+    keeps those the caller may see."""
+    query_ = supabase.table("crm_saved_views").select("*").eq("workspace_id", workspace_id)
+    if object is not None:
+        query_ = query_.eq("object", object)
+    return query_.order("position").order("name").execute().data or []
+
+
+def get_view(workspace_id: str, view_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_saved_views")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("id", view_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_favourites(
+    workspace_id: str,
+    *,
+    user_id: str | None = None,
+    target_type: str | None = None,
+    target_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """A person's favourites, or those pinning some targets."""
+    query_ = supabase.table("crm_favourites").select("*").eq("workspace_id", workspace_id)
+    if user_id is not None:
+        query_ = query_.eq("user_id", user_id)
+    if target_type is not None:
+        query_ = query_.eq("target_type", target_type)
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query_ = query_.in_("target_id", target_ids)
+    return query_.order("position").order("created_at").execute().data or []

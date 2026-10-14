@@ -313,3 +313,39 @@ async def crm_handoff(
         if value is not None:
             body[name] = value
     return await _api(ctx, "POST", f"{path}/handoff", params=params, body=body)
+
+
+@mcp.tool(annotations=READ)
+async def crm_list(
+    ctx: Context,
+    object: RecordType,
+    view: str | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    sort: list[dict[str, str]] | None = None,
+    limit: int = 25,
+    after: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer). Records of one object
+    by filters, sort and limit, or by the name of a saved view you can see.
+    Stages and lead stages are passed by key. Viewers cannot filter or sort by
+    amount. view is a saved view's name or key (companies_all, lead_funnel,
+    partners_channels, my_accounts, pipeline, closing_this_month,
+    won_lost_quarter, open_tasks_by_owner, my_week); filters narrow it, all of
+    them holding: [{field, operator, value}] with operators is, is_not,
+    contains, not_contains, is_empty, is_not_empty, any_of, none_of (a list),
+    is_me, on, before, after (YYYY-MM-DD), within_last_days,
+    within_next_days (a number), this_month, this_quarter, gt, gte, lt, lte.
+    sort is [{field, dir: asc|desc}]. Pass the answer's next as after for the
+    following page; total is "10000+" past ten thousand."""
+    spec: dict[str, Any] = {"limit": limit}
+    if filters:
+        spec["filters"] = {"op": "and", "items": filters}
+    if sort:
+        spec["sorts"] = sort
+    if after:
+        spec["after"] = after
+    body: dict[str, Any] = {"object": object, "spec": spec}
+    if view:
+        body["view"] = view
+    return await _api(ctx, "POST", "/crm/query", params={"workspace": workspace}, body=body)

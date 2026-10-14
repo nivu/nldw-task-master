@@ -36,8 +36,9 @@ CALLER_LINES = {
         "WORKSPACE ADMINS AND MEMBERS, LABS (link mode: WORKSPACE ADMINS WHO ARE TVA\n"
         "MANAGERS OR ADMINS, LABS). CONFIRM FIRST"
     ),
+    "crm_list": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
 }
-READS = {"crm_workspaces", "crm_get"}
+READS = {"crm_workspaces", "crm_get", "crm_list"}
 DESTRUCTIVE = {"crm_move_stage", "crm_handoff"}
 
 
@@ -550,3 +551,109 @@ class TestHandoffTool:
 
     def test_amounts_are_described_as_inr(self):
         assert "Revenue and milestone amounts are INR" in _tools()["crm_handoff"].description
+
+
+class TestListTool:
+    """FR-CRM-MCP-01 (S6a: crm_list), -07, -10; contracts §3 tool 11."""
+
+    def test_by_view_name_in_one_call(self, monkeypatch):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(crm.crm_list(Ctx("u"), "opportunity", view="Pipeline", workspace="labs"))
+        assert recorder.calls == [
+            (
+                "POST",
+                "/crm/query",
+                {"workspace": "labs"},
+                {"object": "opportunity", "spec": {"limit": 25}, "view": "Pipeline"},
+            )
+        ]
+
+    def test_filters_and_sort_in_one_call(self, monkeypatch):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        filters = [{"field": "stage", "operator": "is", "value": "proposal"}]
+        asyncio.run(
+            crm.crm_list(
+                Ctx("u"),
+                "opportunity",
+                filters=filters,
+                sort=[{"field": "name", "dir": "asc"}],
+                limit=10,
+                after="abc",
+            )
+        )
+        assert recorder.calls == [
+            (
+                "POST",
+                "/crm/query",
+                {"workspace": None},
+                {
+                    "object": "opportunity",
+                    "spec": {
+                        "limit": 10,
+                        "filters": {"op": "and", "items": filters},
+                        "sorts": [{"field": "name", "dir": "asc"}],
+                        "after": "abc",
+                    },
+                },
+            )
+        ]
+
+    def test_a_seeded_view_through_the_bridge(self, crm_store):
+        labs = next(w for w in crm_store.rows["crm_workspaces"].values() if w["key"] == "labs")
+        crm_store.add_deal_lists(labs)
+        asyncio.run(crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}, workspace="labs"))
+        got = asyncio.run(
+            crm.crm_list(Ctx(OWNER["id"]), "company", view="companies_all", workspace="labs")
+        )
+        assert [r["name"] for r in got["rows"]] == ["Acme"]
+        assert got["view"]["system_key"] == "companies_all"
+
+    def test_a_read_naming_no_workspace_uses_the_last_used(self, crm_store):
+        """D13 — crm_list reads where crm_get would, though it is a POST."""
+        got = asyncio.run(crm.crm_list(Ctx(MEMBER["id"]), "company"))
+        assert got["rows"] == []
+
+    def test_amounts_are_absent_for_a_viewer(self, crm_store):
+        labs = next(w for w in crm_store.rows["crm_workspaces"].values() if w["key"] == "labs")
+        crm_store.add_deal_lists(labs)
+        crm_store.add(
+            "crm_fx_rates", workspace_id=labs["id"], currency="INR", month="2026-10-01", rate=1
+        )
+        company = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}, workspace="labs")
+        )
+        crm_store.rows["crm_companies"][company["id"]]["lead_stage"] = "qualified"
+        deal = asyncio.run(
+            crm.crm_create(
+                Ctx(OWNER["id"]),
+                "opportunity",
+                {
+                    "name": "Acme deal",
+                    "company_id": company["id"],
+                    "amount": "1000",
+                    "currency": "INR",
+                    "next_step": "Call",
+                    "next_step_on": "2026-10-20",
+                },
+                workspace="labs",
+            )
+        )
+        assert deal["amount"] == "1000.00"
+        got = asyncio.run(
+            crm.crm_list(Ctx(VIEWER["id"]), "opportunity", view="pipeline", workspace="labs")
+        )
+        [row] = got["rows"]
+        assert "amount" not in row and "amount_in_inr" not in row
+        assert "sum_amount_in_inr" not in got["groups"][0]["aggregates"]
+        with pytest.raises(Exception) as refused:
+            asyncio.run(
+                crm.crm_list(
+                    Ctx(VIEWER["id"]),
+                    "opportunity",
+                    sort=[{"field": "amount", "dir": "desc"}],
+                    workspace="labs",
+                )
+            )
+        assert "Viewers cannot filter, sort or total by amount." in str(refused.value)
