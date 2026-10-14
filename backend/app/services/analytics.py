@@ -29,8 +29,8 @@ from app.domain import financials as fin
 from app.domain import pnl
 from app.domain import timesheets as rules
 from app.domain.calendar import is_weekend, today_in_company_tz
+from app.services import capacity, settings_store
 from app.services import pnl as pnl_service
-from app.services import settings_store
 from app.services import supabase as db
 from app.services.holidays import holidays_by_person
 from app.services.timesheets import holidays_between, leave_days_for
@@ -206,8 +206,19 @@ def forecast(start: date, end: date) -> dict[str, Any]:
     Tentative projects (spec 002 FR-PROJ-08) are included and marked;
     `over_allocated` counts confirmed allocations only, and
     `over_with_tentative` the same with the pipeline added.
+
+    Released allocations and allocations on archived projects do not count
+    (spec 007 FR-CRM-CHG-03, -04). `weeks` is supply against confirmed and
+    tentative demand per week, from the capacity service the CRM capacity
+    check also reads (FR-CRM-CHG-17). It is computed first, so a company with
+    nothing allocated — or everything released by a lost deal — still sees
+    its supply.
     """
-    allocations = db.list_allocations()
+    weeks = [
+        {k: w[k] for k in ("week_start", "supply_hours", "confirmed_hours", "tentative_hours")}
+        for w in capacity.weekly(start, end)
+    ]
+    allocations = db.list_counting_allocations()
     if not allocations:
         return {
             "start": start.isoformat(),
@@ -215,6 +226,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
             "projects": [],
             "over_allocated": [],
             "over_with_tentative": [],
+            "weeks": weeks,
         }
 
     people = {p["id"]: p["display_name"] for p in db.list_profiles()}
@@ -286,6 +298,7 @@ def forecast(start: date, end: date) -> dict[str, Any]:
         "over_with_tentative": _runs(
             rules.over_allocations(typed, start, end, include_tentative=True), people
         ),
+        "weeks": weeks,
     }
 
 
@@ -398,7 +411,7 @@ def category_effort(start: str | None, end: str | None) -> dict[str, Any]:
             percent=Decimal(str(a["percent"])),
             tentative=a["project_id"] in tentative_ids,
         )
-        for a in db.list_allocations()
+        for a in db.list_counting_allocations()
     ]
     user_ids = sorted({a.user_id for a in allocations})
 
@@ -621,7 +634,7 @@ def resources_timeline(start: date, end: date) -> dict[str, Any]:
     and `over_with_tentative` add the pipeline.
     """
     people = [p for p in db.list_profiles(active_only=True)]
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
     rows_by_id = {p["id"]: p for p in db.list_projects(include_archived=True)}
     projects = {pid: p["name"] for pid, p in rows_by_id.items()}
     tentative_ids = {pid for pid, p in rows_by_id.items() if rules.is_tentative(p)}

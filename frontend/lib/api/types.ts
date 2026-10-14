@@ -484,6 +484,19 @@ export interface Forecast {
   over_allocated: OverAllocation[];
   /** The same with tentative allocations added. */
   over_with_tentative: OverAllocation[];
+  /**
+   * Spec 007 FR-CRM-CHG-17 — per week, supply (contracted hours less
+   * holidays and leave) against confirmed and tentative demand. From the same
+   * service as the CRM capacity check; present even when nothing is allocated.
+   */
+  weeks: ForecastWeek[];
+}
+
+export interface ForecastWeek {
+  week_start: string;
+  supply_hours: string;
+  confirmed_hours: string;
+  tentative_hours: string;
 }
 
 export interface OverAllocation {
@@ -527,6 +540,9 @@ export interface AllocationRow {
   starts_on: string;
   ends_on: string;
   percent: string;
+  /** Spec 007 FR-CRM-CHG-03, D5 — released when its deal was lost; it counts
+   *  nowhere and cannot be edited or removed until the deal is reopened. */
+  released: { at: string; reason: string } | null;
 }
 
 // ---------------------------------------------------------------------------

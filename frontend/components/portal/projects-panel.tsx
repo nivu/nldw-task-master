@@ -901,7 +901,22 @@ function AllocationForm({
       {allocations.length > 0 && (
         <div className="space-y-1">
           {allocations.map((allocation) =>
-            editingId === allocation.id ? (
+            allocation.released ? (
+              // Spec 007 D5 — kept exactly as it was so a reopened deal restores
+              // it; it counts nowhere and the server refuses to change it.
+              <div key={allocation.id} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground line-through">
+                  {allocation.display_name} @{allocation.percent}% · {allocation.starts_on} →{" "}
+                  {allocation.ends_on}
+                </span>
+                <Badge variant="outline" className="border-dashed">
+                  Released (deal lost)
+                </Badge>
+                {allocation.released.reason && (
+                  <span className="text-muted-foreground">{allocation.released.reason}</span>
+                )}
+              </div>
+            ) : editingId === allocation.id ? (
               <AllocationEditRow
                 key={allocation.id}
                 allocation={allocation}

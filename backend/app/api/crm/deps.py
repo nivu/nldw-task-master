@@ -106,6 +106,19 @@ def crm_labs(ctx: CrmReadDep) -> CrmContext:
     return ctx
 
 
+def crm_capacity(ctx: CrmReadDep) -> CrmContext:
+    """FR-CRM-CAP-02, Q-39 — the capacity check is built from staff
+    allocations, leave and holidays, so only Labs admins and staff members see
+    it: not Viewers, not CRM-only accounts. Outside Labs there is no capacity
+    check at all, so it is not found there."""
+    if not ctx.workspace.get("tva_linked"):
+        raise ProblemDetail(404, "There is no capacity check in this workspace.")
+    if ctx.user.is_crm_only or ctx.role not in ("admin", "member"):
+        raise ProblemDetail(403, "Only Labs admins and staff members can see capacity.")
+    return ctx
+
+
 CrmWriteDep = Annotated[CrmContext, Depends(crm_write)]
 CrmAdminDep = Annotated[CrmContext, Depends(crm_admin)]
 CrmLabsDep = Annotated[CrmContext, Depends(crm_labs)]
+CrmCapacityDep = Annotated[CrmContext, Depends(crm_capacity)]

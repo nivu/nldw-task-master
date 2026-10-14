@@ -209,3 +209,13 @@ export interface AccountTypeResult {
   dashboard_access: boolean | null;
   changed: boolean;
 }
+
+/** Spec 007 contracts §2.8, FR-CRM-CAP — totals only; a week with fewer than
+ *  3 people supplying it is hidden (Q-39). */
+export type CrmCapacityWeek =
+  | { week_start: string; tentative_hours: string; free_hours: string }
+  | { week_start: string; hidden: string };
+
+export interface CrmCapacity {
+  weeks: CrmCapacityWeek[];
+}

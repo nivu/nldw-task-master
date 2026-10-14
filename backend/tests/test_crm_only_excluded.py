@@ -127,6 +127,10 @@ class World:
             if user_ids is None or "u-staff" in user_ids
         ]
 
+    def list_counting_allocations(self, *, user_ids=None, project_id=None):
+        # Nothing here is released or archived, so every allocation counts.
+        return self.list_allocations(user_ids=user_ids, project_id=project_id)
+
     def list_bookings(self, *, user_ids=None, **_):
         return [
             {
@@ -166,6 +170,7 @@ def world(monkeypatch) -> World:
         "get_project",
         "list_projects",
         "list_allocations",
+        "list_counting_allocations",
         "list_bookings",
     ):
         monkeypatch.setattr(db, name, getattr(w, name))

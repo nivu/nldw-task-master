@@ -109,7 +109,7 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
     entries = db.list_time_entries(user_ids=[user_id], start=day, end=day)
     allocations = [
         a
-        for a in db.list_allocations(user_ids=[user_id])
+        for a in db.list_counting_allocations(user_ids=[user_id])
         if date.fromisoformat(a["starts_on"]) <= day <= date.fromisoformat(a["ends_on"])
     ]
     projects = {p["id"]: p for p in db.list_projects(include_archived=True)}

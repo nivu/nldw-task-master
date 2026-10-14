@@ -1,9 +1,13 @@
-"""CTC, monthly cost, revenue and profit — spec 005 §3."""
+"""CTC, monthly cost, revenue and profit — spec 005 §3; archived projects in
+the monthly profit — spec 007 FR-CRM-CHG-04."""
 
 from __future__ import annotations
 
+import inspect
 from datetime import date
 from decimal import Decimal
+
+import pytest
 
 from app.domain import pnl
 
@@ -348,3 +352,113 @@ class TestHolidaySpan:
             D("1000000"), window, date(2026, 10, 1), date(2026, 10, 31), NO_HOLIDAYS
         )
         assert october != without
+
+
+# ---------------------------------------------------------------------------
+# Archived projects in the monthly profit — spec 007 FR-CRM-CHG-04
+# ---------------------------------------------------------------------------
+
+
+class _Books:
+    """Asha costs 100,000 a month. Acme is confirmed and live; Old is
+    confirmed, archived, with eight hours logged in September; Flux is
+    tentative; Gone is tentative and archived (a lost deal)."""
+
+    def __init__(self) -> None:
+        def project(pid, name, revenue, status="confirmed", archived=False):
+            return {
+                "id": pid,
+                "name": name,
+                "client": name,
+                "revenue": revenue,
+                "is_archived": archived,
+                "category": "client",
+                "status": status,
+                "probability": 50 if status == "tentative" else None,
+            }
+
+        self.projects = [
+            project("p-acme", "Acme", "300000"),
+            project("p-old", "Old", None, archived=True),
+            project("p-flux", "Flux", "100000", status="tentative"),
+            project("p-gone", "Gone", "60000", status="tentative", archived=True),
+        ]
+        nov = {"starts_on": "2026-11-01", "ends_on": "2026-11-30"}
+        self.phases = [
+            {"id": f"ph-{p['id']}", "project_id": p["id"], "phase": "delivery", **nov}
+            for p in self.projects
+        ]
+        self.allocations = [
+            {"id": "a-acme", "user_id": "u1", "project_id": "p-acme", "percent": "50", **nov},
+            {"id": "a-flux", "user_id": "u1", "project_id": "p-flux", "percent": "40", **nov},
+            {"id": "a-gone", "user_id": "u1", "project_id": "p-gone", "percent": "40", **nov},
+        ]
+        self.entries = [
+            {
+                "user_id": "u1",
+                "project_id": "p-old",
+                "date": "2026-09-15",
+                "hours_office": "8",
+                "hours_home": "0",
+            }
+        ]
+
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
+        return [{"id": "u1", "display_name": "Asha", "is_active": True, "role": "user"}]
+
+    def list_cost_periods(self, user_id=None):
+        return [{"user_id": "u1", "annual_ctc": "1200000", "starts_on": "2026-01-01"}]
+
+    def list_projects(self, *, include_archived=False):
+        return [dict(p) for p in self.projects if include_archived or not p["is_archived"]]
+
+    def list_phases(self, project_id=None):
+        return list(self.phases)
+
+    def list_counting_allocations(self, *, user_ids=None, project_id=None):
+        archived = {p["id"] for p in self.projects if p["is_archived"]}
+        return [a for a in self.allocations if a["project_id"] not in archived]
+
+    def list_time_entries(self, *, start=None, end=None, **_):
+        return [e for e in self.entries if start.isoformat() <= e["date"] <= end.isoformat()]
+
+
+@pytest.fixture
+def books(monkeypatch) -> _Books:
+    from app.services import pnl as pnl_service
+    from app.services import supabase as db
+
+    fake = _Books()
+    for name, fn in inspect.getmembers(db, inspect.isfunction):
+        if fn.__module__ == db.__name__ and not name.startswith("_"):
+            monkeypatch.setattr(db, name, getattr(fake, name, None) or (lambda *a, **k: []))
+    monkeypatch.setattr(pnl_service, "today_in_company_tz", lambda: date(2026, 10, 5))
+    monkeypatch.setattr(pnl_service, "_currency", lambda: "INR")
+    return fake
+
+
+class TestArchivedProjectsInTheMonthlyProfit:
+    def _report(self):
+        from app.services import pnl as pnl_service
+
+        return pnl_service.monthly("2026-09", "2026-11")
+
+    def test_an_archived_tentative_project_is_out_of_the_pipeline_block(self, books):
+        pipeline = self._report()["pipeline"]
+        assert [p["project_id"] for p in pipeline["projects"]] == ["p-flux"]
+        assert pipeline["totals"][2]["revenue"] == "100000.00"
+        assert pipeline["totals"][2]["cost"] == "40000.00"
+
+    def test_un_archiving_it_puts_it_back(self, books):
+        books.projects[3]["is_archived"] = False
+        pipeline = self._report()["pipeline"]
+        assert [p["project_id"] for p in pipeline["projects"]] == ["p-flux", "p-gone"]
+        assert pipeline["totals"][2]["revenue"] == "160000.00"
+
+    def test_an_archived_confirmed_project_keeps_its_logged_cost(self, books):
+        report = self._report()
+        old = next(p for p in report["projects"] if p["project_id"] == "p-old")
+        assert D(old["cells"][0]["cost"]) > 0
+        books.projects[1]["is_archived"] = False
+        again = next(p for p in self._report()["projects"] if p["project_id"] == "p-old")
+        assert again["cells"][0] == old["cells"][0]

@@ -156,7 +156,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
     names = {p["id"]: p["display_name"] for p in profiles}
     projects = db.list_projects(include_archived=True)
     phases = db.list_phases()
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
     entries = [
         e for e in db.list_time_entries(start=range_first, end=range_last) if e.get("project_id")
     ]
@@ -210,6 +210,11 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
         for project in projects:
             pid = project["id"]
             tentative = rules.is_tentative(project)
+            # Spec 007 FR-CRM-CHG-04 — an archived tentative project (a lost
+            # deal, or pipeline simply dropped) is out of the pipeline. It has
+            # no logged hours and no confirmed figure to keep.
+            if tentative and project["is_archived"]:
+                continue
             unrated = pipeline_unrated if tentative else unrated_ids
             revenue = (
                 Decimal(str(project["revenue"])) if project.get("revenue") is not None else None
@@ -388,7 +393,7 @@ def monthly(start: str | None, end: str | None) -> dict[str, Any]:
                         "cells": project_cells[p["id"]],
                     }
                     for p in projects
-                    if rules.is_tentative(p)
+                    if rules.is_tentative(p) and not p["is_archived"]
                 ),
                 key=lambda r: r["project_name"],
             ),
@@ -429,7 +434,7 @@ def timeline(start: date, end: date) -> dict[str, Any]:
     whether the person would be over 100% if the pipeline were won."""
     people = sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
     projects = {p["id"]: p for p in db.list_projects(include_archived=True)}
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
 
     touched: dict[str, int] = {}
     rows = []

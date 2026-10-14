@@ -1,5 +1,5 @@
 """Route-level permissions — spec 003 FR-ROLE-02/07/08, spec 002 FR-PROJ-04a/07/08,
-FR-ALLOC-06, spec 001 FR-HOL-07/08.
+FR-ALLOC-06, spec 001 FR-HOL-07/08, spec 007 FR-CRM-CHG-03 (released allocations).
 
 The domain tests check each rule in isolation. These check that the routes
 actually apply them: the backend holds the service-role key, so a guard
@@ -158,6 +158,15 @@ class FakeDb:
             for a in self.allocations.values()
             if (user_ids is None or a["user_id"] in user_ids)
             and (project_id is None or a["project_id"] == project_id)
+        ]
+
+    def list_counting_allocations(self, *, user_ids=None, project_id=None):
+        # Spec 007 FR-CRM-CHG-03, -04: not released, not on an archived project.
+        archived = {pid for pid, p in self.projects.items() if p["is_archived"]}
+        return [
+            a
+            for a in self.list_allocations(user_ids=user_ids, project_id=project_id)
+            if not a.get("released_at") and a["project_id"] not in archived
         ]
 
     def get_allocation(self, allocation_id):
@@ -451,6 +460,46 @@ class TestLeadAllocations:
     def test_manager_may_allocate_anyone(self, as_, fake):
         r = as_("u-manager").post(f"{API}/allocations", json=self._new("u-theirs"))
         assert r.status_code == 201
+
+
+class TestReleasedAllocation:
+    """Spec 007 D5, contracts §1.1 — a row released by a lost deal is kept as
+    it was, so the reopen restores exactly that; TVA shows it, marked, and
+    refuses to change or remove it."""
+
+    REFUSAL = "This allocation was released when its deal was lost; reopen the deal to restore it."
+
+    @pytest.fixture(autouse=True)
+    def _release(self, fake):
+        fake.allocations["a-mine"].update(
+            released_at="2026-10-02T10:00:00+05:30", release_reason="Deal lost: budget cut"
+        )
+
+    def test_the_list_marks_it_and_only_it(self, as_, fake):
+        rows = {a["id"]: a["released"] for a in as_("u-manager").get(f"{API}/allocations").json()}
+        assert rows["a-mine"] == {
+            "at": "2026-10-02T10:00:00+05:30",
+            "reason": "Deal lost: budget cut",
+        }
+        assert rows["a-theirs"] is None
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_editing_it_is_refused(self, as_, fake, who):
+        r = as_(who).patch(f"{API}/allocations/a-mine", json={"percent": "80"})
+        assert (r.status_code, r.json()["detail"]) == (422, self.REFUSAL)
+        assert fake.allocations["a-mine"]["percent"] == "50"
+        assert fake.audit == []
+
+    @pytest.mark.parametrize("who", ["u-lead", "u-manager", "u-admin"])
+    def test_removing_it_is_refused(self, as_, fake, who):
+        r = as_(who).delete(f"{API}/allocations/a-mine")
+        assert (r.status_code, r.json()["detail"]) == (422, self.REFUSAL)
+        assert "a-mine" in fake.allocations
+        assert fake.audit == []
+
+    def test_a_lead_still_cannot_touch_someone_elses(self, as_, fake):
+        fake.allocations["a-theirs"].update(released_at="2026-10-02", release_reason="Lost")
+        assert as_("u-lead").delete(f"{API}/allocations/a-theirs").status_code == 403
 
 
 class TestArchivedProject:
@@ -951,13 +1000,20 @@ class TestCategoryEffort:
             c["category"]: c["cells"][0] for c in as_("u-lead").get(self.PATH).json()["categories"]
         }
         # Two 50% allocations on Live (client) and one on Old (internal) over
-        # October's 22 weekdays: 88h each.
+        # October's 22 weekdays: 88h each. Old is archived, so its allocation
+        # plans nothing (spec 007 FR-CRM-CHG-04).
         assert cells["client"] == {"logged_hours": "6.00", "planned_hours": "176.00"}
-        assert cells["internal"] == {"logged_hours": "0.00", "planned_hours": "88.00"}
+        assert cells["internal"] == {"logged_hours": "0.00", "planned_hours": "0.00"}
+        fake.projects["p-archived"]["is_archived"] = False
+        cells = {
+            c["category"]: c["cells"][0] for c in as_("u-lead").get(self.PATH).json()["categories"]
+        }
+        assert cells["internal"]["planned_hours"] == "88.00"
         assert cells["activity"] == {"logged_hours": "2.00", "planned_hours": None}
 
     def test_a_tentative_project_plans_no_hours(self, as_, fake):
         fake.projects["p-live"]["status"] = "tentative"
+        fake.projects["p-archived"]["is_archived"] = False
         cells = {
             c["category"]: c["cells"][0] for c in as_("u-lead").get(self.PATH).json()["categories"]
         }

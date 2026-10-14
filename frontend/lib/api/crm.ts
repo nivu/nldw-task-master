@@ -14,6 +14,7 @@ import type {
   CrmAuditEntry,
   CrmAuditFilters,
   CrmBootstrap,
+  CrmCapacity,
   CrmColor,
   CrmFxRate,
   CrmLists,
@@ -205,3 +206,10 @@ export const setCrmFxRate = (
 
 export const getCrmAudit = (workspace: string, filters: CrmAuditFilters = {}) =>
   call<CrmAuditEntry[]>(`/audit${query(workspace, { ...filters })}`);
+
+// ---------------------------------------------------------------------------
+// Capacity — §2.8 (Labs; admins and staff members)
+// ---------------------------------------------------------------------------
+
+export const getCrmCapacity = (workspace: string, weeks?: number) =>
+  call<CrmCapacity>(`/capacity${query(workspace, { weeks })}`);

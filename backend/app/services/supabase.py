@@ -446,7 +446,36 @@ def list_allocations(
     return query.order("starts_on").execute().data or []
 
 
+def list_counting_allocations(
+    *, user_ids: list[str] | None = None, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    """The allocations that count as somebody being busy — spec 007
+    FR-CRM-CHG-03, -04. Released rows (migration 028) and every allocation on
+    an archived project are left out; `list_allocations` keeps every row for
+    the Admin allocations list, which shows released ones marked.
+
+    Every allocation reader (forecast, resources, bench, hiring, planned
+    hours and cost, health, the CEO dashboard, the Time page, the capacity
+    check) reads through here, so none of them can forget either rule.
+    """
+    query = supabase.table("allocations").select("*").is_("released_at", "null")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    rows = query.order("starts_on").execute().data or []
+    archived = {
+        p["id"]
+        for p in supabase.table("projects").select("id").eq("is_archived", True).execute().data
+        or []
+    }
+    return [row for row in rows if row["project_id"] not in archived]
+
+
 def get_allocation(allocation_id: str) -> dict[str, Any] | None:
+    """Every column, the release markers (028) among them."""
     response = supabase.table("allocations").select("*").eq("id", allocation_id).limit(1).execute()
     return response.data[0] if response.data else None
 

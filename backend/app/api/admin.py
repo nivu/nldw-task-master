@@ -1104,6 +1104,12 @@ def set_phase(project_id: str, payload: PhaseIn, user: LeadDep) -> dict:
     }
 
 
+#: Spec 007 D5, contracts §1.1. A released row is kept exactly as it was so
+#: that reopening the deal restores it; editing or removing it would make the
+#: reopen restore something else.
+RELEASED = "This allocation was released when its deal was lost; reopen the deal to restore it."
+
+
 @router.get("/allocations")
 def list_allocations(user: LeadDep) -> list[dict]:
     """A lead sees only their reports' allocations — FR-ROLE-08."""
@@ -1122,6 +1128,12 @@ def list_allocations(user: LeadDep) -> list[dict]:
             "starts_on": a["starts_on"],
             "ends_on": a["ends_on"],
             "percent": str(a["percent"]),
+            # Spec 007 FR-CRM-CHG-03 — every row, a released one marked.
+            "released": (
+                {"at": a["released_at"], "reason": a.get("release_reason")}
+                if a.get("released_at")
+                else None
+            ),
         }
         for a in db.list_allocations(user_ids=user_ids)
     ]
@@ -1198,6 +1210,8 @@ def remove_allocation(allocation_id: str, user: LeadDep) -> dict:
         mine = [p["id"] for p in db.list_reports(user.id, active_only=False)]
         if allocation_id not in {a["id"] for a in db.list_allocations(user_ids=mine)}:
             raise ProblemDetail(403, "A lead can only remove their own reports' allocations.")
+    if existing.get("released_at"):
+        raise ProblemDetail(422, RELEASED)
     db.delete_allocation(allocation_id)
     audit.record(
         action="allocation.deleted",
@@ -1230,6 +1244,8 @@ def update_allocation(allocation_id: str, payload: AllocationUpdate, user: LeadD
         person_lead_id=person.get("lead_id") if person else None,
     ):
         raise ProblemDetail(403, "A lead can only change their own reports' allocations.")
+    if existing.get("released_at"):
+        raise ProblemDetail(422, RELEASED)
 
     old = (date.fromisoformat(existing["starts_on"]), date.fromisoformat(existing["ends_on"]))
     starts_on = changes.get("starts_on", old[0])

@@ -63,7 +63,7 @@ def summary(breakdown: bool) -> dict[str, Any]:
     headcount = [p for p in active if ts.logs_time(p) and ts.employed_on(p, today)]
     projects = db.list_projects(include_archived=True)
     tentative_ids = {p["id"] for p in projects if ts.is_tentative(p)}
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
 
     # -- Today ---------------------------------------------------------------
     holiday = db.get_holiday_on(today)
