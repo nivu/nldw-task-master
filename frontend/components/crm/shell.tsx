@@ -10,21 +10,27 @@ import {
   CalendarCheck,
   CheckSquare,
   CircleHelp,
+  Kanban,
   LogOut,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Star,
   User,
   Users,
 } from "lucide-react";
 
+import { ViewIcon } from "@/components/crm/view-switcher";
 import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import type { CrmBootstrap, CrmWorkspace } from "@/lib/api/crm-types";
+import { listCrmFavourites, listCrmViews } from "@/lib/api/crm";
+import type { CrmBootstrap, CrmFavourite, CrmSavedView, CrmWorkspace } from "@/lib/api/crm-types";
+import { OBJECT_PATH } from "@/lib/crm/view-fields";
 import { createClient } from "@/lib/supabase/client";
+import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
 /**
@@ -35,10 +41,11 @@ import { cn } from "@/lib/utils";
  * screens, a bottom bar with a More sheet on a phone. A CRM-only seller sees
  * no TVA link anywhere; a staff member gets Back to TVA (FR-CRM-UI-03).
  *
- * The sidebar holds what exists so far: Today, Companies, People,
- * Opportunities, Tasks and, for admins, Settings. Each later slice adds its
- * own entry (Pipeline, …). On a phone the bottom bar has room for four; the
- * rest are under More.
+ * The sidebar holds what exists so far: Today, Pipeline, Companies, People,
+ * Opportunities, Tasks, the person's favourites (pinned views and records,
+ * FR-CRM-UI-02) and, for admins, Settings. Each later slice adds its own
+ * entry. On a phone the bottom bar has room for four; the rest, favourites
+ * included, are under More.
  */
 
 const COLLAPSED_KEY = "crm.sidebar.collapsed";
@@ -51,14 +58,31 @@ interface CrmState {
   reload: () => void;
 }
 
-const CrmStateContext = createContext<CrmState | null>(null);
+interface CrmFavourites {
+  /** The person's pins in this workspace; empty until loaded. */
+  favourites: CrmFavourite[];
+  reloadFavourites: () => void;
+}
+
+const CrmStateContext = createContext<(CrmState & CrmFavourites) | null>(null);
 
 /** The workspace, role, lists and the viewer's preferences, for any page
- *  inside `/crm/[ws]`. */
-export function useCrm(): CrmState {
+ *  inside `/crm/[ws]`, and the person's favourites. */
+export function useCrm(): CrmState & CrmFavourites {
   const state = useContext(CrmStateContext);
   if (!state) throw new Error("useCrm is used outside the CRM shell");
   return state;
+}
+
+/** Where a favourite opens: a view on its object's list, a record's page. */
+function favouriteHref(ws: string, fav: CrmFavourite, views: CrmSavedView[]): string | null {
+  if (fav.target_type === "record" && fav.record_type) {
+    return `/crm/${ws}/${OBJECT_PATH[fav.record_type]}/${fav.target_id}`;
+  }
+  const view = views.find((v) => v.id === fav.target_id);
+  if (!view) return null;
+  if (view.system_key === "pipeline") return `/crm/${ws}/pipeline`;
+  return `/crm/${ws}/${OBJECT_PATH[view.object]}?view=${view.id}`;
 }
 
 export function CrmShell({
@@ -72,6 +96,16 @@ export function CrmShell({
   const [moreOpen, setMoreOpen] = useState(false);
   const ws = bootstrap.workspace.key;
   const staff = bootstrap.me.account_type === "staff";
+  // The views map a pinned view to its list; a failure leaves the sidebar
+  // without favourites rather than without navigation.
+  const pins = useAsync(
+    () => Promise.all([listCrmFavourites(ws), listCrmViews(ws)]),
+    [ws]
+  );
+  const favourites = pins.data?.[0] ?? [];
+  const pinned = favourites
+    .map((fav) => ({ fav, href: favouriteHref(ws, fav, pins.data?.[1] ?? []) }))
+    .filter((p): p is { fav: CrmFavourite; href: string } => p.href !== null);
 
   // A per-browser convenience; storage can be unavailable (private windows).
   useEffect(() => {
@@ -98,6 +132,7 @@ export function CrmShell({
   // Hiding a link is tidiness, not security: the server re-checks every route.
   const links = [
     { href: `/crm/${ws}`, label: "Today", icon: CalendarCheck, show: true },
+    { href: `/crm/${ws}/pipeline`, label: "Pipeline", icon: Kanban, show: true },
     { href: `/crm/${ws}/companies`, label: "Companies", icon: Building2, show: true },
     { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
     { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, show: true },
@@ -143,6 +178,34 @@ export function CrmShell({
     </Link>
   );
 
+  const favouriteLink = (
+    fav: CrmFavourite,
+    href: string,
+    { onClick, compact = collapsed }: { onClick?: () => void; compact?: boolean } = {}
+  ) => {
+    const name = fav.name ?? "Untitled";
+    return (
+      <Link
+        key={fav.id}
+        href={href}
+        onClick={onClick}
+        title={compact ? name : undefined}
+        aria-label={compact ? name : undefined}
+        className={cn(
+          "flex items-center gap-3 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground",
+          compact && "justify-center px-0"
+        )}
+      >
+        {fav.target_type === "view" ? (
+          <ViewIcon name={pins.data?.[1].find((v) => v.id === fav.target_id)?.icon} />
+        ) : (
+          <Star className="size-4 shrink-0" />
+        )}
+        {!compact && <span className="truncate">{name}</span>}
+      </Link>
+    );
+  };
+
   const tools = (
     <>
       {/* /help is the TVA guide, inside the TVA flow: staff only (FR-CRM-UI-04). */}
@@ -165,7 +228,9 @@ export function CrmShell({
   );
 
   return (
-    <CrmStateContext.Provider value={{ bootstrap, workspaces, reload }}>
+    <CrmStateContext.Provider
+      value={{ bootstrap, workspaces, reload, favourites, reloadFavourites: pins.reload }}
+    >
       <div className="flex min-h-screen flex-col" data-testid="crm-shell">
         <aside
           className={cn(
@@ -198,6 +263,14 @@ export function CrmShell({
 
           <nav className="flex-1 space-y-0.5 overflow-y-auto px-2">
             {links.map((link) => navLink(link))}
+            {pinned.length > 0 && (
+              <div className="pt-3" aria-label="Favourites" role="group">
+                {!collapsed && (
+                  <p className="px-2.5 pb-1 text-xs font-medium text-muted-foreground">Favourites</p>
+                )}
+                {pinned.map(({ fav, href }) => favouriteLink(fav, href))}
+              </div>
+            )}
           </nav>
 
           <div className="space-y-1 border-t px-2 py-3">
@@ -259,6 +332,12 @@ export function CrmShell({
             <div className="space-y-1 px-4 pb-6">
               {links.slice(PHONE_BAR).map((link) =>
                 navLink(link, { onClick: () => setMoreOpen(false), compact: false })
+              )}
+              {pinned.length > 0 && (
+                <p className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">Favourites</p>
+              )}
+              {pinned.map(({ fav, href }) =>
+                favouriteLink(fav, href, { onClick: () => setMoreOpen(false), compact: false })
               )}
               {footer.map((link) =>
                 navLink(link, { onClick: () => setMoreOpen(false), compact: false })

@@ -232,6 +232,7 @@ export default function OpportunityPage() {
   return (
     <>
       <RecordPage
+        pin={{ recordType: "opportunity", id: deal.id }}
         title={deal.name}
         subtitle={
           <Link href={`/crm/${ws}/companies/${deal.company_id}`} className="hover:underline">

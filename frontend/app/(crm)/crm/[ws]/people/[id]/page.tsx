@@ -130,6 +130,7 @@ export default function PersonPage() {
   return (
     <>
       <RecordPage
+        pin={{ recordType: "person", id: person.id }}
         title={person.name}
         subtitle={[person.job_title, person.company_name].filter(Boolean).join(" at ") || undefined}
         chips={[

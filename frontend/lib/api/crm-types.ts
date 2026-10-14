@@ -686,3 +686,185 @@ export interface CrmTrashRow {
   deleted_by_name: string | null;
   days_left: number;
 }
+
+// ---------------------------------------------------------------------------
+// Views — §2.7 (S6a server, S6b screens; FR-CRM-VIEW)
+// ---------------------------------------------------------------------------
+
+/** A list's object by record type, as saved views and `/crm/query` name it. */
+export type ViewObjectKind = "company" | "person" | "opportunity" | "task" | "note";
+
+/** `crm_object_fields.type` — how a field is filtered, sorted and grouped. */
+export type ViewFieldType =
+  | "text"
+  | "long_text"
+  | "number"
+  | "currency"
+  | "date"
+  | "datetime"
+  | "boolean"
+  | "select"
+  | "multi_select"
+  | "fixed_select"
+  | "person"
+  | "relation"
+  | "flag";
+
+export type FilterOperator =
+  | "is"
+  | "is_not"
+  | "contains"
+  | "not_contains"
+  | "is_empty"
+  | "is_not_empty"
+  | "any_of"
+  | "none_of"
+  | "is_me"
+  | "on"
+  | "before"
+  | "after"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "within_last_days"
+  | "within_next_days"
+  | "this_month"
+  | "this_quarter";
+
+export interface FilterCondition {
+  field: string;
+  operator: FilterOperator;
+  value?: unknown;
+}
+
+/** AND or OR over conditions and groups, at most three levels deep. */
+export interface FilterGroup {
+  op: "and" | "or";
+  items: FilterNode[];
+}
+
+export type FilterNode = FilterCondition | FilterGroup;
+
+export interface ViewSort {
+  field: string;
+  dir: "asc" | "desc";
+}
+
+export type AggregateFn = "count" | "sum" | "avg" | "min" | "max";
+
+/** A count of rows has no field. */
+export interface ViewAggregate {
+  fn: AggregateFn;
+  field?: string;
+}
+
+/** Width in pixels, 40 to 800. */
+export interface ViewColumn {
+  field: string;
+  width?: number;
+}
+
+/** A saved view's `config` (data-model §3.15). */
+export interface ViewConfig {
+  filters?: FilterGroup;
+  sorts?: ViewSort[];
+  group_by?: string;
+  kanban_field?: string;
+  columns?: (ViewColumn | string)[];
+  aggregates?: ViewAggregate[];
+  card_fields?: string[];
+}
+
+/** GET /crm/views. For a Viewer the config has nothing about amounts, and
+ *  `notice` says when something was dropped (Q-67). */
+export interface CrmSavedView {
+  id: string;
+  object: ViewObjectKind;
+  name: string;
+  icon: string | null;
+  kind: "table" | "kanban";
+  visibility: "private" | "shared";
+  owner_id: string | null;
+  /** Seeded views (FR-CRM-VIEW-11): hidden, never deleted. */
+  system_key: string | null;
+  is_default: boolean;
+  hidden: boolean;
+  position: number;
+  config: ViewConfig;
+  can_edit: boolean;
+  created_at: string;
+  updated_at: string;
+  notice?: string;
+}
+
+export interface CrmViewIn {
+  object: ViewObjectKind;
+  name: string;
+  icon?: string | null;
+  kind: "table" | "kanban";
+  visibility: "private" | "shared";
+  config: ViewConfig;
+}
+
+export interface CrmViewUpdate {
+  name?: string;
+  icon?: string | null;
+  kind?: "table" | "kanban";
+  visibility?: "private" | "shared";
+  config?: ViewConfig;
+  position?: number;
+  is_default?: boolean;
+  hidden?: boolean;
+}
+
+/** POST /crm/query `spec`; the server filters, sorts and pages. */
+export interface QuerySpec {
+  filters?: FilterGroup;
+  sorts?: ViewSort[];
+  group_by?: string;
+  aggregates?: ViewAggregate[];
+  q?: string;
+  limit?: number;
+  after?: string;
+}
+
+/** Totals keyed `count` or `<fn>_<field>`; money as decimal strings. */
+export type CrmTotals = Record<string, string | number | null>;
+
+export interface CrmQueryGroup {
+  key: string | boolean | null;
+  label: string | null;
+  count: number;
+  aggregates?: CrmTotals;
+}
+
+export interface CrmQueryResult<T> {
+  rows: T[];
+  /** Counting stops past ten thousand. */
+  total: number | "10000+";
+  next: string | null;
+  group_by?: string;
+  groups?: CrmQueryGroup[];
+  aggregates?: CrmTotals;
+  view?: CrmSavedView;
+  notice?: string;
+}
+
+/** FR-CRM-UI-02 — a pinned view or record, named. */
+export interface CrmFavourite {
+  id: string;
+  target_type: "view" | "record";
+  record_type: ViewObjectKind | null;
+  target_id: string;
+  name: string | null;
+  position: number;
+}
+
+export type BulkAction = "set" | "assign_owner" | "add_task" | "delete";
+
+/** POST /crm/bulk — each record held to its own rules (FR-CRM-VIEW-07). */
+export interface BulkResult {
+  ok: string[];
+  failed: { id: string; reason: string }[];
+}

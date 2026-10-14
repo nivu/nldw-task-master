@@ -166,6 +166,7 @@ export default function CompanyPage() {
   return (
     <>
       <RecordPage
+        pin={{ recordType: "company", id: company.id }}
         title={company.name}
         subtitle={company.domain ?? undefined}
         notice={

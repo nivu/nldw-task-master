@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronRight, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, Star } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -10,8 +10,11 @@ import {
   isEmpty,
   type FieldSpec,
 } from "@/components/crm/field-editor";
+import { useCrm } from "@/components/crm/shell";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { addCrmFavourite, removeCrmFavourite } from "@/lib/api/crm";
+import type { ViewObjectKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import type { CrmTimezone } from "@/lib/crm/format";
 
@@ -23,6 +26,7 @@ import type { CrmTimezone } from "@/lib/crm/format";
  * the tabs Timeline, Tasks, Notes, Files and Related. On a phone the panel
  * stacks above the tabs. Companies, people and deals use it; campaigns reuse
  * it as they arrive. The Move stage action is a deal's, passed in `actions`.
+ * A record can be pinned to the sidebar's favourites (FR-CRM-UI-02).
  */
 
 export interface FieldGroup {
@@ -174,6 +178,39 @@ function FieldPanel({
   );
 }
 
+/** Pin or unpin a record in the sidebar's favourites (FR-CRM-UI-02). */
+function PinButton({ recordType, id }: { recordType: ViewObjectKind; id: string }) {
+  const { bootstrap, favourites, reloadFavourites } = useCrm();
+  const [busy, setBusy] = useState(false);
+  const pin = favourites.find((f) => f.target_type === "record" && f.target_id === id);
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      const ws = bootstrap.workspace.key;
+      if (pin) await removeCrmFavourite(ws, pin.id);
+      else await addCrmFavourite(ws, { target_type: "record", target_id: id, record_type: recordType });
+      reloadFavourites();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="icon"
+      aria-pressed={Boolean(pin)}
+      aria-label={pin ? "Unpin from favourites" : "Pin to favourites"}
+      title={pin ? "Unpin from favourites" : "Pin to favourites"}
+      disabled={busy}
+      onClick={toggle}
+    >
+      <Star className={pin ? "size-4 fill-amber-400 text-amber-500" : "size-4"} />
+    </Button>
+  );
+}
+
 export function RecordPage({
   title,
   subtitle,
@@ -190,6 +227,7 @@ export function RecordPage({
   notes,
   files,
   related,
+  pin,
 }: {
   title: string;
   subtitle?: React.ReactNode;
@@ -206,6 +244,8 @@ export function RecordPage({
   notes?: React.ReactNode;
   files: React.ReactNode;
   related: React.ReactNode;
+  /** The record, to pin it to the sidebar. */
+  pin?: { recordType: ViewObjectKind; id: string };
 }) {
   const [tab, setTab] = useState("timeline");
 
@@ -217,7 +257,10 @@ export function RecordPage({
             <h1 className="break-words font-heading text-xl font-semibold">{title}</h1>
             {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
           </div>
-          <div className="flex flex-wrap gap-1.5">{actions}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {pin && <PinButton recordType={pin.recordType} id={pin.id} />}
+            {actions}
+          </div>
         </div>
         {chips.length > 0 && <div className="flex flex-wrap gap-1.5">{chips}</div>}
         {notice}

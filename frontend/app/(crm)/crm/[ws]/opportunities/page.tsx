@@ -1,11 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { AmountField, AmountText, type AmountValue } from "@/components/crm/amount-field";
+import { AmountField, type AmountValue } from "@/components/crm/amount-field";
 import { FieldEditor } from "@/components/crm/field-editor";
+import { ObjectList } from "@/components/crm/object-list";
 import { useCrm } from "@/components/crm/shell";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,168 +18,45 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createCrmRecord, getCrmMembers, listCrmRecords, searchCompanyChoices } from "@/lib/api/crm";
+import { createCrmRecord, getCrmMembers, searchCompanyChoices } from "@/lib/api/crm";
 import type { CrmMember, CrmOpportunity } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { formatDate, todayIn, type NumberFormat } from "@/lib/crm/format";
+import type { NumberFormat } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
-import { cn } from "@/lib/utils";
 
 /**
  * Opportunities — spec 007 FR-CRM-OPP-01, FR-CRM-PIPE-04, -10, FR-CRM-FX-06,
- * FR-CRM-UI-02, -06.
+ * FR-CRM-VIEW-01 to -09, -11, FR-CRM-UI-02, -06.
  *
- * The plain list, newest first, with a search and paging; saved views, the
- * kanban and the Pipeline arrive with S6. A deal is opened on a company at
- * Qualified or later, with its next step and date; the server refuses
- * anything else in one sentence, shown as it is. A Viewer sees no amounts.
+ * Deals on their saved views (Pipeline, Closing this month, Won and lost
+ * this quarter, and any the person saves), as a table or a kanban; a stage
+ * changed from a cell or a card goes through the stage form. A deal is
+ * opened on a company at Qualified or later, with its next step and date;
+ * the server refuses anything else in one sentence, shown as it is. A
+ * Viewer sees no amounts.
  */
 export default function OpportunitiesPage() {
   const { bootstrap } = useCrm();
-  const ws = bootstrap.workspace.key;
-  const tz = bootstrap.me.timezone;
-  const numberFormat = bootstrap.me.number_format;
   const canEdit = bootstrap.role !== "viewer";
-  const [q, setQ] = useState("");
-  const [search, setSearch] = useState("");
-  const [extra, setExtra] = useState<CrmOpportunity[]>([]);
-  const [next, setNext] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const { data, error } = useAsync(async () => {
-    const page = await listCrmRecords<CrmOpportunity>(ws, "opportunities", { q: search, limit: 50 });
-    setExtra([]);
-    setNext(page.next);
-    return page.rows;
-  }, [ws, search]);
-  const rows = [...(data ?? []), ...extra];
-  const today = todayIn(tz);
-
-  async function more() {
-    if (!next) return;
-    const page = await listCrmRecords<CrmOpportunity>(ws, "opportunities", { q: search, limit: 50, after: next });
-    setExtra((current) => [...current, ...page.rows]);
-    setNext(page.next);
-  }
-
-  const due = (deal: CrmOpportunity) =>
-    deal.next_step_on && !deal.stage.startsWith("closed") && deal.next_step_on < today;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="flex-1 font-heading text-lg font-semibold">Opportunities</h1>
-        {canEdit && <Button onClick={() => setCreating(true)}>New deal</Button>}
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          setSearch(q.trim());
-        }}
-        className="flex gap-2"
-      >
-        <Input
-          aria-label="Search deals"
-          placeholder="Search by name"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="max-w-sm"
-        />
-        <Button type="submit" variant="outline">
-          Search
-        </Button>
-      </form>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {!error && !data && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {data && rows.length === 0 && (
-        <p className="text-sm text-muted-foreground">{search ? "No deal matches that." : "No deals yet."}</p>
-      )}
-
-      {rows.length > 0 && (
-        <>
-          {/* Phones: one card per deal (FR-CRM-UI-06). */}
-          <ul className="divide-y rounded-md border md:hidden">
-            {rows.map((d) => (
-              <li key={d.id} className="space-y-0.5 p-3">
-                <Link href={`/crm/${ws}/opportunities/${d.id}`} className="font-medium hover:underline">
-                  {d.name}
-                </Link>
-                <p className="text-xs text-muted-foreground">
-                  {[d.stage_label, d.company_name, d.owner_name].filter(Boolean).join(" · ")}
-                </p>
-                {d.amount !== undefined && (
-                  <p className="text-sm">
-                    <AmountText amount={d.amount} currency={d.currency} inr={d.amount_in_inr} numberFormat={numberFormat} />
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-          <div className="hidden overflow-x-auto rounded-md border md:block">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="p-2 font-medium">Deal</th>
-                  <th className="p-2 font-medium">Company</th>
-                  <th className="p-2 font-medium">Stage</th>
-                  {bootstrap.role !== "viewer" && <th className="p-2 font-medium">Amount</th>}
-                  <th className="p-2 font-medium">Next step</th>
-                  <th className="p-2 font-medium">Owner</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rows.map((d) => (
-                  <tr key={d.id} className="hover:bg-muted/40">
-                    <td className="p-2">
-                      <Link href={`/crm/${ws}/opportunities/${d.id}`} className="font-medium hover:underline">
-                        {d.name}
-                      </Link>
-                    </td>
-                    <td className="p-2">
-                      <Link href={`/crm/${ws}/companies/${d.company_id}`} className="hover:underline">
-                        {d.company_name ?? "—"}
-                      </Link>
-                    </td>
-                    <td className="p-2">{d.stage_label}</td>
-                    {bootstrap.role !== "viewer" && (
-                      <td className="whitespace-nowrap p-2">
-                        <AmountText amount={d.amount} currency={d.currency} inr={d.amount_in_inr} numberFormat={numberFormat} />
-                      </td>
-                    )}
-                    <td className="p-2">
-                      {d.next_step ? (
-                        <span className={cn(due(d) && "text-destructive")}>
-                          {d.next_step}
-                          {d.next_step_on ? ` · ${formatDate(d.next_step_on, tz)}` : ""}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="p-2">{d.owner_name ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {next && (
-            <Button variant="outline" onClick={more}>
-              Load more
-            </Button>
-          )}
-        </>
-      )}
-
+    <>
+      <ObjectList
+        kind="opportunity"
+        title="Opportunities"
+        actions={canEdit && <Button onClick={() => setCreating(true)}>New deal</Button>}
+      />
       {canEdit && (
         <NewDealDialog
           open={creating}
           onOpenChange={setCreating}
-          workspace={ws}
+          workspace={bootstrap.workspace.key}
           me={bootstrap.me.id}
-          numberFormat={numberFormat}
+          numberFormat={bootstrap.me.number_format}
         />
       )}
-    </div>
+    </>
   );
 }
 

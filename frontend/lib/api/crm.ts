@@ -11,6 +11,8 @@
 import { backendFetch } from "@/lib/api/backend";
 import type {
   AccountTypeResult,
+  BulkAction,
+  BulkResult,
   CrmAuditEntry,
   CrmAuditFilters,
   CrmBootstrap,
@@ -27,14 +29,19 @@ import type {
   CrmOpportunity,
   CrmOption,
   CrmPage,
+  CrmFavourite,
   CrmPerson,
+  CrmQueryResult,
   CrmRecord,
   CrmRecordPage,
   CrmRole,
+  CrmSavedView,
   CrmSettings,
   CrmTask,
   CrmTimelineEntry,
   CrmTrashRow,
+  CrmViewIn,
+  CrmViewUpdate,
   CrmWorkspace,
   HandoffIn,
   HandoffPreview,
@@ -45,6 +52,7 @@ import type {
   NotCreated,
   OptionUpdate,
   ProjectCategory,
+  QuerySpec,
   StageChanges,
   StageKey,
   StageMoveResult,
@@ -53,6 +61,7 @@ import type {
   TvaCrmAuditEntry,
   TvaCrmWorkspace,
   TvaInvitationIn,
+  ViewObjectKind,
 } from "@/lib/api/crm-types";
 import type { MePreferences } from "@/lib/api/types";
 import { createClient } from "@/lib/supabase/client";
@@ -456,3 +465,59 @@ export const listCrmTasks = (
 /** Q-57 — a Viewer may complete a task assigned to them. */
 export const completeCrmTask = (workspace: string, taskId: string) =>
   call<CrmTask>(`/tasks/${taskId}/complete${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// Views, favourites, bulk — §2.7, §2.5 (FR-CRM-VIEW, FR-CRM-UI-02)
+// ---------------------------------------------------------------------------
+
+/** One page of a list, filtered, sorted, grouped and totalled on the server. */
+export const queryCrm = <T extends CrmRecord>(
+  workspace: string,
+  object: ViewObjectKind,
+  spec: QuerySpec,
+  view?: { view_id?: string; view?: string }
+) =>
+  call<CrmQueryResult<T>>(`/query${query(workspace)}`, {
+    method: "POST",
+    ...body({ object, spec, ...view }),
+  });
+
+export const listCrmViews = (workspace: string, object?: ViewObjectKind, includeHidden = false) =>
+  call<CrmSavedView[]>(
+    `/views${query(workspace, { object, include_hidden: includeHidden ? "true" : undefined })}`
+  );
+
+export const createCrmView = (workspace: string, view: CrmViewIn) =>
+  call<CrmSavedView>(`/views${query(workspace)}`, { method: "POST", ...body(view) });
+
+export const updateCrmView = (workspace: string, id: string, changes: CrmViewUpdate) =>
+  call<CrmSavedView>(`/views/${id}${query(workspace)}`, { method: "PATCH", ...body(changes) });
+
+/** A seeded view is hidden instead. */
+export const deleteCrmView = (workspace: string, id: string) =>
+  call<{ deleted?: boolean; hidden?: boolean }>(`/views/${id}${query(workspace)}`, {
+    method: "DELETE",
+  });
+
+export const listCrmFavourites = (workspace: string) =>
+  call<CrmFavourite[]>(`/favourites${query(workspace)}`);
+
+export const addCrmFavourite = (
+  workspace: string,
+  pin: { target_type: "view" | "record"; target_id: string; record_type?: ViewObjectKind }
+) => call<CrmFavourite>(`/favourites${query(workspace)}`, { method: "POST", ...body(pin) });
+
+export const removeCrmFavourite = (workspace: string, id: string) =>
+  call<{ deleted: boolean }>(`/favourites/${id}${query(workspace)}`, { method: "DELETE" });
+
+export const bulkCrm = (
+  workspace: string,
+  object: ViewObjectKind,
+  ids: string[],
+  action: BulkAction,
+  values: Record<string, unknown> = {}
+) =>
+  call<BulkResult>(`/bulk${query(workspace)}`, {
+    method: "POST",
+    ...body({ object, ids, action, values }),
+  });
