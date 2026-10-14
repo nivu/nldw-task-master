@@ -18,6 +18,7 @@ whenever a cached key expires.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 import time
@@ -65,6 +66,15 @@ class CurrentUser(Person):
         self.email: str = profile["email"]
         self.display_name: str = profile["display_name"]
         self.profile = profile
+
+    @property
+    def account_type(self) -> str:
+        """Spec 007 FR-CRM-ACC-01 — 'staff', or 'crm_only' for a CRM-only seller."""
+        return self.profile.get("account_type") or "staff"
+
+    @property
+    def is_crm_only(self) -> bool:
+        return self.account_type == "crm_only"
 
     @property
     def is_admin(self) -> bool:
@@ -165,14 +175,16 @@ def verify_personal_token(token: str) -> str:
     return row["user_id"]
 
 
-def current_user(request: Request) -> CurrentUser:
-    """FR-AUTH-01 — every route depends on this.
+def _authenticate(request: Request) -> CurrentUser:
+    """FR-AUTH-01 — every authenticated route depends on this, through
+    `current_user` (TVA) or `any_account` (the shared allow-list).
 
     A valid token is not enough. The account must also have a profile and still
     be active: FR-AUTH-06 lets an admin deactivate someone without deleting
     their history, and an unexpired token in that person's browser must stop
     working immediately rather than at expiry.
     """
+    request.state.channel = _channel(request)
     bearer = _bearer_token(request)
     if tokens.is_token(bearer):
         # Spec 004. A personal token is the person, with every check below
@@ -201,6 +213,47 @@ def current_user(request: Request) -> CurrentUser:
     request.state.user_id = profile["id"]
 
     return CurrentUser(profile)
+
+
+def _channel(request: Request) -> str:
+    """Spec 007 plan §5.1 — 'mcp' or 'web', a label for the audit only.
+
+    No authorisation decision ever reads it. 'mcp' needs the per-process key
+    that the in-process MCP bridge sends; the backend is public, so a token
+    holder sending `X-Portal-Client: mcp` on their own is recorded as 'web'.
+    """
+    from app.mcp.server import CHANNEL_KEY  # late: the MCP module imports the app
+
+    sent = request.headers.get("x-portal-channel-key", "")
+    if sent and hmac.compare_digest(sent.encode(), CHANNEL_KEY.encode()):
+        return "mcp"
+    return "web"
+
+
+def any_account(request: Request) -> CurrentUser:
+    """Spec 007 FR-CRM-CHG-01 — staff and CRM-only accounts alike.
+
+    Used by exactly the shared allow-list of contracts §1: `GET /me`, the
+    token routes and the OAuth consent routes. Everything else goes through
+    `current_user`, which refuses a CRM-only account.
+    """
+    return _authenticate(request)
+
+
+AnyAccountDep = Annotated[CurrentUser, Depends(any_account)]
+
+
+def current_user(user: AnyAccountDep) -> CurrentUser:
+    """Every TVA route depends on this, directly or through a role guard.
+
+    A CRM-only seller is refused here, once, so no TVA route needs to change
+    to gain the refusal (FR-CRM-CHG-01). Their own data never reaches TVA
+    either way: they are also left out of every TVA people list
+    (`db.list_profiles`).
+    """
+    if user.is_crm_only:
+        raise ProblemDetail(403, "This account is for the CRM only.")
+    return user
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(current_user)]
@@ -253,8 +306,8 @@ AdminDep = Annotated[CurrentUser, Depends(require_admin)]
 DashboardDep = Annotated[CurrentUser, Depends(require_dashboard)]
 
 
-def require_session(user: CurrentUserDep, request: Request) -> CurrentUser:
-    """Guards the token routes — spec 004 FR-TOK-04.
+def _session_only(user: CurrentUser, request: Request) -> CurrentUser:
+    """Spec 004 FR-TOK-04.
 
     A token must not be able to issue, list or revoke tokens. A leaked token
     would otherwise be able to extend its own life indefinitely; confining
@@ -266,4 +319,16 @@ def require_session(user: CurrentUserDep, request: Request) -> CurrentUser:
     return user
 
 
+def require_session(user: CurrentUserDep, request: Request) -> CurrentUser:
+    """Guards the calendar-feed routes — a TVA account, from a browser session."""
+    return _session_only(user, request)
+
+
+def require_any_session(user: AnyAccountDep, request: Request) -> CurrentUser:
+    """Guards the token and OAuth consent routes — any account, from a browser
+    session (spec 007 contracts §1: a CRM-only seller connects Claude too)."""
+    return _session_only(user, request)
+
+
 SessionDep = Annotated[CurrentUser, Depends(require_session)]
+AnySessionDep = Annotated[CurrentUser, Depends(require_any_session)]

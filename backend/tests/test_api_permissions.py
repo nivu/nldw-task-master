@@ -17,7 +17,7 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import CurrentUser, current_user
+from app.api.deps import CurrentUser, any_account, current_user
 from app.main import app
 from app.services import bookings as booking_service
 from app.services import supabase as db
@@ -117,8 +117,12 @@ class FakeDb:
     def get_profile(self, user_id):
         return dict(self.profiles[user_id]) if user_id in self.profiles else None
 
-    def list_profiles(self, *, active_only=False):
-        return list(self.profiles.values())
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
+        return [
+            p
+            for p in self.profiles.values()
+            if include_crm_only or p.get("account_type", "staff") == "staff"
+        ]
 
     def list_reports(self, lead_id, *, active_only=True):
         return [p for p in self.profiles.values() if p["lead_id"] == lead_id]
@@ -271,10 +275,13 @@ def as_(fake):
 
     def sign_in(user_id: str) -> TestClient:
         app.dependency_overrides[current_user] = lambda: CurrentUser(fake.profiles[user_id])
+        # GET /me sits on `any_account` (spec 007 contracts §1).
+        app.dependency_overrides[any_account] = lambda: CurrentUser(fake.profiles[user_id])
         return TestClient(app)
 
     yield sign_in
     app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(any_account, None)
 
 
 API = "/api/v1/admin"

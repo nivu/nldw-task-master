@@ -23,6 +23,7 @@ description, and ask the model to confirm with the person first (FR-MCP-04).
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import date
 from typing import Any
 
@@ -83,6 +84,12 @@ mcp = MCPServer(
     version="1.0.0",
 )
 
+# Spec 007 plan §5.1 — sent on every in-process call so the API can label the
+# request 'mcp' in the audit. Random per process and never leaves it: a token
+# holder calling the public backend directly cannot claim the channel. A label,
+# never a permission.
+CHANNEL_KEY = secrets.token_urlsafe(32)
+
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
@@ -123,7 +130,11 @@ async def _api(
             f"/api/v1{path}",
             params=clean,
             json=body,
-            headers={"Authorization": f"Bearer {_bearer(ctx)}", "X-Portal-Client": "mcp"},
+            headers={
+                "Authorization": f"Bearer {_bearer(ctx)}",
+                "X-Portal-Client": "mcp",
+                "X-Portal-Channel-Key": CHANNEL_KEY,
+            },
         )
     if response.status_code >= 400:
         try:

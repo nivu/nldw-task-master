@@ -177,7 +177,7 @@ class FakeDb:
         self.entries: list[dict] = []
         self.audit: list[dict] = []
 
-    def list_profiles(self, *, active_only=False):
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
         return self.profiles
 
     def list_cost_periods(self, user_id=None):

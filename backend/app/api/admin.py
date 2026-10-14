@@ -70,8 +70,11 @@ def list_users(admin: AdminDep) -> list[dict]:
             # and the owner flag itself is never changed through the app.
             "dashboard_access": row.get("dashboard_access") is True,
             "is_owner": row.get("is_owner") is True,
+            # Spec 007 FR-CRM-CHG-02 — CRM-only sellers are listed here, and
+            # only here in TVA, so an admin can see and deactivate them.
+            "account_type": row.get("account_type") or "staff",
         }
-        for row in db.list_profiles()
+        for row in db.list_profiles(include_crm_only=True)
     ]
 
 
@@ -170,6 +173,15 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
 
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no TVA role, lead,
+    # timesheet or dashboard (025 `profiles_crm_only_shape`). Giving it one is
+    # converting it to staff, which is its own deliberate step.
+    if existing.get("account_type") == "crm_only" and (
+        any(k in changes for k in ("role", "lead_id", "logs_time"))
+        or changes.get("dashboard_access") is True
+    ):
+        raise ProblemDetail(422, "Change the account type first.")
+
     # Spec 003 FR-DASH-03 — the owner alone grants and revokes dashboard
     # access. Being an admin is not enough; that is the point of the flag.
     if "dashboard_access" in changes:
@@ -205,6 +217,11 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     joined_on, left_on = rules.employment({**existing, **changes})
     if problem := rules.check_employment_dates(joined_on, left_on):
         raise ProblemDetail(422, problem)
+
+    # Spec 007 FR-CRM-ACC-04 — an admin's deactivation is recorded as such, so
+    # a CRM workspace admin's invitation cannot quietly undo it.
+    if "is_active" in changes and changes["is_active"] is not None:
+        changes["deactivated_reason"] = None if changes["is_active"] else "admin"
 
     updated = db.update_profile(user_id, changes)
     # FR-DASH-03 — access changes get their own audit action, so who was let
@@ -826,8 +843,11 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
 
 @router.get("/audit")
 def read_audit(admin: AdminDep, limit: int = Query(default=200, le=1000)) -> list[dict]:
-    """NFR-06 — readable, and by construction not writable."""
-    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    """NFR-06 — readable, and by construction not writable.
+
+    Names CRM-only actors too (spec 007 FR-CRM-AUD-04): a seller's action must
+    not show up as an unknown person."""
+    names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     return [
         {**row, "actor": actor_name(row.get("actor_id"), names)} for row in db.list_audit(limit)
     ]
@@ -1103,6 +1123,8 @@ def create_allocation(payload: AllocationIn, user: LeadDep) -> dict:
     person = db.get_profile(payload.user_id)
     if person is None:
         raise ProblemDetail(404, "No such person.")
+    if refusal := rules.allocation_person_refusal(person):
+        raise ProblemDetail(422, refusal)
     if not rules.may_allocate(
         actor_id=user.id, actor_is_manager=user.is_manager, person_lead_id=person.get("lead_id")
     ):

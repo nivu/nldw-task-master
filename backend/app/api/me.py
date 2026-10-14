@@ -12,7 +12,7 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import CurrentUserDep
+from app.api.deps import AnyAccountDep, CurrentUserDep
 from app.domain.calendar import (
     is_weekend,
     month_matrix,
@@ -30,20 +30,39 @@ PERIOD_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
 
 
 @router.get("")
-def whoami(user: CurrentUserDep) -> dict:
+def whoami(user: AnyAccountDep) -> dict:
     """Who am I and what may I see?
 
     The frontend uses `capabilities` to decide which navigation to render. It
     is a convenience, never a control: every guarded route re-checks the role
     server-side, because a client that lies about its capabilities must gain
     nothing by it.
+
+    Spec 007 contracts §1 — one of the few routes a CRM-only seller reaches.
+    They get a reduced shape: no role, lead or capabilities, since nothing in
+    TVA is theirs to see. `crm.workspaces` is filled in by S1b.
     """
+    crm = {"workspaces": []}
+    if user.is_crm_only:
+        return {
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "account_type": user.account_type,
+            "crm": crm,
+            "preferences": {
+                "timezone": user.profile.get("timezone") or "Asia/Kolkata",
+                "number_format": user.profile.get("number_format") or "indian_short",
+            },
+        }
     return {
         "id": user.id,
         "email": user.email,
         "display_name": user.display_name,
         "role": user.role,
         "lead_id": user.lead_id,
+        "account_type": user.account_type,
+        "crm": crm,
         "capabilities": {
             "team_view": user.is_lead,
             "admin_panel": user.is_admin,

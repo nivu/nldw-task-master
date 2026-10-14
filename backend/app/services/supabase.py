@@ -144,16 +144,27 @@ def get_profile_by_email_ignoring_case(email: str) -> dict[str, Any] | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def list_profiles(*, active_only: bool = False) -> list[dict[str, Any]]:
+def list_profiles(
+    *, active_only: bool = False, include_crm_only: bool = False
+) -> list[dict[str, Any]]:
+    """Staff profiles, by name. Spec 007 FR-CRM-CHG-02: CRM-only accounts are
+    left out by default, which keeps them out of every TVA people population
+    at once. `include_crm_only` is for the few places that must name them:
+    Admin → People and the audit's actor names."""
     query = supabase.table("profiles").select("*").order("display_name")
     if active_only:
         query = query.eq("is_active", True)
+    if not include_crm_only:
+        query = query.eq("account_type", "staff")
     return query.execute().data or []
 
 
 def list_reports(lead_id: str, *, active_only: bool = True) -> list[dict[str, Any]]:
-    """A lead's direct reports — the population FR-LEAD-01 shows."""
-    query = supabase.table("profiles").select("*").eq("lead_id", lead_id)
+    """A lead's direct reports — the population FR-LEAD-01 shows. Staff only
+    (a CRM-only account has no lead, and 025 enforces it; this says so too)."""
+    query = (
+        supabase.table("profiles").select("*").eq("lead_id", lead_id).eq("account_type", "staff")
+    )
     if active_only:
         query = query.eq("is_active", True)
     return query.order("display_name").execute().data or []

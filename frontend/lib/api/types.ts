@@ -23,10 +23,32 @@ export type BookingStatus =
   | "released"
   | "unrecognised";
 
+/** Spec 007 FR-CRM-ACC-01 — a CRM-only seller is not staff and sees no TVA. */
+export type AccountType = "staff" | "crm_only";
+
+/** Spec 007 contracts §1 — a CRM workspace the person belongs to. */
+export interface MeCrmWorkspace {
+  id: string;
+  key: string;
+  name: string;
+  role: "admin" | "member" | "viewer";
+  last_used: boolean;
+}
+
 export interface Me {
   id: string;
   email: string;
   display_name: string;
+  /** Spec 007. For `crm_only` the backend sends no `role`, `lead_id` or
+   *  `capabilities`, only `preferences`; from S1c the portal layout sends
+   *  them to /crm before the TVA shell renders. */
+  account_type: AccountType;
+  /** Spec 007 — every account's CRM workspaces; empty until S1b adds them. */
+  crm: { workspaces: MeCrmWorkspace[] };
+  preferences?: {
+    timezone: "Asia/Kolkata" | "Australia/Sydney";
+    number_format: "indian_short" | "full";
+  };
   role: Role;
   lead_id: string | null;
   /** A hint for which navigation to render. Never a permission — every

@@ -8,7 +8,14 @@ from decimal import Decimal
 from fastapi import APIRouter, Query
 from fastapi.responses import PlainTextResponse, Response
 
-from app.api.deps import AdminDep, CurrentUserDep, LeadDep, ManagerDep, SessionDep
+from app.api.deps import (
+    AdminDep,
+    AnySessionDep,
+    CurrentUserDep,
+    LeadDep,
+    ManagerDep,
+    SessionDep,
+)
 from app.api.errors import ProblemDetail
 from app.config import settings
 from app.domain import invoicing as invoice_rules
@@ -280,10 +287,13 @@ def calendar_feed(key: str) -> Response:
 # ---------------------------------------------------------------------------
 
 oauth = APIRouter(prefix="/oauth", tags=["oauth"])
+# Spec 007 contracts §1 — any account, from a browser session: a CRM-only
+# seller connects Claude the same way. The token they approve is them, so
+# every TVA route still refuses it.
 
 
 @oauth.get("/transaction/{txn}", include_in_schema=False)
-def oauth_transaction(txn: str, user: SessionDep) -> dict:
+def oauth_transaction(txn: str, user: AnySessionDep) -> dict:
     from app.services.oauth import provider
 
     row = provider.transaction(txn)
@@ -293,7 +303,7 @@ def oauth_transaction(txn: str, user: SessionDep) -> dict:
 
 
 @oauth.post("/approve", include_in_schema=False)
-def oauth_approve(payload: OAuthApprove, user: SessionDep) -> dict:
+def oauth_approve(payload: OAuthApprove, user: AnySessionDep) -> dict:
     from mcp.server.auth.provider import AuthorizeError
 
     from app.services.oauth import provider
