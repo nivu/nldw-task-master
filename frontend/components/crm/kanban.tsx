@@ -23,7 +23,7 @@ import { GripVertical } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import type { CrmQueryGroup, ViewObjectKind } from "@/lib/api/crm-types";
+import type { CrmLists, CrmQueryGroup, ViewObjectKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { formatAmount, type CrmTimezone, type NumberFormat } from "@/lib/crm/format";
 import { cellText, fieldLabel, groupKeyOf, TITLE_FIELD } from "@/lib/crm/view-fields";
@@ -97,6 +97,8 @@ export function Kanban({
   canMove,
   onMove,
   hrefFor,
+  detailFor,
+  lists,
   timeZone,
   numberFormat,
 }: {
@@ -115,7 +117,12 @@ export function Kanban({
    * sentence shows).
    */
   onMove: (row: Row, key: string) => Promise<Row | null>;
-  hrefFor: (row: Row) => string;
+  /** A record's page; null when it has none to open. */
+  hrefFor: (row: Row) => string | null;
+  /** A line under the title (a task's linked records). */
+  detailFor?: (row: Row) => React.ReactNode;
+  /** The workspace's select lists, to name a value the row sends no label for. */
+  lists: CrmLists;
   timeZone: CrmTimezone;
   numberFormat: NumberFormat;
 }) {
@@ -241,7 +248,9 @@ export function Kanban({
                     row={row}
                     cardFields={cardFields}
                     disabled={!canMove(row)}
-                    href={hrefFor(row)}
+                    href={hrefFor(row) ?? undefined}
+                    detail={detailFor?.(row)}
+                    lists={lists}
                     timeZone={timeZone}
                     numberFormat={numberFormat}
                   />
@@ -252,7 +261,15 @@ export function Kanban({
         </div>
         <DragOverlay>
           {dragging && (
-            <CardBody kind={kind} row={dragging} cardFields={cardFields} timeZone={timeZone} numberFormat={numberFormat} lifted />
+            <CardBody
+              kind={kind}
+              row={dragging}
+              cardFields={cardFields}
+              lists={lists}
+              timeZone={timeZone}
+              numberFormat={numberFormat}
+              lifted
+            />
           )}
         </DragOverlay>
       </DndContext>
@@ -317,6 +334,8 @@ function KanbanCard({
   cardFields,
   disabled,
   href,
+  detail,
+  lists,
   timeZone,
   numberFormat,
 }: {
@@ -324,7 +343,9 @@ function KanbanCard({
   row: Row;
   cardFields: string[];
   disabled: boolean;
-  href: string;
+  href?: string;
+  detail?: React.ReactNode;
+  lists: CrmLists;
   timeZone: CrmTimezone;
   numberFormat: NumberFormat;
 }) {
@@ -345,7 +366,17 @@ function KanbanCard({
         isDragging && "opacity-40"
       )}
     >
-      <CardBody kind={kind} row={row} cardFields={cardFields} href={href} timeZone={timeZone} numberFormat={numberFormat} movable={!disabled} />
+      <CardBody
+        kind={kind}
+        row={row}
+        cardFields={cardFields}
+        href={href}
+        detail={detail}
+        lists={lists}
+        timeZone={timeZone}
+        numberFormat={numberFormat}
+        movable={!disabled}
+      />
     </div>
   );
 }
@@ -355,6 +386,8 @@ function CardBody({
   row,
   cardFields,
   href,
+  detail,
+  lists,
   timeZone,
   numberFormat,
   lifted,
@@ -364,12 +397,14 @@ function CardBody({
   row: Row;
   cardFields: string[];
   href?: string;
+  detail?: React.ReactNode;
+  lists: CrmLists;
   timeZone: CrmTimezone;
   numberFormat: NumberFormat;
   lifted?: boolean;
   movable?: boolean;
 }) {
-  const title = cellText(kind, TITLE_FIELD[kind], row, { timeZone, numberFormat });
+  const title = cellText(kind, TITLE_FIELD[kind], row, { timeZone, numberFormat, lists });
   return (
     <div className={cn("space-y-1 rounded-md border bg-background p-2.5 text-sm shadow-xs", lifted && "shadow-lg")}>
       <div className="flex items-start gap-1">
@@ -382,10 +417,11 @@ function CardBody({
         )}
         {(movable || lifted) && <GripVertical aria-hidden className="size-4 shrink-0 text-muted-foreground" />}
       </div>
+      {detail && <div className="text-xs text-muted-foreground">{detail}</div>}
       {cardFields
         .filter((f) => f !== TITLE_FIELD[kind])
         .map((f) => {
-          const text = cellText(kind, f, row, { timeZone, numberFormat });
+          const text = cellText(kind, f, row, { timeZone, numberFormat, lists });
           if (text === "—") return null;
           return (
             <p key={f} className="truncate text-xs text-muted-foreground">

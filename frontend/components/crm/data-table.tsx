@@ -109,7 +109,10 @@ export interface DataTableProps {
   onEdit: (row: Row, meta: ViewFieldMeta, value: unknown) => Promise<void>;
   /** A deal's stage moves through the stage form (contracts §2.6). */
   onStage?: (row: Row, stage: string) => void;
-  hrefFor: (row: Row) => string;
+  /** A record's page; null when it has none to open. */
+  hrefFor: (row: Row) => string | null;
+  /** A line under the title (a task's linked records). */
+  detailFor?: (row: Row) => React.ReactNode;
   bootstrap: CrmBootstrap;
   members: CrmMember[];
   timeZone: CrmTimezone;
@@ -208,7 +211,8 @@ export function DataTable(props: DataTableProps) {
       focusRow(visible[i - 1]?.id);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      router.push(hrefFor(row));
+      const href = hrefFor(row);
+      if (href) router.push(href);
     } else if (e.key === " " && selectable) {
       e.preventDefault();
       toggle(row.id);
@@ -420,26 +424,37 @@ function Cell({
   onEdit,
   onStage,
   hrefFor,
+  detailFor,
   bootstrap,
   members,
   timeZone,
   numberFormat,
 }: Omit<DataTableProps, "rows"> & { row: Row; field: string }) {
   const meta = fieldMeta(kind, field);
-  const text = cellText(kind, field, row, { timeZone, numberFormat });
+  const text = cellText(kind, field, row, { timeZone, numberFormat, lists: bootstrap.lists });
   const editable = Boolean(meta?.editable && canEditCell(row, meta));
 
   if (field === TITLE_FIELD[kind]) {
+    const href = hrefFor(row);
+    const title = kind === "note" ? text.slice(0, 80) : text;
+    const detail = detailFor?.(row);
     return (
-      <div className="group flex items-center gap-1 p-2">
-        <Link href={hrefFor(row)} tabIndex={-1} className="truncate font-medium hover:underline">
-          {kind === "note" ? text.slice(0, 80) : text}
-        </Link>
-        {editable && meta && (
-          <CellEditor {...{ kind, row, meta, onEdit, bootstrap, members }} label={text}>
-            <Pencil className="size-3.5" />
-          </CellEditor>
-        )}
+      <div className="p-2">
+        <div className="group flex items-center gap-1">
+          {href ? (
+            <Link href={href} tabIndex={-1} className="truncate font-medium hover:underline">
+              {title}
+            </Link>
+          ) : (
+            <span className="truncate font-medium">{title}</span>
+          )}
+          {editable && meta && (
+            <CellEditor {...{ kind, row, meta, onEdit, bootstrap, members }} label={text}>
+              <Pencil className="size-3.5" />
+            </CellEditor>
+          )}
+        </div>
+        {detail && <div className="truncate text-xs text-muted-foreground">{detail}</div>}
       </div>
     );
   }

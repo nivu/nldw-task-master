@@ -11,8 +11,9 @@ import { LostDialog } from "@/components/crm/lost-dialog";
 import { useCrm } from "@/components/crm/shell";
 import { SortMenu } from "@/components/crm/sort-menu";
 import { StageDialog } from "@/components/crm/stage-dialog";
+import { LinkRefs } from "@/components/crm/task-dialog";
 import { ViewSearch } from "@/components/crm/view-search";
-import { ViewSwitcher, type SaveAs } from "@/components/crm/view-switcher";
+import { swapPartner, ViewSwitcher, type SaveAs } from "@/components/crm/view-switcher";
 import { Button } from "@/components/ui/button";
 import {
   addCrmFavourite,
@@ -26,6 +27,7 @@ import {
   updateCrmView,
 } from "@/lib/api/crm";
 import type {
+  CrmLinkRef,
   CrmObject,
   CrmOpportunity,
   CrmRecord,
@@ -65,7 +67,12 @@ import { useAsync } from "@/lib/use-async";
  *
  * Edits from a cell or a card are the record's own PATCH with its
  * `updated_at`; a deal's stage goes through the stage form, the lost form or
- * the handoff, exactly as from the deal's page.
+ * the handoff, exactly as from the deal's page. A move that lands runs the
+ * query again, so group counts and totals follow it.
+ *
+ * Tasks and notes have no page of their own: each shows the records it is
+ * linked to and opens the first of them. The selection for the bulk bar
+ * holds only while the rows are those it was made on.
  */
 
 type Row = Record<string, unknown> & { id: string; updated_at: string };
@@ -93,6 +100,14 @@ const DEAL_TOTALS: ViewAggregate[] = [
   { fn: "sum", field: "amount_in_inr" },
   { fn: "sum", field: "weighted_amount" },
 ];
+
+/** The view's own totals with any of `more` it lacks. */
+function withTotals(own: ViewAggregate[], more: ViewAggregate[]): ViewAggregate[] {
+  const has = (a: ViewAggregate) => own.some((o) => o.fn === a.fn && (o.field ?? null) === (a.field ?? null));
+  return [...own, ...more.filter((a) => !has(a))];
+}
+
+const NO_SELECTION = new Set<string>();
 
 function columnsOf(config: ViewConfig, kind: ViewObjectKind, shown: ViewFieldMeta[]): ViewColumn[] {
   const allowed = new Set(shown.map((f) => f.field));
@@ -173,19 +188,23 @@ function ObjectListView({
   const kanbanFields = visibleFields.filter((f) => KANBAN_TYPES.includes(f.type) && f.groupable);
 
   const [viewsNonce, setViewsNonce] = useState(0);
+  // Admins and Members also get the hidden seeded views, to show them again.
   const setup = useAsync(
-    () => Promise.all([listCrmViews(ws, kind), getCrmMembers(ws)]),
-    [ws, kind, viewsNonce]
+    () => Promise.all([listCrmViews(ws, kind, !viewer), getCrmMembers(ws)]),
+    [ws, kind, viewer, viewsNonce]
   );
-  const views = setup.data?.[0] ?? [];
+  const allViews = setup.data?.[0];
+  const views = useMemo(() => (allViews ?? []).filter((v) => !v.hidden), [allViews]);
+  const hiddenViews = useMemo(() => (allViews ?? []).filter((v) => v.hidden), [allViews]);
   const members = setup.data?.[1] ?? [];
 
   const wanted = lockedView ?? params.get("view");
-  const current =
-    views.find((v) => v.id === wanted || (wanted && v.system_key === wanted)) ??
-    views.find((v) => v.is_default) ??
-    views[0] ??
-    null;
+  const match = views.find((v) => v.id === wanted || (wanted && v.system_key === wanted));
+  // A locked view (Pipeline) is that view or nothing: never another in its place.
+  const lockedHidden = Boolean(lockedView && setup.data && !match);
+  const current = lockedView
+    ? (match ?? null)
+    : (match ?? views.find((v) => v.is_default) ?? views[0] ?? null);
 
   const [draftState, setDraft] = useState<Draft | null>(null);
   const draft = draftState && draftState.viewId === (current?.id ?? "") ? draftState : draftOf(current);
@@ -196,7 +215,6 @@ function ObjectListView({
   const changeConfig = (patch: Partial<ViewConfig>) => change({ config: { ...draft.config, ...patch } });
 
   const [q, setQ] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [queryNonce, setQueryNonce] = useState(0);
   const [extra, setExtra] = useState<Row[]>([]);
   const [next, setNext] = useState<string | null>(null);
@@ -206,26 +224,40 @@ function ObjectListView({
     draft.kind === "kanban"
       ? (draft.config.kanban_field ?? kanbanFields[0]?.field)
       : undefined;
+  // A deal kanban's headers always carry the deal totals (FR-CRM-VIEW-08),
+  // whatever totals the view keeps for its table footer.
   const spec = {
     filters: draft.config.filters,
     sorts: draft.config.sorts,
     group_by: draft.kind === "kanban" ? kanbanField : draft.config.group_by,
     aggregates:
-      draft.config.aggregates ??
-      (draft.kind === "kanban" && kind === "opportunity" && !viewer ? DEAL_TOTALS : undefined),
+      draft.kind === "kanban" && kind === "opportunity" && !viewer
+        ? withTotals(draft.config.aggregates ?? [], DEAL_TOTALS)
+        : draft.config.aggregates,
     q: q || undefined,
     limit: PAGE[draft.kind],
   };
   const specKey = JSON.stringify(spec);
 
+  // The selection belongs to the rows it was made on: a change of view,
+  // layout, filters, search, sorts or grouping drops it, so the bulk bar
+  // never acts on records no longer on screen.
+  const rowsKey = JSON.stringify([current?.id, draft.kind, spec.filters, spec.sorts, spec.group_by, spec.q]);
+  const [selection, setSelection] = useState<{ key: string; ids: Set<string> }>({
+    key: "",
+    ids: NO_SELECTION,
+  });
+  const selected = selection.key === rowsKey ? selection.ids : NO_SELECTION;
+  const setSelected = (ids: Set<string>) => setSelection({ key: rowsKey, ids });
+
   const result = useAsync(async () => {
-    if (!setup.data) return null;
+    if (!setup.data || lockedHidden) return null;
     const page = await queryCrm<CrmRecord>(ws, kind, JSON.parse(specKey));
     setExtra([]);
     setSaved({});
     setNext(page.next);
     return page;
-  }, [ws, kind, specKey, Boolean(setup.data), queryNonce, refreshKey]);
+  }, [ws, kind, specKey, Boolean(setup.data), lockedHidden, queryNonce, refreshKey]);
   const page = result.data;
   const rows = useMemo(
     () =>
@@ -276,7 +308,10 @@ function ObjectListView({
   }
 
   function endMove(row: Row | null) {
-    if (row) keep(row);
+    if (row) {
+      keep(row);
+      setQueryNonce((n) => n + 1);
+    }
     settle.current?.(row);
     settle.current = null;
     setMoving(null);
@@ -294,6 +329,8 @@ function ObjectListView({
       row.updated_at
     );
     keep(updated as unknown as Row);
+    // The headers' counts and sums are the server's: ask again.
+    setQueryNonce((n) => n + 1);
     return updated as unknown as Row;
   }
 
@@ -337,8 +374,7 @@ function ObjectListView({
   }
 
   async function moveView(view: CrmSavedView, by: -1 | 1) {
-    const i = views.findIndex((v) => v.id === view.id);
-    const other = views[i + by];
+    const other = swapPartner(views, view, by);
     if (!other) return;
     // Swap the two positions; equal ones are pulled apart first.
     const [a, b] =
@@ -350,6 +386,11 @@ function ObjectListView({
 
   async function makeDefault(view: CrmSavedView) {
     await updateCrmView(ws, view.id, { is_default: true });
+    setViewsNonce((n) => n + 1);
+  }
+
+  async function showView(view: CrmSavedView) {
+    await updateCrmView(ws, view.id, { hidden: false });
     setViewsNonce((n) => n + 1);
   }
 
@@ -383,7 +424,17 @@ function ObjectListView({
     if (present.has("")) out.push({ key: "", label: "None" });
     return out;
   }, [kanbanMeta, rows, page, bootstrap]);
-  const hrefFor = (row: Row) => `/crm/${ws}/${OBJECT_PATH[kind]}/${row.id}`;
+  // A task or a note opens the first record it is linked to (campaigns have
+  // no page yet).
+  const linked = kind === "task" || kind === "note";
+  const hrefFor = (row: Row): string | null => {
+    if (!linked) return `/crm/${ws}/${OBJECT_PATH[kind]}/${row.id}`;
+    const link = ((row.links as CrmLinkRef[] | undefined) ?? []).find((l) => l.record_type !== "campaign");
+    return link ? `/crm/${ws}/${OBJECT_PATH[link.record_type as ViewObjectKind]}/${link.record_id}` : null;
+  };
+  const detailFor = linked
+    ? (row: Row) => <LinkRefs workspace={ws} links={(row.links as CrmLinkRef[] | undefined) ?? []} />
+    : undefined;
   const bulkFields = visibleFields.filter(
     (f) => f.editable && f.field !== TITLE_FIELD[kind] && f.type !== "long_text"
   );
@@ -399,11 +450,18 @@ function ObjectListView({
       {setup.error && <p className="text-sm text-destructive">{setup.error}</p>}
       {!setup.data && !setup.error && <p className="text-sm text-muted-foreground">Loading…</p>}
 
-      {setup.data && (
+      {lockedHidden && (
+        <p role="status" className="rounded-md bg-muted p-2 text-sm" data-testid="view-hidden">
+          The {title} view is hidden. An Admin or Member can show it again from the View menu of its list.
+        </p>
+      )}
+
+      {setup.data && !lockedHidden && (
         <>
           {!lockedView && (
             <ViewSwitcher
               views={views}
+              hiddenViews={hiddenViews}
               current={current}
               onSelect={select}
               kind={draft.kind}
@@ -427,6 +485,7 @@ function ObjectListView({
               onMove={moveView}
               onDefault={makeDefault}
               onRemove={removeView}
+              onShow={showView}
               onPin={togglePin}
               onReset={() => setDraft(null)}
             />
@@ -509,6 +568,7 @@ function ObjectListView({
               onEdit={edit}
               onStage={kind === "opportunity" ? (row, stage) => void moveStage(row, stage) : undefined}
               hrefFor={hrefFor}
+              detailFor={detailFor}
               bootstrap={bootstrap}
               members={members}
               timeZone={timeZone}
@@ -523,9 +583,11 @@ function ObjectListView({
               columns={kanbanColumns}
               groups={page.groups}
               cardFields={draft.config.card_fields ?? columns.map((c) => c.field).slice(1, 4)}
-              canMove={(row) => Boolean(kanbanMeta && canEditCell(row, kanbanMeta))}
+              canMove={(row) => Boolean(kanbanMeta?.editable && canEditCell(row, kanbanMeta))}
               onMove={moveCard}
               hrefFor={hrefFor}
+              detailFor={detailFor}
+              lists={bootstrap.lists}
               timeZone={timeZone}
               numberFormat={numberFormat}
             />

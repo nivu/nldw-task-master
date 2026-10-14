@@ -369,23 +369,96 @@ test.describe("views (S6)", () => {
     await expect(page.getByTestId("view-error")).toHaveText("Viewers cannot filter, sort or total by amount.");
   });
 
-  test("the seeded views open in both workspaces (FR-CRM-VIEW-11)", async ({ page }) => {
-    const seeded: [string, string[]][] = [
-      ["companies", ["All companies", "Lead funnel", "Partners and channels", "My accounts"]],
-      ["opportunities", ["Pipeline", "Closing this month", "Won and lost this quarter"]],
-      ["tasks", ["Open tasks by owner", "My week"]],
+  test("a task opens the record it is linked to, from the Tasks table and with Enter", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E task ${Date.now().toString(36)}`;
+    const company = await crmApi(request, token, "POST", "/companies?workspace=labs", { name: `${tag} Co` });
+    const task = await crmApi(request, token, "POST", "/tasks?workspace=labs", {
+      title: `${tag} call back`,
+      links: [{ record_type: "company", record_id: company.id }],
+    });
+
+    await signIn(page, PEOPLE.user);
+    await page.goto("/crm/labs/tasks");
+    await page.getByLabel("Search tasks").fill(tag);
+    const row = page.locator(`[data-row-id="${task.id}"]`);
+    await expect(row).toBeVisible();
+    await expect(row.getByRole("link", { name: `${tag} Co` })).toBeVisible();
+    await row.getByRole("link", { name: `${tag} call back` }).click();
+    await page.waitForURL(`**/crm/labs/companies/${company.id}`);
+
+    await page.goto("/crm/labs/tasks");
+    await page.getByLabel("Search tasks").fill(tag);
+    await page.locator(`[data-row-id="${task.id}"]`).focus();
+    await page.keyboard.press("Enter");
+    await page.waitForURL(`**/crm/labs/companies/${company.id}`);
+  });
+
+  test("the seeded views open in both workspaces with their filters (FR-CRM-VIEW-11)", async ({
+    page,
+    request,
+  }) => {
+    // [tab, conditions in its filter]
+    const seeded: [string, [string, number][]][] = [
+      [
+        "companies",
+        [
+          ["All companies", 0],
+          ["Lead funnel", 1],
+          ["Partners and channels", 1],
+          ["My accounts", 1],
+        ],
+      ],
+      [
+        "opportunities",
+        [
+          ["Pipeline", 1],
+          ["Closing this month", 2],
+          ["Won and lost this quarter", 3],
+        ],
+      ],
+      [
+        "tasks",
+        [
+          ["Open tasks by owner", 1],
+          ["My week", 1],
+        ],
+      ],
     ];
     await signIn(page, PEOPLE.manager);
     for (const ws of ["labs", "academy"]) {
-      for (const [list, names] of seeded) {
+      for (const [list, views] of seeded) {
         await page.goto(`/crm/${ws}/${list}`);
-        for (const name of names) {
+        for (const [name, conditions] of views) {
           await page.getByRole("tab", { name }).click();
           await expect(page.getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
           await expect(page.getByText(/^[\d,]+\+? records?$/).first()).toBeVisible();
           await expect(page.getByTestId("view-error")).toHaveCount(0);
+          await expect(
+            page.getByRole("button", { name: conditions ? `Filter · ${conditions}` : "Filter", exact: true })
+          ).toBeVisible();
         }
       }
     }
+
+    // Open tasks by owner groups by assignee; My week is a board by bucket.
+    await page.goto("/crm/labs/tasks");
+    await page.getByRole("tab", { name: "Open tasks by owner" }).click();
+    await page.getByRole("button", { name: /^Sort/ }).click();
+    await expect(page.locator("#view-group-by")).toHaveValue("assignee_id");
+    await page.keyboard.press("Escape");
+    await page.getByRole("tab", { name: "My week" }).click();
+    await expect(column(page, "today")).toBeVisible();
+
+    // My accounts leaves out a company someone else owns.
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E mine ${Date.now().toString(36)}`;
+    await crmApi(request, token, "POST", "/companies?workspace=labs", { name: `${tag} Theirs` });
+    await page.goto("/crm/labs/companies");
+    await page.getByRole("tab", { name: "All companies" }).click();
+    await page.getByLabel("Search companies").fill(tag);
+    await expect(page.getByTestId("table-count")).toHaveText("1 record");
+    await page.getByRole("tab", { name: "My accounts" }).click();
+    await expect(page.getByTestId("table-count")).toHaveText("0 records");
   });
 });

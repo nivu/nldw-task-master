@@ -15,7 +15,8 @@ import { useAsync } from "@/lib/use-async";
  *
  * Tasks on their saved views: Open tasks by owner (a table grouped by
  * assignee) and My week (a kanban by bucket), or any the person saves. Each
- * links to its records on its own page. A Viewer sees the tasks and may
+ * shows the records it is linked to; a task has no page of its own, so
+ * opening one opens the first of them. A Viewer sees the tasks and may
  * change the status of the ones assigned to them; nothing else.
  */
 export default function TasksPage() {

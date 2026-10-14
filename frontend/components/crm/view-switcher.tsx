@@ -50,9 +50,10 @@ import { cn } from "@/lib/utils";
  * person's own; Table or Kanban for what is on screen; and the view's menu:
  * save the changes, save as a new view (a name, an icon, private or shared,
  * the list's default), move it earlier or later, pin it to the sidebar, and
- * hide a seeded view or delete one's own. A Viewer saves private views only;
- * Admins and Members manage shared ones. The server decides; a refusal is
- * shown as its sentence.
+ * hide a seeded view or delete one's own. A hidden seeded view is listed
+ * under Hidden views for Admins and Members to show again. A Viewer saves
+ * private views only; Admins and Members manage shared ones. The server
+ * decides; a refusal is shown as its sentence.
  */
 
 export const VIEW_ICONS: Record<string, LucideIcon> = {
@@ -74,6 +75,21 @@ export function ViewIcon({ name, className }: { name: string | null | undefined;
   return <Icon aria-hidden className={cn("size-4 shrink-0", className)} />;
 }
 
+/**
+ * The view `view` trades places with to move one step earlier or later: the
+ * nearest one that way the person may also change and that is seen by the
+ * same people, so a private view never moves a shared one for everybody.
+ */
+export function swapPartner(views: CrmSavedView[], view: CrmSavedView, by: -1 | 1): CrmSavedView | null {
+  const i = views.findIndex((v) => v.id === view.id);
+  if (i < 0) return null;
+  for (let j = i + by; j >= 0 && j < views.length; j += by) {
+    const other = views[j];
+    if (other.can_edit && other.visibility === view.visibility) return other;
+  }
+  return null;
+}
+
 export interface SaveAs {
   name: string;
   icon: string;
@@ -83,6 +99,7 @@ export interface SaveAs {
 
 export function ViewSwitcher({
   views,
+  hiddenViews,
   current,
   onSelect,
   kind,
@@ -96,10 +113,13 @@ export function ViewSwitcher({
   onMove,
   onDefault,
   onRemove,
+  onShow,
   onPin,
   onReset,
 }: {
   views: CrmSavedView[];
+  /** Hidden seeded views, for Admins and Members to show again. */
+  hiddenViews: CrmSavedView[];
   current: CrmSavedView | null;
   onSelect: (view: CrmSavedView) => void;
   kind: "table" | "kanban";
@@ -116,12 +136,12 @@ export function ViewSwitcher({
   onMove: (view: CrmSavedView, by: -1 | 1) => Promise<void>;
   onDefault: (view: CrmSavedView) => Promise<void>;
   onRemove: (view: CrmSavedView) => Promise<void>;
+  onShow: (view: CrmSavedView) => Promise<void>;
   onPin: () => Promise<void>;
   onReset: () => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const index = current ? views.findIndex((v) => v.id === current.id) : -1;
   // A seeded view keeps its kind (contracts §2.7): a change of kind is a new view.
   const kindLocked = Boolean(current?.system_key) && current?.kind !== kind;
   const canSave = Boolean(current?.can_edit) && dirty && !kindLocked;
@@ -213,11 +233,14 @@ export function ViewSwitcher({
                         Make the default view
                       </DropdownMenuItem>
                     )}
-                    <DropdownMenuItem disabled={index <= 0} onClick={() => act(() => onMove(current, -1))}>
+                    <DropdownMenuItem
+                      disabled={!swapPartner(views, current, -1)}
+                      onClick={() => act(() => onMove(current, -1))}
+                    >
                       Move earlier
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      disabled={index < 0 || index >= views.length - 1}
+                      disabled={!swapPartner(views, current, 1)}
                       onClick={() => act(() => onMove(current, 1))}
                     >
                       Move later
@@ -225,6 +248,19 @@ export function ViewSwitcher({
                     <DropdownMenuItem variant="destructive" onClick={() => act(() => onRemove(current))}>
                       {current.system_key ? "Hide this view" : "Delete this view"}
                     </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </>
+              )}
+              {hiddenViews.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Hidden views</DropdownMenuLabel>
+                    {hiddenViews.map((view) => (
+                      <DropdownMenuItem key={view.id} onClick={() => act(() => onShow(view))}>
+                        Show {view.name} again
+                      </DropdownMenuItem>
+                    ))}
                   </DropdownMenuGroup>
                 </>
               )}

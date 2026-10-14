@@ -14,6 +14,7 @@ import type { Choice, FieldSpec, FieldType, RelationSearch } from "@/components/
 import { searchCompanyChoices, searchPersonChoices } from "@/lib/api/crm";
 import type {
   CrmBootstrap,
+  CrmLists,
   CrmMember,
   FilterOperator,
   ViewFieldType,
@@ -345,12 +346,17 @@ function labelKey(field: string): string {
   return `${field}_label`;
 }
 
-/** How a row's field reads in a cell or on a card. Display only. */
+/** How a row's field reads in a cell or on a card. Display only. A select
+ *  value the row sends no label for (Lost from stage) is named from `lists`. */
 export function cellText(
   kind: ViewObjectKind,
   field: string,
   row: Row,
-  { timeZone, numberFormat }: { timeZone: CrmTimezone; numberFormat: NumberFormat }
+  {
+    timeZone,
+    numberFormat,
+    lists,
+  }: { timeZone: CrmTimezone; numberFormat: NumberFormat; lists?: CrmLists }
 ): string {
   const meta = fieldMeta(kind, field);
   const value = row[field];
@@ -378,6 +384,12 @@ export function cellText(
     case "flag": {
       const label = row[labelKey(field)];
       if (typeof label === "string" && label) return label;
+      const listed =
+        meta.listKey &&
+        lists?.[meta.listKey]?.find((o) =>
+          meta.type === "fixed_select" ? (o.system_key ?? o.id) === value : o.id === value
+        );
+      if (listed) return listed.label;
       return meta.fixed?.find((c) => c.value === value)?.label ?? String(value);
     }
     case "number":
