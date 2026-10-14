@@ -23,6 +23,7 @@ from app.domain.calendar import (
 from app.domain.rules import OCCUPYING_STATES, is_locked
 from app.services import balances
 from app.services import supabase as db
+from app.services.crm.context import workspaces_of
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -40,9 +41,15 @@ def whoami(user: AnyAccountDep) -> dict:
 
     Spec 007 contracts §1 — one of the few routes a CRM-only seller reaches.
     They get a reduced shape: no role, lead or capabilities, since nothing in
-    TVA is theirs to see. `crm.workspaces` is filled in by S1b.
+    TVA is theirs to see. Everyone gets their CRM workspaces, so the TVA shell
+    knows whether to show a CRM link (FR-CRM-UI-03).
     """
-    crm = {"workspaces": []}
+    crm = {
+        "workspaces": [
+            {k: w[k] for k in ("id", "key", "name", "role", "last_used")}
+            for w in workspaces_of(user.id)
+        ]
+    }
     if user.is_crm_only:
         return {
             "id": user.id,

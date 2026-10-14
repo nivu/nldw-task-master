@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from crm_fake import FakeCrmStore
 from fastapi.testclient import TestClient
 
 from app.api.deps import CurrentUser, any_account, current_user
@@ -266,6 +267,8 @@ def fake(monkeypatch) -> FakeDb:
     for name in dir(FakeDb):
         if not name.startswith("_"):
             monkeypatch.setattr(db, name, getattr(fake, name))
+    # Spec 007: GET /me lists the person's CRM workspaces; nobody here has one.
+    FakeCrmStore().install(monkeypatch)
     return fake
 
 

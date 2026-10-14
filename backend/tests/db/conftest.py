@@ -36,10 +36,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "db: needs the local Supabase stack (CRM_DB_TESTS=1)")
-
-
 def pytest_collection_modifyitems(config, items):
     if os.environ.get("CRM_DB_TESTS") == "1":
         return
@@ -146,10 +142,15 @@ def stack() -> LocalStack:
 
 @pytest.fixture
 def make_profile(stack):
-    """Create an auth user and its profile; both are removed afterwards."""
+    """Create an auth user and its profile; both are removed afterwards.
+
+    `keep=True` leaves them: a profile that has acted in the CRM is named by
+    audit rows, and the append-only audit log (005) refuses the SET NULL that
+    deleting it would cause. The local database is reset between runs anyway.
+    """
     made: list[str] = []
 
-    def make(**profile) -> str:
+    def make(*, keep: bool = False, **profile) -> str:
         uid = str(uuid.uuid4())
         email = f"crm-db-test-{uid[:8]}@example.com"
         stack.sql(
@@ -157,7 +158,8 @@ def make_profile(stack):
             f"({_q(uid)}, '00000000-0000-0000-0000-000000000000', 'authenticated', "
             f"'authenticated', {_q(email)})"
         )
-        made.append(uid)
+        if not keep:
+            made.append(uid)
         columns = {"id": uid, "email": email, "display_name": f"Test {uid[:8]}", **profile}
         names = ", ".join(columns)
         values = ", ".join(

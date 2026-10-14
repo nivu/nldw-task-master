@@ -379,11 +379,13 @@ def insert_audit(entry: dict[str, Any]) -> None:
     supabase.table("audit_log").insert(entry).execute()
 
 
-def list_audit(limit: int = 200) -> list[dict[str, Any]]:
-    return (
-        supabase.table("audit_log").select("*").order("at", desc=True).limit(limit).execute().data
-        or []
-    )
+def list_audit(limit: int = 200, *, tva_only: bool = True) -> list[dict[str, Any]]:
+    """Newest first. Spec 007 FR-CRM-AUD-04: CRM rows (those with a workspace)
+    are left out by default, for everyone, TVA admins included."""
+    query = supabase.table("audit_log").select("*")
+    if tva_only:
+        query = query.is_("workspace_id", "null")
+    return query.order("at", desc=True).limit(limit).execute().data or []
 
 
 # ---------------------------------------------------------------------------

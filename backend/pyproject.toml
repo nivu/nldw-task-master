@@ -40,6 +40,11 @@ line-length = 100
 #   UP           pyupgrade — keep syntax current with target-version
 select = ["E4", "E7", "E9", "F", "I", "UP"]
 
+[tool.pytest.ini_options]
+# Spec 007: real-database tests, skipped unless CRM_DB_TESTS=1 with the local
+# Supabase stack up (tests/db/conftest.py). CI runs them in the `db` job.
+markers = ["db: needs the local Supabase stack (CRM_DB_TESTS=1)"]
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

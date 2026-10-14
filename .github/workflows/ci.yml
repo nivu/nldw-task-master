@@ -49,3 +49,37 @@ jobs:
       - run: pnpm run build:guides
       - run: pnpm exec tsc --noEmit
       - run: pnpm exec eslint .
+
+  # Spec 007 (NFR-CRM-10, Q-68): what only Postgres can prove — the CRM's
+  # audit trigger, its write functions under row locks, and that the browser
+  # can read no table and call no CRM function. Runs every migration from
+  # empty against a local Supabase stack, then the tests marked `db`.
+  db:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: supabase start
+      - run: supabase db reset
+      # The tests read the local stack's URL and keys from CRM_DB_* (see
+      # backend/tests/db/conftest.py), and refuse anything but a loopback URL.
+      - name: Export the local stack's keys
+        run: |
+          supabase status -o env \
+            | grep -E '^(API_URL|ANON_KEY|SERVICE_ROLE_KEY|JWT_SECRET)=' \
+            | sed -e 's/^/CRM_DB_/' -e 's/"//g' >> "$GITHUB_ENV"
+      - working-directory: backend
+        run: uv sync --locked
+      - working-directory: backend
+        env:
+          CRM_DB_TESTS: "1"
+          # Settings requires these at import time; the db tests reach the
+          # stack through CRM_DB_*, never through the app's client.
+          SUPABASE_URL: http://127.0.0.1:54321
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: uv run pytest -m db -q

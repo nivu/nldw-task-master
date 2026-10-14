@@ -15,6 +15,7 @@ channel label (`mcp` only with the per-process key).
 from __future__ import annotations
 
 import pytest
+from crm_fake import FakeCrmStore
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -69,6 +70,8 @@ CRM_ONLY = "This account is for the CRM only."
 def profiles(monkeypatch) -> dict[str, dict]:
     """Sessions are tokens named after the profile id: 'Bearer u-crm'."""
     rows = {p["id"]: dict(p) for p in (SELLER, STAFF, ADMIN)}
+    # GET /me lists CRM workspaces (S1b); nobody here has one.
+    FakeCrmStore().install(monkeypatch)
     monkeypatch.setattr(deps, "_verify", lambda token: token)
     monkeypatch.setattr(db, "get_profile", lambda uid: dict(rows[uid]) if uid in rows else None)
     return rows

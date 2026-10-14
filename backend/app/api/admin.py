@@ -860,11 +860,14 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
 def read_audit(admin: AdminDep, limit: int = Query(default=200, le=1000)) -> list[dict]:
     """NFR-06 — readable, and by construction not writable.
 
-    Names CRM-only actors too (spec 007 FR-CRM-AUD-04): a seller's action must
-    not show up as an unknown person."""
+    Spec 007 FR-CRM-AUD-04: TVA rows only — a CRM row (one with a workspace)
+    is not shown here, to anyone. CRM-only actors are named too: a seller's
+    action must not show up as an unknown person, and a TVA change a deal
+    move made for them reads "*Name* (via CRM deal)" (FR-CRM-TVA-03)."""
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     return [
-        {**row, "actor": actor_name(row.get("actor_id"), names)} for row in db.list_audit(limit)
+        {**row, "actor": actor_name(row.get("actor_id"), names, row.get("actor_label"))}
+        for row in db.list_audit(limit, tva_only=True)
     ]
 
 
