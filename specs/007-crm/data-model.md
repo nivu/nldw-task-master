@@ -969,7 +969,8 @@ Audited as `company.merged` on both ids.
 
 - `p_spec`: `{filters: {op: "and"|"or", items: [ {field, operator, value} | {op, items} ]},
   sorts: [{field, dir}], group_by, aggregates: [{field, fn}], columns: [...],
-  q, limit, after}`. Operators by type: `is`, `is_not`, `contains`,
+  q, limit, after, today, tz}` (`today` and `tz` are the person's, set by
+  Python). Operators by type: `is`, `is_not`, `contains`,
   `not_contains`, `is_empty`, `is_not_empty`, `before`, `after`, `on`,
   `within_last_days`, `within_next_days`, `gt`, `gte`, `lt`, `lte`,
   `any_of`, `none_of`, `is_me` (resolved in Python before the call).
@@ -979,6 +980,15 @@ Audited as `company.merged` on both ids.
   first). Values are bound with `format('%L')` or passed by `USING`.
 - Always adds `workspace_id = p_workspace AND deleted_at IS NULL`. For
   `company`, also `merged_into_id IS NULL`.
+- A day on a `datetime` field (`on`, `before`, `after`, `gt`…`lte`, the
+  `within` operators, and this month or quarter once resolved) is the
+  person's day in `tz`, from local midnight to the next, never the server's.
+- Sorts and groups follow each list's own order: a select by its option's
+  `position`, a fixed list (stages, lead stages, task status and bucket) in
+  its seeded order, a person by `display_name`, a related company or person
+  by name. A `group_by` is the first sort key (that order, then the key), and
+  `groups` come back in the same order, so a page never shows a later group
+  before an earlier one.
 - Keyset paging on `(sort columns…, id)`; `limit` ≤ 200.
 - Returns `{rows: [...selected columns], total: n | null (when > 10,000:
   "more"), groups: [{key, count, aggregates}], aggregates: {...}, next: cursor}`.

@@ -191,9 +191,9 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | Method | Path | Guard | Body | Returns |
 |---|---|---|---|---|
 | POST | `/crm/query` | Read | `{object, spec?: {filters, sorts, group_by?, aggregates?, columns, q?, limit≤200, after?}, view_id?, view?}` (`view` = a saved view's name or `system_key` the caller can see; `spec` then narrows it) | `{rows, total \| "10000+", groups?, aggregates?, next?, notice?}`. For a Viewer, a shared view loses its amount conditions, columns, sorts, group and aggregates, and `notice` = "A condition on an amount field was removed". `q` is matched literally (`%` and `_` escaped). |
-| GET | `/crm/views` | Read | `object` | shared views + my private ones |
+| GET | `/crm/views` | Read | `object`, `include_hidden` | shared views + my private ones; with `include_hidden=true`, Admins and Members also get hidden seeded views (`hidden: true`) to show again |
 | POST | `/crm/views` | Read (Viewer: `visibility=private` only) | `{object, name, icon?, kind, visibility, config}` | the view |
-| PATCH | `/crm/views/{id}` | owner, or Write for shared | any of the above, `position`, `is_default` | the view |
+| PATCH | `/crm/views/{id}` | owner, or Write for shared | any of the above, `position`, `is_default`, `hidden` (seeded views; a hidden view is never the default) | the view |
 | DELETE | `/crm/views/{id}` | as PATCH; seeded views can be hidden, not deleted | — | — |
 | GET, POST, DELETE | `/crm/favourites` (`/{id}`) | Read | `{target_type, target_id, record_type?}` | the person's favourites |
 

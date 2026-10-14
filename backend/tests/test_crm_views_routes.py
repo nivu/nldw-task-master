@@ -230,6 +230,86 @@ class TestSeededViews:
         assert _names(_query(http, "companies_all", "companies", query=LABS)) == ["Labs co"]
 
 
+def _ask(http, obj, spec, view=None, who=OWNER["id"], query=ACADEMY):
+    body = {"object": obj, "spec": spec, **({"view": view} if view else {})}
+    r = http.post(f"/api/v1/crm/query{query}", json=body, headers=as_(who))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+class TestListOrder:
+    """FR-CRM-VIEW-03, -04: a list sorts and groups in each list's own order,
+    and a grouped list pages in the order of its groups."""
+
+    def test_the_pipeline_pages_in_stage_order(self, crm):
+        http, fake, _, academy = crm
+        company = _company(http, "College")
+        _patch(http, "companies", company["id"], {"lead_stage": "qualified"})
+        rows = fake.rows["crm_opportunities"]
+        for stage in reversed(OPEN):
+            for n in range(2):
+                made = _deal(http, company, f"{stage} {n}")
+                rows[made["id"]]["stage"] = stage
+        seen, spec = [], {"limit": 3}
+        for _ in range(5):
+            page = _ask(http, "opportunities", spec, view="pipeline")
+            seen += [r["stage"] for r in page["rows"]]
+            if not page["next"]:
+                break
+            spec = {**spec, "after": page["next"]}
+        assert seen == [s for s in OPEN for _ in range(2)]
+        assert [g["key"] for g in page["groups"]] == OPEN
+
+    def test_sort_by_stage_owner_and_select(self, crm):
+        http, fake, _, academy = crm
+        company = _company(http, "College")
+        _patch(http, "companies", company["id"], {"lead_stage": "qualified"})
+        rows = fake.rows["crm_opportunities"]
+        for name, stage, owner in (
+            ("A", "negotiation", OWNER["id"]),
+            ("B", "discovery", MEMBER["id"]),
+            ("C", "proposal", OWNER["id"]),
+        ):
+            made = _deal(http, company, name)
+            rows[made["id"]].update(stage=stage, owner_id=owner)
+        by_stage = _ask(http, "opportunities", {"sorts": [{"field": "stage", "dir": "asc"}]})
+        assert [r["name"] for r in by_stage["rows"]] == ["B", "C", "A"]
+        by_owner = _ask(
+            http,
+            "opportunities",
+            {"sorts": [{"field": "owner_id", "dir": "asc"}, {"field": "name", "dir": "asc"}]},
+        )
+        # Deepika before Owner, by name.
+        assert [r["name"] for r in by_owner["rows"]] == ["B", "A", "C"]
+        client_type = _option(fake, academy, "company.account_type", "Client")
+        prospect = _option(fake, academy, "company.account_type", "Prospect")
+        _company(http, "Zed", account_type_id=prospect)
+        _company(http, "Ace", account_type_id=client_type)
+        by_type = _ask(
+            http,
+            "companies",
+            {"sorts": [{"field": "account_type_id", "dir": "desc"}], "limit": 2},
+        )
+        # Client sits after Prospect in the list, so it comes first descending.
+        assert [r["name"] for r in by_type["rows"]] == ["Ace", "Zed"]
+
+    def test_a_day_is_the_persons_own_day(self, crm):
+        http, fake, _, academy = crm
+        late = _company(http, "Late")
+        early = _company(http, "Early")
+        rows = fake.rows["crm_companies"]
+        # 23:30 IST on the 13th, and 00:30 IST on the 14th (both the 13th in UTC).
+        rows[late["id"]]["last_contact_at"] = "2026-10-13T18:00:00+00:00"
+        rows[early["id"]]["last_contact_at"] = "2026-10-13T19:00:00+00:00"
+        on = {"field": "last_contact_at", "operator": "on", "value": "2026-10-14"}
+        found = _ask(http, "companies", {"filters": {"op": "and", "items": [on]}})
+        assert _names(found) == ["Early"]
+        within = {"field": "last_contact_at", "operator": "within_last_days", "value": 0}
+        found = _ask(http, "companies", {"filters": {"op": "and", "items": [within]}})
+        assert _names(found) == ["Early"]
+        assert fake.queries[-1]["spec"]["tz"] == "Asia/Kolkata"
+
+
 class TestSavingViews:
     """FR-CRM-VIEW-05, Q-37."""
 
@@ -331,6 +411,36 @@ class TestSavingViews:
             headers=as_(MEMBER["id"]),
         )
         assert r.status_code == 200 and r.json()["hidden"] is False
+
+    def test_a_hidden_seeded_view_can_be_found_and_shown_again(self, crm):
+        http, *_ = crm
+        seeded = next(v for v in _views(http) if v["system_key"] == "pipeline")
+        assert seeded["is_default"] is True
+        http.delete(f"/api/v1/crm/views/{seeded['id']}{ACADEMY}", headers=as_(OWNER["id"]))
+        everything = _views(http, query=ACADEMY + "&include_hidden=true")
+        hidden = next(v for v in everything if v["id"] == seeded["id"])
+        assert hidden["hidden"] is True and hidden["is_default"] is False
+        # A Viewer does not manage shared views, so is not shown hidden ones.
+        theirs = _views(http, who=VIEWER["id"], query=ACADEMY + "&include_hidden=true")
+        assert seeded["id"] not in [v["id"] for v in theirs]
+        url = f"/api/v1/crm/views/{seeded['id']}{ACADEMY}"
+        r = http.patch(url, json={"is_default": True}, headers=as_(OWNER["id"]))
+        assert r.status_code == 422
+        r = http.patch(url, json={"hidden": False}, headers=as_(OWNER["id"]))
+        assert r.status_code == 200 and r.json()["hidden"] is False
+        assert seeded["id"] in [v["id"] for v in _views(http)]
+        r = http.patch(url, json={"is_default": True}, headers=as_(OWNER["id"]))
+        assert r.status_code == 200 and r.json()["is_default"] is True
+
+    def test_hiding_a_default_view_by_patch_clears_the_default(self, crm):
+        http, *_ = crm
+        seeded = next(v for v in _views(http) if v["system_key"] == "pipeline")
+        r = http.patch(
+            f"/api/v1/crm/views/{seeded['id']}{ACADEMY}",
+            json={"hidden": True},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200 and r.json()["is_default"] is False
 
     def test_a_seeded_view_keeps_its_kind(self, crm):
         http, *_ = crm

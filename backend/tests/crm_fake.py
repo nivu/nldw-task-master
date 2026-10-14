@@ -27,6 +27,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.testclient import TestClient
 
@@ -2204,8 +2205,35 @@ def _like(text: str, pattern: str) -> bool:
     return re.fullmatch("".join(out), text, re.DOTALL) is not None
 
 
-def _midnight(day: date) -> datetime:
-    return datetime(day.year, day.month, day.day, tzinfo=UTC)
+def _midnight(day: date, zone: Any = UTC) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=zone)
+
+
+_STAGES = (
+    "discovery",
+    "qualification",
+    "proposal",
+    "negotiation",
+    "closed_won",
+    "closed_lost",
+)
+#: Each fixed list in the order 026 seeds it (crm_query_rank).
+_FIXED_ORDER = {
+    "lead_stage": (
+        "new",
+        "contacted",
+        "nurturing",
+        "qualified",
+        "deal_open",
+        "customer",
+        "partner",
+        "disqualified",
+    ),
+    "stage": _STAGES,
+    "lost_from_stage": _STAGES,
+    "status": ("todo", "in_progress", "done"),
+    "bucket": ("today", "this_week", "this_month", "later"),
+}
 
 
 class FakeQuery:
@@ -2251,12 +2279,53 @@ class FakeQuery:
             return value if isinstance(value, datetime) else _at(value)
         if kind == "boolean":
             return value if isinstance(value, bool) else str(value).lower() == "true"
+        if kind == "integer":
+            return int(value)
         if kind == "multi_select":
             return [str(v) for v in value]
         return str(value)
 
     def value(self, f: dict[str, Any], row: dict[str, Any]) -> Any:
         return self.typed(f["type"], self.raw(f, row))
+
+    def rank(self, f: dict[str, Any], row: dict[str, Any]) -> Any:
+        """crm_query_rank: the value in its list's own order."""
+        v, typ, col = self.value(f, row), f["type"], f["column_sql"]
+        if v is None:
+            return None
+        if typ == "select":
+            option = self.fake.rows["crm_select_options"].get(v)
+            return option["position"] if option and option["workspace_id"] == self.ws else None
+        if typ == "fixed_select" and col in _FIXED_ORDER:
+            order = _FIXED_ORDER[col]
+            return order.index(v) + 1 if v in order else None
+        if typ == "person":
+            person = self.fake.profiles.get(v) or PEOPLE.get(v)
+            return person["display_name"].lower() if person else None
+        if typ == "relation" and col in ("company_id", "point_of_contact_id"):
+            table = "crm_companies" if col == "company_id" else "crm_people"
+            other = self.fake.rows[table].get(v)
+            if other is None or other["workspace_id"] != self.ws:
+                return None
+            if col == "company_id":
+                return other["name"].lower()
+            return f"{other['first_name']} {other.get('last_name') or ''}".strip().lower()
+        if typ in ("text", "long_text"):
+            return v.lower()
+        return v
+
+    @staticmethod
+    def rank_type(f: dict[str, Any]) -> str:
+        typ = f["type"]
+        if typ == "select" or (typ == "fixed_select" and f["column_sql"] in _FIXED_ORDER):
+            return "integer"
+        return {
+            "number": "numeric",
+            "currency": "numeric",
+            "date": "date",
+            "datetime": "timestamptz",
+            "boolean": "boolean",
+        }.get(typ, "text")
 
     def literal(self, kind: str, value: Any) -> Any:
         if value is None or isinstance(value, (dict, list)):
@@ -2360,7 +2429,7 @@ class FakeQuery:
         if op in ("gt", "gte", "lt", "lte") and typ in ("number", "currency", "date", "datetime"):
             want = self.literal("date" if typ == "datetime" else typ, given)
             if typ == "datetime":
-                want = _midnight(want)
+                want = _midnight(want, self.tz)
             compare = {
                 "gt": lambda a, b: a > b,
                 "gte": lambda a, b: a >= b,
@@ -2370,15 +2439,14 @@ class FakeQuery:
             return lambda r: get(r) is not None and compare(get(r), want)
         raise _refuse("That operator does not fit the field.")
 
-    @staticmethod
-    def _day_between(value: Any, typ: str, lo: date, hi: date) -> bool:
-        """lo <= value < hi, a timestamp read from midnight UTC as Postgres
-        compares it with a date."""
+    def _day_between(self, value: Any, typ: str, lo: date, hi: date) -> bool:
+        """lo <= value < hi, a timestamp read from midnight in the person's
+        time zone."""
         if value is None:
             return False
         if typ == "datetime":
-            low = _midnight(lo) if lo != date.min else None
-            high = _midnight(hi) if hi != date.max else None
+            low = _midnight(lo, self.tz) if lo != date.min else None
+            high = _midnight(hi, self.tz) if hi != date.max else None
             return (low is None or value >= low) and (high is None or value < high)
         return lo <= value < hi
 
@@ -2402,8 +2470,9 @@ class FakeQuery:
         spec = self.spec
         try:
             self.today = date.fromisoformat(spec["today"]) if spec.get("today") else date.today()
+            self.tz = ZoneInfo(spec.get("tz") or "UTC")
             limit = min(max(int(spec.get("limit") or 50), 1), 200)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
             raise _refuse("That list request is not valid.") from None
 
         keep = lambda r: True  # noqa: E731
@@ -2437,6 +2506,7 @@ class FakeQuery:
             if self.redact and f and f["is_amount"]:
                 raise _refuse(_AMOUNT)
 
+        # (how a row gives the key, direction, its SQL type for the cursor)
         keys: list[tuple[Any, str, str]] = []
         group = None
         if spec.get("group_by"):
@@ -2445,7 +2515,14 @@ class FakeQuery:
                 raise _refuse(_AMOUNT)
             if group is None or not group["groupable"]:
                 raise _refuse("That field cannot group a list.")
-            keys.append((group, "asc", "boolean" if group["type"] == "boolean" else "text"))
+            boolean = group["type"] == "boolean"
+
+            def group_key(r, f=group):
+                v = self.value(f, r)
+                return v if v is None or boolean else str(v)
+
+            keys.append((functools.partial(self.rank, group), "asc", self.rank_type(group)))
+            keys.append((group_key, "asc", "boolean" if boolean else "text"))
         sorts = spec.get("sorts") or [{"field": "updated_at", "dir": "desc"}]
         for sort in sorts:
             f = self.fields.get(sort.get("field"))
@@ -2455,30 +2532,12 @@ class FakeQuery:
                 raise _refuse(_AMOUNT)
             if sort.get("dir", "asc") not in ("asc", "desc"):
                 raise _refuse("A sort is asc or desc.")
-            typ = f["type"]
             keys.append(
-                (
-                    f,
-                    sort.get("dir", "asc"),
-                    {"number": "numeric", "currency": "numeric", "date": "date"}.get(
-                        typ,
-                        "timestamptz"
-                        if typ == "datetime"
-                        else "boolean"
-                        if typ == "boolean"
-                        else "text",
-                    ),
-                )
+                (functools.partial(self.rank, f), sort.get("dir", "asc"), self.rank_type(f))
             )
 
         def key_of(r):
-            out = []
-            for f, _, kind in keys:
-                v = self.value(f, r)
-                if v is not None and kind == "text":
-                    v = str(v).lower() if f["type"] in ("text", "long_text") else str(v)
-                out.append(v)
-            return out
+            return [get(r) for get, _, _ in keys]
 
         def compare(a: list, b: list) -> int:
             for (_, direction, _), x, y in zip(keys, a, b, strict=False):
@@ -2560,10 +2619,18 @@ class FakeQuery:
         if group is not None:
             buckets: dict[Any, list] = {}
             for r in matched:
-                buckets.setdefault(key_of(r)[0], []).append(r)
+                buckets.setdefault(tuple(key_of(r)[:2]), []).append(r)
             groups = [
-                {"key": k, "count": len(v), "aggregates": totals(v)}
-                for k, v in sorted(buckets.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))
+                {"key": k[1], "count": len(v), "aggregates": totals(v)}
+                for k, v in sorted(
+                    buckets.items(),
+                    key=lambda kv: (
+                        kv[0][0] is None,
+                        kv[0][0] if kv[0][0] is not None else 0,
+                        kv[0][1] is None,
+                        kv[0][1] if kv[0][1] is not None else "",
+                    ),
+                )
             ]
         return {
             "rows": rows,

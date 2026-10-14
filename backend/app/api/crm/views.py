@@ -45,9 +45,12 @@ def run_query(payload: QueryIn, ctx: CrmQueryDep) -> dict:
 
 
 @router.get("/views")
-def list_views(ctx: CrmReadDep, object: ViewObject | None = None) -> list[dict]:
-    """The shared views and the caller's private ones."""
-    return service.list_views(ctx, object)
+def list_views(
+    ctx: CrmReadDep, object: ViewObject | None = None, include_hidden: bool = False
+) -> list[dict]:
+    """The shared views and the caller's private ones; `include_hidden=true`
+    adds the hidden seeded views for Admins and Members."""
+    return service.list_views(ctx, object, include_hidden=include_hidden)
 
 
 @router.post("/views", status_code=201)

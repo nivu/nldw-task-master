@@ -38,8 +38,12 @@
 --    merged company never appears. Paging is keyset on (sort keys…, id), with
 --    nulls last. Python resolves `is_me` and the calendar operators, and
 --    escapes LIKE's wildcards in `q` and in `contains` values, before the
---    call. Its helpers `crm_query_expr()`, `crm_query_value()` and
---    `crm_query_cond()` build the pieces.
+--    call, with the person's today and time zone: a day on a datetime field
+--    is their own day. Sorts and groups follow each list's own order (a
+--    select's option order, the pipeline's stages, a person or record by
+--    name), and groups come back in the order their rows do. Its helpers
+--    `crm_query_expr()`, `crm_query_rank()`, `crm_query_rank_type()`,
+--    `crm_query_value()` and `crm_query_cond()` build the pieces.
 -- 6. `crm_purge()`, fourth form (data-model §5.4): purging a record also
 --    removes the favourites that pin it.
 -- 7. Seeds (data-model §7.5): the registry, and the seeded shared views of
@@ -49,8 +53,9 @@
 --
 -- Reversible: restore 033's crm_purge() and 030's crm_audit_row();
 -- DROP FUNCTION crm_query(uuid, text, jsonb, boolean),
--- crm_query_cond(jsonb, jsonb, date, boolean, integer),
--- crm_query_value(text, jsonb), crm_query_expr(text, text);
+-- crm_query_cond(jsonb, jsonb, date, text, boolean, integer),
+-- crm_query_value(text, jsonb), crm_query_rank(text, text, text),
+-- crm_query_rank_type(text, text), crm_query_expr(text, text);
 -- DROP TABLE crm_favourites, crm_saved_views, crm_object_fields. Their audit
 -- rows stay: history is append-only (005).
 
@@ -322,6 +327,67 @@ BEGIN
 END;
 $$;
 
+-- Where a field's value comes in its list's own order, on the row alias `t`
+-- (FR-CRM-VIEW-03, -04): a select by its option's position, a fixed list
+-- in the order 026 seeds it (fixed lists are never reordered, Q-30), a
+-- person by name, a related company or person by name. Anything else is its
+-- value. `p_expr` is the field's `crm_query_expr()`.
+CREATE OR REPLACE FUNCTION public.crm_query_rank(p_type text, p_column_sql text, p_expr text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = public, extensions
+AS $$
+BEGIN
+    RETURN CASE
+        WHEN p_type = 'select' THEN format(
+            '(SELECT o.position FROM crm_select_options o WHERE o.workspace_id = '
+            't.workspace_id AND o.id = %s)', p_expr)
+        WHEN p_type = 'fixed_select' AND p_column_sql = 'lead_stage' THEN format(
+            'array_position(''{new,contacted,nurturing,qualified,deal_open,customer,partner,'
+            'disqualified}''::text[], %s)', p_expr)
+        WHEN p_type = 'fixed_select' AND p_column_sql IN ('stage', 'lost_from_stage') THEN format(
+            'array_position(''{discovery,qualification,proposal,negotiation,closed_won,'
+            'closed_lost}''::text[], %s)', p_expr)
+        WHEN p_type = 'fixed_select' AND p_column_sql = 'status' THEN format(
+            'array_position(''{todo,in_progress,done}''::text[], %s)', p_expr)
+        WHEN p_type = 'fixed_select' AND p_column_sql = 'bucket' THEN format(
+            'array_position(''{today,this_week,this_month,later}''::text[], %s)', p_expr)
+        WHEN p_type = 'person' THEN format(
+            '(SELECT lower(p.display_name) FROM profiles p WHERE p.id = %s)', p_expr)
+        WHEN p_type = 'relation' AND p_column_sql = 'company_id' THEN format(
+            '(SELECT lower(c.name) FROM crm_companies c WHERE c.workspace_id = '
+            't.workspace_id AND c.id = %s)', p_expr)
+        WHEN p_type = 'relation' AND p_column_sql = 'point_of_contact_id' THEN format(
+            '(SELECT lower(btrim(c.first_name || '' '' || coalesce(c.last_name, ''''))) FROM '
+            'crm_people c WHERE c.workspace_id = t.workspace_id AND c.id = %s)', p_expr)
+        WHEN p_type IN ('text', 'long_text') THEN 'lower(' || p_expr || ')'
+        WHEN p_type = 'relation' THEN '(' || p_expr || ')::text'
+        ELSE '(' || p_expr || ')'
+    END;
+END;
+$$;
+
+-- The SQL type of a field's `crm_query_rank()`, for the keyset cursor.
+CREATE OR REPLACE FUNCTION public.crm_query_rank_type(p_type text, p_column_sql text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, extensions
+AS $$
+    SELECT CASE
+        WHEN p_type = 'select' THEN 'integer'
+        WHEN p_type = 'fixed_select'
+             AND p_column_sql IN ('lead_stage', 'stage', 'lost_from_stage', 'status', 'bucket')
+            THEN 'integer'
+        WHEN p_type IN ('number', 'currency') THEN 'numeric'
+        WHEN p_type = 'date' THEN 'date'
+        WHEN p_type = 'datetime' THEN 'timestamptz'
+        WHEN p_type = 'boolean' THEN 'boolean'
+        ELSE 'text'
+    END;
+$$;
+
 -- A condition's value as a literal of the field's type, refused (CRM22)
 -- when it is not one, so a wrong value is the caller's mistake rather than
 -- a failed query.
@@ -358,9 +424,10 @@ $$;
 
 -- One filter node as SQL: a group `{op: and|or, items: [...]}` or a
 -- condition `{field, operator, value}`. `p_fields` is the registry of the
--- object, as crm_query built it.
+-- object, as crm_query built it. A day on a datetime field is the person's
+-- own day in `p_tz` (plan §5.8), from its local midnight to the next.
 CREATE OR REPLACE FUNCTION public.crm_query_cond(
-    p_fields jsonb, p_node jsonb, p_today date, p_redact boolean, p_depth integer
+    p_fields jsonb, p_node jsonb, p_today date, p_tz text, p_redact boolean, p_depth integer
 )
 RETURNS text
 LANGUAGE plpgsql
@@ -379,6 +446,8 @@ DECLARE
     arr    text;
     span   numeric;
     days   integer;
+    lo     text;
+    hi     text;
 BEGIN
     -- Python allows three levels per part; a saved view and the request's
     -- own filters are joined under one more.
@@ -398,7 +467,7 @@ BEGIN
                 MESSAGE = 'A filter group joins its conditions with and or or.';
         END IF;
         FOR item IN SELECT value FROM jsonb_array_elements(p_node -> 'items') LOOP
-            parts := parts || crm_query_cond(p_fields, item, p_today, p_redact, p_depth + 1);
+            parts := parts || crm_query_cond(p_fields, item, p_today, p_tz, p_redact, p_depth + 1);
         END LOOP;
         IF cardinality(parts) = 0 THEN
             RETURN 'true';
@@ -458,13 +527,15 @@ BEGIN
                 MESSAGE = 'Within takes a date field and a number of days from 0 to 3650.';
         END IF;
         days := span::integer;
-        RETURN CASE op
-            WHEN 'within_last_days'
-                THEN format('(%1$s >= %2$L::date AND %1$s < %3$L::date)',
-                            lhs, p_today - days, p_today + 1)
-            ELSE format('(%1$s >= %2$L::date AND %1$s < %3$L::date)',
-                        lhs, p_today, p_today + days + 1)
-        END;
+        lo := format('%L::date', CASE op WHEN 'within_last_days' THEN p_today - days
+                                         ELSE p_today END);
+        hi := format('%L::date', CASE op WHEN 'within_last_days' THEN p_today + 1
+                                         ELSE p_today + days + 1 END);
+        IF typ = 'datetime' THEN
+            lo := format('(%s::timestamp AT TIME ZONE %L)', lo, p_tz);
+            hi := format('(%s::timestamp AT TIME ZONE %L)', hi, p_tz);
+        END IF;
+        RETURN format('(%1$s >= %2$s AND %1$s < %3$s)', lhs, lo, hi);
     END IF;
 
     IF typ = 'multi_select' THEN
@@ -501,16 +572,25 @@ BEGIN
     IF op IN ('before', 'after', 'on') AND typ IN ('date', 'datetime') THEN
         -- Whole days: a timestamp is on a day from its midnight to the next.
         val := crm_query_value('date', p_node -> 'value');
+        lo := val;
+        hi := '(' || val || ' + 1)';
+        IF typ = 'datetime' THEN
+            lo := format('(%s::timestamp AT TIME ZONE %L)', lo, p_tz);
+            hi := format('(%s::timestamp AT TIME ZONE %L)', hi, p_tz);
+        END IF;
         RETURN CASE op
-            WHEN 'before' THEN format('%s < %s', lhs, val)
-            WHEN 'after' THEN format('%s >= (%s + 1)', lhs, val)
-            ELSE format('(%1$s >= %2$s AND %1$s < (%2$s + 1))', lhs, val)
+            WHEN 'before' THEN format('%s < %s', lhs, lo)
+            WHEN 'after' THEN format('%s >= %s', lhs, hi)
+            ELSE format('(%1$s >= %2$s AND %1$s < %3$s)', lhs, lo, hi)
         END;
     END IF;
 
     IF op IN ('gt', 'gte', 'lt', 'lte') AND typ IN ('number', 'currency', 'date', 'datetime') THEN
         val := crm_query_value(CASE typ WHEN 'datetime' THEN 'date' ELSE typ END,
                                p_node -> 'value');
+        IF typ = 'datetime' THEN
+            val := format('(%s::timestamp AT TIME ZONE %L)', val, p_tz);
+        END IF;
         RETURN format('%s %s %s', lhs,
                       CASE op WHEN 'gt' THEN '>' WHEN 'gte' THEN '>=' WHEN 'lt' THEN '<'
                               ELSE '<=' END,
@@ -542,6 +622,7 @@ DECLARE
     fields   jsonb;
     hidden   text[];
     today    date;
+    tz       text;
     lim      integer;
     cond     text;
     rowcond  text;
@@ -551,6 +632,7 @@ DECLARE
     typ      text;
     sexpr    text;
     gexpr    text;
+    grank    text;
     keys     text[] := '{}';
     types    text[] := '{}';
     dirs     text[] := '{}';
@@ -582,6 +664,7 @@ BEGIN
     -- The object's registry, less the fields of the other workspace kind.
     SELECT jsonb_object_agg(o.field, jsonb_build_object(
                'expr', crm_query_expr(p_object, o.column_sql),
+               'column', o.column_sql,
                'type', o.type,
                'is_amount', o.is_amount,
                'filterable', o.filterable,
@@ -598,6 +681,9 @@ BEGIN
 
     BEGIN
         today := coalesce((spec ->> 'today')::date, current_date);
+        -- The person's time zone (Python sends it); an unknown one is refused.
+        tz := coalesce(spec ->> 'tz', 'UTC');
+        PERFORM now() AT TIME ZONE tz;
         lim := least(greatest(coalesce((spec ->> 'limit')::integer, 50), 1), 200);
     EXCEPTION WHEN data_exception THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'That list request is not valid.';
@@ -610,7 +696,7 @@ BEGIN
         cond := cond || ' AND t.merged_into_id IS NULL';
     END IF;
     IF jsonb_typeof(spec -> 'filters') = 'object' THEN
-        cond := cond || ' AND ' || crm_query_cond(fields, spec -> 'filters', today, p_redact, 1);
+        cond := cond || ' AND ' || crm_query_cond(fields, spec -> 'filters', today, tz, p_redact, 1);
     END IF;
     IF coalesce(spec ->> 'q', '') <> '' THEN
         -- `q` arrives with LIKE's wildcards escaped (domain/crm/views.py).
@@ -644,7 +730,9 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Group: rows come grouped, so a page never splits a group out of order.
+    -- Group: rows come grouped in the order of the groups list (a select's
+    -- option order, a stage's place in the pipeline, a name), then by the
+    -- key itself, so a page never splits a group out of order.
     IF coalesce(spec ->> 'group_by', '') <> '' THEN
         f := fields -> (spec ->> 'group_by');
         IF p_redact AND (f ->> 'is_amount')::boolean THEN
@@ -657,9 +745,11 @@ BEGIN
         gexpr := CASE WHEN f ->> 'type' IN ('select', 'person', 'relation')
                       THEN '(' || (f ->> 'expr') || ')::text'
                       ELSE '(' || (f ->> 'expr') || ')' END;
-        keys := keys || gexpr;
-        types := types || CASE f ->> 'type' WHEN 'boolean' THEN 'boolean' ELSE 'text' END;
-        dirs := dirs || 'asc'::text;
+        grank := crm_query_rank(f ->> 'type', f ->> 'column', f ->> 'expr');
+        keys := keys || grank || gexpr;
+        types := types || crm_query_rank_type(f ->> 'type', f ->> 'column')
+                       || CASE f ->> 'type' WHEN 'boolean' THEN 'boolean' ELSE 'text' END;
+        dirs := dirs || '{asc,asc}'::text[];
     END IF;
 
     -- Sorts, newest first by default; then the id, so the order is total.
@@ -680,23 +770,14 @@ BEGIN
         IF coalesce(item ->> 'dir', 'asc') NOT IN ('asc', 'desc') THEN
             RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'A sort is asc or desc.';
         END IF;
+        -- In the list's own order: a stage by the pipeline, an owner by name.
         typ := f ->> 'type';
-        sexpr := CASE
-            WHEN typ IN ('text', 'long_text') THEN 'lower(' || (f ->> 'expr') || ')'
-            WHEN typ IN ('select', 'person', 'relation') THEN '(' || (f ->> 'expr') || ')::text'
-            ELSE '(' || (f ->> 'expr') || ')'
-        END;
+        sexpr := crm_query_rank(typ, f ->> 'column', f ->> 'expr');
         keys := keys || sexpr;
-        types := types || CASE
-            WHEN typ IN ('number', 'currency') THEN 'numeric'
-            WHEN typ = 'date' THEN 'date'
-            WHEN typ = 'datetime' THEN 'timestamptz'
-            WHEN typ = 'boolean' THEN 'boolean'
-            ELSE 'text'
-        END;
+        types := types || crm_query_rank_type(typ, f ->> 'column');
         dirs := dirs || coalesce(item ->> 'dir', 'asc');
     END LOOP;
-    IF cardinality(keys) > 11 THEN
+    IF cardinality(keys) > (CASE WHEN grank IS NULL THEN 10 ELSE 12 END) THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Sort by at most ten fields.';
     END IF;
     FOR i IN 1 .. cardinality(keys) LOOP
@@ -801,9 +882,10 @@ BEGIN
     IF gexpr IS NOT NULL THEN
         EXECUTE format(
             'SELECT coalesce(jsonb_agg(jsonb_build_object(''key'', g.k, ''count'', g.n, '
-            '''aggregates'', g.a) ORDER BY g.k NULLS LAST), ''[]'') FROM (SELECT %s AS k, '
-            'count(*) AS n, %s AS a FROM %I t WHERE %s GROUP BY 1) g',
-            gexpr, aggobj, tbl, cond)
+            '''aggregates'', g.a) ORDER BY g.r NULLS LAST, g.k NULLS LAST), ''[]'') FROM '
+            '(SELECT %s AS k, %s AS r, count(*) AS n, %s AS a FROM %I t WHERE %s '
+            'GROUP BY 1, 2) g',
+            gexpr, grank, aggobj, tbl, cond)
         INTO groups;
     END IF;
 
@@ -917,7 +999,9 @@ $$;
 
 REVOKE ALL ON FUNCTION public.crm_query_expr(text, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_query_value(text, jsonb) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.crm_query_cond(jsonb, jsonb, date, boolean, integer)
+REVOKE ALL ON FUNCTION public.crm_query_rank(text, text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.crm_query_rank_type(text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.crm_query_cond(jsonb, jsonb, date, text, boolean, integer)
     FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_query(uuid, text, jsonb, boolean)
     FROM PUBLIC, anon, authenticated;
@@ -925,7 +1009,9 @@ REVOKE ALL ON FUNCTION public.crm_audit_row() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_purge(jsonb, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.crm_query_expr(text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_query_value(text, jsonb) TO service_role;
-GRANT EXECUTE ON FUNCTION public.crm_query_cond(jsonb, jsonb, date, boolean, integer)
+GRANT EXECUTE ON FUNCTION public.crm_query_rank(text, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.crm_query_rank_type(text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.crm_query_cond(jsonb, jsonb, date, text, boolean, integer)
     TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_query(uuid, text, jsonb, boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_audit_row() TO service_role;

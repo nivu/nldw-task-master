@@ -36,6 +36,7 @@ pytestmark = pytest.mark.db
 
 SYSTEM = {"kind": "system", "user_id": None, "channel": None, "workspace_id": None}
 AMOUNT = "Viewers cannot filter, sort or total by amount."
+CLOSE = {"expected_close_on": "2026-12-01"}
 
 
 def _j(stack, value) -> str:
@@ -249,6 +250,107 @@ class TestAnswers:
         assert [(g["key"], g["count"]) for g in answer["groups"]] == [("discovery", 2)]
         companies = _query(stack, ws, "company", {"group_by": "lead_stage"})
         assert {g["key"]: g["count"] for g in companies["groups"]} == {"new": 1, "qualified": 2}
+
+    def test_a_grouped_list_pages_in_pipeline_order(self, stack, owner):
+        """More open deals than a page, across stages: page one holds the
+        earliest stages, and the groups come in the same order."""
+        ws = _new_workspace(stack)
+        company = _company(stack, ws, owner, "College", lead_stage="qualified")
+        stages = ["discovery", "qualification", "proposal", "negotiation"]
+        for stage in reversed(stages):
+            for n in range(2):
+                _deal(stack, ws, owner, company, f"{stage} {n}", 1000, 10, stage=stage, **CLOSE)
+        spec = {"group_by": "stage", "sorts": [{"field": "name", "dir": "asc"}], "limit": 3}
+        page = _query(stack, ws, "opportunity", spec)
+        assert [r["stage"] for r in page["rows"]] == ["discovery", "discovery", "qualification"]
+        assert [g["key"] for g in page["groups"]] == stages
+        seen = [r["stage"] for r in page["rows"]]
+        while page["next"] is not None:
+            page = _query(stack, ws, "opportunity", {**spec, "after": page["next"]})
+            seen += [r["stage"] for r in page["rows"]]
+        assert seen == [s for s in stages for _ in range(2)]
+
+    def test_sorts_follow_each_lists_own_order(self, stack, make_profile):
+        ws = _new_workspace(stack)
+        zara = make_profile(keep=True, display_name="Zara")
+        anil = make_profile(keep=True, display_name="anil")
+        alpha = _company(stack, ws, zara, "Alpha", lead_stage="qualified")
+        beta = _company(stack, ws, anil, "beta", lead_stage="new")
+        _deal(stack, ws, zara, beta, "N", 1000, 10, stage="negotiation", **CLOSE)
+        _deal(stack, ws, anil, alpha, "D", 1000, 10, stage="discovery", **CLOSE)
+        _deal(stack, ws, zara, alpha, "P", 1000, 10, stage="proposal", **CLOSE)
+
+        def names(kind, field, direction="asc", limit=50):
+            spec = {"sorts": [{"field": field, "dir": direction}, {"field": "name"}]}
+            seen, spec = [], {**spec, "limit": limit}
+            page = _query(stack, ws, kind, spec)
+            seen += _names(page)
+            while page["next"] is not None:
+                page = _query(stack, ws, kind, {**spec, "after": page["next"]})
+                seen += _names(page)
+            return seen
+
+        # Stage in pipeline order, paged one row at a time through the cursor.
+        assert names("opportunity", "stage", limit=1) == ["D", "P", "N"]
+        assert names("opportunity", "stage", "desc") == ["N", "P", "D"]
+        # Owner and company by name, not by id.
+        assert names("opportunity", "owner_id", limit=1) == ["D", "N", "P"]
+        assert names("opportunity", "company_id", limit=1) == ["D", "P", "N"]
+        assert names("company", "lead_stage") == ["beta", "Alpha"]
+        # A select by its option's place in the list.
+        options = _as_system(
+            stack,
+            "INSERT INTO crm_select_options (workspace_id, list_key, label, position) VALUES "
+            f"({stack.q(ws)}, 'company.account_type', 'Prospect', 1), "
+            f"({stack.q(ws)}, 'company.account_type', 'Client', 2) RETURNING id, label",
+        )
+        ids = {r["label"]: r["id"] for r in options if "label" in r}
+        _apply(
+            stack,
+            _actor(ws, zara),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_companies",
+                    "id": alpha,
+                    "values": {"account_type_id": ids["Client"]},
+                },
+                {
+                    "op": "update",
+                    "table": "crm_companies",
+                    "id": beta,
+                    "values": {"account_type_id": ids["Prospect"]},
+                },
+            ],
+        )
+        assert names("company", "account_type_id", limit=1) == ["beta", "Alpha"]
+
+    def test_a_day_on_a_datetime_is_the_persons_own_day(self, stack, owner):
+        ws = _new_workspace(stack)
+        # 23:30 IST on the 13th, and 00:30 IST on the 14th: both the 13th in UTC.
+        _company(stack, ws, owner, "Late", last_contact_at="2026-10-13T18:00:00Z")
+        _company(stack, ws, owner, "Early", last_contact_at="2026-10-13T19:00:00Z")
+
+        def found(condition, tz=None):
+            spec = {
+                "filters": {"op": "and", "items": [condition]},
+                "sorts": [{"field": "name", "dir": "asc"}],
+                "today": "2026-10-14",
+                **({"tz": tz} if tz else {}),
+            }
+            return _names(_query(stack, ws, "company", spec))
+
+        on = {"field": "last_contact_at", "operator": "on", "value": "2026-10-14"}
+        assert found(on, "Asia/Kolkata") == ["Early"]
+        assert found(on) == []
+        assert found({**on, "value": "2026-10-13"}, "Asia/Kolkata") == ["Late"]
+        within = {"field": "last_contact_at", "operator": "within_last_days", "value": 0}
+        assert found(within, "Asia/Kolkata") == ["Early"]
+        gte = {"field": "last_contact_at", "operator": "gte", "value": "2026-10-14"}
+        assert found(gte, "Asia/Kolkata") == ["Early"]
+        before = {"field": "last_contact_at", "operator": "before", "value": "2026-10-14"}
+        assert found(before, "Asia/Kolkata") == ["Late"]
+        _refused(stack, ws, "company", {"tz": "Mars/Olympus"})
 
     def test_q_is_literal(self, stack, owner):
         ws = _new_workspace(stack)

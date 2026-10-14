@@ -68,11 +68,14 @@ def kind_of(name: str) -> str:
     return base.PLURALS.get(name, name)
 
 
+def zone_for(user: Any) -> str:
+    """The person's time zone (FR-CRM-ACC-15): their day, not the server's."""
+    return (getattr(user, "profile", None) or {}).get("timezone") or "Asia/Kolkata"
+
+
 def today_for(user: Any) -> date:
-    """The person's own today (FR-CRM-ACC-15), for "this month" and the
-    `within` operators."""
-    zone = (getattr(user, "profile", None) or {}).get("timezone") or "Asia/Kolkata"
-    return datetime.now(ZoneInfo(zone)).date()
+    """The person's own today, for "this month" and the `within` operators."""
+    return datetime.now(ZoneInfo(zone_for(user))).date()
 
 
 def _viewer(ctx: Any) -> bool:
@@ -159,14 +162,19 @@ def _named(ctx: Any, kind: str, name: str) -> dict[str, Any]:
     raise CrmRefused(404, NO_SUCH_VIEW)
 
 
-def list_views(ctx: Any, object_name: str | None) -> list[dict[str, Any]]:
+def list_views(
+    ctx: Any, object_name: str | None, *, include_hidden: bool = False
+) -> list[dict[str, Any]]:
     """Contracts §2.7 `GET /crm/views` — the shared views (not hidden) and the
-    caller's private ones, in order."""
+    caller's private ones, in order. With `include_hidden`, Admins and
+    Members also get the hidden seeded views (`hidden: true`), so one hidden
+    by mistake can be shown again."""
     kind = kind_of(object_name) if object_name else None
+    hidden_too = include_hidden and ctx.may("manage_shared_views")
     return [
         present_view(ctx, v)
         for v in store.list_views(ctx.workspace_id, object=kind)
-        if _visible(ctx, v) and not v.get("hidden")
+        if _visible(ctx, v) and (hidden_too or not v.get("hidden"))
     ]
 
 
@@ -228,12 +236,17 @@ def update_view(ctx: Any, view_id: str, body: ViewChange) -> dict[str, Any]:
         raise CrmRefused(403, "Viewers can save private views only.")
     if sent.get("is_default") and visibility != "shared":
         raise CrmRefused(422, "Only a shared view can be the list's default.")
+    if sent.get("is_default") and sent.get("hidden", row.get("hidden")):
+        raise CrmRefused(422, "A hidden view cannot be the list's default; show it again first.")
     if "config" in sent or "kind" in sent:
         _check_config(
             ctx, row["object"], sent.get("kind", row["kind"]), sent.get("config", row["config"])
         )
 
     values = {k: v for k, v in sent.items() if row.get(k) != v}
+    if values.get("hidden"):
+        # As DELETE hides it: a hidden view is no longer the default.
+        values["is_default"] = False
     if "visibility" in values:
         values["owner_id"] = ctx.user.id if visibility == "private" else None
         if visibility == "private":
@@ -340,6 +353,8 @@ def query(ctx: Any, body: QueryIn) -> dict[str, Any]:
     if body.spec.after:
         merged["after"] = _cursor_in(body.spec.after)
     resolved = rules.resolve(merged, user_id=ctx.user.id, today=today_for(ctx.user))
+    # A day on a datetime field is the person's own day (plan §5.8).
+    resolved["tz"] = zone_for(ctx.user)
     found = store.query(ctx.workspace_id, kind, resolved, redact=viewer)
 
     ws = base.load(ctx)
@@ -387,8 +402,10 @@ def _totals(kind: str, raw: dict[str, Any], viewer: bool) -> dict[str, Any]:
 def _groups(
     ws: base.Workspace, kind: str, field: str, raw: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Each group with the label of its key, in the list's own order (a
-    select's option order, else by label), empty last."""
+    """Each group with the label of its key, in the order `crm_query()`
+    returns them, which is the order of the rows: the list's own order (a
+    select's option order, the pipeline's stages, a person or record by
+    name), empty last."""
     found = objects.view_field(kind, field)
     kind_of_field = found.type if found else "text"
     viewer = ws.facts.role == "viewer"
@@ -420,22 +437,8 @@ def _groups(
             return ws.facts.fixed_label(_FIXED_LISTS[field], key)
         return _FIXED_LABELS.get(field, {}).get(key, str(key))
 
-    def order(group: dict[str, Any]) -> tuple:
-        key = group.get("key")
-        option = ws.facts.options.get(key or "") if kind_of_field == "select" else None
-        if option is None and field in _FIXED_LISTS:
-            option = next(
-                (
-                    o
-                    for o in ws.facts.options.values()
-                    if o["list_key"] == _FIXED_LISTS[field] and o.get("system_key") == key
-                ),
-                None,
-            )
-        return (key is None, option["position"] if option else 0, label(key) or "")
-
     out = []
-    for group in sorted(raw, key=order):
+    for group in raw:
         entry = {
             "key": group.get("key"),
             "label": label(group.get("key")),
