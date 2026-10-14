@@ -129,6 +129,66 @@ class TestAllowedDomains:
         assert (r.status_code, r.json()["detail"]) == (422, "not a domain is not a domain name.")
 
 
+class TestRoleChange:
+    """Contracts §2.4 `PATCH /crm/tva-admin/memberships/{id}`; FR-CRM-ACC-09 —
+    a TVA admin who is in no workspace changes a protected membership."""
+
+    def _membership(self, fake, ws, user_id):
+        return next(
+            m
+            for m in fake.rows["crm_memberships"].values()
+            if m["workspace_id"] == ws["id"] and m["user_id"] == user_id
+        )
+
+    def _patch(self, http, membership_id, role, who=OUTSIDER["id"]):
+        return http.patch(
+            f"{TVA}/memberships/{membership_id}", json={"role": role}, headers=as_(who)
+        )
+
+    def test_a_tva_admin_changes_the_owners_role(self, crm):
+        http, fake, labs, academy = crm
+        self._membership(fake, labs, MEMBER["id"])["role"] = "admin"  # a second admin
+        m = self._membership(fake, labs, OWNER["id"])
+        r = self._patch(http, m["id"], "member")
+        assert r.status_code == 200
+        assert r.json() == {"membership_id": m["id"], "user_id": OWNER["id"], "role": "member"}
+        assert fake.rows["crm_memberships"][m["id"]]["role"] == "member"
+        actor, (op,) = fake.applied[-1]
+        assert (actor["user_id"], actor["workspace_id"]) == (OUTSIDER["id"], labs["id"])
+        assert (op["table"], op["action"]) == ("crm_memberships", "membership.role_changed")
+        rows = http.get(f"{TVA}/audit", headers=as_(OUTSIDER["id"])).json()
+        assert (rows[0]["action"], rows[0]["target_name"], rows[0]["role"]) == (
+            "membership.role_changed",
+            "Owner",
+            "member",
+        )
+
+    def test_the_last_admin_rule_still_holds(self, crm):
+        http, fake, _, academy = crm
+        m = self._membership(fake, academy, OWNER["id"])
+        r = self._patch(http, m["id"], "viewer")
+        assert (r.status_code, r.json()["detail"]) == (422, "A workspace needs at least one admin.")
+        assert fake.rows["crm_memberships"][m["id"]]["role"] == "admin"
+
+    def test_the_same_role_writes_nothing(self, crm):
+        http, fake, labs, _ = crm
+        m = self._membership(fake, labs, SELLER["id"])
+        assert self._patch(http, m["id"], "member").status_code == 200
+        assert fake.applied == []
+
+    def test_an_unknown_membership_is_404(self, crm):
+        http, *_ = crm
+        r = self._patch(http, "m-nowhere", "member")
+        assert (r.status_code, r.json()["detail"]) == (404, "No such membership.")
+
+    def test_a_workspace_admin_cannot_use_it(self, crm):
+        http, fake, labs, _ = crm
+        self._membership(fake, labs, MEMBER["id"])["role"] = "admin"
+        m = self._membership(fake, labs, SELLER["id"])
+        assert self._patch(http, m["id"], "viewer", who=MEMBER["id"]).status_code == 403
+        assert fake.applied == []
+
+
 class TestAccountType:
     """Contracts §2.4 `PATCH /crm/tva-admin/accounts/{user_id}`; FR-CRM-CHG-02."""
 
@@ -273,6 +333,8 @@ class TestAdministrationAudit:
         )
         changed = next(r for r in rows if r["action"] == "user.account_type")
         assert changed["target_name"] == "Deepika" and changed["workspace_key"] is None
+        # Its before/after carry the TVA role; the column is the CRM role.
+        assert changed["role"] is None
 
     def test_filtered_to_a_workspace(self, crm):
         http, fake, labs, academy = crm
@@ -285,6 +347,21 @@ class TestAdministrationAudit:
         assert http.get(f"{TVA}/audit?workspace_id={labs['id']}", headers=admin).json() == []
         rows = http.get(f"{TVA}/audit?workspace_id=academy", headers=admin).json()
         assert [r["action"] for r in rows] == ["workspace.allowed_domains"]
+
+    def test_filtered_to_a_workspace_it_keeps_the_account_events_of_its_people(self, crm):
+        """The `user.*` rows carry no workspace; filtered, they follow the
+        people who are or were its members."""
+        http, fake, labs, academy = crm
+        admin = as_(OUTSIDER["id"])
+        m = next(m for m in fake.rows["crm_memberships"].values() if m["user_id"] == SELLER["id"])
+        http.delete(f"{TVA}/memberships/{m['id']}", headers=admin)
+        rows = http.get(f"{TVA}/audit?workspace_id=labs", headers=admin).json()
+        assert [(r["action"], r["target_name"]) for r in rows] == [
+            ("user.deactivated", "Tamil"),
+            ("membership.removed", "Tamil"),
+        ]
+        # Tamil was never in Academy.
+        assert http.get(f"{TVA}/audit?workspace_id=academy", headers=admin).json() == []
 
     def test_a_removal_names_the_person(self, crm):
         http, fake, labs, _ = crm

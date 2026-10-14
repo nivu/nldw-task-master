@@ -681,6 +681,7 @@ function UserTable({
                         aria-label={`${user.display_name} may see the dashboard`}
                         className="h-4 w-4"
                         checked={user.dashboard_access === true}
+                        disabled={user.account_type === "crm_only"}
                         onChange={async (e) => {
                           try {
                             await updateUser(user.id, { dashboard_access: e.target.checked });

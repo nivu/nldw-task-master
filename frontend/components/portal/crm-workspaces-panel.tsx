@@ -17,6 +17,7 @@ import {
   tvaInviteCrmMember,
   tvaRemoveCrmMembership,
   tvaSetAccountType,
+  tvaUpdateCrmMembership,
 } from "@/lib/api/crm";
 import type { CrmMember, TvaCrmWorkspace } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
@@ -27,6 +28,7 @@ import { useAsync } from "@/lib/use-async";
  * FR-CRM-CHG-11; plan CT-3.
  *
  * A TVA admin administers every workspace without joining one: members,
+ * their roles (the owner's and a TVA admin's included, FR-CRM-ACC-09),
  * invitations, removals, the domain allow-list and account types. None of
  * it opens a CRM record, and the audit below names who changed whose access,
  * never what a record says.
@@ -127,6 +129,9 @@ function WorkspaceCard({
         <MembersTable
           members={data ?? []}
           extra={accountType}
+          onRoleChange={(member, role) =>
+            act(() => tvaUpdateCrmMembership(member.membership_id, role))
+          }
           onRemove={(member) => {
             if (window.confirm(`Remove ${member.display_name} from ${workspace.name}?`)) {
               act(() => tvaRemoveCrmMembership(member.membership_id));

@@ -10,9 +10,9 @@ const ROLE_LABEL: Record<CrmRole, string> = { admin: "Admin", member: "Member", 
  * A workspace's members — spec 007 contracts §2.2, §2.4.
  *
  * Used by workspace Settings (role and removal, FR-CRM-ACC-12) and by the
- * TVA admin panel (removal and account type, FR-CRM-ACC-13). The last-admin
- * and protected-membership refusals come from the server and are shown as
- * they arrive.
+ * TVA admin panel (role, removal and account type, FR-CRM-ACC-09, -13). The
+ * last-admin and protected-membership refusals come from the server and are
+ * shown as they arrive.
  */
 export function MembersTable({
   members,

@@ -22,7 +22,12 @@ from app.api.deps import AdminDep, CurrentUser
 from app.api.errors import ProblemDetail
 from app.domain.audit import actor_name
 from app.domain.crm import invites as rules
-from app.schemas.crm import AccountTypeUpdate, AllowedDomainsIn, TvaInvitationIn
+from app.schemas.crm import (
+    AccountTypeUpdate,
+    AllowedDomainsIn,
+    MembershipUpdate,
+    TvaInvitationIn,
+)
 from app.services import supabase as db
 from app.services.crm import members, store
 
@@ -105,11 +110,42 @@ def invite(workspace_id: str, payload: TvaInvitationIn, admin: AdminDep) -> dict
     )
 
 
-@router.delete("/memberships/{membership_id}")
-def remove_membership(membership_id: str, admin: AdminDep) -> dict:
+def _membership(membership_id: str) -> dict[str, Any]:
     membership = store.find_membership(membership_id)
     if membership is None:
         raise ProblemDetail(404, "No such membership.")
+    return membership
+
+
+@router.patch("/memberships/{membership_id}")
+def change_role(membership_id: str, payload: MembershipUpdate, admin: AdminDep) -> dict:
+    """FR-CRM-ACC-09 — the owner's and a TVA admin's membership included,
+    which only a TVA admin may change. `crm_apply` still holds the last-admin
+    rule under its row locks."""
+    membership = _membership(membership_id)
+    if membership["role"] != payload.role:
+        store.apply(
+            _actor(admin, membership["workspace_id"]),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_memberships",
+                    "id": membership_id,
+                    "values": {"role": payload.role},
+                    "action": "membership.role_changed",
+                }
+            ],
+        )
+    return {
+        "membership_id": membership["id"],
+        "user_id": membership["user_id"],
+        "role": payload.role,
+    }
+
+
+@router.delete("/memberships/{membership_id}")
+def remove_membership(membership_id: str, admin: AdminDep) -> dict:
+    membership = _membership(membership_id)
     return members.remove(_actor(admin, membership["workspace_id"]), membership_id)
 
 
@@ -145,7 +181,9 @@ def read_audit(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict]:
     """Contracts §2.4 — who changed whose access, never what a record says.
-    `before` and `after` are read only to name the person and the role."""
+    `before` and `after` are read only to name the person and the role; the
+    role is a membership's CRM role, so only a membership row carries one (a
+    profile row's `role` is the TVA role)."""
     workspaces = {w["id"]: w for w in store.list_workspaces()}
     scope = _workspace(workspace_id)["id"] if workspace_id else None
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
@@ -153,6 +191,7 @@ def read_audit(
     for row in store.list_account_audit(workspace_id=scope, before=before, limit=limit):
         after = row.get("after") or {}
         before_ = row.get("before") or {}
+        is_membership = row["target_table"] == "crm_memberships"
         # An account created by a TVA admin for staff is TVA's own business;
         # only the CRM-only accounts invitations create are shown here.
         if row["action"] == "user.created" and after.get("account_type") != "crm_only":
@@ -165,7 +204,7 @@ def read_audit(
                 "actor_name": actor_name(row.get("actor_id"), names, row.get("actor_label")),
                 "action": row["action"],
                 "target_name": _target_name(row, names, workspaces),
-                "role": after.get("role") or before_.get("role"),
+                "role": (after.get("role") or before_.get("role")) if is_membership else None,
             }
         )
     return rows

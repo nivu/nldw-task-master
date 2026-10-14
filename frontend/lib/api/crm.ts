@@ -131,6 +131,12 @@ export const tvaRemoveCrmMembership = (membershipId: string) =>
     { method: "DELETE" }
   );
 
+export const tvaUpdateCrmMembership = (membershipId: string, role: CrmRole) =>
+  call<{ membership_id: string; user_id: string; role: CrmRole }>(
+    `/tva-admin/memberships/${membershipId}`,
+    { method: "PATCH", ...body({ role }) }
+  );
+
 export const tvaSetAccountType = (userId: string, accountType: "staff" | "crm_only") =>
   call<AccountTypeResult>(`/tva-admin/accounts/${userId}`, {
     method: "PATCH",

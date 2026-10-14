@@ -129,15 +129,18 @@ export function CrmShell({
 
   const tools = (
     <>
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Help"
-        nativeButton={false}
-        render={<Link href="/help" />}
-      >
-        <CircleHelp className="size-4" />
-      </Button>
+      {/* /help is the TVA guide, inside the TVA flow: staff only (FR-CRM-UI-04). */}
+      {staff && (
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Help"
+          nativeButton={false}
+          render={<Link href="/help" />}
+        >
+          <CircleHelp className="size-4" />
+        </Button>
+      )}
       <ThemeToggle />
       <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
         <LogOut className="size-4" />

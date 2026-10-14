@@ -19,8 +19,9 @@ test.describe("a CRM-only seller", () => {
     await submitSignIn(page, PEOPLE.crmOnly, "**/crm/labs");
     await expect(page.getByTestId("crm-shell")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
-    // No TVA link anywhere in the shell.
+    // No TVA link anywhere in the shell, the TVA guide at /help included.
     await expect(page.getByRole("link", { name: /Back to TVA/i })).toHaveCount(0);
+    await expect(page.locator('a[href="/help"]')).toHaveCount(0);
   });
 
   test("a TVA page sends them to /crm before any TVA request fires", async ({ page }) => {
@@ -45,6 +46,7 @@ test.describe("a staff member", () => {
     await link.click();
     await page.waitForURL("**/crm/labs");
     await expect(page.getByRole("link", { name: /Back to TVA/i }).first()).toBeVisible();
+    await expect(page.locator('a[href="/help"]').first()).toBeVisible();
   });
 
   test("without one sees no CRM link", async ({ page }) => {

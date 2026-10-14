@@ -9,7 +9,11 @@ removing the membership (FR-CRM-ACC-04, -12).
 The last-admin rule is enforced by the database under row locks, so two
 admins demoting each other at once cannot both succeed. The protected
 memberships (the owner's, a TVA admin's) are checked here first for a clear
-403, and again by `crm_remove_membership` (FR-CRM-ACC-09, plan §5.13).
+403 (FR-CRM-ACC-09, plan §5.13). A removal is checked again by
+`crm_remove_membership` under the profile lock; a role change is not:
+`crm_apply` holds only the last-admin rule, so a profile made owner or TVA
+admin between this check and the write can still have its role changed by a
+workspace admin. Plan §5.13 records that narrow window.
 """
 
 from __future__ import annotations

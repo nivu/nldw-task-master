@@ -206,20 +206,51 @@ def list_account_audit(
     *, workspace_id: str | None = None, before: int | None = None, limit: int = 50
 ) -> list[dict[str, Any]]:
     """Membership events of every workspace and the account events around
-    them, newest first (plan CT-3)."""
-    query = (
-        supabase.table("audit_log")
-        .select(
-            "id, at, actor_id, actor_label, workspace_id, action, target_table, target_id, "
-            "before, after"
-        )
-        .or_(f"action.like.membership.*,action.in.({','.join(ACCOUNT_ACTIONS)})")
+    them, newest first (plan CT-3).
+
+    The `user.*` rows are TVA rows, written with no workspace. Filtered to a
+    workspace, they are included for the people who are or were its members,
+    so removing someone's last membership shows the deactivation it caused.
+    A person in two workspaces has their account events in both.
+    """
+    query = supabase.table("audit_log").select(
+        "id, at, actor_id, actor_label, workspace_id, action, target_table, target_id, "
+        "before, after"
     )
+    events = f"action.like.membership.*,action.in.({','.join(ACCOUNT_ACTIONS)})"
     if workspace_id:
-        query = query.eq("workspace_id", workspace_id)
+        own = f"and(workspace_id.eq.{workspace_id},or({events}))"
+        people = _workspace_people(workspace_id)
+        if people:
+            user_actions = ",".join(a for a in ACCOUNT_ACTIONS if a.startswith("user."))
+            query = query.or_(
+                f"{own},and(workspace_id.is.null,action.in.({user_actions}),"
+                f"target_id.in.({','.join(sorted(people))}))"
+            )
+        else:
+            query = query.or_(own)
+    else:
+        query = query.or_(events)
     if before is not None:
         query = query.lt("id", before)
     return query.order("id", desc=True).limit(limit).execute().data or []
+
+
+def _workspace_people(workspace_id: str) -> set[str]:
+    """Everyone who is, or was, a member: the members now, and the people
+    the workspace's membership events name (a removal keeps the user in
+    `before`)."""
+    rows = (
+        supabase.table("audit_log")
+        .select("after_user:after->>user_id, before_user:before->>user_id")
+        .eq("workspace_id", workspace_id)
+        .eq("target_table", "crm_memberships")
+        .execute()
+        .data
+        or []
+    )
+    people = {r[k] for r in rows for k in ("after_user", "before_user") if r.get(k)}
+    return people | {m["user_id"] for m in list_members(workspace_id)}
 
 
 # ---------------------------------------------------------------------------

@@ -252,7 +252,24 @@ class FakeCrmStore:
             if r["action"].startswith("membership.") or r["action"] in store.ACCOUNT_ACTIONS
         ]
         if workspace_id:
-            rows = [r for r in rows if r["workspace_id"] == workspace_id]
+            # As the store: the TVA `user.*` rows (no workspace) of the
+            # people who are or were its members.
+            people = {
+                (r.get(k) or {}).get("user_id")
+                for r in self.audit
+                if r["workspace_id"] == workspace_id and r["target_table"] == "crm_memberships"
+                for k in ("after", "before")
+            } | {m["user_id"] for m in self.list_members(workspace_id)}
+            rows = [
+                r
+                for r in rows
+                if r["workspace_id"] == workspace_id
+                or (
+                    r["workspace_id"] is None
+                    and r["action"].startswith("user.")
+                    and r["target_id"] in people
+                )
+            ]
         if before is not None:
             rows = [r for r in rows if r["id"] < before]
         return sorted(rows, key=lambda r: r["id"], reverse=True)[:limit]

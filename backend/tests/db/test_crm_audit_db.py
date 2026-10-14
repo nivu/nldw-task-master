@@ -23,6 +23,9 @@ import time
 import uuid
 
 import pytest
+from supabase import create_client
+
+from app.services.crm import store
 
 pytestmark = pytest.mark.db
 
@@ -559,6 +562,29 @@ class TestRemoveMembership:
             ("token.revoked", "user", None),
         ]
         assert {r["actor_id"] for r in _audit(stack, seller)} == {admin}
+
+    def test_the_tva_admin_audit_follows_the_person_into_the_workspace(
+        self, stack, workspace, person, make_profile, monkeypatch
+    ):
+        """`store.list_account_audit` filtered to a workspace keeps the
+        `user.deactivated` row (no workspace) that a removal there caused,
+        and another workspace's filter does not (contracts §2.4)."""
+        monkeypatch.setattr(store, "supabase", create_client(stack.url, stack.service_key))
+        admin = person()
+        _member(stack, workspace, admin, "admin")
+        seller = make_profile(keep=True, account_type="crm_only", role="user", logs_time=False)
+        membership = _member(stack, workspace, seller, "member")
+        stack.sql(self._remove(stack, _actor(workspace, admin), membership))
+
+        rows = store.list_account_audit(workspace_id=workspace, limit=200)
+        assert [r["action"] for r in rows if r["target_id"] == seller] == ["user.deactivated"]
+        assert [r["action"] for r in rows if r["target_id"] == membership][0] == (
+            "membership.removed"
+        )
+        assert all(r["action"] != "token.revoked" for r in rows)
+        labs = stack.sql("SELECT id FROM crm_workspaces WHERE key = 'labs'")[0]["id"]
+        elsewhere = store.list_account_audit(workspace_id=labs, limit=200)
+        assert all(r["target_id"] != seller for r in elsewhere)
 
     def test_a_staff_member_keeps_their_account(self, stack, workspace, person):
         admin = person()

@@ -69,9 +69,10 @@ class FxRateIn(BaseModel):
 
 class InvitationIn(BaseModel):
     """FR-CRM-ACC-04, -05, -15 — a CRM role only: no TVA field can be set
-    through an invitation (FR-CRM-ACC-09)."""
+    through an invitation (FR-CRM-ACC-09). Strings are stripped before they
+    are checked, so a blank name is refused rather than stored empty."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     email: EmailStr
     display_name: str = Field(min_length=1, max_length=120)

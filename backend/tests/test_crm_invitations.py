@@ -156,6 +156,17 @@ class TestNewAccounts:
         assert gotrue.created == ["rep@nunnari.academy"]
         assert fake.profiles[body["user_id"]]["email"] == "rep@nunnari.academy"
 
+    @pytest.mark.parametrize("name", ["   ", "\t\n"])
+    def test_a_blank_name_is_refused(self, crm, name):
+        http, fake, _, _, gotrue, _ = crm
+        assert _invite(http, SANJEEV["id"], display_name=name).status_code == 422
+        assert gotrue.created == []
+
+    def test_the_name_is_stored_trimmed(self, crm):
+        http, fake, *_ = crm
+        body = _invite(http, SANJEEV["id"], display_name="  Rep  ").json()
+        assert fake.profiles[body["user_id"]]["display_name"] == "Rep"
+
 
 class TestTimeZone:
     """FR-CRM-ACC-15."""
