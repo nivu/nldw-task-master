@@ -1,12 +1,13 @@
 <!--
 Sync Impact Report
 ===================
-Version change: 1.0.0 -> 1.1.0 (MINOR - product defined; RLS helpers renamed for the
-  single-company role model; integrity + audit rules added)
-Modified principles: I. Security-First (stakes named, RLS helper names corrected
-  for the single-company role model, append-only audit rule added); III. Data
-  Integrity (booking immutability and derived-balance rules added)
-Added sections: What This Product Is and The Journeys are now written (were TODO)
+Version change: 1.1.0 -> 1.2.0 (MINOR - product scope widened to include the
+  sales CRM; CRM-only accounts and CRM workspaces allowed)
+Modified principles: I. Security-First (CRM-only account and workspace isolation
+  rules added; RLS helper name corrected from current_role() to
+  current_app_role()); IV. Clear Boundaries (frontend data access corrected to
+  backend-only; CRM Google Drive links noted)
+Added sections: The Seller's Journey; CRM paragraphs in What This Product Is
 Removed sections: None
 Templates requiring updates:
   - plan-template.md: OK
@@ -40,6 +41,19 @@ code.
 The bar this must clear is not feature parity with an HR suite. It is *lower
 friction than sending an email*. A flow slower than that will not be adopted,
 and an unadopted portal solves nothing.
+
+The portal also carries Nunnari's sales pipeline: a CRM that takes a company
+from first contact to a won deal, and hands the won deal to the portal as a
+project. It exists because the pipeline lived first in a spreadsheet and then
+in a separate CRM that could not see projects, allocations or the P&L. The CRM
+serves a fourth group: **the people who sell**. Nunnari Labs and DeepWeaver
+sell as one team; Nunnari Academy's B2B team sells as another. Some of these
+people do not work for Nunnari Labs. They sign in to the CRM and see nothing
+else.
+
+The CRM is divided into workspaces, one per sales team, and no CRM record
+crosses from one workspace to another. Workspaces exist only inside the CRM.
+Leave, time, projects and money remain one company's records, as before.
 
 This document is the highest-authority governing document for this project.
 All implementation decisions, architectural choices, and tradeoffs MUST comply
@@ -86,6 +100,24 @@ and every employee's balance reflects it. She creates accounts — nobody signs
 themselves up — assigns each person to a lead, and deactivates people who leave
 without destroying the record of what they took.
 
+### The Seller's Journey
+
+Tamil co-founded DeepWeaver and is not on the Nunnari Labs payroll. Tamil signs
+in with Google and lands on the CRM's Today list: replies owed, deals whose
+next step is due, companies that have gone quiet. There is no leave calendar,
+no timesheet and no colleague's salary anywhere in Tamil's view, because for a
+CRM-only account those pages do not exist.
+
+Tamil moves a deal to Proposal, and the portal shows a planned project for it,
+so whoever plans staffing sees the work coming before it is won. When the
+client signs, the deal is marked won and the project becomes confirmed; only a
+manager or admin confirms its revenue. If the client walks away, the planned
+project is archived and the people pencilled in on it are free again.
+
+Sanjeev runs the Academy's workspace and invites the Academy sales reps into
+it. None of them can see a Labs deal, and nothing Sanjeev does reaches a Labs
+record or a portal account outside the CRM.
+
 ---
 
 ## Core Principles
@@ -109,13 +141,17 @@ that includes aggregate or export views.
 - Role and reporting-line checks in RLS policies MUST go through the
   `SECURITY DEFINER` helper functions in `supabase/migrations/003_rls_helpers.sql`
   — `public.is_admin()`, `public.is_lead()`, `public.is_lead_of(uuid)`,
-  `public.current_role()`. Inlining a `SELECT ... FROM profiles` subquery into a
+  `public.current_app_role()`. Inlining a `SELECT ... FROM profiles` subquery into a
   policy ON `profiles` causes silent recursion that PostgreSQL reports as NULL,
   which RLS treats as deny — it presents as login breaking and rows vanishing,
   and is very hard to diagnose
 - The audit log is append-only at the database level, not merely by convention:
   `UPDATE` and `DELETE` are revoked and a trigger rejects them. Every booking
   state transition and administrative action MUST be written to it
+- A CRM-only account MUST be refused by every non-CRM page, route and tool,
+  and MUST NOT appear in any portal people list, report, reminder or job
+- No CRM query, search, total or tool response MAY return data from a
+  workspace the caller is not a member of
 - The Next.js server-side catch-all proxy (`/api/proxy/[...path]`) is the
   ONLY path through which the browser may reach the FastAPI backend — the
   backend URL (`BACKEND_URL`) is a server-side secret and MUST NOT be embedded
@@ -167,10 +203,10 @@ of them is not the product.
 
 Three layers. Three responsibilities. They do not blur.
 
-**The Next.js Frontend** is a rendering and interaction layer. It reads from
-Supabase directly (under RLS) and calls the FastAPI backend via `backendFetch`
-for anything involving heavy processing or business logic. It contains no
-business rules. It has no knowledge of the backend's physical address — all
+**The Next.js Frontend** is a rendering and interaction layer. It uses
+Supabase only for sign-in and the session; it reads and writes no data from
+Supabase directly. All data goes through the FastAPI backend via `backendFetch`.
+It contains no business rules. It has no knowledge of the backend's physical address — all
 backend calls go to `/api/proxy/...` and the Next.js server resolves the real
 `BACKEND_URL`.
 
@@ -180,7 +216,8 @@ which means it MUST enforce its own authorization before touching the database.
 
 **Supabase** is the single source of truth. PostgreSQL holds all persistent
 state, Auth all identity state, Storage all files. No other database or file
-store is permitted.
+store is permitted. The CRM stores links to files kept in Google Drive; it
+holds no files itself, so Drive is not a file store of the portal's.
 
 Each layer MUST be independently deployable. A backend deployment MUST NOT
 require a simultaneous frontend deployment, or vice versa. API contracts
@@ -267,4 +304,4 @@ include a constitution check:
 
 ---
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-04 | **Last Amended**: 2026-09-04
+**Version**: 1.2.0 | **Ratified**: 2026-09-04 | **Last Amended**: 2026-10-14
