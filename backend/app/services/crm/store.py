@@ -244,24 +244,39 @@ def list_account_audit(
     so removing someone's last membership shows the deactivation it caused.
     A person in two workspaces has their account events in both.
     """
-    query = supabase.table("audit_log").select(
-        "id, at, actor_id, actor_label, workspace_id, action, target_table, target_id, "
-        "before, after"
-    )
     events = f"action.like.membership.*,action.in.({','.join(ACCOUNT_ACTIONS)})"
-    if workspace_id:
-        own = f"and(workspace_id.eq.{workspace_id},or({events}))"
-        people = _workspace_people(workspace_id)
-        if people:
-            user_actions = ",".join(a for a in ACCOUNT_ACTIONS if a.startswith("user."))
-            query = query.or_(
-                f"{own},and(workspace_id.is.null,action.in.({user_actions}),"
-                f"target_id.in.({','.join(sorted(people))}))"
-            )
-        else:
-            query = query.or_(own)
-    else:
-        query = query.or_(events)
+    if not workspace_id:
+        return _audit_page(lambda q: q.or_(events), before, limit)
+    rows = _audit_page(lambda q: q.eq("workspace_id", workspace_id).or_(events), before, limit)
+    # The people's account rows go in batches: one id list in the URL grows
+    # with every member the workspace has ever had, and PostgREST refuses a
+    # request line past a few kilobytes ("URI too long").
+    user_actions = [a for a in ACCOUNT_ACTIONS if a.startswith("user.")]
+    people = sorted(_workspace_people(workspace_id))
+    for i in range(0, len(people), _ID_BATCH):
+        batch = people[i : i + _ID_BATCH]
+        rows += _audit_page(
+            lambda q, batch=batch: (
+                q.is_("workspace_id", "null").in_("action", user_actions).in_("target_id", batch)
+            ),
+            before,
+            limit,
+        )
+    rows.sort(key=lambda r: r["id"], reverse=True)
+    return rows[:limit]
+
+
+#: Ids per PostgREST `in` filter; 36-character uuids keep a batch near 4 KB.
+_ID_BATCH = 100
+
+
+def _audit_page(narrow, before: int | None, limit: int) -> list[dict[str, Any]]:
+    query = narrow(
+        supabase.table("audit_log").select(
+            "id, at, actor_id, actor_label, workspace_id, action, target_table, target_id, "
+            "before, after"
+        )
+    )
     if before is not None:
         query = query.lt("id", before)
     return query.order("id", desc=True).limit(limit).execute().data or []

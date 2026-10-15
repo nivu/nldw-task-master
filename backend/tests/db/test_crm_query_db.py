@@ -608,10 +608,11 @@ def through_routes(stack, monkeypatch, owner):
     return TestClient(app), keys
 
 
-def _route_query(http, owner, key, obj, view) -> dict:
+def _route_query(http, owner, key, obj, view, q=None) -> dict:
+    spec = {"limit": 200} if q is None else {"limit": 200, "q": q}
     r = http.post(
         f"/api/v1/crm/query?workspace={key}",
-        json={"object": obj, "view": view, "spec": {"limit": 200}},
+        json={"object": obj, "view": view, "spec": spec},
         headers={"Authorization": f"Bearer {owner}"},
     )
     assert r.status_code == 200, r.text
@@ -730,7 +731,9 @@ class TestSeededViewsThroughTheRoute:
             )
             tasks[name] = done[0]["id"]
 
-        get = lambda obj, view: _route_query(http, owner, key, obj, view)  # noqa: E731
+        # Narrowed to this run's tag: the seeded workspaces outlive a test
+        # run locally, so the first page is not guaranteed to hold them.
+        get = lambda obj, view: _route_query(http, owner, key, obj, view, q=tag)  # noqa: E731
         everything = _ids(get("companies", "companies_all"))
         assert {mine, theirs, partner} <= everything
         assert _ids(get("companies", "my_accounts")) & {mine, theirs, partner} == {mine}
