@@ -24,10 +24,12 @@ import {
   getCrmMailboxes,
   getCrmMembers,
   getCrmSettings,
+  getCrmTargets,
   inviteCrmMember,
   removeCrmMailbox,
   removeCrmMember,
   runCrmEmailSync,
+  setCrmTargets,
   updateCrmMailbox,
   updateCrmMember,
   updateCrmSetting,
@@ -37,6 +39,7 @@ import type {
   CrmAuditEntry,
   CrmJobName,
   CrmMailbox,
+  CrmTargetIn,
   EmailSyncResult,
   FlagThresholds,
   StageKey,
@@ -63,6 +66,7 @@ const TABS = [
   "domains",
   "thresholds",
   "automations",
+  "targets",
   "mailboxes",
   "jobs",
   "audit",
@@ -72,7 +76,8 @@ const TABS = [
  * Workspace settings — spec 007 FR-CRM-LIST-06, FR-CRM-ACC-04 to -12,
  * FR-CRM-AUD-03; from 1b the flag thresholds (FR-CRM-FLAG-01), the
  * automation switches (FR-CRM-AUTO-02), the Gmail mailboxes and the sync
- * switch (FR-CRM-SYNC-01, -03) and the job log (FR-CRM-JOB-01).
+ * switch (FR-CRM-SYNC-01, -03), the job log (FR-CRM-JOB-01) and the
+ * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -96,9 +101,9 @@ export default function SettingsPage() {
         <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/crm/${ws}/settings/trash`} />}>
           Trash
         </Button>
-        {/* FR-CRM-MIG-01: the Twenty importer. */}
+        {/* FR-CRM-MIG-01: the Twenty importer; FR-CRM-IO-01: CSV import. */}
         <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/crm/${ws}/settings/import`} />}>
-          Import from Twenty
+          Import
         </Button>
       </div>
       <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
@@ -110,6 +115,7 @@ export default function SettingsPage() {
           <TabsTrigger value="domains">Allowed domains</TabsTrigger>
           <TabsTrigger value="thresholds">Thresholds</TabsTrigger>
           <TabsTrigger value="automations">Automations</TabsTrigger>
+          <TabsTrigger value="targets">Targets</TabsTrigger>
           <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
@@ -134,6 +140,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="automations" className="pt-4">
           <AutomationsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="targets" className="pt-4">
+          <TargetsTab workspace={ws} />
         </TabsContent>
         <TabsContent value="mailboxes" className="pt-4">
           <MailboxesTab workspace={ws} />
@@ -316,6 +325,142 @@ function FxTab({ workspace }: { workspace: string }) {
       <CardContent className="space-y-3">
         <Problem message={error} />
         <FxRatesForm workspace={workspace} rates={data ?? []} onChanged={reload} />
+      </CardContent>
+    </Card>
+  );
+}
+
+const PERIOD_LABEL: Record<CrmTargetIn["period_kind"], string> = {
+  month: "Month",
+  quarter: "Quarter",
+  fy: "Financial year",
+};
+
+/** The first day of the period the date falls in (FY April–March). */
+function periodStart(kind: CrmTargetIn["period_kind"], day: string): string {
+  const [y, m] = day.split("-").map(Number);
+  if (kind === "month") return `${y}-${String(m).padStart(2, "0")}-01`;
+  if (kind === "quarter") return `${y}-${String(Math.floor((m - 1) / 3) * 3 + 1).padStart(2, "0")}-01`;
+  return `${m >= 4 ? y : y - 1}-04-01`;
+}
+
+/**
+ * Bookings targets — FR-CRM-LIST-06, FR-CRM-DASH-02: what the workspace (or,
+ * in Labs, one entity) means to book in a month, a quarter or a financial
+ * year, in INR. The dashboard colours bookings only against one of these.
+ */
+function TargetsTab({ workspace }: { workspace: string }) {
+  const { bootstrap } = useCrm();
+  const { data, error, setError, reload } = useAsync(() => getCrmTargets(workspace), [workspace]);
+  const [kind, setKind] = useState<CrmTargetIn["period_kind"]>("month");
+  const [day, setDay] = useState("");
+  const [entity, setEntity] = useState<string>("");
+  const [amount, setAmount] = useState("");
+  const targets: CrmTargetIn[] = (data ?? []).map((t) => ({
+    entity: t.entity,
+    period_kind: t.period_kind,
+    period_start: t.period_start,
+    amount_inr: t.amount_inr,
+  }));
+
+  async function save(next: CrmTargetIn[]) {
+    setError(null);
+    try {
+      await setCrmTargets(workspace, next);
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Bookings targets</CardTitle>
+        <CardDescription>
+          In INR. The dashboard shows bookings green, amber or red against the target&apos;s pace; with no
+          target it shows no colour. The financial year runs April to March.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Problem message={error} />
+        <form
+          className="flex flex-wrap items-end gap-3"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!day || !amount) return;
+            const start = periodStart(kind, day);
+            const added: CrmTargetIn = {
+              entity: (entity || null) as CrmTargetIn["entity"],
+              period_kind: kind,
+              period_start: start,
+              amount_inr: amount,
+            };
+            const others = targets.filter(
+              (t) => !(t.period_kind === kind && t.period_start === start && (t.entity ?? "") === entity)
+            );
+            await save([...others, added]);
+            setAmount("");
+          }}
+        >
+          <label className="space-y-1 text-sm">
+            <span className="block text-muted-foreground">Period</span>
+            <select className="h-8 rounded-md border px-2" value={kind} onChange={(e) => setKind(e.target.value as CrmTargetIn["period_kind"])}>
+              {(Object.keys(PERIOD_LABEL) as CrmTargetIn["period_kind"][]).map((k) => (
+                <option key={k} value={k}>
+                  {PERIOD_LABEL[k]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-muted-foreground">Any day in it</span>
+            <Input type="date" className="h-8" value={day} onChange={(e) => setDay(e.target.value)} required />
+          </label>
+          {bootstrap.workspace.has_entity && (
+            <label className="space-y-1 text-sm">
+              <span className="block text-muted-foreground">For</span>
+              <select className="h-8 rounded-md border px-2" value={entity} onChange={(e) => setEntity(e.target.value)}>
+                <option value="">The whole workspace</option>
+                <option value="nunnari_labs">Nunnari Labs</option>
+                <option value="deepweaver">DeepWeaver</option>
+              </select>
+            </label>
+          )}
+          <label className="space-y-1 text-sm">
+            <span className="block text-muted-foreground">Target (INR)</span>
+            <Input
+              inputMode="decimal"
+              className="h-8 w-40"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+              required
+            />
+          </label>
+          <Button type="submit">Set target</Button>
+        </form>
+        {data && data.length === 0 && <p className="text-sm text-muted-foreground">No targets yet.</p>}
+        {data && data.length > 0 && (
+          <ul className="divide-y rounded-md border text-sm">
+            {data.map((t) => (
+              <li key={t.id} className="flex flex-wrap items-center gap-3 p-2">
+                <span className="flex-1">
+                  {PERIOD_LABEL[t.period_kind]} from {formatDate(t.period_start, bootstrap.me.timezone)} to{" "}
+                  {formatDate(t.period_end, bootstrap.me.timezone)}
+                  {t.entity_label ? ` · ${t.entity_label}` : ""}
+                </span>
+                <span className="tabular-nums">₹{Number(t.amount_inr).toLocaleString("en-IN")}</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => save(targets.filter((o) => !(o.period_kind === t.period_kind && o.period_start === t.period_start && o.entity === t.entity)))}
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
       </CardContent>
     </Card>
   );

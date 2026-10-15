@@ -1,6 +1,6 @@
 "use client";
 
-import { ListPlus, Megaphone, Pencil, Trash2, UserRound, X } from "lucide-react";
+import { Download, ListPlus, Megaphone, Pencil, Trash2, UserRound, X } from "lucide-react";
 import { useState } from "react";
 
 import { cleanValue, FieldEditor } from "@/components/crm/field-editor";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { bulkCrm, searchCampaignChoices } from "@/lib/api/crm";
+import { bulkCrm, exportCrmView, saveFile, searchCampaignChoices } from "@/lib/api/crm";
 import type { BulkAction, BulkResult, CrmBootstrap, CrmMember, ViewObjectKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import {
@@ -36,7 +36,8 @@ import {
  * Each record goes through the same rules as one edit would (permissions,
  * pipeline rules, a Labs deal's TVA project, Do not contact), so some may
  * succeed and others not; the result names each one refused and why.
- * Export joins in 1b (S11b).
+ * (1b, S11b) Export downloads the selected rows as CSV, with the list's
+ * columns (FR-CRM-IO-04).
  */
 
 type Row = Record<string, unknown> & { id: string };
@@ -57,6 +58,7 @@ export function BulkBar({
   fields,
   bootstrap,
   members,
+  columns = [],
   onClear,
   onDone,
 }: {
@@ -64,6 +66,8 @@ export function BulkBar({
   selected: string[];
   /** The rows shown, to name a refused record. */
   rows: Row[];
+  /** The list's columns, which an export of the selection keeps. */
+  columns?: string[];
   /** The fields that may be set in bulk. */
   fields: ViewFieldMeta[];
   bootstrap: CrmBootstrap;
@@ -81,6 +85,8 @@ export function BulkBar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkResult | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const meta = fields.find((f) => f.field === field) ?? fields[0];
   const count = selected.length;
@@ -146,6 +152,18 @@ export function BulkBar({
     }
   }
 
+  async function exportSelected() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      saveFile(await exportCrmView(bootstrap.workspace.key, { object: kind, ids: selected, columns }));
+    } catch (err) {
+      setExportError(errorMessage(err));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   if (count === 0) return null;
   const canTask = kind === "company" || kind === "person" || kind === "opportunity" || kind === "campaign";
   const canCampaign = kind === "company" || kind === "person";
@@ -186,9 +204,17 @@ export function BulkBar({
             <Megaphone /> Add to campaign
           </Button>
         )}
+        <Button size="sm" variant="outline" onClick={exportSelected} disabled={exporting}>
+          <Download /> {exporting ? "Exporting…" : "Export"}
+        </Button>
         <Button size="sm" variant="destructive" onClick={() => open("delete")}>
           <Trash2 /> Delete
         </Button>
+        {exportError && (
+          <span role="alert" className="text-sm text-destructive">
+            {exportError}
+          </span>
+        )}
         <Button size="sm" variant="ghost" className="ml-auto" onClick={onClear} aria-label="Clear selection">
           <X />
         </Button>

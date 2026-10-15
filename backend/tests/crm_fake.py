@@ -122,6 +122,9 @@ TABLES = (
     # Campaigns (041), both audited.
     "crm_campaigns",
     "crm_campaign_members",
+    # Bookings targets and saved CSV mappings (043), both audited.
+    "crm_bookings_targets",
+    "crm_csv_mappings",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -2969,6 +2972,93 @@ class FakeCrmStore:
             rows, key=lambda r: (r["campaign_id"], float(r["position"]), r["created_at"], r["id"])
         )
 
+    # -- store: dashboard, CSV import and export (S11b) ---------------------
+
+    def _columns(self, rows: list[dict[str, Any]], columns: str) -> list[dict[str, Any]]:
+        names = [c.strip() for c in columns.split(",")]
+        return [{c: r.get(c) for c in names} for r in rows]
+
+    def dashboard_deals(self, workspace_id: str) -> list[dict[str, Any]]:
+        live = [r for r in self._of("crm_opportunities", workspace_id) if not r.get("deleted_at")]
+        return self._columns(live, store.DASHBOARD_DEAL_COLUMNS)
+
+    def dashboard_companies(self, workspace_id: str) -> list[dict[str, Any]]:
+        live = [
+            r
+            for r in self._of("crm_companies", workspace_id)
+            if not r.get("deleted_at") and not r.get("merged_into_id")
+        ]
+        return self._columns(live, store.DASHBOARD_COMPANY_COLUMNS)
+
+    def stage_history(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._of("crm_stage_history", workspace_id)
+
+    def _between(self, table: str, workspace_id: str, column: str, since: str, until: str):
+        return [
+            r
+            for r in self._of(table, workspace_id)
+            if not r.get("deleted_at")
+            and r.get(column)
+            and _at(since if "T" in since else since + "T00:00:00+00:00")
+            <= _at(r[column])
+            < _at(until if "T" in until else until + "T00:00:00+00:00")
+        ]
+
+    def notes_between(self, workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
+        return self._between("crm_notes", workspace_id, "created_at", since, until)
+
+    def tasks_completed_between(self, workspace_id: str, since: str, until: str) -> list[dict]:
+        return self._between("crm_tasks", workspace_id, "completed_at", since, until)
+
+    def emails_between(self, workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
+        return self._between("crm_email_messages", workspace_id, "sent_at", since, until)
+
+    def list_targets(self, workspace_id: str) -> list[dict[str, Any]]:
+        rows = self._of("crm_bookings_targets", workspace_id)
+        return sorted(rows, key=lambda t: (t["period_start"], t["period_kind"]), reverse=True)
+
+    def list_csv_mappings(self, workspace_id: str, *, object: str | None = None) -> list[dict]:
+        rows = self._of("crm_csv_mappings", workspace_id)
+        if object is not None:
+            rows = [r for r in rows if r["object"] == object]
+        return sorted(rows, key=lambda r: r["name"])
+
+    def get_csv_mapping(self, workspace_id: str, mapping_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_csv_mappings"].get(mapping_id)
+        return dict(row) if row and row["workspace_id"] == workspace_id else None
+
+    def record_names(self, workspace_id: str, table: str) -> list[dict[str, Any]]:
+        assert table in store.NAME_COLUMNS, table
+        live = [r for r in self._of(table, workspace_id) if not r.get("deleted_at")]
+        return self._columns(live, store.NAME_COLUMNS[table])
+
+    def record_export(self, actor: dict[str, Any], detail: dict[str, Any]) -> None:
+        """043 `crm_record_export`: the export's audit row, nothing else."""
+        ws = actor["workspace_id"]
+        if actor.get("kind") != "user" or detail.get("kind") not in ("view", "workspace"):
+            raise store.refusal_for("CRM22", "An export is of a view or a workspace.")
+        if not any(
+            m["workspace_id"] == ws and m["user_id"] == actor["user_id"]
+            for m in self.rows["crm_memberships"].values()
+        ):
+            raise store.refusal_for("CRM04", "No such workspace.")
+        table = detail.get("table") or "crm_workspaces"
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor["user_id"],
+                "actor_label": "user",
+                "channel": actor["channel"],
+                "workspace_id": ws,
+                "action": f"export.{detail['kind']}",
+                "target_table": table,
+                "target_id": ws if table == "crm_workspaces" else None,
+                "before": None,
+                "after": {k: v for k, v in detail.items() if k != "table"},
+            }
+        )
+
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:
         raise AssertionError(f"FakeCrmStore has no fake for {fn}; call a named store function.")
 
@@ -3344,6 +3434,28 @@ class FakeCrmStore:
                 for other in self.rows[table].values()
             ):
                 clash("crm_favourites_target")
+            return
+        if table == "crm_bookings_targets":
+            # 043: one target per workspace, entity, kind and period.
+            if any(
+                other["id"] != row["id"]
+                and other["workspace_id"] == row["workspace_id"]
+                and (other.get("entity") or "") == (row.get("entity") or "")
+                and other["period_kind"] == row["period_kind"]
+                and other["period_start"] == row["period_start"]
+                for other in self.rows[table].values()
+            ):
+                clash("crm_bookings_targets_period")
+            return
+        if table == "crm_csv_mappings":
+            if any(
+                other["id"] != row["id"]
+                and other["workspace_id"] == row["workspace_id"]
+                and other["object"] == row["object"]
+                and other["name"].lower() == row["name"].lower()
+                for other in self.rows[table].values()
+            ):
+                clash("crm_csv_mappings_name")
             return
         if table == "crm_campaign_members":
             # 041: NULLS NOT DISTINCT.

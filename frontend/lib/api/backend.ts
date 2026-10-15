@@ -94,11 +94,21 @@ export async function upload<T>(path: string, form: FormData, token?: string): P
 export async function download(
   path: string,
   token?: string,
-  fallback = "download"
+  fallback = "download",
+  /** A POST with a JSON body, as a view's export is (007 FR-CRM-IO-04). */
+  json?: unknown
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(resolveUrl(path), {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const auth: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const response = await fetch(
+    resolveUrl(path),
+    json === undefined
+      ? { headers: auth }
+      : {
+          method: "POST",
+          headers: { ...auth, "Content-Type": "application/json" },
+          body: JSON.stringify(json),
+        }
+  );
   if (!response.ok) throw await problemFrom(response);
   const disposition = response.headers.get("content-disposition") ?? "";
   const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);

@@ -170,6 +170,15 @@ def _named(ctx: Any, kind: str, name: str) -> dict[str, Any]:
     raise CrmRefused(404, NO_SUCH_VIEW)
 
 
+def view_for(ctx: Any, kind: str, *, view_id: str | None, name: str | None) -> dict[str, Any]:
+    """A view the caller can see, by id or by name, of this object (an
+    export's columns, S11b)."""
+    view = _view(ctx, view_id) if view_id else _named(ctx, kind, name or "")
+    if view["object"] != kind:
+        raise CrmRefused(404, NO_SUCH_VIEW)
+    return view
+
+
 def list_views(
     ctx: Any, object_name: str | None, *, include_hidden: bool = False
 ) -> list[dict[str, Any]]:

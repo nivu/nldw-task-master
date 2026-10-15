@@ -156,6 +156,39 @@ export function BarsByMonth({
   );
 }
 
+/**
+ * Bars per category, in the order given — a pipeline by stage or channel
+ * (spec 007 FR-CRM-DASH-02). Never re-sorted by value: the API's order is
+ * the pipeline's, or by name.
+ */
+export function BarsByLabel({
+  rows,
+  series,
+  format = (v) => v.toLocaleString("en-IN"),
+}: {
+  rows: { label: string; values: Record<string, number> }[];
+  series: string[];
+  format?: (value: number) => string;
+}) {
+  const data = rows.map((r) => ({ label: r.label, ...r.values }));
+  return (
+    <div className="h-52 w-full">
+      <ResponsiveContainer>
+        <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid stroke={GRID} vertical={false} />
+          <XAxis dataKey="label" {...axis} interval={0} />
+          <YAxis {...axis} width={48} tickFormatter={(v: number) => (v >= 100000 ? `${Math.round(v / 100000)}L` : String(v))} />
+          <Tooltip {...tooltipStyle} formatter={(value, name) => [format(Number(value)), name]} />
+          {series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+          {series.map((name, i) => (
+            <Bar key={name} dataKey={name} fill={SERIES[i % SERIES.length]} radius={[3, 3, 0, 0]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 /** Stacked bars per month — leave history by category. */
 export function StackedByMonth({
   months,

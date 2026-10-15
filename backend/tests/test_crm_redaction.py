@@ -417,3 +417,49 @@ class TestCampaigns:
         answer = asyncio.run(tools.crm_get(Ctx(VIEWER["id"]), "campaign", cid, "academy"))
         assert answer["record"]["name"] == "Webinars"
         assert _walk(answer) == []
+
+
+class TestDashboardAndExport:
+    """S11b — a Viewer cannot open the dashboard or export at all, so no
+    amount reaches them there (FR-CRM-ACC-11, FR-CRM-DASH-01, FR-CRM-IO-04);
+    an admin's dashboard does carry amounts, so the refusal is what keeps
+    them out."""
+
+    @pytest.fixture
+    def dash(self, crm, monkeypatch):
+        from app.services.crm import dashboard
+
+        monkeypatch.setattr(dashboard, "today_in_company_tz", lambda: date(2026, 10, 14))
+        return crm
+
+    def test_an_admins_dashboard_has_amounts(self, dash):
+        http, _ = dash
+        r = http.get(f"/api/v1/crm/dashboard{ACADEMY}", headers=as_(OWNER["id"]))
+        assert r.json()["pipeline_by_stage"]["total"]["amount_in_inr"] == "100800.00"
+
+    @pytest.mark.parametrize(
+        ("method", "url", "body"),
+        [
+            ("GET", f"/api/v1/crm/dashboard{ACADEMY}", None),
+            ("POST", f"/api/v1/crm/export/view{ACADEMY}", {"object": "opportunities"}),
+            (
+                "POST",
+                f"/api/v1/crm/export/view{ACADEMY}",
+                {"object": "opportunities", "ids": ["x"], "columns": ["name"]},
+            ),
+            ("GET", f"/api/v1/crm/export/workspace{ACADEMY}", None),
+            ("GET", f"/api/v1/crm/targets{ACADEMY}", None),
+        ],
+    )
+    def test_a_viewer_is_refused(self, dash, method, url, body):
+        http, _ = dash
+        r = http.request(method, url, json=body, headers=as_(VIEWER["id"]))
+        assert r.status_code == 403, r.text
+        assert _walk(r.json()) == []
+
+    def test_crm_dashboard_as_a_viewer(self, dash):
+        from app.mcp import server
+
+        with pytest.raises(server.ToolError) as refused:
+            asyncio.run(tools.crm_dashboard(Ctx(VIEWER["id"]), workspace="academy"))
+        assert "Viewers have no dashboard." in str(refused.value)

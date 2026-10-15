@@ -442,8 +442,10 @@ async def crm_import(
     mode: Literal["dry_run", "run"] = "dry_run",
     run_id: str | None = None,
     object: str | None = None,
-    mapping: dict[str, str] | None = None,
+    mapping: dict[str, str | None] | None = None,
     fixup_next_step: bool = False,
+    on_match: Literal["skip", "update", "create"] | None = None,
+    row_actions: dict[str, Literal["skip", "update", "create"]] | None = None,
     workspace: str | None = None,
 ) -> dict:
     """WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts
@@ -458,13 +460,27 @@ async def crm_import(
     skipped, the lead stage derived for each company, every conflict (those
     marked blocking must be fixed first) and the attachments to re-link from
     Drive. An open deal with no next step blocks the run unless
-    fixup_next_step=true, which gives it "Review after import" dated today."""
+    fixup_next_step=true, which gives it "Review after import" dated today.
+    format=csv imports a CSV of one object (object: companies, people or
+    opportunities): mapping is {CSV column: field}, by default the columns
+    that name a field (an exported view maps itself back); options and
+    owners are read by label, name or email, a company by name or domain, a
+    person by email or name. A row matching a record (by an ID column, a
+    company's domain or a person's email) is skipped unless on_match is
+    update; row_actions choose per row number (skip, update, create). The
+    dry run lists each row's action and errors; a row with an error must be
+    fixed in the file or skipped before the real run. Deals open at
+    Discovery and need their next step and date."""
     params = {"workspace": workspace}
     body: dict[str, Any] = {"format": format, "content": content}
     if object:
         body["object"] = object
     if mapping:
         body["mapping"] = mapping
+    if on_match:
+        body["mode"] = on_match
+    if row_actions:
+        body["actions"] = row_actions
     if mode == "dry_run":
         return await _api(ctx, "POST", "/crm/imports/dry-run", params=params, body=body)
     if not run_id:
@@ -570,3 +586,36 @@ async def crm_campaign_members(
     return await _api(
         ctx, "POST", f"/crm/campaign-members/{member}/convert", params=params, body=convert
     )
+
+
+@mcp.tool(annotations=READ)
+async def crm_dashboard(
+    ctx: Context,
+    entity: Literal["nunnari_labs", "deepweaver"] | None = None,
+    owner_id: str | None = None,
+    channel: str | None = None,
+    from_: str | None = None,
+    to: str | None = None,
+    workspace: str | None = None,
+) -> dict:
+    """WORKSPACE ADMINS, AND MEMBERS FOR THEIR OWN NUMBERS. The pipeline dashboard:
+    open pipeline by stage, bookings against target, win rate, time in
+    stage, follow-up counts, lead funnel, and for Labs the capacity check,
+    each with its colour where a threshold applies. Amounts are INR;
+    per-owner figures are in name order. Filters: entity (Labs), owner_id,
+    channel (the channel option's id), from_ and to (YYYY-MM-DD; the range
+    for win rate, time in stage and activity, by default the financial year
+    to date). Bookings are this month, quarter and financial year (April to
+    March); green, amber or red only where a target is set. Viewers have no
+    dashboard."""
+    params: dict[str, Any] = {"workspace": workspace}
+    for name, value in (
+        ("entity", entity),
+        ("owner_id", owner_id),
+        ("channel_id", channel),
+        ("from", from_),
+        ("to", to),
+    ):
+        if value is not None:
+            params[name] = value
+    return await _api(ctx, "GET", "/crm/dashboard", params=params)

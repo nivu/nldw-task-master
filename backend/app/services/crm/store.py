@@ -90,6 +90,8 @@ ACCOUNT_LEVEL = frozenset(
         # Gmail sync (039): one address is registered in one workspace only,
         # so the check that it is free reads every workspace's mailboxes.
         "find_mailbox_by_email",
+        # An export's audit row (043), in the actor's workspace.
+        "record_export",
     }
 )
 
@@ -124,6 +126,9 @@ UNIQUE_MESSAGES = {
     "crm_campaign_members_once": "That company or person is already in this campaign.",
     # FR-CRM-SYNC-01 (039); the route names it first.
     "crm_mailboxes_email": "That address is already registered as a mailbox in a workspace.",
+    # FR-CRM-IO-01, FR-CRM-LIST-06 (043); the services check them first.
+    "crm_csv_mappings_name": "There is already a saved mapping with that name.",
+    "crm_bookings_targets_period": "There is already a target for that period.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -1744,3 +1749,172 @@ def campaign_members(
     return sorted(
         rows, key=lambda r: (r["campaign_id"], float(r["position"]), r["created_at"], r["id"])
     )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard, CSV import and export — S11b (data-model §3.24; FR-CRM-DASH,
+# FR-CRM-IO)
+# ---------------------------------------------------------------------------
+
+#: What the dashboard reads of a deal and of a company: no free text.
+DASHBOARD_DEAL_COLUMNS = (
+    "id, name, stage, amount_in_inr, probability, entity, channel_id, source_campaign_id, "
+    "owner_id, company_id, programme_id, lost_reason_id, won_on, lost_on, created_at"
+)
+DASHBOARD_COMPANY_COLUMNS = "id, lead_stage, entities, channel_ids, owner_id, institution_type_id"
+
+
+def _every_page(query_for) -> list[dict[str, Any]]:
+    """Every row `query_for()` matches, page by page in id order: a whole
+    workspace can hold more than one response (`max_rows`)."""
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = query_for().order("id").range(offset, offset + _PAGE - 1).execute().data or []
+        rows += page
+        if len(page) < _PAGE:
+            return rows
+        offset += _PAGE
+
+
+def dashboard_deals(workspace_id: str) -> list[dict[str, Any]]:
+    """Every live deal of the workspace, with what the panels read."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_opportunities")
+            .select(DASHBOARD_DEAL_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+        )
+    )
+
+
+def dashboard_companies(workspace_id: str) -> list[dict[str, Any]]:
+    """Every live company that was not merged away, for the lead funnel."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_companies")
+            .select(DASHBOARD_COMPANY_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+            .is_("merged_into_id", "null")
+        )
+    )
+
+
+def stage_history(workspace_id: str) -> list[dict[str, Any]]:
+    """Every stage entry of the workspace (data-model §3.11), for time in
+    stage and days to close."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_stage_history")
+            .select("id, opportunity_id, from_stage, to_stage, at")
+            .eq("workspace_id", workspace_id)
+        )
+    )
+
+
+def notes_between(workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
+    """Live notes written in [since, until) (timestamps), by whom."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_notes")
+            .select("id, created_by, created_at")
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+            .gte("created_at", since)
+            .lt("created_at", until)
+        )
+    )
+
+
+def tasks_completed_between(workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
+    """Live tasks completed in [since, until), by assignee."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_tasks")
+            .select("id, assignee_id, completed_at")
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+            .gte("completed_at", since)
+            .lt("completed_at", until)
+        )
+    )
+
+
+def emails_between(workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
+    """Messages stored in [since, until): direction and kind only, never a
+    subject or a participant."""
+    return _every_page(
+        lambda: (
+            supabase.table("crm_email_messages")
+            .select("id, mailbox_id, direction, sent_at, is_internal, is_auto")
+            .eq("workspace_id", workspace_id)
+            .gte("sent_at", since)
+            .lt("sent_at", until)
+        )
+    )
+
+
+def list_targets(workspace_id: str) -> list[dict[str, Any]]:
+    """The workspace's bookings targets (043), newest period first."""
+    return (
+        supabase.table("crm_bookings_targets")
+        .select("id, entity, period_kind, period_start, amount_inr, updated_at")
+        .eq("workspace_id", workspace_id)
+        .order("period_start", desc=True)
+        .order("period_kind")
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_csv_mappings(workspace_id: str, *, object: str | None = None) -> list[dict[str, Any]]:
+    """Saved CSV mappings (043), by name."""
+    query_ = supabase.table("crm_csv_mappings").select("*").eq("workspace_id", workspace_id)
+    if object is not None:
+        query_ = query_.eq("object", object)
+    return query_.order("name").execute().data or []
+
+
+def get_csv_mapping(workspace_id: str, mapping_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_csv_mappings")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("id", mapping_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+#: What CSV import matches a relation by (FR-CRM-IO-01): names, and a
+#: person's email and company.
+NAME_COLUMNS = {
+    "crm_companies": "id, name",
+    "crm_people": "id, first_name, last_name, primary_email, company_id",
+}
+
+
+def record_names(workspace_id: str, table: str) -> list[dict[str, Any]]:
+    """Every live company or person of the workspace by name, for CSV
+    import's relations by name: matched in Python, case-insensitively, so
+    no name goes into a URL."""
+    if table not in NAME_COLUMNS:
+        raise ValueError(f"not a table matched by name: {table}")
+    return _every_page(
+        lambda: (
+            supabase.table(table)
+            .select(NAME_COLUMNS[table])
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+        )
+    )
+
+
+def record_export(actor: dict[str, Any], detail: dict[str, Any]) -> None:
+    """043 `crm_record_export` — an export's audit row (FR-CRM-IO-04): what
+    was exported, never a value of it. Scoped by the actor's workspace."""
+    rpc("crm_record_export", {"p_actor": actor, "p_detail": detail})

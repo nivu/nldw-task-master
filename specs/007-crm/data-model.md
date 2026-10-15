@@ -33,7 +33,7 @@ order of §1. Existing migrations are not edited.
 | `040_crm_mailbox_owner_left.sql` | S10 | `CREATE OR REPLACE crm_remove_membership()` also pausing the removed person's mailboxes in the workspace (`is_active = false`, audited `mailbox.updated`) |
 | `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists (the `list_key` CHECK widened), field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns; (as built) `CREATE OR REPLACE crm_query()`, `crm_query_rank()` for the two lists and `crm_purge()` for campaigns and their members |
 | `042_crm_campaign_conversions_kept.sql` | S11a | `CREATE OR REPLACE crm_merge_companies()` and `crm_purge()` keeping a Converted campaign membership when two memberships of one campaign collide (§3.23) |
-| `043_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
+| `043_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings`; (as built) `crm_record_export()`, the audit row of an export |
 
 A function that touches a table always arrives in, or is replaced in, the
 migration that creates that table or a later one. PL/pgSQL resolves table
@@ -638,6 +638,22 @@ period_kind, period_start)`.
 `crm_csv_mappings` (audited): `id`, `workspace_id`, `object`, `name`,
 `mapping jsonb` (`{column: field}`), `created_by`, stamps; `UNIQUE
 (workspace_id, object, lower(name))`.
+
+As built (043): a target's `period_start` is held by a CHECK to its
+period's first day (any month's 1st; a quarter's 1 January, 1 April,
+1 July or 1 October; an FY's 1 April), and the unique index is named
+`crm_bookings_targets_period`. A mapping's `object` is `company`,
+`person` or `opportunity` (the objects CSV import takes) and its name is at
+most 80 characters (`crm_csv_mappings_name`). Both tables have the `touch`
+and audit triggers, RLS on and no browser grants. An export writes nothing
+but its audit row, which `crm_apply`'s `audit_only` cannot carry (it takes
+the audited table's own columns only), so 043 adds
+`crm_record_export(p_actor, p_detail)`: it refuses an actor who is not a
+`user` member of the workspace (CRM04) or a kind other than `view` or
+`workspace` (CRM22), and writes `export.view` or `export.workspace` with the
+exported table as `target_table` (the workspace itself for a whole
+export) and the detail (object, columns, row count, bytes; never a value)
+as `after`. `EXECUTE` is the service role's only.
 
 ---
 

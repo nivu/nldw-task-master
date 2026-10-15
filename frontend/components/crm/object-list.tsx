@@ -5,6 +5,7 @@ import { Suspense, useCallback, useMemo, useRef, useState } from "react";
 
 import { BulkBar } from "@/components/crm/bulk-bar";
 import { ColumnsMenu, DataTable } from "@/components/crm/data-table";
+import { ExportMenu } from "@/components/crm/export-menu";
 import { FilterBuilder } from "@/components/crm/filter-builder";
 import { Kanban, type KanbanColumn } from "@/components/crm/kanban";
 import { LostDialog } from "@/components/crm/lost-dialog";
@@ -526,6 +527,16 @@ function ObjectListView({
                 Reset
               </Button>
             )}
+            {!viewer && (
+              <ExportMenu
+                workspace={ws}
+                kind={kind}
+                spec={{ filters: spec.filters, sorts: spec.sorts, q: spec.q }}
+                columns={columns.map((c) => c.field)}
+                title={current?.name ?? title}
+                admin={bootstrap.role === "admin"}
+              />
+            )}
             {page && (
               <span className="ml-auto text-xs text-muted-foreground" aria-live="polite">
                 {page.total === "10000+" ? "10,000+" : page.total} {page.total === 1 ? "record" : "records"}
@@ -606,6 +617,7 @@ function ObjectListView({
               fields={bulkFields}
               bootstrap={bootstrap}
               members={members}
+              columns={columns.map((c) => c.field)}
               onClear={() => setSelected(new Set())}
               onDone={() => setQueryNonce((n) => n + 1)}
             />

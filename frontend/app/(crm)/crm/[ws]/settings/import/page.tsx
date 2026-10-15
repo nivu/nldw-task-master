@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { CsvImportWizard } from "@/components/crm/csv-import-wizard";
 import { useCrm } from "@/components/crm/shell";
 import { TwentyImport } from "@/components/crm/twenty-import";
 import { Button } from "@/components/ui/button";
@@ -17,10 +18,11 @@ const STATUS: Record<ImportRun["status"], string> = {
 };
 
 /**
- * Import from Twenty — spec 007 FR-CRM-MIG-01 to -08, journey 4.6.
+ * Import — spec 007 FR-CRM-MIG-01 to -08 (journey 4.6) and, from 1b, CSV
+ * import of one object (FR-CRM-IO-01 to -03).
  *
  * Admins only; the server refuses everyone else whatever this page shows.
- * Below the importer, the workspace's recent runs with their counts (never
+ * Below the importers, the workspace's recent runs with their counts (never
  * the file or its rows).
  */
 export default function ImportPage() {
@@ -53,6 +55,15 @@ export default function ImportPage() {
 
       <TwentyImport workspace={ws} onImported={reload} />
 
+      <div className="space-y-2 border-t pt-6">
+        <h2 className="font-heading text-base font-semibold">Import a CSV</h2>
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          One file of companies, people or deals, from a spreadsheet or an export of a view here. Map its columns,
+          check it, fix any row in place, then confirm.
+        </p>
+        <CsvImportWizard workspace={ws} onImported={reload} />
+      </div>
+
       {runs && runs.length > 0 && (
         <section className="space-y-2">
           <h2 className="text-sm font-medium">Recent runs</h2>
@@ -62,7 +73,7 @@ export default function ImportPage() {
                 <span className="tabular-nums">{formatDate(run.applied_at ?? run.created_at, tz)}</span>
                 <span>{STATUS[run.status]}</span>
                 <span className="text-muted-foreground">
-                  {run.object ?? "Whole export"}
+                  {run.kind === "csv" ? `CSV of ${run.object}` : (run.object ?? "Whole export")}
                   {run.counts &&
                     ` · ${Object.values(run.counts).reduce((n, c) => n + (c?.in_file ?? 0), 0)} rows`}
                 </span>

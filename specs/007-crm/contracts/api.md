@@ -224,6 +224,35 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | POST | `/crm/imports/{run_id}/apply` | Admin | the same file again + `{fixup_next_step: bool}` (a form field, or `?fixup_next_step=true` for a posted export) (CSV: `mode`) | `{run_id, counts, fixups_used}`. 409 if the file hash differs from the dry run's, or the dry run is older than 24 h; 404 a run of another workspace; 422 while the dry run lists a blocking conflict (a missing FX rate; an open deal with no next step, unless the fix-up is chosen). A re-run keeps a deal's stage and probability and a task's status (they move in the CRM), keeps a record's owner or assignee unless the file names a member (the importing Admin stands in only on a new record), and never blanks a field the file leaves empty. |
 | GET | `/crm/imports` | Admin | — | recent runs (no content) |
 
+CSV import (S11b, as built). `format: "csv"` with `object` (`companies`,
+`people` or `opportunities`; else read from the file name), one object per
+file, at most 5,000 rows. `mapping` is `{CSV header: field or null}` (the
+request field names of §2.5.1, plus `id` and, for people, `name` split into
+first and last); without it a saved mapping's `mapping_id`, else the
+headers that name a field by key or label, so a file exported from a view
+maps itself back. Relations are read by name, domain or email (a company
+by name or domain, a person by email or name, an owner by member email or
+name), options by label. An empty cell never sets or clears a field. A row
+matches a record by its `id` column, a company's domain or a person's
+email (Trash included: a match in the Trash is an error on the row). `mode`
+is what a matching row does: `skip` (default), `update`, or `create`
+(refused on a row matched by domain or email); `actions` `{row number:
+skip|update|create}` choose per row. A deal opens at Discovery with every
+rule of `POST /crm/opportunities` (company at Qualified or later, next step
+and date or the fix-up, the stage's probability, amount in INR at the
+month's rate); a company may start at New, Contacted, Nurturing, Qualified
+or Disqualified. The dry run adds `{object, headers, mapping, fields,
+rows: [{row, action, unchanged, match: {id, name, by} | null, errors,
+warnings, cells}]}` (the run's stored report keeps counts and sentences,
+never a cell); `blocking` lists each row with an error that is not
+skipped, and the real run is 422 while there is one. The real run uses the
+dry run's mapping, writes new records in `crm_apply` chunks as the import
+and changed records through the record routes' own update (so a Labs
+deal's TVA side applies), and answers `{run_id, counts, created, updated,
+failed: [{row, detail}], fixups_used}`: a row refused at write time is
+reported, the rest written. Uploads carry `mapping` and `actions` as JSON
+text form fields beside `mapping_id` and `mode`.
+
 Twenty input shape (clean room: declared here, not taken from Twenty's code;
 fixtures follow it, and aliases cover column-name variants). JSON:
 `{"companies":[…], "people":[…], "opportunities":[…], "tasks":[…],
@@ -259,7 +288,33 @@ imported as Engaged.
 | GET, PUT | `/crm/targets` | Admin | `[{entity?, period_kind, period_start, amount_inr}]` | bookings targets |
 | POST | `/crm/export/view` | Write | `{object, spec, columns}` | `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="<object>-<date>.csv"`; audited `export.view`. A cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'`. 413 "This export is larger than 5 MB; export one object, or a narrower view." past 5 MB |
 | GET | `/crm/export/workspace` | Admin | `object?` | `application/json` attachment of every object, or of one; audited `export.workspace`. The same 413 past 5 MB (Netlify's response limit is about 6 MB) |
-| GET, POST, DELETE | `/crm/csv-mappings` (`/{id}`) | Admin | `{object, name, mapping}` | saved mappings (FR-CRM-IO-01) |
+| GET, POST, DELETE | `/crm/csv-mappings` (`/{id}`) | Admin | `{object, name, mapping}` | saved mappings (FR-CRM-IO-01); `GET` takes `object?`; saving under a name the object's mappings have (ignoring case) replaces that one; another workspace's id is 404 "No such saved mapping." |
+
+As built (S11b). `GET /crm/dashboard`: Members get their own numbers only
+(`owner_id` is forced to theirs, `own_numbers_only: true`); Viewers 403
+"Viewers have no dashboard."; `entity` outside Labs, an owner who is not a
+member or a channel that is not an option is 422. The answer is `{workspace,
+today, filters, own_numbers_only, range: {from, to}, pipeline_by_stage:
+{stages, total}, bookings: [{period, label, start, end, count, value,
+target, colour?, by_entity?}], won_lost_quarter, win_rate: {overall,
+by_entity?, by_channel}, time_in_stage: {stages, days_to_close}, flags:
+[{kind, label, value, colour}], lead_funnel: {stages, disqualified},
+pipeline_by_channel, pipeline_by_campaign, activity: {weeks, owners},
+pipeline_by_institution_type?, pipeline_by_programme?, capacity?}`; the
+range defaults to the financial year to date and sets win rate, time in
+stage and activity (at most its latest 13 weeks); a bookings colour is
+green at or above the target's pace for the days gone, amber within 80% of
+it, red below, and absent without a target or under an owner or channel
+filter. `PUT /crm/targets` replaces the whole set. `POST /crm/export/view`
+also takes `view_id?` or `view?` (a saved view, by id or name: its columns
+when none are sent) and `ids?` (≤ 500, the bulk bar's selection; another
+workspace's or a trashed id is left out); `columns` are field names or
+`{field, width}`; the file starts with a UTF-8 byte-order mark and an `ID`
+column; Viewers 403 "Viewers cannot export."; a member of two workspaces
+names one (it is audited). `GET /crm/export/workspace` answers
+`{workspace, exported_at, objects: {companies, people, opportunities,
+tasks, notes, campaigns, campaign_members, drive_links}}` (or one, by
+`object`), named `<workspace key>-workspace-<date>.json` or `<key>-<object>-<date>.json`.
 
 ---
 
@@ -289,10 +344,10 @@ given, then the text shown. Writes contain `CONFIRM FIRST`.
 | 12 | `crm_today` | S7 | READ | `person_id?`, `workspace` | `GET /crm/today` | "ANY MEMBER OF THE WORKSPACE for their own list; another person's: WORKSPACE ADMINS ONLY. What to do today: replies owed, deal next steps due or overdue, tasks for today, clients gone silent, loose ends. Sections that need email sync say so while it is off. Admins also see any background job that is overdue." |
 | 13 | `crm_search` | S7 | READ | `query: str`, `workspace` | `GET /crm/search` | "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer). One search across companies, people, deals, tasks, notes and campaigns in one workspace." |
 | 14 | `crm_merge` | S7 | DESTRUCTIVE | `survivor_id`, `merged_id`, `choices?: dict`, `preview: bool = True`, `survivor_updated_at?`, `merged_updated_at?` (the preview's `a.updated_at`, `b.updated_at`; sent as `expect`), `workspace` | `GET /crm/companies/merge-preview` or `POST /crm/companies/merge` | "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST: preview first, read the differing fields and what moves, and say the merged company goes to Trash. Merges two companies; people, deals, tasks, notes, Drive links and TVA project links move to the survivor." |
-| 15 | `crm_import` | S8; CSV objects in S11b | WRITE | `content: str` (≤ 4 MB), `format: twenty_json\|twenty_csv\|csv`, `mode: dry_run\|run = "dry_run"`, `run_id?`, `object?` (csv), `mapping?` (csv), `fixup_next_step: bool = False`, `workspace` | `POST /crm/imports/dry-run`, `POST /crm/imports/{run_id}/apply` | "WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts and conflicts. Imports a Twenty export (and, in 1b, a CSV of one object). Always dry-run first; the real run needs the same content and the dry run's run_id. A second real run of the same file changes nothing." |
+| 15 | `crm_import` | S8; CSV objects in S11b | WRITE | `content: str` (≤ 4 MB), `format: twenty_json\|twenty_csv\|csv`, `mode: dry_run\|run = "dry_run"`, `run_id?`, `object?` (csv), `mapping?` (csv), `fixup_next_step: bool = False`, (as built, csv) `on_match?: skip\|update\|create` (sent as the route's `mode`), `row_actions?` (sent as `actions`), `workspace` | `POST /crm/imports/dry-run`, `POST /crm/imports/{run_id}/apply` | "WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts and conflicts. Imports a Twenty export (and, in 1b, a CSV of one object). Always dry-run first; the real run needs the same content and the dry run's run_id. A second real run of the same file changes nothing." |
 | 16 | `crm_run_email_sync` | S10 | WRITE | `workspace` | `POST /crm/email-sync/run` | "WORKSPACE ADMINS ONLY. CONFIRM FIRST. Runs the Gmail label sync for this workspace now and reports messages stored, people and companies matched and created. Refused while sync is off or already running." |
 | 17 | `crm_campaign_members` | S11a | WRITE | `campaign_id`, `action: add\|status\|convert`, `company_ids?`, `person_ids?`, `member_id?`, `status?`, `opportunity_id?`, `new_opportunity?: dict`, `workspace` | `POST …/members`, `PATCH /crm/campaign-members/{id}?campaign_id=`, `POST …/convert?campaign_id=` | "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST. Adds companies or people to a campaign (Do not contact people are skipped), moves a member's status, or converts a member to a new or existing deal, which records the campaign as the deal's source." |
-| 18 | `crm_dashboard` | S11b | READ | `entity?`, `owner_id?`, `channel?`, `from?`, `to?`, `workspace` | `GET /crm/dashboard` | "WORKSPACE ADMINS, AND MEMBERS FOR THEIR OWN NUMBERS. The pipeline dashboard: open pipeline by stage, bookings against target, win rate, time in stage, follow-up counts, lead funnel, and for Labs the capacity check, each with its colour where a threshold applies. Amounts are INR; per-owner figures are in name order." |
+| 18 | `crm_dashboard` | S11b | READ | `entity?`, `owner_id?`, `channel?`, `from_?` (as built: `from` is a Python keyword), `to?`, `workspace` | `GET /crm/dashboard` | "WORKSPACE ADMINS, AND MEMBERS FOR THEIR OWN NUMBERS. The pipeline dashboard: open pipeline by stage, bookings against target, win rate, time in stage, follow-up counts, lead funnel, and for Labs the capacity check, each with its colour where a threshold applies. Amounts are INR; per-owner figures are in name order." |
 
 Web-only in Phase 1 (FR-CRM-MCP-10): soft delete, restore and permanent
 delete; settings, lists, FX rates, allow-lists, mailboxes, thresholds,

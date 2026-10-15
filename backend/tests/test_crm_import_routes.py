@@ -201,14 +201,18 @@ class TestDryRun:
         )
         assert "report" not in run and "conflicts" not in json.dumps(run)
 
-    def test_csv_as_a_format_waits_for_csv_import(self, crm):
+    def test_csv_as_a_format_is_csv_import(self, crm):
+        # S11b: a CSV of one object is CSV import's (tests/test_crm_csv_io.py).
         http, *_ = crm
         r = http.post(
             f"{DRY_RUN}{LABS}",
             json={"format": "csv", "content": "name\nAcme\n", "object": "companies"},
             headers=as_(OWNER["id"]),
         )
-        assert r.status_code == 422
+        assert r.status_code == 200, r.text
+        assert r.json()["counts"] == {
+            "companies": {"in_file": 1, "create": 1, "update": 0, "unchanged": 0, "skipped": 0}
+        }
 
     def test_a_file_that_is_not_json_is_refused(self, crm):
         http, *_ = crm

@@ -934,6 +934,19 @@ FR-CRM-CHG-13; FR-CRM-MCP-01 (`crm_dashboard`; `crm_import` CSV).
 | `tests/test_crm_mcp.py` (extend) | `crm_dashboard`; `crm_import` with CSV |
 | `frontend/e2e/crm.spec.ts` (extend) | A view exported to CSV downloads with its name |
 
+**As built.** Beyond the lists above: `043` also adds `crm_record_export()`
+(an export's audit row; data-model §3.24); `services/crm/store.py`,
+`schemas/crm.py`, `services/crm/views.py` (`view_for`), `api/crm/__init__.py`
+and `tests/crm_fake.py` carry the new names; `api/crm/capacity.py` reads its
+week rule from `domain/crm/dashboard.capacity_weeks`, so the dashboard and
+`/crm/capacity` show the same weeks; `tests/db/test_crm_dashboards_io_db.py`
+proves 043 and quickstart §3 S11 against the real database; the frontend
+also touches `lib/api/backend.ts` (`download` takes a POST body),
+`components/shared/charts.tsx` (`BarsByLabel`), `components/crm/object-list.tsx`
+(the export menu) and `settings/import/page.tsx` (the CSV wizard beside the
+Twenty importer). CSV import takes companies, people and deals (contracts
+§2.9, as built).
+
 **Done when.**
 - [ ] All gates
 - [ ] Journey 4.10 by hand

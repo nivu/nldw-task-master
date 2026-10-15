@@ -8,13 +8,18 @@
  * (D13).
  */
 
-import { backendFetch, upload } from "@/lib/api/backend";
+import { backendFetch, download, upload } from "@/lib/api/backend";
 import type {
   AccountTypeResult,
   BulkAction,
   BulkResult,
   CampaignMembers,
   Converted,
+  CsvApplied,
+  CsvDryRun,
+  CsvImportIn,
+  CsvMapping,
+  CsvObject,
   CrmCampaign,
   CrmCampaignMember,
   CrmAuditEntry,
@@ -24,6 +29,9 @@ import type {
   CrmColor,
   CrmCompany,
   CrmContact,
+  CrmCsvMapping,
+  CrmDashboard,
+  CrmDashboardFilters,
   CrmDriveLink,
   CrmDuplicates,
   CrmEmailThreads,
@@ -49,6 +57,8 @@ import type {
   CrmSavedView,
   CrmSearchResult,
   CrmSettings,
+  CrmTarget,
+  CrmTargetIn,
   CrmTask,
   CrmTimelineEntry,
   CrmToday,
@@ -699,3 +709,92 @@ export const convertCampaignMember = (
     method: "POST",
     ...body(to),
   });
+
+// ---------------------------------------------------------------------------
+// 1b (S11b) — dashboard, targets, CSV import and export (§2.9, §2.10)
+// ---------------------------------------------------------------------------
+
+export const getCrmDashboard = (workspace: string, filters: CrmDashboardFilters = {}) =>
+  call<CrmDashboard>(`/dashboard${query(workspace, { ...filters })}`);
+
+export const getCrmTargets = (workspace: string) => call<CrmTarget[]>(`/targets${query(workspace)}`);
+
+/** The workspace's whole set of targets: any left out is removed. */
+export const setCrmTargets = (workspace: string, targets: CrmTargetIn[]) =>
+  call<CrmTarget[]>(`/targets${query(workspace)}`, { method: "PUT", ...body(targets) });
+
+export const listCsvMappings = (workspace: string, object?: CsvObject) =>
+  call<CrmCsvMapping[]>(`/csv-mappings${query(workspace, { object })}`);
+
+export const saveCsvMapping = (workspace: string, object: CsvObject, name: string, mapping: CsvMapping) =>
+  call<CrmCsvMapping>(`/csv-mappings${query(workspace)}`, {
+    method: "POST",
+    ...body({ object, name, mapping }),
+  });
+
+export const deleteCsvMapping = (workspace: string, id: string) =>
+  call<{ deleted: boolean }>(`/csv-mappings/${encodeURIComponent(id)}${query(workspace)}`, {
+    method: "DELETE",
+  });
+
+/** The CSV goes as a file upload (FR-CRM-IO-02): JSON would escape it past
+ *  the proxy's 4 MB. */
+function csvForm(input: CsvImportIn): FormData {
+  const form = new FormData();
+  form.set("file", new Blob([input.content], { type: "text/csv" }), input.filename);
+  form.set("format", "csv");
+  form.set("object", input.object);
+  if (input.mapping) form.set("mapping", JSON.stringify(input.mapping));
+  if (input.mapping_id) form.set("mapping_id", input.mapping_id);
+  if (input.mode) form.set("mode", input.mode);
+  if (input.actions && Object.keys(input.actions).length) form.set("actions", JSON.stringify(input.actions));
+  if (input.fixup_next_step !== undefined) form.set("fixup_next_step", input.fixup_next_step ? "true" : "false");
+  return form;
+}
+
+export const dryRunCsvImport = async (workspace: string, input: CsvImportIn) =>
+  upload<CsvDryRun>(`/api/v1/crm/imports/dry-run${query(workspace)}`, csvForm(input), await accessToken());
+
+export const applyCsvImport = async (workspace: string, runId: string, input: CsvImportIn) =>
+  upload<CsvApplied>(
+    `/api/v1/crm/imports/${encodeURIComponent(runId)}/apply${query(workspace)}`,
+    csvForm(input),
+    await accessToken()
+  );
+
+/** A view as CSV, with its filters, sorts and columns (FR-CRM-IO-04), or
+ *  the bulk bar's selection: the file and the name the backend gave it. */
+export const exportCrmView = async (
+  workspace: string,
+  request: {
+    object: ViewObjectKind;
+    spec?: Pick<QuerySpec, "filters" | "sorts" | "q">;
+    columns?: string[];
+    view_id?: string;
+    ids?: string[];
+  }
+) =>
+  download(
+    `/api/v1/crm/export/view${query(workspace)}`,
+    await accessToken(),
+    `${request.object}.csv`,
+    request
+  );
+
+/** The whole workspace as JSON, or one object of it (Admins). */
+export const exportCrmWorkspace = async (workspace: string, object?: string) =>
+  download(
+    `/api/v1/crm/export/workspace${query(workspace, { object })}`,
+    await accessToken(),
+    `${workspace}-workspace.json`
+  );
+
+/** Hands a downloaded file to the browser under its own name. */
+export function saveFile({ blob, filename }: { blob: Blob; filename: string }) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}

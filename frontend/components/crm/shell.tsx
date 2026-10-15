@@ -11,6 +11,7 @@ import {
   CheckSquare,
   CircleHelp,
   Kanban,
+  LayoutDashboard,
   LogOut,
   Megaphone,
   MoreHorizontal,
@@ -45,7 +46,7 @@ import { cn } from "@/lib/utils";
  * no TVA link anywhere; a staff member gets Back to TVA (FR-CRM-UI-03).
  *
  * The sidebar holds what exists so far: Today, Pipeline, Companies, People,
- * Opportunities, Tasks, (1b) Campaigns, the person's favourites (pinned
+ * Opportunities, Tasks, (1b) Campaigns and Dashboard, the person's favourites (pinned
  * views and records, FR-CRM-UI-02) and, for admins, Settings. Each later
  * slice adds its own entry. On a phone the bottom bar has room for four; the
  * rest, favourites included, are under More.
@@ -148,6 +149,13 @@ export function CrmShell({
     { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, show: true },
     // 1b (FR-CRM-UI-02, FR-CRM-CAMP).
     { href: `/crm/${ws}/campaigns`, label: "Campaigns", icon: Megaphone, show: true },
+    // FR-CRM-DASH-01: Admins and Members (their own numbers); Viewers have none.
+    {
+      href: `/crm/${ws}/dashboard`,
+      label: "Dashboard",
+      icon: LayoutDashboard,
+      show: bootstrap.role !== "viewer",
+    },
     {
       href: `/crm/${ws}/settings`,
       label: "Settings",

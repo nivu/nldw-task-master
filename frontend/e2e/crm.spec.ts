@@ -778,3 +778,42 @@ test.describe("campaigns (S11a)", () => {
     await expect(page.getByRole("link", { name: `${tag} series` })).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dashboard and export (spec 007 FR-CRM-IO-04, -05, FR-CRM-DASH-01; tasks
+// S11b, quickstart §3 S11). A company made with a tag, so the export can be
+// narrowed to it whatever other runs left behind.
+// ---------------------------------------------------------------------------
+
+test.describe("dashboard and export (S11b)", () => {
+  test("a view exported to CSV downloads with its name and the view's rows", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    const tag = `E2E export ${Date.now().toString(36)}`;
+    await crmApi(request, token, "POST", "/companies?workspace=academy", { name: `${tag} College` });
+
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/crm/academy/companies");
+    await page.getByRole("searchbox").fill(tag);
+    await expect(page.getByRole("link", { name: `${tag} College` })).toBeVisible();
+    await page.getByRole("button", { name: "Export" }).click();
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-view-csv").click(),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/^companies-\d{4}-\d{2}-\d{2}\.csv$/);
+    const text = fs.readFileSync(await download.path(), "utf8").replace(/^﻿/, "");
+    const lines = text.trim().split(/\r?\n/);
+    expect(lines[0].startsWith("ID,Name")).toBe(true);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(`${tag} College`);
+  });
+
+  test("the dashboard loads its panels for an admin", async ({ page }) => {
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/crm/labs/dashboard");
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByTestId("panel-pipeline")).toBeVisible();
+    await expect(page.getByTestId("panel-bookings")).toBeVisible();
+    await expect(page.getByTestId("panel-activity")).toBeVisible();
+  });
+});

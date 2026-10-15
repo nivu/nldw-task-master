@@ -477,3 +477,98 @@ class TestCampaigns:
             headers=as_(OWNER["id"]),
         )
         assert r.json()["rows"] == []
+
+
+class TestDashboardAndExport:
+    """S11b — Labs's dashboard, exports, targets and saved mappings hold
+    nothing of Academy (FR-CRM-WS-02, FR-CRM-IO-04, FR-CRM-DASH-01)."""
+
+    @pytest.fixture
+    def made(self, crm, monkeypatch):
+        from app.services.crm import dashboard
+
+        monkeypatch.setattr(dashboard.capacity, "weekly", lambda start, end: [])
+        http, made = crm
+        me = as_(OWNER["id"])
+        http.put(
+            f"/api/v1/crm/targets{ACADEMY}",
+            json=[{"period_kind": "fy", "period_start": "2026-04-01", "amount_inr": "777"}],
+            headers=me,
+        )
+        mapping = http.post(
+            f"/api/v1/crm/csv-mappings{ACADEMY}",
+            json={"object": "companies", "name": "Academy fairs", "mapping": {"Org": "name"}},
+            headers=me,
+        ).json()
+        return http, {**made, "mapping": mapping}
+
+    def test_the_dashboard_counts_nothing_of_it(self, made):
+        http, m = made
+        r = http.get(f"/api/v1/crm/dashboard{LABS}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pipeline_by_stage"]["total"]["count"] == 0
+        assert all(b["target"] is None for b in body["bookings"])
+        text = str(body)
+        for record in (m["companies"], m["opportunities"], m["people"]):
+            assert record["id"] not in text
+
+    def test_exports_hold_nothing_of_it(self, made):
+        http, m = made
+        me = as_(OWNER["id"])
+        r = http.post(
+            f"/api/v1/crm/export/view{LABS}",
+            json={"object": "companies", "columns": ["name"]},
+            headers=me,
+        )
+        assert "Academy College" not in r.content.decode()
+        r = http.post(
+            f"/api/v1/crm/export/view{LABS}",
+            json={"object": "companies", "columns": ["name"], "ids": [m["companies"]["id"]]},
+            headers=me,
+        )
+        assert r.content.decode("utf-8-sig").strip() == "ID,Name"
+        r = http.get(f"/api/v1/crm/export/workspace{LABS}", headers=me)
+        text = r.content.decode()
+        for record in (m["companies"], m["opportunities"], m["people"], m["tasks"], m["notes"]):
+            assert record["id"] not in text
+
+    def test_targets_and_mappings_are_the_workspaces_own(self, made):
+        http, m = made
+        me = as_(OWNER["id"])
+        assert http.get(f"/api/v1/crm/targets{LABS}", headers=me).json() == []
+        assert http.get(f"/api/v1/crm/csv-mappings{LABS}", headers=me).json() == []
+        r = http.delete(f"/api/v1/crm/csv-mappings/{m['mapping']['id']}{LABS}", headers=me)
+        assert (r.status_code, r.json()["detail"]) == (404, "No such saved mapping.")
+        r = http.post(
+            f"/api/v1/crm/imports/dry-run{LABS}",
+            json={
+                "format": "csv",
+                "content": "Org\nX\n",
+                "object": "companies",
+                "mapping_id": m["mapping"]["id"],
+            },
+            headers=me,
+        )
+        assert r.status_code == 404
+
+    def test_a_csv_import_cannot_reach_its_records(self, made):
+        http, m = made
+        content = f"ID,Name\n{m['companies']['id']},Renamed\n"
+        r = http.post(
+            f"/api/v1/crm/imports/dry-run{LABS}",
+            json={"format": "csv", "content": content, "object": "companies", "mode": "update"},
+            headers=as_(OWNER["id"]),
+        )
+        [row] = r.json()["rows"]
+        assert row["errors"][0] == f"No such company with ID {m['companies']['id']}."
+        content = "First name,Company\nRavi,Academy College\nAsha,college.edu\n"
+        r = http.post(
+            f"/api/v1/crm/imports/dry-run{LABS}",
+            json={"format": "csv", "content": content, "object": "people"},
+            headers=as_(OWNER["id"]),
+        )
+        assert [row["errors"] for row in r.json()["rows"]] == [
+            ["Company: no company called “Academy College”."],
+            ["Company: no company called “college.edu”."],
+        ]

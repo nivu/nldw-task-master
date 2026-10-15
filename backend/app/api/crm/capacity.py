@@ -13,19 +13,15 @@ is hidden: with two people, one person's leave could be read off the total
 from __future__ import annotations
 
 from datetime import timedelta
-from decimal import Decimal
 
 from fastapi import APIRouter, Query
 
 from app.api.crm.deps import CrmCapacityDep
 from app.domain.calendar import today_in_company_tz
+from app.domain.crm.dashboard import capacity_weeks
 from app.services import capacity
 
 router = APIRouter(prefix="/crm", tags=["crm"])
-
-#: Q-39 — fewer contributors than this and a week says nothing.
-MIN_CONTRIBUTORS = 3
-HIDDEN = "fewer than 3 people"
 
 
 @router.get("/capacity")
@@ -33,20 +29,9 @@ def capacity_check(
     ctx: CrmCapacityDep,
     weeks: int = Query(default=13, ge=1, le=13, description="Weeks from this one; 13 is 90 days."),
 ) -> dict:
+    """The rule a week is shown by is the dashboard's too (S11b), so both
+    show the same weeks."""
     today = today_in_company_tz()
     monday = today - timedelta(days=today.weekday())
     rows = capacity.weekly(today, monday + timedelta(days=7 * weeks - 1))
-    return {
-        "weeks": [
-            {"week_start": w["week_start"], "hidden": HIDDEN}
-            if w["contributors"] < MIN_CONTRIBUTORS
-            else {
-                "week_start": w["week_start"],
-                "tentative_hours": w["tentative_hours"],
-                # Negative when confirmed work already exceeds supply: that is
-                # the staffing problem this check exists to show.
-                "free_hours": str(Decimal(w["supply_hours"]) - Decimal(w["confirmed_hours"])),
-            }
-            for w in rows
-        ]
-    }
+    return {"weeks": capacity_weeks(rows)}

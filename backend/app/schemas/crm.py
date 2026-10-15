@@ -676,6 +676,11 @@ class MergeIn(BaseModel):
     expect: MergeExpect | None = None
 
 
+#: CSV import (FR-CRM-IO-03): skip a row, update the record it matches, or
+#: create a new record.
+CsvMode = Literal["skip", "update", "create"]
+
+
 class ImportIn(BaseModel):
     """Contracts §2.9 — an import sent as JSON rather than an upload, as
     `crm_import` does (FR-CRM-MCP-08). The content is the file's text, held
@@ -687,8 +692,14 @@ class ImportIn(BaseModel):
     format: Literal["twenty_json", "twenty_csv", "csv"]
     content: str = Field(min_length=1)
     object: str | None = Field(default=None, max_length=40)
-    mapping: dict[str, str] | None = None
+    mapping: dict[str, str | None] | None = Field(default=None, max_length=200)
     fixup_next_step: bool = False
+    # CSV (S11b, FR-CRM-IO-01, -03): a saved mapping instead of `mapping`;
+    # for the real run, what a row matching an existing record does, and
+    # per-row choices by row number.
+    mapping_id: str | None = Field(default=None, max_length=64)
+    mode: CsvMode | None = None
+    actions: dict[str, CsvMode] | None = Field(default=None, max_length=20_000)
 
 
 class NotificationsRead(BaseModel):
@@ -723,3 +734,50 @@ class MailboxUpdate(BaseModel):
     owner_id: str | None = Field(default=None, min_length=1, max_length=64)
     labels: list[str] | None = Field(default=None, min_length=1, max_length=20)
     is_active: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Dashboard, CSV mappings, export — contracts §2.10 (S11b)
+# ---------------------------------------------------------------------------
+
+
+class TargetIn(BaseModel):
+    """FR-CRM-LIST-06, FR-CRM-DASH-02 — a bookings target in INR for a month,
+    a quarter or a financial year (from its first day), for the workspace
+    or one entity (Labs)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity: Entity | None = None
+    period_kind: Literal["month", "quarter", "fy"]
+    period_start: date
+    amount_inr: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+
+
+CsvObject = Literal["company", "person", "opportunity", "companies", "people", "opportunities"]
+
+
+class CsvMappingIn(BaseModel):
+    """FR-CRM-IO-01 — a saved mapping: CSV header → field (or null to leave
+    the column out)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    object: CsvObject
+    name: str = Field(min_length=1, max_length=80)
+    mapping: dict[str, str | None] = Field(min_length=1, max_length=200)
+
+
+class ExportViewIn(BaseModel):
+    """FR-CRM-IO-04, -VIEW-07 — a list as CSV: the view (by id or name) with
+    the person's current filters and sorts in `spec`, its `columns` in
+    order, or (the bulk bar) the selected `ids`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object: ViewObject
+    spec: QuerySpec = Field(default_factory=QuerySpec)
+    columns: list[Any] | None = Field(default=None, max_length=60)
+    view_id: str | None = Field(default=None, max_length=64)
+    view: str | None = Field(default=None, min_length=1, max_length=80)
+    ids: list[str] | None = Field(default=None, min_length=1, max_length=500)

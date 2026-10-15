@@ -2,7 +2,8 @@
 FR-CRM-MCP-08.
 
 Admins only. A file arrives as a multipart upload (`file`, with optional
-`format`, `object` and, for the real run, `fixup_next_step`) through the
+`format`, `object` and, for the real run, `fixup_next_step`; a CSV of one
+object also `mapping`, `mapping_id`, `mode` and `actions`, S11b) through the
 portal's proxy, as JSON `{format, content, object?, fixup_next_step?}`
 from `crm_import`, or as a Twenty JSON export posted as it is (the real run
 then takes `?fixup_next_step=true`). Either way it is held to 4 MB here as well as in the
@@ -14,9 +15,9 @@ rest, off the event loop.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
@@ -24,7 +25,7 @@ from starlette.datastructures import UploadFile
 from app.api.crm.deps import CrmAdminDep
 from app.api.errors import ProblemDetail
 from app.domain.crm.importer import MAX_BYTES
-from app.schemas.crm import ImportIn
+from app.schemas.crm import CsvMappingIn, ImportIn
 from app.services.crm import importer as service
 
 router = APIRouter(prefix="/crm/imports", tags=["crm"])
@@ -84,7 +85,13 @@ async def _source(request: Request) -> tuple[service.Source, bool]:
             fmt = "twenty_json" if name.lower().endswith(".json") else "twenty_csv"
         if fmt not in ("twenty_json", "twenty_csv", "csv"):
             raise ProblemDetail(422, "The format is twenty_json, twenty_csv or csv.")
-        source = service.Source(content, fmt, str(form.get("object") or "") or None, name)
+        source = service.Source(
+            content,
+            fmt,
+            str(form.get("object") or "") or None,
+            name,
+            **_csv_fields(form),
+        )
         return source, str(form.get("fixup_next_step") or "").lower() in _TRUE
     if media not in ("application/json", ""):
         raise ProblemDetail(415, "Send the file as multipart/form-data or as JSON.")
@@ -105,7 +112,43 @@ async def _source(request: Request) -> tuple[service.Source, bool]:
     content = payload.content.encode("utf-8")
     if len(content) > MAX_BYTES:
         raise ProblemDetail(413, service.TOO_BIG, title=TOO_LARGE)
-    return service.Source(content, payload.format, payload.object), payload.fixup_next_step
+    source = service.Source(
+        content,
+        payload.format,
+        payload.object,
+        mapping=payload.mapping,
+        mapping_id=payload.mapping_id,
+        mode=payload.mode,
+        actions=payload.actions,
+    )
+    return source, payload.fixup_next_step
+
+
+def _csv_fields(form: Any) -> dict[str, Any]:
+    """A CSV upload's other form fields (S11b): `mapping` and `actions` as
+    JSON text, `mapping_id`, `mode`."""
+    out: dict[str, Any] = {}
+    for name in ("mapping", "actions"):
+        text = form.get(name)
+        if not text:
+            continue
+        try:
+            value = json.loads(str(text))
+        except ValueError:
+            value = None
+        if not isinstance(value, dict) or not all(
+            isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in value.items()
+        ):
+            raise ProblemDetail(422, f"The form field “{name}” is a JSON object of text.")
+        out[name] = value
+    if form.get("mapping_id"):
+        out["mapping_id"] = str(form.get("mapping_id"))
+    mode = str(form.get("mode") or "")
+    if mode:
+        if mode not in ("skip", "update", "create"):
+            raise ProblemDetail(422, "The mode is skip, update or create.")
+        out["mode"] = mode
+    return out
 
 
 @router.post("/dry-run")
@@ -129,3 +172,28 @@ async def apply(run_id: str, request: Request, ctx: CrmAdminDep) -> dict:
 def recent(ctx: CrmAdminDep) -> list[dict]:
     """Recent runs with their counts; never the file or its rows."""
     return service.runs(ctx)
+
+
+# ---------------------------------------------------------------------------
+# Saved CSV mappings — contracts §2.10 (S11b, FR-CRM-IO-01)
+# ---------------------------------------------------------------------------
+
+mappings_router = APIRouter(prefix="/crm/csv-mappings", tags=["crm"])
+
+
+@mappings_router.get("")
+def list_mappings(
+    ctx: CrmAdminDep, object: Annotated[str | None, Query(max_length=40)] = None
+) -> list[dict]:
+    return service.list_mappings(ctx, object)
+
+
+@mappings_router.post("", status_code=201)
+def save_mapping(payload: CsvMappingIn, ctx: CrmAdminDep) -> dict:
+    """Saving under a name the object's mappings already have replaces it."""
+    return service.save_mapping(ctx, payload.object, payload.name, payload.mapping)
+
+
+@mappings_router.delete("/{mapping_id}")
+def delete_mapping(mapping_id: str, ctx: CrmAdminDep) -> dict:
+    return service.delete_mapping(ctx, mapping_id)

@@ -1322,3 +1322,185 @@ export type EmailSyncResult =
       created_people: number;
       skipped_internal: number;
     };
+
+// ---------------------------------------------------------------------------
+// 1b (S11b) — the dashboard, bookings targets, CSV import and export
+// (contracts §2.9, §2.10; mirrors schemas/crm.py TargetIn, CsvMappingIn,
+// ExportViewIn and services/crm/dashboard.py)
+// ---------------------------------------------------------------------------
+
+export type Colour = "green" | "amber" | "red";
+
+/** A money total of open deals: decimal strings in INR. */
+export interface PipelineFigures {
+  count: number;
+  amount_in_inr: string | null;
+  weighted: string | null;
+}
+
+/** A booked figure against its target; a colour only when a target is set. */
+export interface BookedFigure {
+  value: string | null;
+  target: string | null;
+  colour?: Colour;
+  count: number;
+}
+
+export interface BookingsRow extends BookedFigure {
+  period: "month" | "quarter" | "fy";
+  label: string;
+  start: string;
+  end: string;
+  by_entity?: (BookedFigure & { entity: CrmEntity; entity_label: string })[];
+}
+
+export interface WinRateRow {
+  won: number;
+  lost: number;
+  /** Percent, one decimal; null when nothing closed. */
+  win_rate: string | null;
+  average_deal_size: string | null;
+}
+
+export interface ActivityCell {
+  week_start: string;
+  emails_in: number;
+  emails_out: number;
+  notes: number;
+  tasks: number;
+}
+
+/** GET /crm/dashboard — FR-CRM-DASH-01 to -04. */
+export interface CrmDashboard {
+  workspace: { key: string; name: string };
+  today: string;
+  filters: {
+    entity: CrmEntity | null;
+    owner_id: string | null;
+    channel_id: string | null;
+    from: string | null;
+    to: string | null;
+  };
+  own_numbers_only: boolean;
+  range: { from: string; to: string };
+  pipeline_by_stage: {
+    stages: (PipelineFigures & { stage: StageKey; stage_label: string })[];
+    total: PipelineFigures;
+  };
+  bookings: BookingsRow[];
+  won_lost_quarter: {
+    start: string;
+    end: string;
+    won: { count: number; amount_in_inr: string | null };
+    lost: { count: number; amount_in_inr: string | null };
+    lost_reasons: { lost_reason_id: string | null; label: string; count: number }[];
+  };
+  win_rate: {
+    overall: WinRateRow;
+    by_entity?: (WinRateRow & { entity: CrmEntity; entity_label: string })[];
+    by_channel: (WinRateRow & { channel_id: string | null; label: string })[];
+  };
+  time_in_stage: {
+    stages: { stage: StageKey; stage_label: string; average_days: string | null; stays: number }[];
+    days_to_close: { average_days: string | null; deals: number };
+  };
+  flags: { kind: string; label: string; value: number; colour: Colour }[];
+  lead_funnel: {
+    stages: { lead_stage: string; label: string; count: number; reached: number; conversion: string | null }[];
+    disqualified: number;
+  };
+  pipeline_by_channel: (PipelineFigures & { channel_id: string | null; label: string })[];
+  pipeline_by_campaign: (PipelineFigures & { campaign_id: string | null; label: string })[];
+  pipeline_by_institution_type?: (PipelineFigures & { institution_type_id: string | null; label: string })[];
+  pipeline_by_programme?: (PipelineFigures & { programme_id: string | null; label: string })[];
+  activity: {
+    weeks: string[];
+    owners: {
+      owner_id: string;
+      name: string | null;
+      weeks: ActivityCell[];
+      totals: Omit<ActivityCell, "week_start">;
+    }[];
+  };
+  /** Labs, for admins and staff members only (FR-CRM-CAP-02). */
+  capacity?: CrmCapacity;
+}
+
+export interface CrmDashboardFilters {
+  entity?: CrmEntity;
+  owner_id?: string;
+  channel_id?: string;
+  from?: string;
+  to?: string;
+}
+
+/** GET, PUT /crm/targets — FR-CRM-LIST-06. */
+export interface CrmTarget {
+  id: string;
+  entity: CrmEntity | null;
+  entity_label: string | null;
+  period_kind: "month" | "quarter" | "fy";
+  period_start: string;
+  period_end: string;
+  amount_inr: string;
+  updated_at: string;
+}
+
+export type CrmTargetIn = Pick<CrmTarget, "entity" | "period_kind" | "period_start" | "amount_inr">;
+
+/** The objects a CSV imports (FR-CRM-IO-01). */
+export type CsvObject = "company" | "person" | "opportunity";
+export type CsvMode = "skip" | "update" | "create";
+/** CSV header → field, or null to leave the column out. */
+export type CsvMapping = Record<string, string | null>;
+
+export interface CrmCsvMapping {
+  id: string;
+  object: CsvObject;
+  name: string;
+  mapping: CsvMapping;
+  updated_at: string;
+}
+
+export interface CsvPreviewRow {
+  /** 1-based, the header not counted. */
+  row: number;
+  action: CsvMode;
+  unchanged: boolean;
+  match: { id: string; name: string; by: "id" | "domain" | "email" } | null;
+  errors: string[];
+  warnings: string[];
+  /** The row's cells, in the header's order. */
+  cells: string[];
+}
+
+/** POST /crm/imports/dry-run with format csv. */
+export interface CsvDryRun extends Omit<ImportDryRun, "counts"> {
+  object: CsvObject;
+  counts: Partial<Record<"companies" | "people" | "opportunities", ImportCounts>>;
+  headers: string[];
+  mapping: CsvMapping;
+  fields: { field: string; label: string }[];
+  rows: CsvPreviewRow[];
+}
+
+/** POST /crm/imports/{run_id}/apply with format csv. */
+export interface CsvApplied {
+  run_id: string;
+  counts: Partial<Record<"companies" | "people" | "opportunities", ImportCounts>>;
+  created: number;
+  updated: number;
+  failed: { row: number; detail: string }[];
+  fixups_used: number;
+}
+
+export interface CsvImportIn {
+  content: string;
+  filename: string;
+  object: CsvObject;
+  mapping?: CsvMapping;
+  mapping_id?: string;
+  mode?: CsvMode;
+  actions?: Record<string, CsvMode>;
+  fixup_next_step?: boolean;
+}

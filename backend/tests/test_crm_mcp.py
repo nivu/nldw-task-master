@@ -1,7 +1,8 @@
 """The CRM's MCP tools — spec 007 FR-CRM-MCP-01, -03, -04, -05, -07, -09,
 -10, -11; FR-CRM-CHG-07; contracts §3.
 
-Each slice asserts the tools it has added so far; S12 asserts all eighteen.
+Each slice asserts the tools it has added so far; S11b brings all eighteen
+(S12 adds the final purposes check).
 The tool runs through the real in-process bridge (`server._api`), so the
 route's guard, D13 and the channel label apply exactly as in production.
 """
@@ -47,8 +48,9 @@ CALLER_LINES = {
     ),
     "crm_run_email_sync": "WORKSPACE ADMINS ONLY. CONFIRM FIRST.",
     "crm_campaign_members": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
+    "crm_dashboard": "WORKSPACE ADMINS, AND MEMBERS FOR THEIR OWN NUMBERS.",
 }
-READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search"}
+READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search", "crm_dashboard"}
 DESTRUCTIVE = {"crm_move_stage", "crm_handoff", "crm_merge"}
 
 
@@ -961,5 +963,123 @@ class TestCampaignMembers:
             asyncio.run(
                 crm.crm_campaign_members(
                     Ctx(VIEWER["id"]), made["id"], "add", company_ids=[C1], workspace="academy"
+                )
+            )
+
+
+class TestDashboardAndCsvImport:
+    """S11b — `crm_dashboard` (contracts §3 tool 18) and `crm_import` with a
+    CSV of one object."""
+
+    def test_all_eighteen_tools_exist(self):
+        assert len([n for n in _tools() if n.startswith("crm_")]) == 18
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_dashboard(Ctx("u"), workspace="labs"),
+                ("GET", "/crm/dashboard", {"workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_dashboard(
+                    Ctx("u"),
+                    entity="deepweaver",
+                    owner_id="u2",
+                    channel="ch",
+                    from_="2026-04-01",
+                    to="2026-10-15",
+                ),
+                (
+                    "GET",
+                    "/crm/dashboard",
+                    {
+                        "workspace": None,
+                        "entity": "deepweaver",
+                        "owner_id": "u2",
+                        "channel_id": "ch",
+                        "from": "2026-04-01",
+                        "to": "2026-10-15",
+                    },
+                    None,
+                ),
+            ),
+            (
+                lambda: crm.crm_import(
+                    Ctx("u"),
+                    "Name\nAcme\n",
+                    "csv",
+                    object="companies",
+                    mapping={"Name": "name"},
+                    workspace="labs",
+                ),
+                (
+                    "POST",
+                    "/crm/imports/dry-run",
+                    {"workspace": "labs"},
+                    {
+                        "format": "csv",
+                        "content": "Name\nAcme\n",
+                        "object": "companies",
+                        "mapping": {"Name": "name"},
+                    },
+                ),
+            ),
+            (
+                lambda: crm.crm_import(
+                    Ctx("u"),
+                    "Name\nAcme\n",
+                    "csv",
+                    mode="run",
+                    run_id=K1,
+                    object="companies",
+                    on_match="update",
+                    row_actions={"2": "skip"},
+                ),
+                (
+                    "POST",
+                    f"/crm/imports/{K1}/apply",
+                    {"workspace": None},
+                    {
+                        "format": "csv",
+                        "content": "Name\nAcme\n",
+                        "object": "companies",
+                        "mode": "update",
+                        "actions": {"2": "skip"},
+                        "fixup_next_step": False,
+                    },
+                ),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    def test_the_dashboard_through_the_bridge(self, crm_store, monkeypatch):
+        from app.services.crm import dashboard
+
+        monkeypatch.setattr(dashboard.capacity, "weekly", lambda start, end: [])
+        answer = asyncio.run(crm.crm_dashboard(Ctx(OWNER["id"]), workspace="labs"))
+        assert answer["workspace"]["key"] == "labs"
+        assert answer["pipeline_by_stage"]["total"]["count"] == 0
+        assert answer["capacity"] == {"weeks": []}
+        mine = asyncio.run(crm.crm_dashboard(Ctx(MEMBER["id"]), workspace="labs"))
+        assert mine["own_numbers_only"] is True
+        with pytest.raises(server.ToolError):
+            asyncio.run(crm.crm_dashboard(Ctx(VIEWER["id"]), workspace="labs"))
+
+    def test_a_csv_import_through_the_bridge(self, crm_store):
+        me = Ctx(OWNER["id"])
+        dry = asyncio.run(
+            crm.crm_import(me, "Name\nAcme\n", "csv", object="companies", workspace="labs")
+        )
+        assert dry["counts"]["companies"]["create"] == 1
+        with pytest.raises(server.ToolError):
+            asyncio.run(
+                crm.crm_import(
+                    Ctx(MEMBER["id"]), "Name\nAcme\n", "csv", object="companies", workspace="labs"
                 )
             )

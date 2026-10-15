@@ -2,7 +2,7 @@
 FR-CRM-LIST-01 to -06, -09, FR-CRM-FX-02, FR-CRM-PIPE-11; from 1b the flag
 thresholds (FR-CRM-FLAG-01), the automation switches (FR-CRM-AUTO-02) and
 the email sync switch, which cannot go on until the Gmail credential exists
-(FR-CRM-SYNC-03, Q-23).
+(FR-CRM-SYNC-03, Q-23), and the dashboard's bookings targets (S11b).
 
 Everything here is Admin only except reading the lists, which every member
 needs for the pickers. Each change goes through `crm_apply`, so it is
@@ -17,14 +17,14 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Body, Path
 
 from app.api.crm.deps import CrmAdminDep, CrmContext, CrmReadDep
 from app.api.errors import ProblemDetail
 from app.config import settings as config
 from app.domain.crm import settings as rules
-from app.schemas.crm import FxRateIn, OptionCreate, OptionUpdate, SettingUpdate
-from app.services.crm import email_sync, store
+from app.schemas.crm import FxRateIn, OptionCreate, OptionUpdate, SettingUpdate, TargetIn
+from app.services.crm import dashboard, email_sync, store
 from app.services.crm.context import actor
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -264,3 +264,23 @@ def _rate(row: dict) -> dict:
         # string every money and rate value is on the wire.
         "rate": format(Decimal(str(row["rate"])).normalize(), "f"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Bookings targets — FR-CRM-LIST-06, FR-CRM-DASH-02 (1b)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/targets")
+def read_targets(ctx: CrmAdminDep) -> list[dict]:
+    """The workspace's targets in INR, the latest period first."""
+    return dashboard.list_targets(ctx)
+
+
+@router.put("/targets")
+def set_targets(
+    ctx: CrmAdminDep, payload: Annotated[list[TargetIn], Body(max_length=500)]
+) -> list[dict]:
+    """The whole set: those sent are kept, added or changed, any other is
+    removed, in one audited transaction."""
+    return dashboard.put_targets(ctx, payload)
