@@ -194,9 +194,6 @@ PARTNER_TYPES: Final = ("technology_partner", "channel_partner", "training_partn
 #: Lead stages a deal may sit on (FR-CRM-PIPE-04).
 OPENABLE: Final = ("qualified", "deal_open", "customer", "partner")
 TASK_STATUS: Final = {"todo": "todo", "inprogress": "in_progress", "done": "done"}
-#: Blank values an update still writes: a task reopened in the file loses its
-#: completion time with it (030 `crm_tasks_completed`).
-CLEARED_WITH_STATUS: Final = ("completed_at",)
 
 _TWENTY_ID = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _EMAIL = re.compile(r"^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
@@ -659,6 +656,16 @@ class _Planner:
         self.conflict(obj, i, kind, detail)
         self.count(obj)["skipped"] += 1
 
+    def owner(self, email: Any, existing: dict[str, Any] | None) -> tuple[str | None, bool]:
+        """FR-CRM-MIG-05/07 — the importing Admin stands in only on a new
+        record. A record already in the CRM keeps its owner unless the file
+        names a member, so a re-run by another Admin, or after a reassignment
+        in the CRM, changes nothing."""
+        found, unknown = owner_for(email, self.facts.members, self.facts.importer)
+        if existing is not None and (unknown or _blank(email)):
+            return None, unknown
+        return found, unknown
+
     def outcome(self, write: Write) -> None:
         """Counts the row as created, updated or unchanged, and keeps it to
         write unless it is unchanged. An update carries only what changed."""
@@ -672,9 +679,7 @@ class _Planner:
         changed = {
             k: v
             for k, v in write.values.items()
-            if k != "twenty_id"
-            and (not _blank(v) or k in CLEARED_WITH_STATUS)
-            and not same(write.existing.get(k), v)
+            if k != "twenty_id" and not _blank(v) and not same(write.existing.get(k), v)
         }
         if not (changed or write.domains or write.links):
             counts["unchanged"] += 1
@@ -785,16 +790,14 @@ class _Planner:
                     )
             owner = None
             if row["owner_email"]:
-                owner, unknown = owner_for(
-                    row["owner_email"], self.facts.members, self.facts.importer
-                )
+                owner, unknown = self.owner(row["owner_email"], existing)
                 if unknown:
                     self.conflict(
                         "people",
                         i,
                         "unknown_owner",
                         f"{label}'s owner {row['owner_email']} is not a member; "
-                        "you own them instead.",
+                        + ("they keep their owner." if existing else "you own them instead."),
                     )
             company = self.ref("companies", row["company_id"])
             if row["company_id"] and company is None:
@@ -875,13 +878,14 @@ class _Planner:
             current = existing["stage"] if existing else stage
             self.deal_stages.setdefault(str(row["company_id"]).strip(), []).append(current)
 
-            owner, unknown = owner_for(row["owner_email"], self.facts.members, self.facts.importer)
+            owner, unknown = self.owner(row["owner_email"], existing)
             if unknown:
                 self.conflict(
                     "opportunities",
                     i,
                     "unknown_owner",
-                    f"{name}'s owner {row['owner_email']} is not a member; you own it instead.",
+                    f"{name}'s owner {row['owner_email']} is not a member; "
+                    + ("it keeps its owner." if existing else "you own it instead."),
                 )
             contact = self.ref("people", row["contact_id"])
             if row["contact_id"] and contact is None:
@@ -1030,7 +1034,6 @@ class _Planner:
     # -- companies, second pass: their values, once the deals are known -------
 
     def companies(self) -> None:
-        importer = self.facts.importer
         source = next(
             (
                 o["id"]
@@ -1061,13 +1064,14 @@ class _Planner:
                     f"{name}'s account type “{row['account_type']}” is not in this workspace's "
                     "list; it is left empty.",
                 )
-            owner, unknown = owner_for(row["owner_email"], self.facts.members, importer)
+            owner, unknown = self.owner(row["owner_email"], existing)
             if unknown:
                 self.conflict(
                     "companies",
                     i,
                     "unknown_owner",
-                    f"{name}'s owner {row['owner_email']} is not a member; you own it instead.",
+                    f"{name}'s owner {row['owner_email']} is not a member; "
+                    + ("it keeps its owner." if existing else "you own it instead."),
                 )
             own = file_lead_stage(row["stage"])
             stages = self.stages_of(tid, existing)
@@ -1223,31 +1227,29 @@ class _Planner:
             self.written["tasks"].add(tid)
             existing = self.facts.existing["tasks"].get(tid)
             status = TASK_STATUS.get(_key(str(row["status"] or "todo")), "todo")
-            assignee, unknown = owner_for(
-                row["assignee_email"], self.facts.members, self.facts.importer
-            )
+            assignee, unknown = self.owner(row["assignee_email"], existing)
             if unknown:
                 self.conflict(
                     "tasks",
                     i,
                     "unknown_owner",
                     f"{label}'s assignee {row['assignee_email']} is not a member; "
-                    "it is yours instead.",
+                    + ("it keeps its assignee." if existing else "it is yours instead."),
                 )
             values: dict[str, Any] = {
                 "twenty_id": tid,
                 "title": title,
                 "body": _text(row["body"], 20_000)[0],
-                "status": status,
                 "due_on": _iso(_day(row["due_on"])),
                 "assignee_id": assignee,
-                "completed_at": None,
             }
-            if status == "done":
-                done = _timestamp(row["completed_at"]) or _timestamp(row["updated_at"])
-                if done is None and existing is not None:
-                    done = existing.get("completed_at")
-                values["completed_at"] = done or f"{self.today.isoformat()}T00:00:00+00:00"
+            # Like a deal's stage, a task's status moves in the CRM: a re-run
+            # sets it on a new task only, never reopens or closes one.
+            if existing is None:
+                values.update(status=status, completed_at=None)
+                if status == "done":
+                    done = _timestamp(row["completed_at"]) or _timestamp(row["updated_at"])
+                    values["completed_at"] = done or f"{self.today.isoformat()}T00:00:00+00:00"
             self.with_links("tasks", tid, values, existing, links)
 
     def notes(self) -> None:

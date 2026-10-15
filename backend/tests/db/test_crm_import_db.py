@@ -4,7 +4,10 @@ plan, risk "PostgREST rpc statement timeout on big imports".
 
 What only Postgres can prove: an upsert on `twenty_id` through the real
 `crm_apply` is idempotent, and a re-run of unchanged rows writes no audit
-row; tasks and notes now match on `twenty_id` too (036); the FX CHECK
+row; the real importer's writes of a whole export (deals inserted won,
+lost and at Proposal, `$ref` links, the fix-up next step) pass the
+database's CHECKs and triggers, and its second run writes nothing; tasks
+and notes now match on `twenty_id` too (036); the FX CHECK
 refuses an upsert that changes an amount without its INR value; a chunk of
 500 rows fits well inside the statement timeout; `crm_similar_many` answers
 each name as `crm_similar` would; `crm_record_import` writes the run and its
@@ -19,8 +22,16 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from supabase import create_client
+
+from app.services import supabase as db
+from app.services.crm import importer as service
+from app.services.crm import store
 
 pytestmark = pytest.mark.db
 
@@ -219,6 +230,116 @@ class TestUpsert:
         )
         assert time.monotonic() - again < 8
         assert _audit_count(stack, ws) == before
+
+
+class TestRealImporter:
+    """FR-CRM-MIG-04, -07 — `services/crm/importer` end to end through the
+    real `crm_apply`, not only hand-built ops."""
+
+    LABS = (Path(__file__).parents[1] / "fixtures" / "twenty" / "labs.json").read_bytes()
+
+    def _options(self, stack, ws: str) -> None:
+        options = [
+            ("opportunity.lost_reason", "price", "Price"),
+            ("opportunity.lost_reason", "other", "Other"),
+            ("source", "import", "Import"),
+        ]
+        values = ", ".join(
+            f"({stack.q(ws)}, {stack.q(k)}, {stack.q(sk)}, {stack.q(label)}, {n})"
+            for n, (k, sk, label) in enumerate(options, start=1)
+        )
+        _as_system(
+            stack,
+            "INSERT INTO crm_select_options (workspace_id, list_key, system_key, label, position) "
+            f"VALUES {values}",
+        )
+        _as_system(
+            stack,
+            "INSERT INTO crm_fx_rates (workspace_id, currency, month, rate) "
+            f"VALUES ({stack.q(ws)}, 'USD', '2026-09-01', 83.5)",
+        )
+
+    def _rows(self, stack, ws: str, table: str) -> dict[str, dict]:
+        rows = stack.sql(f"SELECT * FROM {table} WHERE workspace_id = {stack.q(ws)}")
+        return {r["twenty_id"]: r for r in rows}
+
+    def test_a_whole_export_lands_and_a_second_run_writes_nothing(
+        self, stack, ws, owner, monkeypatch
+    ):
+        local = create_client(stack.url, stack.service_key)
+        monkeypatch.setattr(db, "supabase", local)
+        monkeypatch.setattr(store, "supabase", local)
+        monkeypatch.setattr(service, "today_in_company_tz", lambda: date(2026, 10, 15))
+        self._options(stack, ws)
+        ctx = SimpleNamespace(
+            user=SimpleNamespace(id=owner),
+            workspace={"id": ws, "name": "Import test"},
+            workspace_id=ws,
+            channel="web",
+        )
+        source = service.Source(self.LABS, "twenty_json")
+
+        dry = service.dry_run(ctx, source)
+        done = service.apply(ctx, dry["run_id"], source, fixup=True)
+        assert done["fixups_used"] == 1
+        assert {obj: c["create"] for obj, c in done["counts"].items()} == {
+            "companies": 6,
+            "people": 4,
+            "opportunities": 4,
+            "tasks": 2,
+            "notes": 2,
+        }
+
+        companies = self._rows(stack, ws, "crm_companies")
+        deals = self._rows(stack, ws, "crm_opportunities")
+        tasks = self._rows(stack, ws, "crm_tasks")
+        assert set(companies) == {
+            "c-acme",
+            "c-globex",
+            "c-initech",
+            "c-umbrella",
+            "c-hooli",
+            "c-acme-pvt",
+        }
+        assert set(self._rows(stack, ws, "crm_people")) == {"p-asha", "p-ben", "p-chen", "p-dana"}
+        assert set(self._rows(stack, ws, "crm_notes")) == {"n-kickoff", "n-initech"}
+        assert {t: d["stage"] for t, d in deals.items()} == {
+            "o-acme-pilot": "proposal",
+            "o-initech-rollout": "closed_won",
+            "o-umbrella-audit": "closed_lost",
+            "o-acme-phase2": "discovery",
+        }
+        assert deals["o-acme-pilot"]["amount_in_inr"] is not None
+        assert deals["o-acme-phase2"]["next_step"] and deals["o-acme-phase2"]["next_step_on"]
+        assert deals["o-acme-pilot"]["company_id"] == companies["c-acme"]["id"]
+        history = stack.sql(
+            "SELECT opportunity_id FROM crm_stage_history WHERE opportunity_id IN ("
+            + ", ".join(stack.q(d["id"]) for d in deals.values())
+            + ")"
+        )
+        assert {h["opportunity_id"] for h in history} == {d["id"] for d in deals.values()}
+        links = stack.sql(
+            "SELECT record_type, record_id FROM crm_task_links "
+            f"WHERE task_id = {stack.q(tasks['t-call-asha']['id'])}"
+        )
+        assert {(lk["record_type"], lk["record_id"]) for lk in links} == {
+            ("person", self._rows(stack, ws, "crm_people")["p-asha"]["id"]),
+            ("opportunity", deals["o-acme-pilot"]["id"]),
+        }
+        assert tasks["t-globex-deck"]["status"] == "done"
+
+        before = stack.sql(
+            f"SELECT max(id) AS n FROM audit_log WHERE workspace_id = {stack.q(ws)}"
+        )[0]["n"]
+        again = service.dry_run(ctx, source)
+        assert all(c["create"] == c["update"] == 0 for c in again["counts"].values())
+        rerun = service.apply(ctx, again["run_id"], source, fixup=True)
+        assert all(c["create"] == c["update"] == 0 for c in rerun["counts"].values())
+        actions = stack.sql(
+            "SELECT action FROM audit_log "
+            f"WHERE workspace_id = {stack.q(ws)} AND id > {before} ORDER BY id"
+        )
+        assert [a["action"] for a in actions] == ["import.dry_run", "import.applied"]
 
 
 class TestSimilarMany:

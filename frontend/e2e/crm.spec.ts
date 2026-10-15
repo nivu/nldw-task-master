@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { type APIRequestContext, expect, type Locator, type Page, test } from "@playwright/test";
+import { NextRequest } from "next/server";
 
+import * as proxyRoute from "../app/api/proxy/[...path]/route";
 import { PASSWORD, PEOPLE, signIn, submitSignIn } from "./helpers";
 
 /**
@@ -588,15 +590,89 @@ test.describe("the importer and the proxy (S8)", () => {
     expect(r.status()).toBe(415);
   });
 
-  test("no backend Set-Cookie or Location reaches the browser", async ({ request }) => {
-    const token = await tokenFor(request, PEOPLE.manager);
-    for (const route of ["/api/proxy/api/v1/crm/workspaces", "/api/proxy/api/v1/crm/imports?workspace=academy"]) {
-      const r = await request.get(route, { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 });
-      expect(r.status()).toBe(200);
-      const names = Object.keys(r.headers());
-      expect(names).not.toContain("set-cookie");
-      expect(names).not.toContain("location");
+  /**
+   * The proxy's handler called directly, with `fetch` standing in for a
+   * backend that sends what the real one never does: a redirect, a cookie,
+   * an HTML page.
+   */
+  async function viaProxy(
+    backend: Response,
+    init: { method?: string; contentType?: string; body?: Uint8Array } = {}
+  ): Promise<{ res: Response; sent: RequestInit | null }> {
+    const real = globalThis.fetch;
+    let sent: RequestInit | null = null;
+    globalThis.fetch = (async (_url: unknown, req?: RequestInit) => {
+      sent = req ?? {};
+      return backend;
+    }) as typeof fetch;
+    try {
+      const method = init.method ?? "GET";
+      const request = new NextRequest("http://portal.test/api/proxy/api/v1/x", {
+        method,
+        headers: init.contentType ? { "Content-Type": init.contentType } : {},
+        body: init.body as BodyInit | undefined,
+      });
+      const handler = method === "POST" ? proxyRoute.POST : proxyRoute.GET;
+      const res = await handler(request, { params: Promise.resolve({ path: ["api", "v1", "x"] }) });
+      return { res, sent };
+    } finally {
+      globalThis.fetch = real;
     }
+  }
+
+  test("a backend redirect and cookie never reach the browser", async () => {
+    const { res, sent } = await viaProxy(
+      new Response("<a href=/elsewhere>moved</a>", {
+        status: 307,
+        headers: { Location: "https://evil.test/", "Set-Cookie": "s=1", "Content-Type": "text/html" },
+      })
+    );
+    expect(sent?.redirect).toBe("manual");
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get("set-cookie")).toBeNull();
+
+    const json = await viaProxy(
+      Response.json({ ok: true }, { headers: { "Set-Cookie": "s=1" } })
+    );
+    expect(json.res.status).toBe(200);
+    expect(json.res.headers.get("set-cookie")).toBeNull();
+    expect(await json.res.json()).toEqual({ ok: true });
+  });
+
+  test("a download comes back as a nosniff attachment; an HTML page gets 502", async () => {
+    const csv = await viaProxy(
+      new Response("a,b\n1,2\n", { headers: { "Content-Type": "text/csv", "Set-Cookie": "s=1" } })
+    );
+    expect(csv.res.status).toBe(200);
+    expect(csv.res.headers.get("content-disposition")).toBe("attachment");
+    expect(csv.res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(csv.res.headers.get("set-cookie")).toBeNull();
+    expect(await csv.res.text()).toBe("a,b\n1,2\n");
+
+    const html = await viaProxy(
+      new Response("<script>alert(1)</script>", { headers: { "Content-Type": "text/html" } })
+    );
+    expect(html.res.status).toBe(502);
+    expect(html.res.headers.get("content-type")).toBe("application/problem+json");
+    expect(await html.res.text()).not.toContain("<script>");
+  });
+
+  test("a multipart upload gets the backend's 64 KB of envelope room; JSON does not", async () => {
+    const limit = 4 * MB + 64 * 1024;
+    const post = (size: number, contentType: string) =>
+      viaProxy(Response.json({}), { method: "POST", contentType, body: new Uint8Array(size) });
+
+    const multipart = "multipart/form-data; boundary=x";
+    const fits = await post(limit, multipart);
+    expect(fits.res.status).toBe(200);
+    expect(fits.sent).not.toBeNull();
+    const over = await post(limit + 1, multipart);
+    expect(over.res.status).toBe(413);
+    expect(over.sent).toBeNull();
+
+    expect((await post(4 * MB, "application/json")).res.status).toBe(200);
+    expect((await post(4 * MB + 1, "application/json")).res.status).toBe(413);
   });
 
   test("the effort statement CSV downloads with its name and real content (006 FR-STMT-02)", async ({

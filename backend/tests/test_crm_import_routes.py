@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
+from crm_fake import MEMBER, OUTSIDER, OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 
 from app.mcp import crm as tools
@@ -285,6 +285,43 @@ class TestApply:
         assert changed == []
         # Only the second run's own two rows: its dry run and its real run.
         assert [a["action"] for a in fake.audit[audit:]] == ["import.dry_run", "import.applied"]
+
+    def test_another_admin_rerunning_keeps_the_owners(self, crm):
+        """FR-CRM-MIG-07 — the importer stands in for a blank or unknown owner
+        only on a new record: a second Admin's re-run, or one after a
+        reassignment in the CRM, moves no owner."""
+        http, fake, labs, _ = crm
+        fake.add_member(labs, OUTSIDER["id"], "admin")
+        _imported(http, fake, labs)
+        hooli = _by_twenty(fake, "crm_companies", labs)["c-hooli"]
+        hooli["owner_id"] = MEMBER["id"]
+        owners = {
+            t: {k: (r.get("owner_id"), r.get("assignee_id")) for k, r in rows.items()}
+            for t in ("crm_companies", "crm_people", "crm_opportunities", "crm_tasks")
+            for rows in [_by_twenty(fake, t, labs)]
+        }
+        dry = _dry(http, who=OUTSIDER["id"]).json()
+        assert all(c["update"] == 0 for c in dry["counts"].values())
+        again = _apply(http, dry["run_id"], who=OUTSIDER["id"])
+        assert again.status_code == 200, again.text
+        assert all(c["create"] == c["update"] == 0 for c in again.json()["counts"].values())
+        assert {
+            t: {k: (r.get("owner_id"), r.get("assignee_id")) for k, r in rows.items()}
+            for t in owners
+            for rows in [_by_twenty(fake, t, labs)]
+        } == owners
+
+    def test_a_rerun_does_not_reopen_a_task_completed_in_the_crm(self, crm):
+        http, fake, labs, _ = crm
+        _imported(http, fake, labs)
+        task = _by_twenty(fake, "crm_tasks", labs)["t-call-asha"]
+        task.update(status="done", completed_at="2026-10-14T10:00:00+00:00")
+        run_id = _dry(http).json()["run_id"]
+        again = _apply(http, run_id)
+        assert again.status_code == 200, again.text
+        assert again.json()["counts"]["tasks"]["update"] == 0
+        task = _by_twenty(fake, "crm_tasks", labs)["t-call-asha"]
+        assert (task["status"], task["completed_at"]) == ("done", "2026-10-14T10:00:00+00:00")
 
     def test_the_links_are_reproduced_with_the_twenty_ids(self, crm):
         """Journey 4.6 — every company, person, deal, task and note with its

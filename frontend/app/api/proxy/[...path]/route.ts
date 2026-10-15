@@ -9,14 +9,18 @@ import { NextRequest, NextResponse } from "next/server";
  * and `X-Forwarded-*` never are. The body is read as a stream with a running
  * byte count and refused 413 the moment it passes 4 MB, whatever
  * `Content-Length` says (it is absent from a chunked upload, and can lie).
- * 4 MB leaves room under Netlify's ~6 MB function body limit, which a
+ * A multipart body gets the backend's 64 KB of room for its envelope, so a
+ * file of exactly 4 MB gets through (the backend holds the file to 4 MB).
+ * That leaves room under Netlify's ~6 MB function body limit, which a
  * base64-encoded binary body grows a third towards (Q-05).
  *
  * Responses: the backend is called with `redirect: "manual"`, and only the
  * status, `Content-Type` and `Content-Disposition` come back, never
- * `Set-Cookie` or `Location`. JSON is answered as before; anything else (a
- * CSV download) is streamed through with its type and file name, which is
- * what the effort statement's download needed (006 FR-STMT-02).
+ * `Set-Cookie` or `Location`. JSON is answered as before; a download (CSV,
+ * PDF, zip or bytes) is streamed through with its type and file name, which is
+ * what the effort statement's download needed (006 FR-STMT-02), as an
+ * attachment with `nosniff`. Any other type (an HTML page) is answered 502:
+ * the portal's origin never serves the backend's HTML.
  */
 
 const BACKEND_URL =
@@ -25,7 +29,14 @@ const BACKEND_URL =
   "http://localhost:8000";
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MULTIPART_ROOM = 64 * 1024;
 const ALLOWED_TYPES = ["application/json", "multipart/form-data", "text/csv"];
+const DOWNLOAD_TYPES = [
+  "text/csv",
+  "application/octet-stream",
+  "application/pdf",
+  "application/zip",
+];
 const NO_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
 function problem(status: number, title: string, detail: string, instance: string) {
@@ -93,7 +104,8 @@ async function proxy(
 
   const init: RequestInit = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD") {
-    const body = await readBody(request, MAX_BODY_BYTES);
+    const multipart = contentType !== null && mediaType(contentType) === "multipart/form-data";
+    const body = await readBody(request, MAX_BODY_BYTES + (multipart ? MULTIPART_ROOM : 0));
     if (body === null) {
       return problem(413, "Content Too Large", "The upload is larger than 4 MB.", instance);
     }
@@ -117,10 +129,18 @@ async function proxy(
     return new Response(null, { status: res.status });
   }
 
-  const out = new Headers();
-  if (type) out.set("Content-Type", type);
-  const disposition = res.headers.get("content-disposition");
-  if (disposition) out.set("Content-Disposition", disposition);
+  if (!DOWNLOAD_TYPES.includes(media)) {
+    await res.body?.cancel();
+    return problem(
+      502,
+      "Bad Gateway",
+      "The server answered with something the portal does not pass on.",
+      instance
+    );
+  }
+
+  const out = new Headers({ "Content-Type": type, "X-Content-Type-Options": "nosniff" });
+  out.set("Content-Disposition", res.headers.get("content-disposition") ?? "attachment");
   return new Response(res.body, { status: res.status, headers: out });
 }
 
