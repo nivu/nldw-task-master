@@ -19,7 +19,8 @@ import { NextRequest, NextResponse } from "next/server";
  * `Set-Cookie` or `Location`. JSON is answered as before; a download (CSV,
  * PDF, zip or bytes) is streamed through with its type and file name, which is
  * what the effort statement's download needed (006 FR-STMT-02), as an
- * attachment with `nosniff`. Any other type (an HTML page) is answered 502:
+ * attachment with `nosniff`. JSON the backend sends as an attachment (the
+ * CRM's JSON export, FR-CRM-IO) is a download too, so it keeps its file name. Any other type (an HTML page) is answered 502:
  * the portal's origin never serves the backend's HTML.
  */
 
@@ -119,7 +120,14 @@ async function proxy(
   if (NO_BODY_STATUSES.has(res.status)) {
     return new Response(null, { status: res.status });
   }
-  if (media === "" || media === "application/json" || media === "application/problem+json") {
+  // JSON sent as an attachment is a file to save, not an answer to re-read.
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const jsonDownload = media === "application/json" && /^\s*attachment\b/i.test(disposition);
+
+  if (
+    !jsonDownload &&
+    (media === "" || media === "application/json" || media === "application/problem+json")
+  ) {
     const data = await res.json().catch(() => null);
     return NextResponse.json(data, { status: res.status });
   }
@@ -129,7 +137,7 @@ async function proxy(
     return new Response(null, { status: res.status });
   }
 
-  if (!DOWNLOAD_TYPES.includes(media)) {
+  if (!jsonDownload && !DOWNLOAD_TYPES.includes(media)) {
     await res.body?.cancel();
     return problem(
       502,
@@ -140,7 +148,7 @@ async function proxy(
   }
 
   const out = new Headers({ "Content-Type": type, "X-Content-Type-Options": "nosniff" });
-  out.set("Content-Disposition", res.headers.get("content-disposition") ?? "attachment");
+  out.set("Content-Disposition", disposition || "attachment");
   return new Response(res.body, { status: res.status, headers: out });
 }
 

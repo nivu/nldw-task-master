@@ -378,3 +378,71 @@ class TestTvaWorkRefused:
         )
         assert r.status_code == 422
         assert r.json()["detail"] == "A CRM-only account has no checklists."
+
+
+class TestTvaRecordsAboutCrmOnlyRefused:
+    """FR-CRM-CHG-02 — an admin or manager writes no absence, sign-off,
+    review or leave decision about a CRM-only account, and cannot open one's
+    timesheet. Each refusal comes before anything is written."""
+
+    @pytest.fixture
+    def tva(self, people, monkeypatch):
+        from app.services import reviews as review_service
+
+        def never(*args, **kwargs):
+            raise AssertionError("a write was reached for a CRM-only account")
+
+        for name in (
+            "insert_booking",
+            "update_booking",
+            "upsert_confirmation",
+            "delete_confirmation",
+            "find_booking_on",
+        ):
+            monkeypatch.setattr(db, name, never)
+        monkeypatch.setattr(review_service, "close", never)
+        bookings = {
+            "b-crm": {"id": "b-crm", "user_id": "u-crm", "status": "pending"},
+        }
+        monkeypatch.setattr(db, "get_booking", lambda bid: dict(bookings[bid]))
+        return people
+
+    def test_flagging_an_absence(self, tva):
+        r = TestClient(app).post(
+            "/api/v1/team/unrecognised", json={"user_id": "u-crm", "date": "2026-10-01"}
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no absences to record."
+
+    def test_confirming_a_week(self, tva):
+        r = TestClient(app).post("/api/v1/team/timesheets/u-crm/2026-10-05/confirm", json={})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no timesheet."
+
+    def test_reopening_a_week(self, tva):
+        r = TestClient(app).delete("/api/v1/team/timesheets/u-crm/2026-10-05/confirm")
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no timesheet."
+
+    def test_closing_a_review(self, tva):
+        r = TestClient(app).post("/api/v1/team/reviews/u-crm/2026-Q3/close")
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no review."
+
+    @pytest.mark.parametrize("approve", [True, False])
+    def test_deciding_their_booking(self, tva, approve):
+        r = TestClient(app).post(
+            "/api/v1/bookings/b-crm/decision", json={"approve": approve, "note": "No"}
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "A CRM-only account has no leave."
+
+    def test_their_timesheet_is_not_found(self, tva, monkeypatch):
+        from app.services import timesheets as timesheet_service
+
+        monkeypatch.setattr(timesheet_service, "week_for", lambda *a, **k: {"days": []})
+        r = TestClient(app).get("/api/v1/timesheet/of/u-crm/week?week_start=2026-10-05")
+        assert r.status_code == 404
+        assert r.json()["detail"] == "No such person."
+        staff = TestClient(app).get("/api/v1/timesheet/of/u-staff/week?week_start=2026-10-05")
+        assert staff.status_code == 200

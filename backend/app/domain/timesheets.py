@@ -521,14 +521,19 @@ _NOT_STAFF = {
     "leave": "A CRM-only account has no leave.",
     "checklist": "A CRM-only account has no checklists.",
     "ctc": "A CRM-only account has no CTC.",
+    "absence": "A CRM-only account has no absences to record.",
+    "timesheet": "A CRM-only account has no timesheet.",
+    "review": "A CRM-only account has no review.",
 }
 
 
 def staff_subject_refusal(person: dict, subject: str) -> str | None:
-    """Spec 007 FR-CRM-CHG-02 — leave balances, checklists and CTC leave
-    CRM-only accounts out, so nothing of the kind is written for one.
+    """Spec 007 FR-CRM-CHG-02 — leave, checklists, CTC, absences, timesheet
+    sign-off and reviews leave CRM-only accounts out, so nothing of the kind
+    is written for one.
 
-    `subject` is "leave", "checklist" or "ctc".
+    `subject` is "leave", "checklist", "ctc", "absence", "timesheet" or
+    "review".
     """
     if person.get("account_type") == "crm_only":
         return _NOT_STAFF[subject]

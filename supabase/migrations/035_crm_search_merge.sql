@@ -58,6 +58,12 @@
 -- 1. crm_search — data-model §5.9
 -- ---------------------------------------------------------------------------
 
+-- Load pg_trgm into this session before any function below declares
+-- `SET pg_trgm.*`: until the library is loaded those are unknown settings,
+-- which only a superuser may attach to a function. A whole `db push` loads
+-- it in 029, but a push resumed on a fresh connection would stop here.
+SELECT extensions.similarity('', '');
+
 CREATE OR REPLACE FUNCTION public.crm_search(
     p_workspace uuid, p_q text, p_limit integer, p_redact boolean
 )

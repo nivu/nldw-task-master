@@ -62,6 +62,11 @@ without acting; `/api/v1/feed/{key}.ics` never resolves a `crm_only` profile
 | `POST /admin/backfill`, `PUT /admin/allowances` (with `user_id`) | A `crm_only` person is refused 422 "A CRM-only account has no leave." | CHG-02 |
 | `POST /admin/users/{id}/ctc` | A `crm_only` person is refused 422 "A CRM-only account has no CTC." | CHG-02 |
 | `POST /admin/checklists` | A `crm_only` person is refused 422 "A CRM-only account has no checklists." | CHG-02 |
+| `POST /bookings/{id}/decision` | A booking whose owner is `crm_only` is refused 422 "A CRM-only account has no leave." | CHG-02 |
+| `POST /team/unrecognised` | A `crm_only` person is refused 422 "A CRM-only account has no absences to record." | CHG-02 |
+| `POST`, `DELETE /team/timesheets/{user_id}/{week_start}/confirm` | A `crm_only` person is refused 422 "A CRM-only account has no timesheet." | CHG-02 |
+| `POST /team/reviews/{user_id}/{quarter}/close` | A `crm_only` person is refused 422 "A CRM-only account has no review." | CHG-02 |
+| `GET /timesheet/of/{user_id}/week` | A `crm_only` person is **404** "No such person." | CHG-02 |
 | `POST /admin/projects`, `PATCH /admin/projects/{id}` | A `crm_only` lead is refused 422 "A CRM-only account cannot lead a project." `PATCH` on a linked project refuses `status` and `probability`, and `is_archived` while tentative: 422 "Managed by CRM deal *name*." (the name only for Labs members, otherwise "Managed by a CRM deal.") | CHG-02, CHG-05 |
 | `GET /admin/projects`, `GET /analytics/projects/{project_id}` | Each project gains `crm_managed: bool`; for Labs members also `crm: {company: {id, name}, opportunity: {id, name, owner_name, won_on}}`. Never an amount. The Labs membership and the linked deals and companies are read once per request, not per project. | TVA-02 |
 | `POST /admin/allocations` | A `crm_only` person is refused 422 "A CRM-only account cannot be allocated." | CHG-02 |
@@ -121,7 +126,7 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | POST | `/crm/tva-admin/workspaces/{id}/invitations` | as §2.2, plus `bypass_allow_list` (existing staff accounts only, FR-CRM-ACC-05) | as §2.2 |
 | PATCH | `/crm/tva-admin/memberships/{membership_id}` | `{role}` | as §2.2 `PATCH /crm/members/{id}`, for any workspace without joining it, the owner's and a TVA admin's membership included (FR-CRM-ACC-09); audited `membership.role_changed`; 422 last admin; 404 unknown membership |
 | DELETE | `/crm/tva-admin/memberships/{membership_id}` | — | as §2.2 |
-| PATCH | `/crm/tva-admin/accounts/{user_id}` | `{account_type}` | the profile summary, through `crm_convert_account` (one transaction under a profile lock). staff → crm_only is refused 422, naming the reason, for the owner ("The owner's account cannot be CRM-only."), or if the person leads anyone, leads a project or holds an unreleased allocation (re-checked inside the lock); on success `role` → `user`, `logs_time` off, `lead_id` cleared and `dashboard_access` off together (audited `user.account_type`) |
+| PATCH | `/crm/tva-admin/accounts/{user_id}` | `{account_type}` | the profile summary, through `crm_convert_account` (one transaction under a profile lock). staff → crm_only is refused 422, naming the reason, for the owner ("The owner's account cannot be CRM-only."), or if the person leads anyone, leads a project or holds an unreleased allocation (re-checked inside the lock), or has leave or a comp-off claim waiting for a decision ("This person has leave waiting for a decision; decide or withdraw it first." / "This person has a comp-off claim waiting for a decision; decide it first.", answered by the route first and re-checked by the function, 045); on success `role` → `user`, `logs_time` off, `lead_id` cleared and `dashboard_access` off together (audited `user.account_type`) |
 | GET | `/crm/tva-admin/jobs` (1b) | — | run metadata for every workspace, and the cross-workspace digest rows; `error_public` only (FR-CRM-JOB-01) |
 
 ### 2.5 Records — S3, S4 (FR-CRM-CO, -PER, -OPP, -TASK, -NOTE, -LINK, -DEL)

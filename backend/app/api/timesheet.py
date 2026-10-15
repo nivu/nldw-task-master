@@ -15,6 +15,7 @@ from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentUserDep, LeadDep, ManagerDep
 from app.api.errors import ProblemDetail
+from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person, can_view_timesheet
 from app.domain.calendar import today_in_company_tz
 from app.schemas import TimesheetDay
@@ -85,6 +86,9 @@ def someone_elses_week(user_id: str, user: CurrentUserDep, week_start: date | No
     if not can_view_timesheet(user, subject):
         # 404 rather than 403: confirming that a colleague's timesheet exists
         # already says something about them.
+        raise ProblemDetail(404, "No such person.")
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no timesheet to show.
+    if timesheet_rules.staff_subject_refusal(subject_row, "timesheet"):
         raise ProblemDetail(404, "No such person.")
 
     return {

@@ -755,6 +755,10 @@ class TestTodaySearchMergeTools:
     def test_the_merge_description_says_the_trash(self):
         assert "the merged company goes to Trash" in _tools()["crm_merge"].description
 
+    def test_the_add_task_description_names_every_link_type(self):
+        """A task may link to a campaign (1b), so the format says so."""
+        assert "company|person|opportunity|campaign" in _tools()["crm_add_task"].description
+
     def test_a_viewer_gets_no_amounts_through_search_and_today(self, crm_store):
         """Contracts §3.1 `test_viewer_gets_no_amounts_through_tools`, for the
         S7 tools."""

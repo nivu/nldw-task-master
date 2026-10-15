@@ -36,6 +36,9 @@ from app.services.crm import jobs, members, store
 router = APIRouter(prefix="/crm/tva-admin", tags=["crm"])
 
 NO_SUCH_WORKSPACE = "No such workspace."
+#: The sentences `crm_convert_account` (045) also raises.
+PENDING_LEAVE = "This person has leave waiting for a decision; decide or withdraw it first."
+PENDING_COMPOFF = "This person has a comp-off claim waiting for a decision; decide it first."
 
 
 def _actor(admin: CurrentUser, workspace_id: str | None, channel: str = "web") -> dict[str, Any]:
@@ -154,13 +157,23 @@ def remove_membership(membership_id: str, admin: AdminDep) -> dict:
 @router.patch("/accounts/{user_id}")
 def change_account_type(user_id: str, payload: AccountTypeUpdate, admin: AdminDep) -> dict:
     """Staff ↔ CRM-only, in one transaction under the profile lock. The
-    refusals (the owner, someone who leads, leads a project or holds an
-    unreleased allocation) come from `crm_convert_account`, re-checked inside
-    that lock."""
-    if db.get_profile(user_id) is None:
+    refusals (the owner, someone who leads, leads a project, holds an
+    unreleased allocation, or has leave or a comp-off claim waiting for a
+    decision) come from `crm_convert_account`, re-checked inside that lock;
+    the waiting ones are also answered here first."""
+    person = db.get_profile(user_id)
+    if person is None:
         raise ProblemDetail(404, "No such user.")
     if user_id == admin.id and payload.account_type == "crm_only":
         raise ProblemDetail(422, "You cannot make your own account CRM-only.")
+    if payload.account_type == "crm_only" and person.get("account_type") != "crm_only":
+        # A CRM-only account drops out of every approval queue, so what is
+        # waiting would never be decided.
+        waiting = db.has_pending_decisions(user_id)
+        if waiting["leave"]:
+            raise ProblemDetail(422, PENDING_LEAVE)
+        if waiting["compoff"]:
+            raise ProblemDetail(422, PENDING_COMPOFF)
     done = store.convert_account(_actor(admin, None), user_id, payload.account_type)
     profile = db.get_profile(user_id) or {}
     return {

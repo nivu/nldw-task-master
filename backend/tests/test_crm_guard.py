@@ -79,6 +79,20 @@ class TestReadsDefaultToLastUsed:
         listed = http.get("/api/v1/crm/workspaces", headers=as_(MEMBER["id"])).json()
         assert {w["key"]: w["last_used"] for w in listed} == {"labs": True, "academy": False}
 
+    def test_a_viewer_and_a_crm_only_seller_may_record_it(self, crm):
+        """The CRM shell records the workspace on every load, whatever the
+        role, so recording it must never refuse a Viewer or a CRM-only seller."""
+        http, fake, labs, _ = crm
+        for who in (VIEWER, SELLER):
+            r = http.post("/api/v1/crm/workspaces/labs/use", headers=as_(who["id"]))
+            assert r.status_code == 200, r.text
+            mine = next(
+                m
+                for m in fake.rows["crm_memberships"].values()
+                if m["user_id"] == who["id"] and m["workspace_id"] == labs["id"]
+            )
+            assert mine["last_used_at"]
+
     def test_use_writes_no_audit_row(self, crm):
         """data-model §3.2: switching workspace is not a change to audit."""
         http, fake, *_ = crm

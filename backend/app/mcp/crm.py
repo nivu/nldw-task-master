@@ -169,9 +169,10 @@ async def crm_add_task(
 ) -> dict:
     """WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST. Adds a task linked to at
     least one company, person, deal or campaign. A deal's follow-up is its
-    next step, not a task. links are [{record_type: company|person|
-    opportunity, record_id}]; the assignee defaults to you and must be a
-    member; category is a task category's name; due_on is YYYY-MM-DD."""
+    next step, not a task. links are [{record_type:
+    company|person|opportunity|campaign, record_id}]; the assignee defaults
+    to you and must be a member; category is a task category's name; due_on
+    is YYYY-MM-DD."""
     fields: dict[str, Any] = {"title": title, "links": links}
     for name, value in (
         ("assignee_id", assignee_id),

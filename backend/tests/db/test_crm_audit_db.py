@@ -806,6 +806,36 @@ class TestConvertAccount:
         assert refused == ["This person is allocated to a project; remove the allocation first."]
         assert _profile(stack, staff)["account_type"] == "staff"
 
+    @pytest.mark.parametrize(
+        ("insert", "message"),
+        [
+            (
+                "INSERT INTO bookings (user_id, date, category, duration, status) "
+                "VALUES ({user}, '2026-10-20', 'wfh', 1.0, 'pending')",
+                "This person has leave waiting for a decision; decide or withdraw it first.",
+            ),
+            (
+                "INSERT INTO compoff_credits (user_id, worked_on, days, status) "
+                "VALUES ({user}, '2026-10-04', 1.0, 'pending')",
+                "This person has a comp-off claim waiting for a decision; decide it first.",
+            ),
+        ],
+    )
+    def test_refuses_while_a_decision_is_waiting(self, stack, person, insert, message):
+        """045 — a CRM-only account leaves the approval queues, so what is
+        pending would never be decided. Once decided, the change goes through."""
+        tva_admin = person(role="admin")
+        staff = person()
+        stack.sql(insert.format(user=stack.q(staff)))
+        refused = _refused(stack, self._convert(stack, tva_admin, staff), "CRM22")
+        assert refused == message
+        assert _profile(stack, staff)["account_type"] == "staff"
+        table = "bookings" if insert.startswith("INSERT INTO bookings") else "compoff_credits"
+        decided = "'withdrawn'" if table == "bookings" else "'lapsed'"
+        stack.sql(f"UPDATE {table} SET status = {decided} WHERE user_id = {stack.q(staff)}")
+        stack.sql(self._convert(stack, tva_admin, staff))
+        assert _profile(stack, staff)["account_type"] == "crm_only"
+
     def test_back_to_staff(self, stack, person, make_profile):
         seller = make_profile(keep=True, account_type="crm_only", role="user", logs_time=False)
         stack.sql(self._convert(stack, person(role="admin"), seller, "staff"))

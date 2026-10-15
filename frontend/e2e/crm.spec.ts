@@ -663,6 +663,33 @@ test.describe("the importer and the proxy (S8)", () => {
     expect(await html.res.text()).not.toContain("<script>");
   });
 
+  test("a JSON export keeps its file name; plain JSON is still re-read", async () => {
+    const body = '{"companies":[]}';
+    const exported = await viaProxy(
+      new Response(body, {
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Disposition": 'attachment; filename="companies.json"',
+          "Set-Cookie": "s=1",
+        },
+      })
+    );
+    expect(exported.res.status).toBe(200);
+    expect(exported.res.headers.get("content-type")).toBe("application/json");
+    expect(exported.res.headers.get("content-disposition")).toBe(
+      'attachment; filename="companies.json"'
+    );
+    expect(exported.res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(exported.res.headers.get("set-cookie")).toBeNull();
+    expect(await exported.res.text()).toBe(body);
+
+    const inline = await viaProxy(
+      Response.json({ ok: true }, { headers: { "Content-Disposition": "inline" } })
+    );
+    expect(inline.res.headers.get("content-disposition")).toBeNull();
+    expect(await inline.res.json()).toEqual({ ok: true });
+  });
+
   test("a multipart upload gets the backend's 64 KB of envelope room; JSON does not", async () => {
     const limit = 4 * MB + 64 * 1024;
     const post = (size: number, contentType: string) =>

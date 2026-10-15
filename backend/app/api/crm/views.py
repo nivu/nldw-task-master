@@ -12,28 +12,13 @@ held to its own rules.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter
 
 from app.api.crm.deps import CrmQueryDep, CrmReadDep, CrmWriteDep
-from app.schemas.crm import BulkIn, FavouriteIn, QueryIn, ViewIn, ViewUpdate
+from app.schemas.crm import BulkIn, FavouriteIn, QueryIn, ViewIn, ViewObject, ViewUpdate
 from app.services.crm import views as service
 
 router = APIRouter(prefix="/crm", tags=["crm"])
-
-ViewObject = Literal[
-    "company",
-    "person",
-    "opportunity",
-    "task",
-    "note",
-    "companies",
-    "people",
-    "opportunities",
-    "tasks",
-    "notes",
-]
 
 
 @router.post("/query")

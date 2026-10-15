@@ -158,6 +158,19 @@ class TestSeededViews:
             "campaign_member": "members_by_status",
         }
 
+    @pytest.mark.parametrize(
+        "obj", ["campaign", "campaigns", "campaign_member", "campaign_members"]
+    )
+    def test_campaign_lists_can_ask_for_their_views(self, crm, obj):
+        """The Campaigns list page asks `GET /crm/views?object=campaign`;
+        the route takes every object the schemas know, not a shorter list."""
+        http, *_ = crm
+        views = _views(http, obj=obj)
+        kind = "campaign_member" if obj.startswith("campaign_member") else "campaign"
+        assert {v["object"] for v in views} <= {kind}
+        if kind == "campaign_member":
+            assert [v["system_key"] for v in views] == ["members_by_status"]
+
     def test_company_views_return_the_right_rows(self, crm):
         http, fake, _, academy = crm
         channel = fake.option(academy, "Referral")["id"]

@@ -14,7 +14,7 @@ from crm_fake import MEMBER, OUTSIDER, OWNER, SELLER, VIEWER, FakeCrmStore, as_,
 from crm_fake import client as crm_client
 
 from app.services import notify
-from app.services.crm import members
+from app.services.crm import members, store
 
 TVA = "/api/v1/crm/tva-admin"
 
@@ -245,6 +245,50 @@ class TestAccountType:
             422,
             "This person is allocated to a project; remove the allocation first.",
         )
+
+    LEAVE = "This person has leave waiting for a decision; decide or withdraw it first."
+    COMPOFF = "This person has a comp-off claim waiting for a decision; decide it first."
+
+    @pytest.mark.parametrize(
+        ("table", "detail"), [("bookings", LEAVE), ("compoff_credits", COMPOFF)]
+    )
+    def test_someone_with_a_decision_waiting_is_refused(self, crm, monkeypatch, table, detail):
+        """A CRM-only account leaves every approval queue, so a pending
+        booking or claim would never be decided. Python answers before the
+        function is called (which re-checks under the lock, 045)."""
+        http, fake, *_ = crm
+        fake.add(table, user_id=MEMBER["id"], status="pending")
+
+        def never(*args, **kwargs):
+            raise AssertionError("crm_convert_account was called")
+
+        monkeypatch.setattr(store, "convert_account", never)
+        r = self._convert(http, MEMBER["id"])
+        assert (r.status_code, r.json()["detail"]) == (422, detail)
+        assert fake.profiles[MEMBER["id"]]["account_type"] == "staff"
+
+    @pytest.mark.parametrize(
+        ("table", "detail"), [("bookings", LEAVE), ("compoff_credits", COMPOFF)]
+    )
+    def test_the_function_refuses_it_too(self, crm, table, detail):
+        """The fake mirrors 045's check, for a claim made after Python looked."""
+        _, fake, *_ = crm
+        fake.add(table, user_id=MEMBER["id"], status="pending")
+        with pytest.raises(Exception, match=detail.split(";")[0]):
+            fake.convert_account({"user_id": OUTSIDER["id"]}, MEMBER["id"], "crm_only")
+
+    @pytest.mark.parametrize("status", ["approved", "rejected", "withdrawn"])
+    def test_decided_leave_does_not_block_it(self, crm, status):
+        http, fake, *_ = crm
+        fake.add("bookings", user_id=MEMBER["id"], status=status)
+        fake.add("compoff_credits", user_id=MEMBER["id"], status="used")
+        fake.add("bookings", user_id=VIEWER["id"], status="pending")
+        assert self._convert(http, MEMBER["id"]).status_code == 200
+
+    def test_back_to_staff_is_not_held_by_anything_waiting(self, crm):
+        http, fake, *_ = crm
+        fake.add("bookings", user_id=SELLER["id"], status="pending")
+        assert self._convert(http, SELLER["id"], "staff").status_code == 200
 
     def test_crm_only_back_to_staff(self, crm):
         http, *_ = crm

@@ -220,6 +220,8 @@ def close_review(user_id: str, quarter: str, user: LeadDep) -> dict:
         user, Person(**{k: subject[k] for k in ("id", "role", "lead_id", "is_active")})
     ):
         raise ProblemDetail(403, "Only this person's lead or an admin can close their review.")
+    if refusal := timesheet_rules.staff_subject_refusal(subject, "review"):
+        raise ProblemDetail(422, refusal)
     review_service.close(user_id=user_id, quarter=quarter, actor_id=user.id)
     return {"user_id": user_id, "quarter": quarter, "status": "closed"}
 

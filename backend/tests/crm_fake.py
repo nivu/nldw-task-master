@@ -132,6 +132,10 @@ TABLES = (
     "project_milestones",
     "allocations",
     "time_entries",
+    # What a conversion to CRM-only waits on (045): leave and comp-off
+    # claims still pending a decision.
+    "bookings",
+    "compoff_credits",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -144,6 +148,7 @@ TVA_READS = (
     "list_project_phases",
     "list_project_milestones",
     "project_has_time_entries",
+    "has_pending_decisions",
 )
 #: The soft-deletable record tables (data-model §2).
 RECORDS = (
@@ -621,6 +626,15 @@ class FakeCrmStore:
 
     # -- TVA reads (services/supabase.py, S5) --------------------------------
 
+    def has_pending_decisions(self, user_id: str) -> dict[str, bool]:
+        def pending(table: str) -> bool:
+            return any(
+                r.get("user_id") == user_id and r.get("status") == "pending"
+                for r in self.rows[table].values()
+            )
+
+        return {"leave": pending("bookings"), "compoff": pending("compoff_credits")}
+
     def get_project_by_source_opportunity(self, opportunity_id: str) -> dict[str, Any] | None:
         return next(
             (
@@ -918,6 +932,17 @@ class FakeCrmStore:
                 raise store.refusal_for(
                     "CRM22",
                     "This person is allocated to a project; remove the allocation first.",
+                )
+            waiting = self.has_pending_decisions(user_id)
+            if waiting["leave"]:
+                raise store.refusal_for(
+                    "CRM22",
+                    "This person has leave waiting for a decision; decide or withdraw it first.",
+                )
+            if waiting["compoff"]:
+                raise store.refusal_for(
+                    "CRM22",
+                    "This person has a comp-off claim waiting for a decision; decide it first.",
                 )
             before = {k: person.get(k) for k in ("account_type", "role", "dashboard_access")}
             person.update(

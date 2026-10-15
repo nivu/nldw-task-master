@@ -67,6 +67,12 @@
 -- 1. The campaign lists — data-model §3.4.1
 -- ---------------------------------------------------------------------------
 
+-- Load pg_trgm into this session before any function below declares
+-- `SET pg_trgm.*`: until the library is loaded those are unknown settings,
+-- which only a superuser may attach to a function. A whole `db push` loads
+-- it in 029, but a push resumed on a fresh connection would stop here.
+SELECT extensions.similarity('', '');
+
 ALTER TABLE crm_select_options DROP CONSTRAINT IF EXISTS crm_select_options_list_key_check;
 ALTER TABLE crm_select_options ADD CONSTRAINT crm_select_options_list_key_check
     CHECK (list_key IN (

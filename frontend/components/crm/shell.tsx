@@ -30,7 +30,7 @@ import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { listCrmFavourites, listCrmViews } from "@/lib/api/crm";
+import { listCrmFavourites, listCrmViews, selectCrmWorkspace } from "@/lib/api/crm";
 import type { CrmBootstrap, CrmFavourite, CrmSavedView, CrmWorkspace } from "@/lib/api/crm-types";
 import { OBJECT_PATH } from "@/lib/crm/view-fields";
 import { createClient } from "@/lib/supabase/client";
@@ -116,6 +116,14 @@ export function CrmShell({
   const pinned = favourites
     .map((fav) => ({ fav, href: favouriteHref(ws, fav, pins.data?.[1] ?? []) }))
     .filter((p): p is { fav: CrmFavourite; href: string } => p.href !== null);
+
+  // FR-CRM-WS-04, D13: opening a workspace makes it the last used, not only
+  // choosing it in the switcher, so an MCP read that names no workspace
+  // follows the one the person actually works in. Any role may record it;
+  // remembering is a convenience, so a failure is ignored.
+  useEffect(() => {
+    selectCrmWorkspace(ws).catch(() => {});
+  }, [ws]);
 
   // A per-browser convenience; storage can be unavailable (private windows).
   useEffect(() => {

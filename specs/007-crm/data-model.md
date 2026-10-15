@@ -1121,13 +1121,14 @@ the row's `workspace_id`; for an option array, every element must be a
 `crm_select_options` row of the same workspace. Else `CRM04` "No such
 *record* in this workspace." Each creating migration attaches it.
 
-### 5.15 `crm_convert_account(p_actor jsonb, p_user_id uuid, p_to text) RETURNS jsonb` — FR-CRM-ACC-14, FR-CRM-CHG-02 (027)
+### 5.15 `crm_convert_account(p_actor jsonb, p_user_id uuid, p_to text) RETURNS jsonb` — FR-CRM-ACC-14, FR-CRM-CHG-02 (027, 045)
 
 `SELECT … FOR UPDATE` the profile. Staff → `crm_only`: refuse `CRM22` for an
 `is_owner` profile ("The owner's account cannot be CRM-only."); re-check
 inside the lock that nobody has this person as `lead_id`, no project has them
-as `lead_id`, and they hold no unreleased allocation, naming the first reason
-found; then set `account_type = 'crm_only'`, `role = 'user'`, `lead_id =
+as `lead_id`, and they hold no unreleased allocation, nor (045) a booking or
+comp-off claim still `pending` (a CRM-only account leaves every approval
+queue), naming the first reason found; then set `account_type = 'crm_only'`, `role = 'user'`, `lead_id =
 NULL`, `logs_time = false`, `dashboard_access = false` in one statement, so
 `profiles_crm_only_shape` never fails as a raw 23514. `crm_only` → staff:
 set `account_type = 'staff'` only. Writes the TVA audit row

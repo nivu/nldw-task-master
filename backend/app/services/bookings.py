@@ -227,6 +227,9 @@ def decide(
         raise BookingRefused(
             "You can only approve or reject bookings for your own reports.", status=403
         )
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no leave to decide.
+    if refusal := timesheet_rules.staff_subject_refusal(subject_row, "leave"):
+        raise BookingRefused(refusal)
 
     target = "approved" if approve else "rejected"
     refusal = rules.check_transition(booking["status"], target)
@@ -283,6 +286,9 @@ def flag_unrecognised(
     )
     if not can_decide(actor, subject):
         raise BookingRefused("You can only flag absences for your own reports.", status=403)
+    # Spec 007 FR-CRM-CHG-02 — nothing of TVA's is written about a CRM-only account.
+    if refusal := timesheet_rules.staff_subject_refusal(subject_row, "absence"):
+        raise BookingRefused(refusal)
 
     today = today_in_company_tz()
     if day >= today:

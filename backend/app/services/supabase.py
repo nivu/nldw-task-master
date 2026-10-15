@@ -802,6 +802,17 @@ def update_compoff_credit(credit_id: str, data: dict[str, Any]) -> dict[str, Any
     return supabase.table("compoff_credits").update(data).eq("id", credit_id).execute().data[0]
 
 
+def has_pending_decisions(user_id: str) -> dict[str, bool]:
+    """Spec 007 FR-CRM-CHG-02 — whether leave or a comp-off claim of this
+    person's is waiting for a decision, before they are made CRM-only."""
+
+    def pending(table: str) -> bool:
+        query = supabase.table(table).select("id").eq("user_id", user_id).eq("status", "pending")
+        return bool(query.limit(1).execute().data)
+
+    return {"leave": pending("bookings"), "compoff": pending("compoff_credits")}
+
+
 def list_confirmations(
     *, user_ids: list[str] | None = None, week_start: date | None = None
 ) -> list[dict[str, Any]]:
