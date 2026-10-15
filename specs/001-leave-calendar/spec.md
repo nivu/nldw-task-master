@@ -150,9 +150,9 @@ Keywords follow RFC 2119: MUST, MUST NOT, SHOULD, MAY.
 
 | ID | Requirement |
 |---|---|
-| FR-AUTH-01 | The system MUST require authentication for every page except the sign-in page. |
-| FR-AUTH-02 | The system MUST NOT offer self-registration. Accounts are created by an admin only. |
-| FR-AUTH-03 | An admin MUST be able to create a user with an email address, a display name, a role and an assigned lead. *(Amended 2026-09-05: no initial password — see FR-AUTH-08.)* |
+| FR-AUTH-01 | The system MUST require authentication for every page except the sign-in page. *Amended 14 October 2026 by `007`: a signed-in person need not be an employee: a CRM-only account signs in and is refused everything outside the CRM and the shared allow-list (`007` FR-CRM-CHG-01).* |
+| FR-AUTH-02 | The system MUST NOT offer self-registration. Accounts are created by an admin only. *Amended 14 October 2026 by `007`: workspace admins also create CRM-only accounts, by invitation into their own workspace (`007` FR-CRM-CHG-14).* |
+| FR-AUTH-03 | An admin MUST be able to create a user with an email address, a display name, a role and an assigned lead. *(Amended 2026-09-05: no initial password — see FR-AUTH-08.)* *Amended 14 October 2026 by `007`: staff accounts are still created by admins only; CRM-only accounts are created by invitation (`007` FR-CRM-CHG-14).* |
 | FR-AUTH-04 | The system MUST enforce role-based access: a user MUST NOT be able to read another user's bookings, reasons or balances. |
 | ~~FR-AUTH-05~~ | ~~A user MUST be able to change their own password.~~ **Withdrawn 2026-09-05.** There are no passwords to change; identity is delegated to Google (FR-AUTH-08). Account recovery is a Google concern, which is where it belongs. |
 | FR-AUTH-06 | An admin MUST be able to deactivate a user without deleting their historical records. |
@@ -475,7 +475,7 @@ configuration rather than a migration. Seeded with the defaults in §11.
 |---|---|
 | NFR-01 | The calendar MUST be usable on a phone. Leave is often marked from bed or in transit. |
 | NFR-02 | Booking a leave MUST take no more than three interactions from the calendar: pick day, pick category and duration, confirm. |
-| NFR-03 | All dates MUST be handled in Asia/Kolkata. Calendar dates MUST NOT be stored as UTC timestamps — that shifts days across midnight. |
+| NFR-03 | All dates MUST be handled in Asia/Kolkata. Calendar dates MUST NOT be stored as UTC timestamps — that shifts days across midnight. *Amended 14 October 2026 by `007`: except CRM display and CRM digests, which use the person's own time zone; every TVA rule, lock and calendar date is unchanged (`007` FR-CRM-CHG-12).* |
 | NFR-04 | The lock check (§6.3) MUST be enforced server-side. |
 | NFR-05 | Reasons, particularly for sick leave, are personal data. Access MUST be limited to the person, their lead, and admins. |
 | NFR-06 | The audit log MUST be append-only and MUST NOT be editable from the application. |

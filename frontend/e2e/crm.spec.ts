@@ -50,8 +50,13 @@ test.describe("a staff member", () => {
     await expect(link).toBeVisible();
     await link.click();
     await page.waitForURL("**/crm/labs");
+    // On a phone the rest of the sidebar sits behind More.
+    if ((page.viewportSize()?.width ?? 1280) < 768) {
+      await page.getByRole("button", { name: "More", exact: true }).click();
+    }
     await expect(page.getByRole("link", { name: /Back to TVA/i }).first()).toBeVisible();
-    await expect(page.locator('a[href="/help"]').first()).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator('a[href="/help"]:visible').first()).toBeVisible();
   });
 
   test("without one sees no CRM link", async ({ page }) => {
@@ -795,7 +800,7 @@ test.describe("dashboard and export (S11b)", () => {
     await page.goto("/crm/academy/companies");
     await page.getByRole("searchbox").fill(tag);
     await expect(page.getByRole("link", { name: `${tag} College` })).toBeVisible();
-    await page.getByRole("button", { name: "Export" }).click();
+    await page.getByRole("button", { name: "Export", exact: true }).click();
     const [download] = await Promise.all([
       page.waitForEvent("download"),
       page.getByTestId("export-view-csv").click(),
@@ -815,5 +820,162 @@ test.describe("dashboard and export (S11b)", () => {
     await expect(page.getByTestId("panel-pipeline")).toBeVisible();
     await expect(page.getByTestId("panel-bookings")).toBeVisible();
     await expect(page.getByTestId("panel-activity")).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hardening — spec 007 FR-CRM-UI-06 (phone width) and NFR-CRM-06 (keyboard
+// usable, visible focus); tasks S12. Each page is checked for the one thing
+// that breaks a phone: the page itself scrolling sideways (a board may
+// scroll inside its own lane strip).
+// ---------------------------------------------------------------------------
+
+async function pageFitsTheScreen(page: Page) {
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+  );
+  expect(overflow, `${page.url()} scrolls sideways by ${overflow}px`).toBeLessThanOrEqual(1);
+}
+
+/** Tab until the element matching `selector` has the focus, as a person would. */
+async function tabTo(page: Page, selector: string, most = 80) {
+  for (let i = 0; i < most; i++) {
+    await page.keyboard.press("Tab");
+    if (await page.evaluate((s) => document.activeElement?.matches(s) ?? false, selector)) return;
+  }
+  throw new Error(`Tab never reached ${selector}`);
+}
+
+/** The focused element shows it: an outline or a ring (box-shadow). */
+async function focusIsVisible(page: Page) {
+  const style = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el) return null;
+    const css = getComputedStyle(el);
+    return { outline: css.outlineStyle !== "none" && css.outlineWidth !== "0px", ring: css.boxShadow !== "none" };
+  });
+  expect(style, "nothing has the focus").not.toBeNull();
+  expect(style!.outline || style!.ring, "the focused element shows no focus").toBe(true);
+}
+
+test.describe("the CRM guides (S12)", () => {
+  for (const [slug, heading] of [
+    ["crm", "The sales CRM"],
+    ["crm-admin", "Running a CRM workspace"],
+  ]) {
+    test(`/help/${slug} renders without signing in, and names nobody`, async ({ page }) => {
+      await page.goto(`/help/${slug}`);
+      await expect(page.getByRole("heading", { name: heading, level: 1 })).toBeVisible();
+      // Public, so it describes screens and never data: no seeded name here.
+      await expect(page.locator("body")).not.toContainText(/Deepika|Devansh|Sriram|Vinita|Tarun|Tamil|Ganesh/);
+    });
+  }
+});
+
+test.describe("phone width and keyboard (S12)", () => {
+  test("Today, a list, a record and the kanban fit a phone's screen (FR-CRM-UI-06)", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E phone ${Date.now().toString(36)}`;
+    const company = await crmApi(request, token, "POST", "/companies?workspace=labs", {
+      name: `${tag} a company with a rather long name that has to wrap on a phone`,
+    });
+    await page.setViewportSize({ width: 360, height: 740 });
+    await signIn(page, PEOPLE.user);
+
+    await page.goto("/crm/labs");
+    await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+    await pageFitsTheScreen(page);
+
+    await page.goto("/crm/labs/companies");
+    await expect(page.getByTestId("table-count")).toBeVisible();
+    await pageFitsTheScreen(page);
+
+    await page.goto(`/crm/labs/companies/${company.id}`);
+    await expect(page.getByRole("heading", { name: new RegExp(tag) })).toBeVisible();
+    await pageFitsTheScreen(page);
+
+    await page.goto("/crm/labs/pipeline");
+    await expect(page.getByTestId("crm-kanban")).toBeVisible();
+    await pageFitsTheScreen(page);
+  });
+
+  test("the command menu works by keyboard alone (NFR-CRM-06)", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E keys ${Date.now().toString(36)}`;
+    const company = await crmApi(request, token, "POST", "/companies?workspace=labs", { name: `${tag} Co` });
+
+    await signIn(page, PEOPLE.user);
+    await page.goto("/crm/labs");
+    await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    const box = page.getByRole("combobox", { name: "Search the CRM" });
+    await expect(box).toBeFocused();
+    await page.keyboard.type(tag);
+    const value = `companies-${company.id}`;
+    const hit = page.locator(`[role="option"][data-value="${value}"]`);
+    await expect(hit).toBeVisible();
+    // Arrow keys to the hit, wherever the selection starts, then Enter opens it.
+    for (let i = 0; i < 30 && (await hit.getAttribute("aria-selected")) !== "true"; i++) {
+      const [selected, target] = await page.getByRole("option").evaluateAll(
+        (els, v) => [
+          els.findIndex((e) => e.getAttribute("aria-selected") === "true"),
+          els.findIndex((e) => e.getAttribute("data-value") === v),
+        ],
+        value
+      );
+      await page.keyboard.press(selected > target ? "ArrowUp" : "ArrowDown");
+    }
+    await expect(hit).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(`**/crm/labs/companies/${company.id}`);
+
+    // Escape closes it, and the focus is shown wherever it lands.
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(box).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(box).toHaveCount(0);
+    await page.keyboard.press("Tab");
+    await focusIsVisible(page);
+  });
+
+  test("a kanban card moves by keyboard alone, and Escape puts it back (NFR-CRM-06)", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E keyboard ${Date.now().toString(36)}`;
+    const fresh = await crmApi(request, token, "POST", "/companies?workspace=labs", { name: `${tag} New` });
+
+    await signIn(page, PEOPLE.user);
+    await page.goto("/crm/labs/companies");
+    await page.getByRole("tab", { name: "Lead funnel" }).click();
+    await page.getByLabel("Search companies").fill(tag);
+    await expect(page.getByText("1 record", { exact: true })).toBeVisible();
+    const live = page.locator('[role="status"][aria-live="assertive"]');
+
+    // Tab reaches the card, and shows it has the focus.
+    await tabTo(page, `[data-card-id="${fresh.id}"]`);
+    await focusIsVisible(page);
+
+    // Space picks it up, an arrow chooses a column, Escape cancels.
+    await page.keyboard.press("Space");
+    await expect(live).toContainText(/Picked up|is over/);
+    await expect(async () => {
+      await page.keyboard.press("ArrowRight");
+      await expect(live).toContainText("is over Contacted", { timeout: 1000 });
+    }).toPass();
+    await page.keyboard.press("Escape");
+    await expect(live).toContainText("cancelled");
+    await expect(column(page, "new").locator(card(page, fresh.id))).toBeVisible();
+
+    // Space, an arrow and Space again move it, and the server keeps it.
+    await tabTo(page, `[data-card-id="${fresh.id}"]`);
+    await page.keyboard.press("Space");
+    await expect(async () => {
+      await page.keyboard.press("ArrowRight");
+      await expect(live).toContainText("is over Contacted", { timeout: 1000 });
+    }).toPass();
+    await page.keyboard.press("Space");
+    await expect(column(page, "contacted").locator(card(page, fresh.id))).toBeVisible();
+    await expect
+      .poll(async () => (await crmApi(request, token, "GET", `/companies/${fresh.id}?workspace=labs`)).record.lead_stage)
+      .toBe("contacted");
   });
 });

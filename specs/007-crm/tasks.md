@@ -1003,6 +1003,16 @@ the amendments of FR-CRM-CHG-01 to -17; D16 (not code: noted in docs only).
 1 s (NFR-CRM-01; **AC** "Table and kanban views with saved filters load in
 under 1 second for 10,000 companies").
 
+**As built.** The 10k check found no missed index, so there is no
+`044_crm_performance_indexes.sql`; the security sweep found that
+`crm_notifications.record_id` was the one polymorphic reference without
+`crm_check_refs()`, so `044_crm_notification_refs.sql` adds it (data-model
+§3.19) and `tests/crm_fake.py` keeps the same rule. The guides render at
+`/help/crm` and `/help/crm-admin` (`scripts/build-guides.mjs` drops the
+number from the slug). Beyond the lists above: `tests/test_mcp.py` pins the
+coverage test to `004`'s amended FR-MCP-01, and `docs/guides/05-for-managers.md`
+lost a seeded name the public help test forbids.
+
 **Done when.**
 - [ ] All gates
 - [ ] `test_crm_acceptance.py` has one passing test per §11 line, and none is skipped (email ones run against the fake Gmail when no credential exists, and the commit says so)

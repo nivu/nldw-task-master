@@ -35,7 +35,7 @@ of them at once.
 
 ### 2.1 Goals
 
-- **G-1** — Anyone can connect Claude to the portal and use it as themselves, with exactly the access they have in the web app.
+- **G-1** — Anyone can connect Claude to the portal and use it as themselves, with exactly the access they have in the web app. *Amended 14 October 2026 by `007`: a signed-in person need not be an employee; a CRM-only account is refused every non-CRM tool (`007` FR-CRM-CHG-01, -07).*
 - **G-2** — Every operation the web app can perform is available as a tool.
 - **G-3** — A person can see, name and revoke the tokens they have issued.
 - **G-4** — Nothing reaches Claude through MCP that the web app would not show the same person. (Until 5 October 2026 this read "— and one thing less": leave reasons; see Q-03.)
@@ -87,7 +87,7 @@ Claude ── MCP over HTTP ──▶ backend /mcp ──▶ the same API routes
 
 | ID | Requirement |
 |---|---|
-| FR-MCP-01 | Every API operation a person can perform in the web app MUST have a tool. |
+| FR-MCP-01 | Every API operation a person can perform in the web app MUST have a tool. *Amended 14 October 2026 by `007`: …except CRM routes, which are covered by the `crm_*` tools of `007` FR-CRM-MCP-01 (FR-CRM-CHG-07).* |
 | FR-MCP-02 | A tool MUST act as the token's owner and MUST be refused where the route would refuse that person. |
 | FR-MCP-03 | **A leave reason MUST be returned by a tool exactly where the portal shows it, and to nobody the portal would not show it to** — the person, their lead (`lead_id`) and admins (`001` NFR-05). A manager or lead who is not the person's lead MUST NOT receive it. The person reads their own reason on any of their bookings; their lead and admins read it only on a request still pending a decision, as on the portal's approval screen (`001` Q-06), whether through `pending_approvals` or `get_booking`. The team-day roster stays category only (`001` FR-LEAD, Q-06), even when `lead_view_shows_reason` is on, because the portal's Team page never shows a reason. The MCP layer does not redact; the routes enforce NFR-05, and route-level tests (`test_api_permissions.py`, `TestLeaveReasons`) hold them to it. *Amended 5 October 2026 — see Q-03.* `pending_approvals` returns the whole queue in one answer, `{"leave": [...], "compoff": [...]}`: the leave requests from `/team/approvals` and only the still-pending claims from `/compoff/team`, as the portal's Approvals page shows them together. *Amended 10 October 2026.* |
 | FR-MCP-04 | Every tool that changes something MUST be marked as such in its metadata and MUST instruct the model to confirm with the person before calling it. |

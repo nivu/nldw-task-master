@@ -2551,6 +2551,13 @@ class FakeCrmStore:
             )
             if not member or seen:
                 continue
+            # 044: the record it opens is held to its workspace, as a link's.
+            if r.get("record_id") and r.get("record_type"):
+                found = self.rows[TARGETS[r["record_type"]]].get(r["record_id"])
+                if not found or found["workspace_id"] != r["workspace_id"]:
+                    raise store.refusal_for(
+                        "CRM04", f"No such {r['record_type']} in this workspace."
+                    )
             row = self.add(
                 "crm_notifications",
                 workspace_id=r["workspace_id"],

@@ -10,6 +10,7 @@ route's guard, D13 and the channel label apply exactly as in production.
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, two_workspaces
@@ -1083,3 +1084,118 @@ class TestDashboardAndCsvImport:
                     Ctx(MEMBER["id"]), "Name\nAcme\n", "csv", object="companies", workspace="labs"
                 )
             )
+
+
+#: FR-CRM-MCP-01, the eighteen, written out.
+EIGHTEEN = {
+    "crm_workspaces",
+    "crm_today",
+    "crm_search",
+    "crm_get",
+    "crm_list",
+    "crm_create",
+    "crm_update",
+    "crm_move_stage",
+    "crm_handoff",
+    "crm_set_next_step",
+    "crm_add_task",
+    "crm_complete_task",
+    "crm_add_note",
+    "crm_merge",
+    "crm_import",
+    "crm_campaign_members",
+    "crm_dashboard",
+    "crm_run_email_sync",
+}
+
+#: FR-CRM-MCP-02, purpose by purpose: the tool that serves it and the words
+#: of its description (or the parameter) that say so.
+PURPOSES = {
+    "workspaces and roles": ("crm_workspaces", "your role in\neach"),
+    "Today, another member's for Admins": ("crm_today", "another person's: WORKSPACE"),
+    "one search": ("crm_search", "One search across"),
+    "any record with fields, related records, recent timeline": (
+        "crm_get",
+        "related records, recent timeline",
+    ),
+    "recent emails and health": ("crm_get", "follow-up flags and recent email\nthreads"),
+    "records by filter, sort, limit or saved view name": (
+        "crm_list",
+        "by filters, sort and limit, or by the name of a saved view",
+    ),
+    "create any object": ("crm_create", "Creates a company, person,\nopportunity"),
+    "update any object": ("crm_update", "Changes fields on a record"),
+    "move a deal, with a TVA project preview": ("crm_move_stage", "TVA project effect"),
+    "confirm a handoff": ("crm_handoff", "confirm marks the deal Closed Won"),
+    "link a deal to a TVA project": ("crm_handoff", "link attaches an imported deal"),
+    "next step and date": ("crm_set_next_step", "Sets a deal's next step and\nits date"),
+    "tasks with bucket and category": ("crm_add_task", "category is a task category"),
+    "notes on one or more records": ("crm_add_note", "Adds a note to one or more\nrecords"),
+    "campaign members add, status, convert": ("crm_campaign_members", "convert\nturns a member"),
+    "dashboard numbers with colours": ("crm_dashboard", "each with its colour"),
+    "run sync now and report": ("crm_run_email_sync", "for this\nworkspace now and reports"),
+    "merge two companies": ("crm_merge", "Merges two companies"),
+    "dry-run or run an import": ("crm_import", "Always dry-run first"),
+}
+
+#: One call of each tool with the least it takes.
+ONE_CALL_EACH = {
+    "crm_workspaces": {},
+    "crm_today": {},
+    "crm_search": {"query": "acme"},
+    "crm_get": {"record_type": "company", "id": C1},
+    "crm_list": {"object": "company"},
+    "crm_create": {"record_type": "company", "fields": {"name": "Acme"}},
+    "crm_update": {"record_type": "company", "id": C1, "changes": {"city": "Pune"}},
+    "crm_move_stage": {"opportunity_id": D1, "stage": "proposal"},
+    "crm_handoff": {"opportunity_id": D1},
+    "crm_set_next_step": {"opportunity_id": D1, "next_step": "Call", "next_step_on": "2026-10-20"},
+    "crm_add_task": {"title": "Call", "links": [{"record_type": "company", "record_id": C1}]},
+    "crm_complete_task": {"task_id": T1},
+    "crm_add_note": {"body": "Met.", "links": [{"record_type": "company", "record_id": C1}]},
+    "crm_merge": {"survivor_id": C1, "merged_id": P1},
+    "crm_import": {"content": "{}", "format": "twenty_json"},
+    "crm_campaign_members": {"campaign_id": K1, "action": "add", "company_ids": [C1]},
+    "crm_dashboard": {},
+    "crm_run_email_sync": {},
+}
+
+
+class TestTheFinalSet:
+    """S12 — FR-CRM-MCP-01, -02, -05, -11; FR-CRM-CHG-07."""
+
+    def test_exactly_the_eighteen_crm_tools(self, monkeypatch):
+        tools = _tools()
+        crm_tools = {name for name in tools if name.startswith("crm_")}
+        # The set, exactly: none missing, none extra (crm_audit is Phase 2).
+        assert crm_tools == EIGHTEEN
+        assert len(EIGHTEEN) == 18 and set(CALLER_LINES) == EIGHTEEN
+        for name in EIGHTEEN:
+            tool = tools[name]
+            # Who may call, in capitals, first (FR-CRM-MCP-11).
+            assert tool.description.startswith(CALLER_LINES[name]), name
+            assert re.match(r"(WORKSPACE ADMINS|ADMINS AND MEMBERS|ANY MEMBER)", tool.description)
+            # Reads are marked read-only; every write says CONFIRM FIRST and
+            # is marked a write, destructive where it cannot simply be undone.
+            assert tool.annotations.read_only_hint is (name in READS), name
+            if name not in READS:
+                assert "CONFIRM FIRST" in tool.description, name
+                assert tool.annotations.destructive_hint is (name in DESTRUCTIVE), name
+            # Every tool takes an optional workspace but crm_workspaces
+            # (FR-CRM-MCP-03).
+            properties = tool.input_schema.get("properties", {})
+            assert ("workspace" in properties) is (name != "crm_workspaces"), name
+            assert "workspace" not in tool.input_schema.get("required", []), name
+        # One `_api` call per invocation: each tool is one route call.
+        assert set(ONE_CALL_EACH) == EIGHTEEN
+        for name, kwargs in ONE_CALL_EACH.items():
+            recorder = Recorder()
+            monkeypatch.setattr(crm, "_api", recorder)
+            asyncio.run(getattr(crm, name)(Ctx("u"), **kwargs))
+            assert len(recorder.calls) == 1, (name, recorder.calls)
+        # Every purpose of FR-CRM-MCP-02 is served by a named tool.
+        for purpose, (name, words) in PURPOSES.items():
+            assert name in EIGHTEEN, purpose
+            assert words in tools[name].description, (purpose, name)
+        assert {"bucket", "category"} <= set(tools["crm_add_task"].input_schema["properties"])
+        assert {name for name, _ in PURPOSES.values()} == EIGHTEEN - {"crm_complete_task"}

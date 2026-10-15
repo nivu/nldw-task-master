@@ -35,6 +35,7 @@ The navigation shows only what your role, or the owner's authorisation, lets you
 | **Dashboard** | People the owner authorises | The whole company on one page: today, data health, money, cash, delivery, people, trends and what needs attention |
 | **Projects** | Leads, managers, admins | Create projects, set phases and categories, allocate people (leads: their own reports; never money) |
 | **Admin** | Admins | People, allowances, holidays, policy |
+| **CRM** | People who belong to a CRM workspace | The sales CRM, in its own area with its own sidebar; **Back to TVA** returns here (see *The sales CRM*) |
 | **Account** | Everyone | Your details, yearly history, calendar feed, Claude tokens, your quarter |
 
 On a laptop the links sit in a sidebar on the left, grouped under **My work**,

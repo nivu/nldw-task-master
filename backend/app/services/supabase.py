@@ -194,6 +194,12 @@ def get_booking(booking_id: str) -> dict[str, Any] | None:
     return response.data[0] if response.data else None
 
 
+#: People per `user_id=in.(…)` request. Every staff id in one URL passes
+#: PostgREST's request-line limit (414) at a few hundred people, so a list of
+#: everybody (the capacity service's) goes in batches.
+USER_ID_BATCH = 100
+
+
 def list_bookings(
     *,
     user_ids: list[str] | None = None,
@@ -202,18 +208,25 @@ def list_bookings(
     statuses: list[str] | None = None,
     columns: str = BOOKING_FULL_COLUMNS,
 ) -> list[dict[str, Any]]:
-    query = supabase.table("bookings").select(columns)
-    if user_ids is not None:
-        if not user_ids:
-            return []
-        query = query.in_("user_id", user_ids)
-    if start is not None:
-        query = query.gte("date", start.isoformat())
-    if end is not None:
-        query = query.lte("date", end.isoformat())
-    if statuses is not None:
-        query = query.in_("status", statuses)
-    return query.order("date").execute().data or []
+    def read(batch: list[str] | None) -> list[dict[str, Any]]:
+        query = supabase.table("bookings").select(columns)
+        if batch is not None:
+            query = query.in_("user_id", batch)
+        if start is not None:
+            query = query.gte("date", start.isoformat())
+        if end is not None:
+            query = query.lte("date", end.isoformat())
+        if statuses is not None:
+            query = query.in_("status", statuses)
+        return query.order("date").execute().data or []
+
+    if user_ids is None:
+        return read(None)
+    wanted = sorted(set(user_ids))
+    rows: list[dict[str, Any]] = []
+    for i in range(0, len(wanted), USER_ID_BATCH):
+        rows += read(wanted[i : i + USER_ID_BATCH])
+    return sorted(rows, key=lambda r: r.get("date") or "") if len(wanted) > USER_ID_BATCH else rows
 
 
 def find_booking_on(user_id: str, day: date, statuses: list[str]) -> dict[str, Any] | None:

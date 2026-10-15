@@ -120,3 +120,45 @@ class TestRetryAfterHeaders:
         with pytest.raises(httpx.ReadError):
             response.read()
         assert len(calls) == 1
+
+
+class TestLongIdLists:
+    """Spec 007 S12 (found by the dashboard's e2e run on a database with
+    two thousand profiles): every staff id in one `in.(…)` filter passes
+    PostgREST's request-line limit and is answered 414, so the capacity
+    service's list of everybody goes in batches."""
+
+    def test_list_bookings_reads_many_people_in_batches(self, monkeypatch):
+        import uuid
+        from urllib.parse import unquote
+
+        ids = [str(uuid.uuid4()) for _ in range(250)]
+        seen: list[str] = []
+
+        def send(self, request):
+            url = unquote(str(request.url))
+            seen.append(url)
+            batch = url.split("user_id=in.(", 1)[1].split(")", 1)[0].split(",")
+            body = [
+                {"user_id": u, "date": f"2026-10-{(n % 28) + 1:02d}"} for n, u in enumerate(batch)
+            ]
+            return httpx.Response(200, request=request, json=body)
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", send)
+        rows = db.list_bookings(user_ids=ids + ids[:5], columns="user_id,date")
+        assert len(seen) == 3
+        assert max(len(url) for url in seen) < 6000
+        assert sorted(r["user_id"] for r in rows) == sorted(ids)
+        assert [r["date"] for r in rows] == sorted(r["date"] for r in rows)
+
+    def test_a_short_list_is_one_request(self, monkeypatch):
+        seen = []
+
+        def send(self, request):
+            seen.append(request)
+            return httpx.Response(200, request=request, json=[])
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", send)
+        assert db.list_bookings(user_ids=["a", "b"]) == []
+        assert db.list_bookings(user_ids=[]) == []
+        assert len(seen) == 1

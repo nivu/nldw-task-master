@@ -11,6 +11,7 @@ Specifications live in [`../specs/`](../specs/), not here.
 | Document | Covers |
 |---|---|
 | [`architecture/leave-calendar.md`](architecture/leave-calendar.md) | How the leave calendar works: the request path, where each rule lives, the three things that are easy to get wrong (timezone, derived balances, the append-only audit log), who can see a reason, background work, and how to run it locally |
+| [`architecture/crm.md`](architecture/crm.md) | How the sales CRM works: the CRM guard and deny-by-default for CRM-only accounts, the browser's lack of any table grant, the write path and audit trigger, workspace-scoped references, transition functions, redaction, the TVA lifecycle and its readers, capacity, jobs and queues, the MCP tools, and the three things that are easy to get wrong (`crm.actor`, function grants, the counting-allocations reader) |
 
 ## Guides
 
@@ -22,16 +23,18 @@ User guides, also served in the portal at `/help`:
 | [`guides/02-booking-leave.md`](guides/02-booking-leave.md) | Booking leave and work-from-home days |
 | [`guides/03-logging-your-day.md`](guides/03-logging-your-day.md) | Logging hours against projects and activities |
 | [`guides/04-for-leads.md`](guides/04-for-leads.md) | Team view, approvals, weekly sign-off, running projects for your reports, effort across all projects |
-| [`guides/05-for-managers.md`](guides/05-for-managers.md) | Projects, categories, phases including spill-over, revenue, money by month |
-| [`guides/06-for-admins.md`](guides/06-for-admins.md) | People, roles, CTC, holidays, policy |
+| [`guides/05-for-managers.md`](guides/05-for-managers.md) | Projects, categories, phases including spill-over, revenue, money by month; projects run by a CRM deal and released allocations |
+| [`guides/06-for-admins.md`](guides/06-for-admins.md) | People, roles, account types, CTC, holidays, policy, the CRM workspaces panel |
 | [`guides/07-faq.md`](guides/07-faq.md) | Common questions |
-| [`guides/08-connecting-claude.md`](guides/08-connecting-claude.md) | Using the portal from Claude through MCP |
+| [`guides/08-connecting-claude.md`](guides/08-connecting-claude.md) | Using the portal from Claude through MCP, the CRM's `crm_*` tools by role included |
+| [`guides/09-crm.md`](guides/09-crm.md) | The sales CRM for sellers: signing in, Today, records, the pipeline and what each stage needs, Drive links, Claude |
+| [`guides/10-crm-admin.md`](guides/10-crm-admin.md) | Running a CRM workspace: inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, automations, targets |
 
 ## Operations
 
 | Document | Covers |
 |---|---|
-| [`operations/deployment.md`](operations/deployment.md) | Deploying to Supabase + Railway + Netlify, in order; the two settings that are easy to skip and expensive to skip (`config push` for FR-AUTH-02, the `beat` process for Q-04); and bootstrapping the first admin into an empty database |
+| [`operations/deployment.md`](operations/deployment.md) | Deploying to Supabase + Railway + Netlify, in order; the two settings that are easy to skip and expensive to skip (`config push` for FR-AUTH-02, the `beat` process for Q-04); bootstrapping the first admin into an empty database; and releasing the sales CRM (migrations 025–044, Gmail sync and its `worker-crm-sync` service, the SMTP precondition, `/health/jobs`) |
 
 ## Where things go
 

@@ -62,6 +62,19 @@ class TestCoverage:
         }
         assert len(tva_tools) == len(tva_operations)
 
+    def test_the_crm_exception_is_the_specs(self):
+        """FR-MCP-01 as amended by `007` FR-CRM-CHG-07: the test above leaves
+        out every `/api/v1/crm/` operation by prefix, and exactly what the
+        amended text exempts."""
+        from pathlib import Path
+
+        spec = Path(__file__).resolve().parents[2] / "specs" / "004-mcp" / "spec.md"
+        [row] = [line for line in spec.read_text().splitlines() if line.startswith("| FR-MCP-01 |")]
+        assert "except CRM routes, which are covered by the `crm_*` tools of `007`" in row
+        crm_operations = {op for op in _operations() if op[1].startswith("/api/v1/crm/")}
+        assert crm_operations and not crm_operations & EXCLUDED
+        assert {t.name for t in _tools() if t.name.startswith("crm_")}
+
     def test_every_tool_is_described_and_annotated(self):
         for tool in _tools():
             assert tool.description and len(tool.description) > 20, tool.name

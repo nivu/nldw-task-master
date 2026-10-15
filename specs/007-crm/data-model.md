@@ -34,6 +34,7 @@ order of §1. Existing migrations are not edited.
 | `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists (the `list_key` CHECK widened), field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns; (as built) `CREATE OR REPLACE crm_query()`, `crm_query_rank()` for the two lists and `crm_purge()` for campaigns and their members |
 | `042_crm_campaign_conversions_kept.sql` | S11a | `CREATE OR REPLACE crm_merge_companies()` and `crm_purge()` keeping a Converted campaign membership when two memberships of one campaign collide (§3.23) |
 | `043_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings`; (as built) `crm_record_export()`, the audit row of an export |
+| `044_crm_notification_refs.sql` | S12 | (as built, found by the security sweep) trigger `crm_notifications_check_refs`: `crm_check_refs()` on a notification's `record_type` / `record_id`, on insert and on an update of those columns |
 
 A function that touches a table always arrives in, or is replaced in, the
 migration that creates that table or a later one. PL/pgSQL resolves table
@@ -497,7 +498,7 @@ Index `(job, workspace_id, started_at DESC)`.
 | `id`, `workspace_id` | uuid | |
 | `user_id` | uuid | NOT NULL FK profiles CASCADE |
 | `kind` | text | `CHECK (kind IN ('assigned','mentioned','stage_changed','reply_owed_red','handoff_waiting','revenue_confirm','task_due','task_overdue','stale_deal','job_failed','invited'))` |
-| `record_type`, `record_id` | text, uuid | |
+| `record_type`, `record_id` | text, uuid | the record is in the notification's workspace: `crm_check_refs()` (044) |
 | `title` | text | ≤ 200; no amount (FR-CRM-ACC-11) |
 | `dedupe_key` | text | `UNIQUE (user_id, dedupe_key)`, e.g. `task_overdue:<id>:2026-10-14` |
 | `created_at`, `read_at` | timestamptz | |

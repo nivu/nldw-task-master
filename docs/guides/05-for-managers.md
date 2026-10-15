@@ -34,8 +34,8 @@ by it:
 
 Change a project's category from the dropdown beside its name.
 
-A project can also name its **lead** — the person who leads it, say Devansh
-on Hearsight. Pick one when you add the project, or change it later from the
+A project can also name its **lead** — the person who leads its delivery.
+Pick one when you add the project, or change it later from the
 *Lead* dropdown beside its name (*No lead* clears it). Only someone with an
 active account can be named. The lead is a label: it shows on Projects and
 on **Effort → Projects**, but it changes nobody's access — who may edit the
@@ -96,6 +96,32 @@ allocations are marked *tentative*:
 Its money is kept out of every profit figure — see *By month* below. When the
 work is won, set the status to **Confirmed**: from then on it counts like any
 other project and hours can be logged against it.
+
+### Projects run by a CRM deal
+
+A project made from a Nunnari Labs deal in the sales CRM is marked **Managed
+by CRM deal** (with the deal's name, if you belong to the Labs workspace). The
+deal drives it: a tentative project is created when the deal reaches
+Proposal, confirmed when the deal is won, and archived when it is lost. Its
+**status** and **chance of winning**, and archiving it while it is tentative,
+change only through the deal, so those controls are read-only here; ask the
+deal's owner. Phases, allocations, the lead and milestones stay yours to edit,
+and once the project is confirmed it archives and unarchives here as any
+other. Revenue is entered at the deal's handoff only by a manager or admin;
+if a seller won it, the Labs admins get a task to confirm the revenue, which
+you can then set here.
+
+### Released allocations
+
+When a CRM deal is lost, the allocations on its project are **released**:
+kept, marked with who released them, when and why, but no longer counted.
+Released allocations, and allocations on any **archived** project, drop out
+of every figure that counts people's time: the forecast, resources, bench,
+over-allocation, the hiring signal, planned cost and profit, project health,
+the dashboard and the digests. An archived tentative project also drops out of
+the pipeline. If the deal is reopened, the project comes back as tentative
+and exactly those allocations count again. The allocation list still shows
+released rows, marked, so nothing disappears without a trace.
 
 ### Milestones
 
