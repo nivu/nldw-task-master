@@ -61,6 +61,10 @@ export default function SettingsPage() {
         <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/crm/${ws}/settings/trash`} />}>
           Trash
         </Button>
+        {/* FR-CRM-MIG-01: the Twenty importer. */}
+        <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/crm/${ws}/settings/import`} />}>
+          Import from Twenty
+        </Button>
       </div>
       <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
         <TabsList className="max-w-full overflow-x-auto">

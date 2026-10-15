@@ -954,3 +954,57 @@ export interface MergePreview {
   differing_fields: MergeField[];
   moves: { people: number; deals: number; tasks: number; notes: number; links: number; projects: number };
 }
+
+// ---------------------------------------------------------------------------
+// Imports — contracts §2.9 (S8), mirrors schemas/crm.py ImportIn and the
+// dry run's report.
+// ---------------------------------------------------------------------------
+
+export type ImportObject = "companies" | "people" | "opportunities" | "tasks" | "notes";
+
+export interface ImportCounts {
+  in_file: number;
+  create: number;
+  update: number;
+  unchanged: number;
+  skipped: number;
+}
+
+export interface ImportConflict {
+  object: ImportObject | "attachments";
+  /** 1-based, within its object in the file. */
+  row: number;
+  kind: string;
+  detail: string;
+  /** Fixed in the file, the CRM or by the fix-up before the real run. */
+  blocking: boolean;
+}
+
+/** POST /crm/imports/dry-run — FR-CRM-MIG-03, -04, -05. */
+export interface ImportDryRun {
+  run_id: string;
+  counts: Partial<Record<ImportObject, ImportCounts>>;
+  lead_stages: { row: number; company: string; derived: string; derived_label: string; because: string }[];
+  conflicts: ImportConflict[];
+  attachments: { name: string; record_type: string | null; record: string | null; record_id: string | null }[];
+  fixup_candidates: number;
+  blocking: string[];
+}
+
+/** POST /crm/imports/{run_id}/apply — FR-CRM-MIG-07. */
+export interface ImportApplied {
+  run_id: string;
+  counts: Partial<Record<ImportObject, ImportCounts>>;
+  fixups_used: number;
+}
+
+/** GET /crm/imports — recent runs, never their rows. */
+export interface ImportRun {
+  id: string;
+  kind: "twenty" | "csv";
+  object: string | null;
+  status: "dry_run" | "applied" | "failed";
+  counts: Partial<Record<ImportObject, ImportCounts>> | null;
+  created_at: string;
+  applied_at: string | null;
+}

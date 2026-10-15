@@ -13,6 +13,7 @@ would fail here with `CheckViolation`.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 
 import pytest
@@ -995,3 +996,56 @@ class TestThroughMcp:
         assert moved["opportunity"]["stage"] == "closed_lost"
         actor, _ = fake.applied[-1]
         assert actor["channel"] == "mcp"
+
+
+class TestImportHoldsTheNextStepRule:
+    """FR-CRM-PIPE-10 through import (S8) — spec §11 AC "an open deal without
+    a next step is refused … through the web app, import, MCP or API"; the
+    fix-up of Q-46 is the one way past it."""
+
+    EXPORT = json.dumps(
+        {
+            "companies": [{"id": "c1", "name": "Acme College"}],
+            "opportunities": [
+                {"id": "o1", "name": "Acme bootcamp", "companyId": "c1", "stage": "NEW"}
+            ],
+        }
+    )
+
+    def _dry(self, http):
+        r = http.post(
+            f"/api/v1/crm/imports/dry-run{ACADEMY}",
+            json={"format": "twenty_json", "content": self.EXPORT},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def _apply(self, http, run_id, fixup):
+        return http.post(
+            f"/api/v1/crm/imports/{run_id}/apply{ACADEMY}",
+            json={"format": "twenty_json", "content": self.EXPORT, "fixup_next_step": fixup},
+            headers=as_(OWNER["id"]),
+        )
+
+    def test_refused_without_the_fixup(self, crm):
+        http, fake, _, _ = crm
+        dry = self._dry(http)
+        assert dry["fixup_candidates"] == 1
+        r = self._apply(http, dry["run_id"], fixup=False)
+        assert r.status_code == 422
+        assert r.json()["detail"] == (
+            "The import cannot run yet: Acme bootcamp is open with no next step; "
+            "add one in the file or choose the fix-up."
+        )
+        assert fake.rows["crm_opportunities"] == {}
+
+    def test_the_fixup_lets_it_in_with_review_after_import(self, crm, monkeypatch):
+        from app.services.crm import importer
+
+        monkeypatch.setattr(importer, "today_in_company_tz", lambda: date(2026, 10, 14))
+        http, fake, _, _ = crm
+        r = self._apply(http, self._dry(http)["run_id"], fixup=True)
+        assert (r.status_code, r.json()["fixups_used"]) == (200, 1)
+        [deal] = fake.rows["crm_opportunities"].values()
+        assert (deal["next_step"], deal["next_step_on"]) == ("Review after import", "2026-10-14")

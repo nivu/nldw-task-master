@@ -518,3 +518,129 @@ test.describe("Today, search and merge (S7)", () => {
     await expect(page.getByTestId("today-loose_ends")).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The importer and the widened proxy — spec 007 FR-CRM-CHG-08, FR-CRM-MIG,
+// 006 FR-STMT-02; plan §5.12; tasks S8. The size checks confirm the 4 MB
+// figure chosen under Netlify's ~6 MB function body limit (Q-05).
+// ---------------------------------------------------------------------------
+
+const MB = 1024 * 1024;
+
+/** A companies CSV of about `bytes` bytes, every row a unique Twenty id. */
+function companiesCsv(bytes: number, tag: string): Buffer {
+  const lines = ["id,name,description"];
+  let size = lines[0].length + 1;
+  for (let i = 0; ; i++) {
+    const line = `${tag}-${i},${tag} company ${i},${"x".repeat(900)}`;
+    if (size + line.length + 1 > bytes) break;
+    lines.push(line);
+    size += line.length + 1;
+  }
+  return Buffer.from(`${lines.join("\n")}\n`);
+}
+
+async function upload(request: APIRequestContext, token: string, body: Buffer, name = "companies.csv") {
+  return request.post("/api/proxy/api/v1/crm/imports/dry-run?workspace=academy", {
+    headers: { Authorization: `Bearer ${token}` },
+    multipart: { file: { name, mimeType: "text/csv", buffer: body } },
+  });
+}
+
+test.describe("the importer and the proxy (S8)", () => {
+  test("a 3.9 MB CSV uploads through the proxy; a 4.1 MB one gets 413", async ({ request }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    const tag = `e2e${Date.now().toString(36)}`;
+    const ok = await upload(request, token, companiesCsv(3.9 * MB, tag));
+    expect(ok.status(), await ok.text()).toBe(200);
+    expect((await ok.json()).counts.companies.create).toBeGreaterThan(1000);
+
+    const over = await upload(request, token, companiesCsv(4.1 * MB, `${tag}b`));
+    expect(over.status()).toBe(413);
+    expect((await over.json()).detail).toBe("The upload is larger than 4 MB.");
+  });
+
+  test("an oversize chunked upload with no Content-Length gets 413", async ({ request, baseURL }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 5 * MB) return controller.close();
+        sent += MB;
+        controller.enqueue(new Uint8Array(MB).fill(120));
+      },
+    });
+    const r = await fetch(`${baseURL}/api/proxy/api/v1/crm/imports/dry-run?workspace=academy`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(r.status).toBe(413);
+  });
+
+  test("a disallowed request Content-Type gets 415", async ({ request }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    const r = await request.post("/api/proxy/api/v1/crm/imports/dry-run?workspace=academy", {
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+      data: "hello",
+    });
+    expect(r.status()).toBe(415);
+  });
+
+  test("no backend Set-Cookie or Location reaches the browser", async ({ request }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    for (const route of ["/api/proxy/api/v1/crm/workspaces", "/api/proxy/api/v1/crm/imports?workspace=academy"]) {
+      const r = await request.get(route, { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 });
+      expect(r.status()).toBe(200);
+      const names = Object.keys(r.headers());
+      expect(names).not.toContain("set-cookie");
+      expect(names).not.toContain("location");
+    }
+  });
+
+  test("the effort statement CSV downloads with its name and real content (006 FR-STMT-02)", async ({
+    page,
+    request,
+  }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    const projects = await (
+      await request.get("/api/proxy/api/v1/admin/projects", { headers: { Authorization: `Bearer ${token}` } })
+    ).json();
+    const project = projects[0];
+    const period = new Date().toISOString().slice(0, 7);
+
+    await signIn(page, PEOPLE.manager);
+    await page.goto(`/analytics/statement?project=${project.id}&period=${period}`);
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Download CSV" }).click(),
+    ]);
+    expect(download.suggestedFilename()).toBe(`${project.name}-${period}.csv`);
+    const text = fs.readFileSync(await download.path(), "utf8");
+    expect(text.split("\n")[0]).toContain("effort statement");
+    expect(text).not.toContain('"detail"');
+  });
+
+  test("journey 4.6: dry run, run, and a second run that changes nothing", async ({ page }) => {
+    const tag = `e2e${Date.now().toString(36)}`;
+    const exportJson = JSON.stringify({
+      companies: [{ id: `${tag}-c`, name: `${tag} College` }],
+      people: [{ id: `${tag}-p`, firstName: "Ravi", email: `ravi.${tag}@example.com`, companyId: `${tag}-c` }],
+      notes: [{ id: `${tag}-n`, body: "First call went well.", targets: [{ type: "company", id: `${tag}-c` }] }],
+    });
+    const file = { name: "academy.json", mimeType: "application/json", buffer: Buffer.from(exportJson) };
+
+    await signIn(page, PEOPLE.manager);
+    await page.goto("/crm/academy/settings/import");
+    for (const creates of ["1", "0"]) {
+      await page.locator("#twenty-file").setInputFiles(file);
+      await page.getByRole("button", { name: "Dry run" }).click();
+      await expect(page.getByTestId("import-report")).toBeVisible();
+      await page.getByRole("button", { name: "Run the import" }).click();
+      const done = page.getByTestId("import-done");
+      await expect(done).toBeVisible();
+      await expect(done.getByRole("row", { name: /^Companies/ }).getByRole("cell").nth(2)).toHaveText(creates);
+    }
+  });
+});

@@ -415,3 +415,46 @@ async def crm_merge(
             "merged_updated_at": merged_updated_at,
         }
     return await _api(ctx, "POST", "/crm/companies/merge", params=params, body=body)
+
+
+@mcp.tool(annotations=WRITE)
+async def crm_import(
+    ctx: Context,
+    content: str,
+    format: Literal["twenty_json", "twenty_csv", "csv"],
+    mode: Literal["dry_run", "run"] = "dry_run",
+    run_id: str | None = None,
+    object: str | None = None,
+    mapping: dict[str, str] | None = None,
+    fixup_next_step: bool = False,
+    workspace: str | None = None,
+) -> dict:
+    """WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts
+    and conflicts. Imports a Twenty export (and, in 1b, a CSV of one object).
+    Always dry-run first; the real run needs the same content and the dry
+    run's run_id. A second real run of the same file changes nothing.
+    content is the file's text, at most 4 MB: a JSON export with companies,
+    people, opportunities, tasks, notes and attachments, or with
+    format=twenty_csv one object's CSV, named by object (companies, people,
+    opportunities, tasks, notes, attachments). The dry run reports, per
+    object, how many rows would be created, updated, left unchanged or
+    skipped, the lead stage derived for each company, every conflict (those
+    marked blocking must be fixed first) and the attachments to re-link from
+    Drive. An open deal with no next step blocks the run unless
+    fixup_next_step=true, which gives it "Review after import" dated today."""
+    params = {"workspace": workspace}
+    body: dict[str, Any] = {"format": format, "content": content}
+    if object:
+        body["object"] = object
+    if mapping:
+        body["mapping"] = mapping
+    if mode == "dry_run":
+        return await _api(ctx, "POST", "/crm/imports/dry-run", params=params, body=body)
+    if not run_id:
+        raise ToolError("A real run needs the dry run's run_id; dry-run the file first.")
+    try:
+        run = str(uuid.UUID(run_id))
+    except ValueError:
+        raise ToolError("No such import run.") from None
+    body["fixup_next_step"] = fixup_next_step
+    return await _api(ctx, "POST", f"/crm/imports/{run}/apply", params=params, body=body)

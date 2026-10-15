@@ -1,0 +1,36 @@
+{
+  "companies": [
+    {"id": "c-acme", "name": "Acme Robotics", "domainName": "https://www.acme.io", "stage": "CUSTOMER", "accountType": "Client", "accountOwnerEmail": "owner@nunnarilabs.com", "address": {"city": "Chennai", "country": "India"}},
+    {"id": "c-globex", "name": "Globex", "domainName": "globex.com", "accountType": "Technology partner", "accountOwnerEmail": "deepika@nunnarilabs.com"},
+    {"id": "c-initech", "name": "Initech", "domainName": "initech.com", "accountOwnerEmail": "owner@nunnarilabs.com"},
+    {"id": "c-umbrella", "name": "Umbrella Corp", "domainName": "umbrella.co", "stage": "CONTACTED", "accountOwnerEmail": "owner@nunnarilabs.com"},
+    {"id": "c-hooli", "name": "Hooli", "domainName": "hooli.xyz", "stage": "QUALIFIED", "accountOwnerEmail": "gavin@hooli.xyz"},
+    {"id": "c-acme-pvt", "name": "Acme Robotics Pvt", "domainName": "acme.io", "accountOwnerEmail": "owner@nunnarilabs.com"}
+  ],
+  "people": [
+    {"id": "p-asha", "name": {"firstName": "Asha", "lastName": "Rao"}, "emails": {"primaryEmail": "Asha@Acme.io", "additionalEmails": ["asha.rao@gmail.com"]}, "jobTitle": "CTO", "phone": "98400 12345", "companyId": "c-acme", "lastInboundAt": "2026-10-01T10:00:00Z", "lastOutboundAt": "2026-10-02T11:30:00Z"},
+    {"id": "p-ben", "name": {"firstName": "Ben", "lastName": "Lee"}, "emails": {"primaryEmail": "ben@globex.com"}, "companyId": "c-globex"},
+    {"id": "p-chen", "name": {"firstName": "Chen", "lastName": "Wu"}, "emails": {"primaryEmail": "chen@initech.com"}, "companyId": "c-initech", "lastInboundAt": "2026-08-20T08:00:00Z"},
+    {"id": "p-dana", "name": {"firstName": "Dana", "lastName": "Kim"}, "emails": {"primaryEmail": "asha@acme.io"}, "companyId": "c-umbrella"}
+  ],
+  "opportunities": [
+    {"id": "o-acme-pilot", "name": "Acme pilot", "companyId": "c-acme", "pointOfContactId": "p-asha", "stage": "PROPOSAL", "amount": {"amount": "50000", "currencyCode": "USD"}, "closeDate": "2026-11-30", "nextStep": "Send the revised proposal", "nextStepOn": "2026-10-20", "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-09-10T06:00:00Z"},
+    {"id": "o-initech-rollout", "name": "Initech rollout", "companyId": "c-initech", "pointOfContactId": "p-chen", "stage": "CUSTOMER", "amount": {"amount": "1200000", "currencyCode": "INR"}, "closeDate": "2026-08-31", "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-06-01T06:00:00Z"},
+    {"id": "o-umbrella-audit", "name": "Umbrella audit", "companyId": "c-umbrella", "stage": "LOST", "lostReason": "Price", "amount": {"amount": "300000", "currencyCode": "INR"}, "closeDate": "2026-07-15", "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-05-01T06:00:00Z"},
+    {"id": "o-acme-phase2", "name": "Acme phase 2", "companyId": "c-acme", "stage": "NEW", "ownerEmail": "deepika@nunnarilabs.com", "createdAt": "2026-10-01T06:00:00Z"},
+    {"id": "o-orphan", "name": "Orphan deal", "companyId": "c-missing", "stage": "NEW", "nextStep": "Find the company", "nextStepOn": "2026-10-20"}
+  ],
+  "tasks": [
+    {"id": "t-call-asha", "title": "Call Asha about the pilot", "status": "TODO", "dueAt": "2026-10-16T03:30:00Z", "assigneeEmail": "owner@nunnarilabs.com", "targets": [{"type": "person", "id": "p-asha"}, {"type": "opportunity", "id": "o-acme-pilot"}]},
+    {"id": "t-globex-deck", "title": "Send Globex the partner deck", "status": "DONE", "completedAt": "2026-09-05T09:00:00Z", "assigneeEmail": "deepika@nunnarilabs.com", "targets": [{"type": "company", "id": "c-globex"}]},
+    {"id": "t-lost", "title": "Follow up with nobody", "status": "TODO", "targets": [{"type": "company", "id": "c-nowhere"}]}
+  ],
+  "notes": [
+    {"id": "n-kickoff", "title": "Kickoff", "body": "Met the Acme team; they want a pilot by November.", "targets": [{"type": "company", "id": "c-acme"}, {"type": "opportunity", "id": "o-acme-pilot"}]},
+    {"id": "n-initech", "body": "Initech is happy with the rollout.", "targets": [{"type": "person", "id": "p-chen"}]}
+  ],
+  "attachments": [
+    {"id": "a-proposal", "name": "Acme proposal v2.pdf", "targets": [{"type": "opportunity", "id": "o-acme-pilot"}]},
+    {"id": "a-logo", "name": "Globex logo.png", "companyId": "c-globex"}
+  ]
+}

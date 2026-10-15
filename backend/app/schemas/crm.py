@@ -592,3 +592,18 @@ class MergeIn(BaseModel):
     merged_id: str = Field(min_length=1, max_length=64)
     choices: dict[str, Literal["a", "b"]] = Field(default_factory=dict, max_length=40)
     expect: MergeExpect | None = None
+
+
+class ImportIn(BaseModel):
+    """Contracts §2.9 — an import sent as JSON rather than an upload, as
+    `crm_import` does (FR-CRM-MCP-08). The content is the file's text, held
+    to the 4 MB an upload may have (checked by the route); `csv` with its
+    `mapping` arrives with CSV import (S11b)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: Literal["twenty_json", "twenty_csv", "csv"]
+    content: str = Field(min_length=1)
+    object: str | None = Field(default=None, max_length=40)
+    mapping: dict[str, str] | None = None
+    fixup_next_step: bool = False

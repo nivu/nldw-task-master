@@ -26,7 +26,7 @@ order of §1. Existing migrations are not edited.
 | `033_crm_lifecycle.sql` | S5 | `CREATE OR REPLACE crm_deal_transition()` with the TVA branches; `crm_link_project()`; `CREATE OR REPLACE crm_purge()` adding `projects.crm_company_id`; trigger `crm_opportunities_project_company`: a deal's project follows its `company_id` (`crm_company_id`, `client`, TVA audit row) |
 | `034_crm_views.sql` | S6a | `crm_object_fields` (column registry, seeded), `crm_saved_views` (seeded), `crm_favourites`, `crm_query()`; `CREATE OR REPLACE crm_purge()` adding favourites |
 | `035_crm_search_merge.sql` | S7 | `crm_search()`, `crm_merge_companies()` |
-| `036_crm_imports.sql` | S8 | `crm_import_runs` |
+| `036_crm_imports.sql` | S8 | `crm_import_runs`; `twenty_id` on `crm_tasks` and `crm_notes`; `crm_similar_many()` (the dry run's possible-duplicate check for many names in one call); `crm_record_import()` (a run and its audit row together) |
 | `037_crm_jobs_notifications.sql` | S9 | `crm_job_runs`, `crm_notifications`, `crm_digest_sends`; settings seeds for thresholds and automations; `CREATE OR REPLACE crm_remove_membership()` deleting the person's notifications for the workspace |
 | `038_crm_flags.sql` | S9 | Flag columns and indexes on companies, people, opportunities, tasks; `crm_object_fields` rows for them |
 | `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
@@ -355,6 +355,7 @@ directly. Time in stage and days to close are derived from it (FR-CRM-DASH-02).
 | `category_id` | uuid | FK `crm_select_options` |
 | `assignee_id` | uuid | NOT NULL FK profiles |
 | `completed_at` | timestamptz | `CHECK ((status = 'done') = (completed_at IS NOT NULL))` |
+| `twenty_id` | text | (036) unique per workspace when set, so a re-import matches it (FR-CRM-MIG-07) |
 | `position` | numeric | |
 | stamps, soft delete | | |
 
@@ -375,7 +376,8 @@ NULL` (Today §3); `(workspace_id, bucket, position)`.
 `crm_notes`: `id`, `workspace_id`, `body text NOT NULL` (≤ 20,000, markdown),
 `kind text NOT NULL DEFAULT 'note' CHECK (kind IN
 ('note','call','meeting','whatsapp','other'))`, `occurred_on date` (required
-when `kind <> 'note'`, `CHECK`), stamps, soft delete. Index `(workspace_id,
+when `kind <> 'note'`, `CHECK`), `twenty_id text` (036; unique per workspace
+when set, FR-CRM-MIG-07), stamps, soft delete. Index `(workspace_id,
 created_at DESC)`.
 
 `crm_note_links`: as `crm_task_links` (`note_id`).
@@ -461,8 +463,14 @@ CHECK (target_type IN ('view','record'))`, `record_type` (when a record),
 
 The real run requires a `dry_run` row of the same workspace, kind and
 `file_sha256`, created within 24 hours (FR-CRM-MIG-04). Both the dry run and
-the real run are audited as `import.dry_run` / `import.applied` through
-`crm_apply` (an `audit_only` op), with counts and no row content.
+the real run are audited as `import.dry_run` / `import.applied` (or
+`import.failed`), with counts and no row content. They are written by
+`crm_record_import(p_actor, p_run)` (036), which adds or marks the run and
+writes its audit row in one transaction in the actor's workspace:
+`crm_apply`'s `audit_only` op takes only the audited table's own columns as
+values, so it cannot carry the counts. The imported rows themselves go
+through `crm_apply` (upserts on `twenty_id`, a plain insert for a new deal so
+its first stage is set, updates by id carrying only what changed).
 
 ### 3.18 `crm_job_runs` — FR-CRM-JOB-01 (037) — log
 

@@ -59,6 +59,10 @@ ACCOUNT_LEVEL = frozenset(
         "list_object_fields",
         # Locks both companies in the actor's workspace (035).
         "merge_companies",
+        # Writes the import-run log of the actor's workspace (036).
+        "record_import",
+        # Pure: splits values for URL filters.
+        "text_batches",
     }
 )
 
@@ -827,3 +831,135 @@ def merge_companies(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, An
     """Data-model §5.7 — `{survivor, moved}`; both companies re-checked and
     locked in the actor's workspace, everything moved in one transaction."""
     return rpc("crm_merge_companies", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+# ---------------------------------------------------------------------------
+# The Twenty importer — S8 (data-model §3.17; FR-CRM-MIG)
+# ---------------------------------------------------------------------------
+
+#: The record tables an import matches on `twenty_id` (029, 030, 036).
+TWENTY_TABLES = frozenset(
+    {"crm_companies", "crm_people", "crm_opportunities", "crm_tasks", "crm_notes"}
+)
+
+
+def list_by_twenty_ids(
+    workspace_id: str, table: str, twenty_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Records of one table by Twenty id, Trash included. The ids go into
+    the URL, so they are read in batches (PostgREST refuses a long one)."""
+    if table not in TWENTY_TABLES:
+        raise ValueError(f"not a table an import matches: {table}")
+    rows: list[dict[str, Any]] = []
+    for batch in text_batches(twenty_ids):
+        rows += (
+            supabase.table(table)
+            .select("*")
+            .eq("workspace_id", workspace_id)
+            .in_("twenty_id", batch)
+            .execute()
+            .data
+            or []
+        )
+    return rows
+
+
+#: Characters of values per PostgREST `in` filter: well under the few
+#: kilobytes a request line may have, however long each value is.
+_URL_BUDGET = 2000
+
+
+def text_batches(values: Any) -> list[list[str]]:
+    """Distinct values, sorted, in batches that each fit `_URL_BUDGET`."""
+    batches: list[list[str]] = []
+    size = 0
+    for value in sorted({v for v in values if v}):
+        if not batches or size + len(value) + 1 > _URL_BUDGET:
+            batches.append([])
+            size = 0
+        batches[-1].append(value)
+        size += len(value) + 1
+    return batches
+
+
+def deals_of_companies(workspace_id: str, company_ids: list[str]) -> list[dict[str, Any]]:
+    """The live deals of some companies, for the lead stage an import
+    derives (FR-CRM-MIG-05)."""
+    rows: list[dict[str, Any]] = []
+    wanted = sorted(set(company_ids))
+    for i in range(0, len(wanted), _ID_BATCH):
+        rows += (
+            supabase.table("crm_opportunities")
+            .select("id, company_id, stage, twenty_id")
+            .eq("workspace_id", workspace_id)
+            .in_("company_id", wanted[i : i + _ID_BATCH])
+            .is_("deleted_at", "null")
+            .execute()
+            .data
+            or []
+        )
+    return rows
+
+
+#: Names per `crm_similar_many` call: they travel in the body, not the URL.
+_NAME_BATCH = 200
+
+
+def similar_many(
+    workspace_id: str, kind: str, names: list[str], limit: int = 3
+) -> list[dict[str, Any]]:
+    """FR-CRM-DUP-02 for many names (036 `crm_similar_many`): each match with
+    `idx`, the 1-based position of the name it is like."""
+    found: list[dict[str, Any]] = []
+    for i in range(0, len(names), _NAME_BATCH):
+        batch = names[i : i + _NAME_BATCH]
+        for row in (
+            rpc(
+                "crm_similar_many",
+                {"p_workspace": workspace_id, "p_object": kind, "p_names": batch, "p_limit": limit},
+            )
+            or []
+        ):
+            found.append({**row, "idx": row["idx"] + i})
+    return found
+
+
+_RUN_COLUMNS = "id, workspace_id, kind, object, file_sha256, status, report, options, " + (
+    "created_by, created_at, applied_at"
+)
+
+
+def record_import(actor: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """036 `crm_record_import` — a dry run added, or a run marked applied or
+    failed, with its `import.*` audit row (counts only) in one transaction.
+    Scoped by the actor's workspace."""
+    return rpc("crm_record_import", {"p_actor": actor, "p_run": run}) or {}
+
+
+def get_import_run(workspace_id: str, run_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_import_runs")
+        .select(_RUN_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", run_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_import_runs(workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Recent runs, newest first, without their reports' rows."""
+    return (
+        supabase.table("crm_import_runs")
+        .select(
+            "id, kind, object, file_sha256, status, counts:report->counts, options, "
+            "created_by, created_at, applied_at"
+        )
+        .eq("workspace_id", workspace_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )

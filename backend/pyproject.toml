@@ -16,6 +16,10 @@ dependencies = [
     "supabase",
     "python-dotenv",
     "mcp>=2.2.0",
+    # FastAPI parses multipart uploads (the 4 MB Twenty import, spec 007
+    # FR-CRM-CHG-08) with it. Already locked through mcp; direct, so an mcp
+    # upgrade cannot silently remove it.
+    "python-multipart",
 ]
 
 [tool.setuptools]

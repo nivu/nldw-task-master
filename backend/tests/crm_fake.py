@@ -110,6 +110,7 @@ TABLES = (
     "crm_note_mentions",
     "crm_saved_views",
     "crm_favourites",
+    "crm_import_runs",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -177,6 +178,7 @@ DEFAULTS = {
         "lead_stage": "new",
         "channel_ids": [],
         "merged_into_id": None,
+        "twenty_id": None,
         "last_inbound_at": None,
         "last_outbound_at": None,
         "last_contact_at": None,
@@ -236,10 +238,11 @@ DEFAULTS = {
         "bucket": None,
         "category_id": None,
         "completed_at": None,
+        "twenty_id": None,
         "position": 0,
         **_TRASH,
     },
-    "crm_notes": {"kind": "note", "occurred_on": None, **_TRASH},
+    "crm_notes": {"kind": "note", "occurred_on": None, "twenty_id": None, **_TRASH},
     "crm_saved_views": {
         "icon": None,
         "kind": "table",
@@ -307,6 +310,8 @@ def _read_034() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 OBJECT_FIELDS, SEEDED_VIEWS = _read_034()
 
 _clock = itertools.count(1)
+#: Pure: the fake keeps the real batching (S8).
+_TEXT_BATCHES = store.text_batches
 
 
 def _now() -> str:
@@ -2124,6 +2129,103 @@ class FakeCrmStore:
             raise
         return {"survivor": dict(keep), "moved": moved}
 
+    # -- store: the Twenty importer (S8) ------------------------------------
+
+    def text_batches(self, values: Any) -> list[list[str]]:
+        return _TEXT_BATCHES(values)
+
+    def list_by_twenty_ids(
+        self, workspace_id: str, table: str, twenty_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        assert table in store.TWENTY_TABLES, table
+        wanted = set(twenty_ids)
+        return [r for r in self._of(table, workspace_id) if r.get("twenty_id") in wanted]
+
+    def deals_of_companies(self, workspace_id: str, company_ids: list[str]) -> list[dict]:
+        return [
+            {k: r.get(k) for k in ("id", "company_id", "stage", "twenty_id")}
+            for r in self._of("crm_opportunities", workspace_id)
+            if r["company_id"] in company_ids and not r.get("deleted_at")
+        ]
+
+    def similar_many(
+        self, workspace_id: str, kind: str, names: list[str], limit: int = 3
+    ) -> list[dict[str, Any]]:
+        return [
+            {"idx": idx, **match}
+            for idx, name in enumerate(names, start=1)
+            for match in self.similar(workspace_id, kind, name, limit)
+        ]
+
+    def record_import(self, actor: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+        """036 `crm_record_import`: the run and its audit row together."""
+        ws = actor["workspace_id"]
+        if not run.get("id"):
+            row = self.add(
+                "crm_import_runs",
+                workspace_id=ws,
+                kind=run["kind"],
+                object=run.get("object"),
+                file_sha256=run["file_sha256"],
+                status="dry_run",
+                report=json.loads(json.dumps(run.get("report") or {})),
+                options=run.get("options") or {},
+                created_by=actor["user_id"],
+                created_at=datetime.now(UTC).isoformat(),
+                applied_at=None,
+            )
+            status = "dry_run"
+        else:
+            row = self.rows["crm_import_runs"].get(run["id"])
+            if row is None or row["workspace_id"] != ws:
+                raise store.refusal_for("CRM04", "No such import run.")
+            status = run["status"]
+            row.update(
+                status=status,
+                report={**row["report"], "applied": run.get("report") or {}},
+                options=run.get("options") or row["options"],
+                applied_at=datetime.now(UTC).isoformat()
+                if status == "applied"
+                else row["applied_at"],
+            )
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor["user_id"],
+                "actor_label": actor["kind"],
+                "channel": actor["channel"],
+                "workspace_id": ws,
+                "action": f"import.{status}",
+                "target_table": "crm_import_runs",
+                "target_id": row["id"],
+                "before": None,
+                "after": {
+                    "kind": row["kind"],
+                    "object": row["object"],
+                    "file_sha256": row["file_sha256"],
+                    "counts": (run.get("report") or {}).get("counts", {}),
+                },
+            }
+        )
+        return dict(row)
+
+    def get_import_run(self, workspace_id: str, run_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_import_runs"].get(run_id)
+        return dict(row) if row and row["workspace_id"] == workspace_id else None
+
+    def list_import_runs(self, workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = sorted(
+            self._of("crm_import_runs", workspace_id), key=lambda r: r["created_at"], reverse=True
+        )
+        return [
+            {
+                **{k: r[k] for k in r if k not in ("report", "workspace_id", "updated_at")},
+                "counts": r["report"].get("counts"),
+            }
+            for r in rows[:limit]
+        ]
+
     # -- store: writes ------------------------------------------------------
 
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:
@@ -2179,7 +2281,30 @@ class FakeCrmStore:
                 raise store.refusal_for("CRM22", f"{k} cannot be set here.")
         if op["table"] == "crm_opportunities" and op["op"] == "update" and "stage" in values:
             raise store.refusal_for("CRM22", "Use a stage move.")
-        if op["op"] == "insert":
+        if op["op"] == "upsert":
+            if not values.get("twenty_id"):
+                raise store.refusal_for("CRM22", "An upsert needs twenty_id.")
+            if op["table"] == "crm_opportunities" and "stage" in values:
+                raise store.refusal_for("CRM22", "Use a stage move.")
+            found = next(
+                (
+                    r
+                    for r in table.values()
+                    if r["workspace_id"] == ws and r.get("twenty_id") == values["twenty_id"]
+                ),
+                None,
+            )
+            if found is not None:
+                # 027: an unchanged row is not rewritten, so no audit row.
+                changed = {
+                    k: v
+                    for k, v in values.items()
+                    if k not in ("twenty_id", "updated_by") and found.get(k) != v
+                }
+                if changed:
+                    self._update(actor, op, found, changed)
+                return {"ref": op.get("ref"), "id": found["id"], "row": dict(found)}
+        if op["op"] in ("insert", "upsert"):
             row = {
                 "id": str(uuid.uuid4()),
                 "workspace_id": ws,
@@ -2195,8 +2320,8 @@ class FakeCrmStore:
             self._check_refs(op["table"], row)
             self._check_unique(op["table"], row)
             table[row["id"]] = row
-            self._audit(actor, op, row, None, dict(row))
-            if op["table"] == "crm_opportunities":
+            self._audit(actor, {**op, "op": "insert"}, row, None, dict(row))
+            if op["table"] == "crm_opportunities" and op["op"] == "insert":
                 self.add(
                     "crm_stage_history",
                     workspace_id=ws,

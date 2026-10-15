@@ -42,6 +42,9 @@ CALLER_LINES = {
     ),
     "crm_search": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
     "crm_merge": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST: preview first",
+    "crm_import": (
+        "WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts\nand conflicts."
+    ),
 }
 READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search"}
 DESTRUCTIVE = {"crm_move_stage", "crm_handoff", "crm_merge"}

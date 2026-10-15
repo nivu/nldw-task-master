@@ -8,7 +8,7 @@
  * (D13).
  */
 
-import { backendFetch } from "@/lib/api/backend";
+import { backendFetch, upload } from "@/lib/api/backend";
 import type {
   AccountTypeResult,
   BulkAction,
@@ -48,6 +48,9 @@ import type {
   HandoffIn,
   HandoffPreview,
   HandoffResult,
+  ImportApplied,
+  ImportDryRun,
+  ImportRun,
   InvitationIn,
   InvitationResult,
   LinkableProject,
@@ -548,3 +551,31 @@ export const mergeCrmCompanies = (
     expect?: { survivor_updated_at: string; merged_updated_at: string };
   }
 ) => call<CrmCompany>(`/companies/merge${query(workspace)}`, { method: "POST", ...body(merge) });
+
+// ---------------------------------------------------------------------------
+// Imports — §2.9 (S8). The file goes up as multipart through the proxy,
+// which carries uploads up to 4 MB (FR-CRM-CHG-08).
+// ---------------------------------------------------------------------------
+
+function importForm(file: File, fixup?: boolean): FormData {
+  const form = new FormData();
+  form.set("file", file);
+  if (fixup !== undefined) form.set("fixup_next_step", fixup ? "true" : "false");
+  return form;
+}
+
+export const dryRunCrmImport = async (workspace: string, file: File) =>
+  upload<ImportDryRun>(
+    `/api/v1/crm/imports/dry-run${query(workspace)}`,
+    importForm(file),
+    await accessToken()
+  );
+
+export const applyCrmImport = async (workspace: string, runId: string, file: File, fixup: boolean) =>
+  upload<ImportApplied>(
+    `/api/v1/crm/imports/${encodeURIComponent(runId)}/apply${query(workspace)}`,
+    importForm(file, fixup),
+    await accessToken()
+  );
+
+export const listCrmImports = (workspace: string) => call<ImportRun[]>(`/imports${query(workspace)}`);
