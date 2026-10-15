@@ -41,6 +41,8 @@ PROJECT_STAGES = ("proposal", "negotiation")
 #: FR-CRM-TVA-05, contracts §2.6.
 ASK_A_MANAGER = "Ask a TVA manager to link it."
 HAS_PROJECT = "This deal has a TVA project; mark it Closed Lost instead."
+#: Ids per read by id: they travel in the URL (as `records.ID_BATCH`).
+ID_BATCH = 100
 
 
 def may_link(user: Any) -> bool:
@@ -108,9 +110,18 @@ def blocks(
     *, opportunity_ids: list[str] | None = None, company_ids: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """The linked projects of some deals or companies, with their phases, in
-    two queries. Each block keeps the link it was found by."""
-    projects = db.list_crm_projects(opportunity_ids=opportunity_ids, company_ids=company_ids)
-    phases = db.list_project_phases([p["id"] for p in projects])
+    two queries per `ID_BATCH` ids. Each block keeps the link it was found by."""
+    found: dict[str, dict[str, Any]] = {}
+    for column, ids in (("opportunity_ids", opportunity_ids), ("company_ids", company_ids)):
+        wanted = list(dict.fromkeys(ids or []))
+        for i in range(0, len(wanted), ID_BATCH):
+            for p in db.list_crm_projects(**{column: wanted[i : i + ID_BATCH]}):
+                found.setdefault(p["id"], p)
+    projects = sorted(found.values(), key=lambda p: p["name"])
+    project_ids = [p["id"] for p in projects]
+    phases: list[dict[str, Any]] = []
+    for i in range(0, len(project_ids), ID_BATCH):
+        phases += db.list_project_phases(project_ids[i : i + ID_BATCH])
     return [
         {
             **block(p, phases),

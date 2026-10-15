@@ -593,7 +593,10 @@ class TestCapacityOnTheDashboard:
 
     def test_not_a_crm_only_member(self, crm):
         http, *_, capacity = crm
-        body = _get(http, SELLER["id"]).json()
+        r = _get(http, SELLER["id"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "pipeline_by_stage" in body
         assert "capacity" not in body
         assert capacity.calls == 0
 

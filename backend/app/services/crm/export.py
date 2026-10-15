@@ -39,6 +39,8 @@ NO_EXPORT = "Viewers cannot export."
 BOM = "﻿"
 #: Rows per page read for an export.
 PAGE = 200
+#: Rows presented at a time for a whole-workspace export.
+PRESENT_BATCH = 500
 #: The objects of a whole-workspace export, by their name in the file.
 WORKSPACE_OBJECTS = {
     "companies": "company",
@@ -153,22 +155,19 @@ def view_csv(ctx: Any, body: ExportViewIn) -> tuple[str, bytes]:
 
 
 def _all_rows(ctx: Any, ws: base.Workspace, kind: str) -> list[dict[str, Any]]:
-    """Every live record of one object, presented as the record routes
-    present it (a Viewer never gets here)."""
-    table = objects.TABLES[kind]
-    rows: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = store.list_records(ctx.workspace_id, table, limit=500, offset=offset)
-        rows += page
-        if len(page) < 500:
-            break
-        offset += 500
+    """Every live record of one object, in id order, presented as the
+    record routes present it (a Viewer never gets here), `PRESENT_BATCH`
+    rows at a time."""
+    rows = store.every_record(ctx.workspace_id, objects.TABLES[kind])
     if kind == "drive_link":
         return [show.drive_link(r, ws.facts) for r in rows]
-    if kind == "campaign_member":
-        rows = base.shown_members(ctx.workspace_id, rows)
-    return base.present_rows(ws, kind, rows) if rows else []
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(rows), PRESENT_BATCH):
+        batch = rows[i : i + PRESENT_BATCH]
+        if kind == "campaign_member":
+            batch = base.shown_members(ctx.workspace_id, batch)
+        out += base.present_rows(ws, kind, batch) if batch else []
+    return out
 
 
 def workspace_json(ctx: Any, object_name: str | None) -> tuple[str, bytes]:

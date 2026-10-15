@@ -22,7 +22,7 @@ from crm_fake import client as crm_client
 
 from app.domain.crm import csv_io
 from app.mcp import crm as tools
-from app.services.crm import deals, importer, records
+from app.services.crm import deals, importer, records, tva
 from app.services.crm import views as view_service
 
 API = "/api/v1/crm"
@@ -173,6 +173,28 @@ class TestDuplicates:
             "A record with this domain or email exists; update it or skip the row."
         ]
 
+    def test_an_id_matched_row_created_again_clashes_on_its_own_domain(self, crm):
+        http, college = crm["http"], crm["college"]
+        content = _csv([["ID", "Name", "Domain"], [college["id"], "PSG Tech", "psg.edu"]])
+        body = _dry(http, content, "companies", actions={"1": "create"}).json()
+        [row] = body["rows"]
+        assert row["action"] == "create" and row["match"]["by"] == "id"
+        assert row["errors"] and "psg.edu" in row["errors"][0]
+        assert body["blocking"]
+
+    def test_an_additional_domain_twice_in_one_file(self, crm):
+        http = crm["http"]
+        content = _csv(
+            [
+                ["Name", "Domain", "Additional domains"],
+                ["KCT", "kct.ac.in", ""],
+                ["KCT Online", "kctonline.in", "kct.ac.in"],
+            ]
+        )
+        body = _dry(http, content, "companies").json()
+        assert body["rows"][1]["errors"] == ["Row 1 has the same domain."]
+        assert body["blocking"]
+
     def test_similar_names_are_warnings(self, crm):
         http = crm["http"]
         body = _dry(http, _csv([["Name"], ["PSG Tech College"]]), "companies").json()
@@ -237,6 +259,60 @@ class TestRowActions:
             "import.dry_run",
             "import.applied",
         ]
+
+    def test_a_run_applied_once_is_not_applied_again(self, crm):
+        http, fake, academy = crm["http"], crm["fake"], crm["academy"]
+        content = _csv(
+            [
+                ["Name", "Company", "Next step", "Next step date"],
+                ["PSG - AI", "PSG Tech", "Call", "2026-10-20"],
+            ]
+        )
+        run = _dry(http, content, "opportunities").json()["run_id"]
+        r = _apply(http, run, content, "opportunities")
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 1
+        deals_before = len(_rows(fake, "crm_opportunities", academy))
+        r = _apply(http, run, content, "opportunities")
+        assert r.status_code == 409
+        assert r.json()["detail"] == "This import has already run; dry-run the file again."
+        assert len(_rows(fake, "crm_opportunities", academy)) == deals_before
+
+    def test_a_failed_run_is_not_applied_again(self, crm, monkeypatch):
+        http, fake = crm["http"], crm["fake"]
+        content = _csv([["Name"], ["Karunya"]])
+        run = _dry(http, content, "companies").json()["run_id"]
+
+        write_new = importer._write_new
+        failing = [True]
+
+        def flaky(*args, **kwargs):
+            if failing:
+                raise RuntimeError("write failed")
+            return write_new(*args, **kwargs)
+
+        monkeypatch.setattr(importer, "_write_new", flaky)
+        with pytest.raises(RuntimeError):
+            _apply(http, run, content, "companies")
+        assert fake.rows["crm_import_runs"][run]["status"] == "failed"
+        failing.clear()
+        assert _apply(http, run, content, "companies").status_code == 409
+
+    def test_a_failure_to_record_the_failure_keeps_the_write_error(self, crm, monkeypatch):
+        http = crm["http"]
+        content = _csv([["Name"], ["Karunya"]])
+        run = _dry(http, content, "companies").json()["run_id"]
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("write failed")
+
+        def unrecorded(*args, **kwargs):
+            raise ConnectionError("store down")
+
+        monkeypatch.setattr(importer, "_write_new", boom)
+        monkeypatch.setattr(importer.store, "record_import", unrecorded)
+        with pytest.raises(RuntimeError, match="write failed"):
+            _apply(http, run, content, "companies")
 
     def test_the_file_must_be_the_dry_runs(self, crm):
         http = crm["http"]
@@ -512,6 +588,28 @@ class TestExport:
     def test_every_formula_start(self, text):
         assert csv_io.neutralise(text) == f"'{text}"
         assert csv_io.neutralise("Acme") == "Acme"
+        assert csv_io.unneutralise(csv_io.neutralise(text)) == text
+        assert csv_io.unneutralise("'quoted") == "'quoted"
+
+    def test_tva_projects_are_read_in_batches_of_ids(self, monkeypatch):
+        """A whole-workspace or 500-row selection export of Labs deals reads
+        their projects `ID_BATCH` ids per URL (414 otherwise)."""
+        seen: list[int] = []
+
+        def projects(*, opportunity_ids=None, company_ids=None):
+            ids = opportunity_ids or company_ids or []
+            seen.append(len(ids))
+            return [{"id": f"p-{i}", "name": f"P {i}", "source_opportunity_id": i} for i in ids[:1]]
+
+        def phases(project_ids):
+            seen.append(len(project_ids))
+            return []
+
+        monkeypatch.setattr(tva.db, "list_crm_projects", projects)
+        monkeypatch.setattr(tva.db, "list_project_phases", phases)
+        found = tva.blocks(opportunity_ids=[str(i) for i in range(250)])
+        assert seen == [100, 100, 50, 3]
+        assert [b["source_opportunity_id"] for b in found] == ["0", "100", "200"]
 
     def test_past_five_megabytes_is_413_with_the_sentence(self, crm, monkeypatch):
         http = crm["http"]
@@ -630,6 +728,22 @@ class TestRoundTrip:
         assert r.status_code == 200, r.text
         assert (r.json()["created"], r.json()["updated"]) == (0, 0)
         assert [a["action"] for a in fake.audit[audit_before:]] == ["import.applied"]
+
+    def test_a_neutralised_cell_reads_back_as_it_was(self, crm):
+        http = crm["http"]
+        _patch(
+            http,
+            "companies",
+            crm["college"]["id"],
+            {"name": '=HYPERLINK("http://x","y")', "description": "- follow up in Nov"},
+        )
+        exported = _export(
+            http, {"object": "companies", "columns": ["name", "domain", "description"]}
+        )
+        content = exported.content.decode("utf-8-sig")
+        assert "'=HYPERLINK" in content and "'- follow up" in content
+        body = _dry(http, content, "companies", mode="update").json()
+        assert body["counts"]["companies"]["unchanged"] == 1, body["rows"]
 
     def test_people_and_deals_too(self, crm):
         http = crm["http"]

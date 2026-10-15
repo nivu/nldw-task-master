@@ -557,6 +557,26 @@ def list_records(
     )
 
 
+def every_record(workspace_id: str, table: str) -> list[dict[str, Any]]:
+    """Every live record of one table, in id order, paged on the id itself:
+    a record edited while it is read neither moves to another page nor is
+    read twice, as it would under `list_records`' newest-first offsets."""
+    rows: list[dict[str, Any]] = []
+    while True:
+        query = (
+            supabase.table(_table(table))
+            .select("*")
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+        )
+        if rows:
+            query = query.gt("id", rows[-1]["id"])
+        page = query.order("id").limit(_PAGE).execute().data or []
+        rows += page
+        if len(page) < _PAGE:
+            return rows
+
+
 def list_domains(
     workspace_id: str,
     *,

@@ -41,6 +41,7 @@ TOO_BIG = "The file is larger than 4 MB; export fewer records at a time."
 NO_SUCH_RUN = "No such import run."
 NOT_THE_FILE = "This is not the file the dry run read; dry-run it again."
 TOO_OLD = "The dry run is more than 24 hours old; dry-run the file again."
+ALREADY_RUN = "This import has already run; dry-run the file again."
 #: FR-CRM-MIG-04 — how long a dry run stays good for the real run.
 DRY_RUN_FOR = timedelta(hours=24)
 
@@ -776,9 +777,10 @@ def plan_csv(
             row.match = {"id": existing["id"], "name": _name(kind, existing), "by": by}
 
         # The same record twice in one file.
+        row_domains = [values.get("domain"), *(values.get("additional_domains") or [])]
         for key in (
             f"id:{record_id}" if record_id else None,
-            f"domain:{values['domain']}" if values.get("domain") else None,
+            *(f"domain:{d}" for d in dict.fromkeys(row_domains) if d),
             f"email:{values['primary_email']}" if values.get("primary_email") else None,
         ):
             if key is None:
@@ -846,7 +848,9 @@ def plan_csv(
             row.values = parsed
 
         # A domain or email another record holds (FR-CRM-DUP-01).
-        mine = row.match["id"] if row.match else None
+        # The matched record's own domain or email is no clash only when
+        # the row updates it; a new record would collide with it.
+        mine = row.match["id"] if row.match and row.action == "update" else None
         if kind == "company" and row.values:
             wanted = [row.values.get("domain")] + list(row.values.get("additional_domains") or [])
             for domain in [d for d in wanted if d]:
@@ -971,6 +975,10 @@ def csv_apply(ctx: Any, run: dict[str, Any], source: Source, *, fixup: bool) -> 
     created_at = datetime.fromisoformat(str(run["created_at"]).replace("Z", "+00:00"))
     if datetime.now(UTC) - created_at > DRY_RUN_FOR:
         raise CrmRefused(409, TOO_OLD)
+    # A CSV row has no key a second run would match it by (a deal never
+    # does), so a run applied, or failed part-way, is not run again.
+    if run.get("status", "dry_run") != "dry_run":
+        raise CrmRefused(409, ALREADY_RUN)
     options = run.get("options") or {}
     mapping = options.get("mapping") or csv_io.default_mapping(kind, headers)
     mode = source.mode or options.get("mode") or "skip"
@@ -997,10 +1005,13 @@ def csv_apply(ctx: Any, run: dict[str, Any], source: Source, *, fixup: bool) -> 
             except CrmRefused as refused:
                 failed.append({"row": row.n, "detail": refused.detail})
     except Exception:
-        store.record_import(
-            actor(ctx, "import"),
-            {"id": run["id"], "status": "failed", "report": {"counts": plan.counts()}},
-        )
+        try:
+            store.record_import(
+                actor(ctx, "import"),
+                {"id": run["id"], "status": "failed", "report": {"counts": plan.counts()}},
+            )
+        except Exception:  # the write's own error is the one to surface
+            logger.exception('{"event": "crm_import_failed_unrecorded", "run": "%s"}', run["id"])
         raise
     done = {
         "counts": plan.counts(),

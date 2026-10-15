@@ -2978,6 +2978,10 @@ class FakeCrmStore:
         names = [c.strip() for c in columns.split(",")]
         return [{c: r.get(c) for c in names} for r in rows]
 
+    def every_record(self, workspace_id: str, table: str) -> list[dict[str, Any]]:
+        live = [r for r in self._of(table, workspace_id) if not r.get("deleted_at")]
+        return sorted(live, key=lambda r: r["id"])
+
     def dashboard_deals(self, workspace_id: str) -> list[dict[str, Any]]:
         live = [r for r in self._of("crm_opportunities", workspace_id) if not r.get("deleted_at")]
         return self._columns(live, store.DASHBOARD_DEAL_COLUMNS)

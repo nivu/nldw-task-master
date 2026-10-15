@@ -221,7 +221,7 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 | Method | Path | Guard | Body | Returns |
 |---|---|---|---|---|
 | POST | `/crm/imports/dry-run` | Admin | multipart `file` ≤ 4 MB (with `format?`, `object?` for a CSV, else read from the file name), or JSON `{format: "twenty_json"\|"twenty_csv"\|"csv", content, object?, mapping?}`, or a Twenty JSON export posted as it is | `{run_id, counts: {object: {in_file, create, update, unchanged, skipped}}, lead_stages: [{row, company, derived, derived_label, because}], conflicts: [{object, row, kind, detail, blocking}], attachments: [{record, record_type, record_id, name}], fixup_candidates: n, blocking: [detail]}`. 413 past 4 MB; 415 another content type |
-| POST | `/crm/imports/{run_id}/apply` | Admin | the same file again + `{fixup_next_step: bool}` (a form field, or `?fixup_next_step=true` for a posted export) (CSV: `mode`) | `{run_id, counts, fixups_used}`. 409 if the file hash differs from the dry run's, or the dry run is older than 24 h; 404 a run of another workspace; 422 while the dry run lists a blocking conflict (a missing FX rate; an open deal with no next step, unless the fix-up is chosen). A re-run keeps a deal's stage and probability and a task's status (they move in the CRM), keeps a record's owner or assignee unless the file names a member (the importing Admin stands in only on a new record), and never blanks a field the file leaves empty. |
+| POST | `/crm/imports/{run_id}/apply` | Admin | the same file again + `{fixup_next_step: bool}` (a form field, or `?fixup_next_step=true` for a posted export) (CSV: `mode`) | `{run_id, counts, fixups_used}`. 409 if the file hash differs from the dry run's, or the dry run is older than 24 h; 409 a CSV run already applied or failed ("This import has already run; dry-run the file again.": a CSV row has no key a second run would match it by); 404 a run of another workspace; 422 while the dry run lists a blocking conflict (a missing FX rate; an open deal with no next step, unless the fix-up is chosen). A re-run keeps a deal's stage and probability and a task's status (they move in the CRM), keeps a record's owner or assignee unless the file names a member (the importing Admin stands in only on a new record), and never blanks a field the file leaves empty. |
 | GET | `/crm/imports` | Admin | — | recent runs (no content) |
 
 CSV import (S11b, as built). `format: "csv"` with `object` (`companies`,
@@ -230,7 +230,8 @@ file, at most 5,000 rows. `mapping` is `{CSV header: field or null}` (the
 request field names of §2.5.1, plus `id` and, for people, `name` split into
 first and last); without it a saved mapping's `mapping_id`, else the
 headers that name a field by key or label, so a file exported from a view
-maps itself back. Relations are read by name, domain or email (a company
+maps itself back (a cell's leading `'` before `=`, `+`, `-`, `@`, a tab or
+a carriage return is the export's and is dropped). Relations are read by name, domain or email (a company
 by name or domain, a person by email or name, an owner by member email or
 name), options by label. An empty cell never sets or clears a field. A row
 matches a record by its `id` column, a company's domain or a person's
@@ -314,7 +315,7 @@ column; Viewers 403 "Viewers cannot export."; a member of two workspaces
 names one (it is audited). `GET /crm/export/workspace` answers
 `{workspace, exported_at, objects: {companies, people, opportunities,
 tasks, notes, campaigns, campaign_members, drive_links}}` (or one, by
-`object`), named `<workspace key>-workspace-<date>.json` or `<key>-<object>-<date>.json`.
+`object`; each object's live records in id order), named `<workspace key>-workspace-<date>.json` or `<key>-<object>-<date>.json`.
 
 ---
 

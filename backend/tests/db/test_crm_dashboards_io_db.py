@@ -276,6 +276,38 @@ class TestQuickstartS11:
             {"first_name": "Ravi", "company_id": company["id"]},
         ]
 
+    def test_a_csv_run_applies_once(self, stack, http):
+        client, me, q, ws = http
+        tag = uuid.uuid4().hex[:8]
+        body = {"format": "csv", "content": f"Name\nOnce {tag}\n", "object": "companies"}
+        dry = client.post(f"/api/v1/crm/imports/dry-run{q}", json=body, headers=me).json()
+        apply = f"/api/v1/crm/imports/{dry['run_id']}/apply{q}"
+        r = client.post(apply, json=body, headers=me)
+        assert r.status_code == 200, r.text
+        r = client.post(apply, json=body, headers=me)
+        assert r.status_code == 409, r.text
+        found = stack.sql(
+            f"SELECT count(*) AS n FROM crm_companies WHERE workspace_id = {stack.q(ws)} "
+            f"AND name = {stack.q('Once ' + tag)}"
+        )
+        assert found[0]["n"] == 1
+
+    def test_the_workspace_json_holds_every_live_record_once(self, stack, http):
+        client, me, q, ws = http
+        tag = uuid.uuid4().hex[:8]
+        made = [
+            client.post(
+                f"/api/v1/crm/companies{q}", json={"name": f"Json {n} {tag}"}, headers=me
+            ).json()["id"]
+            for n in range(3)
+        ]
+        r = client.delete(f"/api/v1/crm/companies/{made[0]}{q}", headers=me)
+        assert r.status_code in (200, 204), r.text
+        r = client.get(f"/api/v1/crm/export/workspace{q}&object=companies", headers=me)
+        assert r.status_code == 200, r.text
+        ids = [c["id"] for c in r.json()["objects"]["companies"]]
+        assert ids == sorted(made[1:])
+
     def test_the_dashboard_loads_for_an_admin(self, stack, http):
         client, me, q, ws = http
         tag = uuid.uuid4().hex[:8]

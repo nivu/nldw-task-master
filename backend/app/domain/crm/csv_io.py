@@ -486,7 +486,7 @@ def read_row(
     out = Read()
     for header, text in zip(headers, cells, strict=True):
         name = mapping.get(header)
-        value = text.strip()
+        value = unneutralise(text).strip()
         if not name or not value:
             continue
         col = column(kind, name)
@@ -550,6 +550,12 @@ def neutralise(text: str) -> str:
     """OWASP CSV injection: a cell a spreadsheet would read as a formula is
     prefixed with `'`."""
     return f"'{text}" if text.startswith(FORMULA_STARTS) else text
+
+
+def unneutralise(text: str) -> str:
+    """The cell before `neutralise`, so an exported view reads back as it
+    was: a `'` before a formula start is the export's, not the value's."""
+    return text[1:] if text.startswith("'") and text[1:].startswith(FORMULA_STARTS) else text
 
 
 #: A field whose shown value sits under another key of a presented record.

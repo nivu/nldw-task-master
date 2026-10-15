@@ -356,6 +356,8 @@ function TargetsTab({ workspace }: { workspace: string }) {
   const [day, setDay] = useState("");
   const [entity, setEntity] = useState<string>("");
   const [amount, setAmount] = useState("");
+  // PUT replaces the whole set, so a save waits for the set the server holds.
+  const loaded = data !== null;
   const targets: CrmTargetIn[] = (data ?? []).map((t) => ({
     entity: t.entity,
     period_kind: t.period_kind,
@@ -388,7 +390,7 @@ function TargetsTab({ workspace }: { workspace: string }) {
           className="flex flex-wrap items-end gap-3"
           onSubmit={async (event) => {
             event.preventDefault();
-            if (!day || !amount) return;
+            if (!loaded || !day || !amount) return;
             const start = periodStart(kind, day);
             const added: CrmTargetIn = {
               entity: (entity || null) as CrmTargetIn["entity"],
@@ -437,7 +439,9 @@ function TargetsTab({ workspace }: { workspace: string }) {
               required
             />
           </label>
-          <Button type="submit">Set target</Button>
+          <Button type="submit" disabled={!loaded}>
+            Set target
+          </Button>
         </form>
         {data && data.length === 0 && <p className="text-sm text-muted-foreground">No targets yet.</p>}
         {data && data.length > 0 && (
