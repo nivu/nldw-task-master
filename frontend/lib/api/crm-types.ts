@@ -868,3 +868,89 @@ export interface BulkResult {
   ok: string[];
   failed: { id: string; reason: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// Today, search, merge — §2.8 (S7)
+// ---------------------------------------------------------------------------
+
+export type TodaySectionKey = "replies_owed" | "next_steps" | "tasks" | "silent_clients" | "loose_ends";
+
+/** One line of Today: what it is and the record it opens. */
+export interface TodayItem {
+  record_type: "company" | "person" | "opportunity" | "task";
+  record_id: string;
+  title: string;
+  detail: string;
+  due_on: string | null;
+  level: "overdue" | "today" | null;
+  /** A task line opens the first record it is linked to. */
+  opens?: SearchTarget | null;
+}
+
+export interface TodaySection {
+  key: TodaySectionKey;
+  /** "Email sync is off" while sections 1 and 4 cannot be built (FR-CRM-TODAY-02). */
+  off_reason?: string;
+  items: TodayItem[];
+}
+
+/** GET /crm/today — FR-CRM-TODAY-01 to -03. */
+export interface CrmToday {
+  /** The person's own day, YYYY-MM-DD. */
+  as_of: string;
+  timezone: string;
+  person: { id: string; name: string | null };
+  sections: TodaySection[];
+}
+
+/** Where a task or note hit opens: the first record it is linked to. */
+export interface SearchTarget {
+  record_type: ViewObjectKind;
+  record_id: string;
+}
+
+export interface SearchHit {
+  id: string;
+  record_type: ViewObjectKind;
+  name: string;
+  domain?: string | null;
+  email?: string | null;
+  company_name?: string | null;
+  lead_stage_label?: string | null;
+  stage_label?: string | null;
+  status_label?: string | null;
+  kind_label?: string | null;
+  /** Absent for a Viewer (FR-CRM-ACC-11). */
+  amount?: string | null;
+  currency?: string | null;
+  opens?: SearchTarget | null;
+}
+
+/** GET /crm/search — FR-CRM-SRCH-01, -02. */
+export interface CrmSearchResult {
+  companies: SearchHit[];
+  people: SearchHit[];
+  opportunities: SearchHit[];
+  tasks: SearchHit[];
+  notes: SearchHit[];
+  campaigns: SearchHit[];
+  views: Pick<CrmSavedView, "id" | "object" | "name" | "icon" | "kind" | "system_key">[];
+}
+
+export interface MergeField {
+  field: string;
+  label: string;
+  a: unknown;
+  b: unknown;
+  a_display: string | number | boolean | null;
+  b_display: string | number | boolean | null;
+  default: "a" | "b";
+}
+
+/** GET /crm/companies/merge-preview — `a` survives (FR-CRM-DUP-03). */
+export interface MergePreview {
+  a: CrmCompany;
+  b: CrmCompany;
+  differing_fields: MergeField[];
+  moves: { people: number; deals: number; tasks: number; notes: number; links: number; projects: number };
+}

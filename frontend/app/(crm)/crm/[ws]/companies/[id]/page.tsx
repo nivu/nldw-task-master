@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { MergeDialog } from "@/components/crm/merge-dialog";
 import { NotesTab } from "@/components/crm/note-composer";
 import type { Choice } from "@/components/crm/field-editor";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
@@ -120,9 +122,11 @@ function companyGroups(
 
 /**
  * A company — spec 007 FR-CRM-CO-01 to -03, FR-CRM-REC-01 to -04,
- * FR-CRM-LINK-03, FR-CRM-DEL-02. Its deals are in Related, its tasks and
- * notes in their tabs; a Labs company's TVA projects are in Related with
- * their status and phase dates (FR-CRM-CO-02).
+ * FR-CRM-LINK-03, FR-CRM-DEL-02, FR-CRM-DUP-03. Its deals are in Related,
+ * its tasks and notes in their tabs; a Labs company's TVA projects are in
+ * Related with their status and phase dates (FR-CRM-CO-02). Admins and
+ * Members merge a duplicate into it, or it into one; Merge and Delete are
+ * also the command menu's quick actions here.
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -131,10 +135,26 @@ export default function CompanyPage() {
   const ws = bootstrap.workspace.key;
   const [version, setVersion] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const [merging, setMerging] = useState(false);
   const { data, error, reload } = useAsync(
     () => Promise.all([getCrmRecord<CrmCompany>(ws, "companies", id), getCrmMembers(ws)]),
     [ws, id]
   );
+  const loaded = data?.[0].record;
+  const canEdit = bootstrap.role !== "viewer";
+  const mayDelete =
+    bootstrap.role === "admin" || (bootstrap.role === "member" && loaded?.owner_id === bootstrap.me.id);
+  const quickActions = useMemo(
+    () =>
+      loaded
+        ? [
+            ...(canEdit ? [{ id: "merge", label: `Merge ${loaded.name}…`, run: () => setMerging(true) }] : []),
+            ...(mayDelete ? [{ id: "delete", label: `Delete ${loaded.name}…`, run: () => setDeleting(true) }] : []),
+          ]
+        : null,
+    [loaded, canEdit, mayDelete]
+  );
+  useQuickActions(quickActions);
 
   if (error) {
     return (
@@ -150,9 +170,6 @@ export default function CompanyPage() {
 
   const [page, members] = data;
   const company = page.record;
-  const canEdit = bootstrap.role !== "viewer";
-  const mayDelete =
-    bootstrap.role === "admin" || (bootstrap.role === "member" && company.owner_id === bootstrap.me.id);
   const refresh = () => {
     reload();
     setVersion((v) => v + 1);
@@ -184,10 +201,19 @@ export default function CompanyPage() {
             : []),
         ]}
         actions={
-          mayDelete && (
-            <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
-              Delete
-            </Button>
+          (canEdit || mayDelete) && (
+            <>
+              {canEdit && (
+                <Button variant="outline" size="sm" onClick={() => setMerging(true)}>
+                  Merge
+                </Button>
+              )}
+              {mayDelete && (
+                <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
+                  Delete
+                </Button>
+              )}
+            </>
           )
         }
         groups={companyGroups(bootstrap, members, company)}
@@ -245,6 +271,22 @@ export default function CompanyPage() {
           />
         }
       />
+      {canEdit && (
+        <MergeDialog
+          open={merging}
+          onOpenChange={setMerging}
+          workspace={ws}
+          company={{ id: company.id, name: company.name }}
+          searchCompanies={async (q, after) => {
+            const found = await searchCompanyChoices(ws, q, after);
+            return { ...found, choices: found.choices.filter((c) => c.value !== company.id) };
+          }}
+          onMerged={(survivorId) => {
+            if (survivorId === company.id) refresh();
+            else router.push(`/crm/${ws}/companies/${survivorId}`);
+          }}
+        />
+      )}
       <DeleteCompanyDialog
         open={deleting}
         onOpenChange={setDeleting}

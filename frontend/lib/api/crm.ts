@@ -36,9 +36,11 @@ import type {
   CrmRecordPage,
   CrmRole,
   CrmSavedView,
+  CrmSearchResult,
   CrmSettings,
   CrmTask,
   CrmTimelineEntry,
+  CrmToday,
   CrmTrashRow,
   CrmViewIn,
   CrmViewUpdate,
@@ -49,6 +51,7 @@ import type {
   InvitationIn,
   InvitationResult,
   LinkableProject,
+  MergePreview,
   NotCreated,
   OptionUpdate,
   ProjectCategory,
@@ -521,3 +524,27 @@ export const bulkCrm = (
     method: "POST",
     ...body({ object, ids, action, values }),
   });
+
+// ---------------------------------------------------------------------------
+// Today, search, merge — §2.8 (FR-CRM-TODAY, FR-CRM-SRCH, FR-CRM-DUP-03)
+// ---------------------------------------------------------------------------
+
+/** The person's Today; `person` is another member's, for an Admin. */
+export const getCrmToday = (workspace: string, person?: string) =>
+  call<CrmToday>(`/today${query(workspace, { person })}`);
+
+export const searchCrm = (workspace: string, q: string) =>
+  call<CrmSearchResult>(`/search${query(workspace, { q })}`);
+
+export const previewCrmMerge = (workspace: string, survivorId: string, mergedId: string) =>
+  call<MergePreview>(`/companies/merge-preview${query(workspace, { a: survivorId, b: mergedId })}`);
+
+export const mergeCrmCompanies = (
+  workspace: string,
+  merge: {
+    survivor_id: string;
+    merged_id: string;
+    choices: Record<string, "a" | "b">;
+    expect?: { survivor_updated_at: string; merged_updated_at: string };
+  }
+) => call<CrmCompany>(`/companies/merge${query(workspace)}`, { method: "POST", ...body(merge) });

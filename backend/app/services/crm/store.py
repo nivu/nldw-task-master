@@ -57,6 +57,8 @@ ACCOUNT_LEVEL = frozenset(
         "link_project",
         # The view registry is not workspace data (data-model §3.15).
         "list_object_fields",
+        # Locks both companies in the actor's workspace (035).
+        "merge_companies",
     }
 )
 
@@ -725,3 +727,88 @@ def list_favourites(
             return []
         query_ = query_.in_("target_id", target_ids)
     return query_.order("position").order("created_at").execute().data or []
+
+
+# ---------------------------------------------------------------------------
+# Today, search, merge — S7 (data-model §5.7, §5.9; plan §5.8)
+# ---------------------------------------------------------------------------
+
+#: FR-CRM-PIPE: the stages of an open deal (domain/crm/pipeline.OPEN).
+_OPEN_STAGES = ("discovery", "qualification", "proposal", "negotiation")
+
+
+def due_next_steps(workspace_id: str, owner_id: str, by: str) -> list[dict[str, Any]]:
+    """Today §2 — a person's open deals whose next step is due on or before
+    `by` (their today, YYYY-MM-DD), oldest first."""
+    return (
+        supabase.table("crm_opportunities")
+        .select("id, name, company_id, next_step, next_step_on, stage, owner_id")
+        .eq("workspace_id", workspace_id)
+        .eq("owner_id", owner_id)
+        .in_("stage", list(_OPEN_STAGES))
+        .is_("deleted_at", "null")
+        .lte("next_step_on", by)
+        .order("next_step_on")
+        .order("name")
+        .limit(500)
+        .execute()
+        .data
+        or []
+    )
+
+
+def tasks_for_today(workspace_id: str, assignee_id: str, by: str) -> list[dict[str, Any]]:
+    """Today §3 — a person's open tasks in the Today bucket or due on or
+    before `by`."""
+    return (
+        supabase.table("crm_tasks")
+        .select("id, title, status, due_on, bucket, assignee_id")
+        .eq("workspace_id", workspace_id)
+        .eq("assignee_id", assignee_id)
+        .neq("status", "done")
+        .is_("deleted_at", "null")
+        .or_(f"bucket.eq.today,due_on.lte.{by}")
+        .order("due_on", nullsfirst=False)
+        .order("title")
+        .limit(500)
+        .execute()
+        .data
+        or []
+    )
+
+
+def nurturing_without_next_touch(workspace_id: str, owner_id: str) -> list[dict[str, Any]]:
+    """Today §5 candidates — a person's live companies in Nurturing with no
+    next touch; the service drops those with an open task."""
+    return (
+        supabase.table("crm_companies")
+        .select("id, name, lead_stage, next_touch_on, owner_id, deleted_at")
+        .eq("workspace_id", workspace_id)
+        .eq("owner_id", owner_id)
+        .eq("lead_stage", "nurturing")
+        .is_("next_touch_on", "null")
+        .is_("deleted_at", "null")
+        .order("name")
+        .limit(500)
+        .execute()
+        .data
+        or []
+    )
+
+
+def search(workspace_id: str, q: str, limit: int, *, redact: bool) -> dict[str, Any]:
+    """Data-model §5.9 — up to `limit` live hits per object, best first. With
+    `redact` (a Viewer) no amount column is read."""
+    return (
+        rpc(
+            "crm_search",
+            {"p_workspace": workspace_id, "p_q": q, "p_limit": limit, "p_redact": redact},
+        )
+        or {}
+    )
+
+
+def merge_companies(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Data-model §5.7 — `{survivor, moved}`; both companies re-checked and
+    locked in the actor's workspace, everything moved in one transaction."""
+    return rpc("crm_merge_companies", {"p_actor": actor, "p_plan": plan}) or {}

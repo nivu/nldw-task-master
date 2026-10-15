@@ -462,3 +462,29 @@ test.describe("views (S6)", () => {
     await expect(page.getByTestId("table-count")).toHaveText("0 records");
   });
 });
+
+test.describe("Today, search and merge (S7)", () => {
+  test("Cmd+K finds a seeded company and opens it (FR-CRM-SRCH-01, -02)", async ({ page, request }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E find ${Date.now().toString(36)}`;
+    const company = await crmApi(request, token, "POST", "/companies?workspace=labs", { name: `${tag} Co` });
+
+    await signIn(page, PEOPLE.user);
+    await page.goto("/crm/labs");
+    await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    const box = page.getByRole("combobox", { name: "Search the CRM" });
+    await expect(box).toBeVisible();
+    await box.fill(tag);
+    await page.getByRole("option", { name: new RegExp(`${tag} Co`) }).click();
+    await page.waitForURL(`**/crm/labs/companies/${company.id}`);
+  });
+
+  test("Today shows its sections, the email ones saying sync is off (FR-CRM-TODAY-01, -02)", async ({ page }) => {
+    await signIn(page, PEOPLE.user);
+    await page.goto("/crm/labs");
+    await expect(page.getByTestId("today-replies_owed")).toContainText("Email sync is off");
+    await expect(page.getByTestId("today-silent_clients")).toContainText("Email sync is off");
+    await expect(page.getByTestId("today-loose_ends")).toBeVisible();
+  });
+});

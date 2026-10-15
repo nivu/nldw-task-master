@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
+import { CommandMenu } from "@/components/crm/command-menu";
 import { CrmShell } from "@/components/crm/shell";
 import { Button } from "@/components/ui/button";
 import { getCrmBootstrap, getCrmWorkspaces } from "@/lib/api/crm";
@@ -14,7 +15,8 @@ import { useAsync } from "@/lib/use-async";
  * One `/crm/bootstrap` call on load gives the shell its workspace, the
  * person's role there, the lists and their display preferences. A workspace
  * the person is not in answers "No such workspace." like one that does not
- * exist (FR-CRM-WS-02), and nothing of it renders.
+ * exist (FR-CRM-WS-02), and nothing of it renders. Cmd/Ctrl+K opens the
+ * command menu on every page of the workspace (FR-CRM-SRCH-01).
  */
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   const { ws } = useParams<{ ws: string }>();
@@ -38,7 +40,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
   const [bootstrap, workspaces] = data;
   return (
     <CrmShell bootstrap={bootstrap} workspaces={workspaces} reload={reload}>
-      {children}
+      <CommandMenu>{children}</CommandMenu>
     </CrmShell>
   );
 }

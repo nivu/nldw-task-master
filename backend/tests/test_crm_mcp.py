@@ -37,9 +37,14 @@ CALLER_LINES = {
         "MANAGERS OR ADMINS, LABS). CONFIRM FIRST"
     ),
     "crm_list": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
+    "crm_today": (
+        "ANY MEMBER OF THE WORKSPACE for their own list; another person's: WORKSPACE\nADMINS ONLY."
+    ),
+    "crm_search": "ANY MEMBER OF THE WORKSPACE (Admin, Member, Viewer).",
+    "crm_merge": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST: preview first",
 }
-READS = {"crm_workspaces", "crm_get", "crm_list"}
-DESTRUCTIVE = {"crm_move_stage", "crm_handoff"}
+READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search"}
+DESTRUCTIVE = {"crm_move_stage", "crm_handoff", "crm_merge"}
 
 
 def _tools() -> dict:
@@ -657,3 +662,98 @@ class TestListTool:
                 )
             )
         assert "Viewers cannot filter, sort or total by amount." in str(refused.value)
+
+
+class TestTodaySearchMergeTools:
+    """FR-CRM-MCP-01 (S7: crm_today, crm_search, crm_merge), -07, -11;
+    contracts §3 tools 12 to 14."""
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_today(Ctx("u")),
+                ("GET", "/crm/today", {"person": None, "workspace": None}, None),
+            ),
+            (
+                lambda: crm.crm_today(Ctx("u"), person_id="u-member", workspace="labs"),
+                ("GET", "/crm/today", {"person": "u-member", "workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_search(Ctx("u"), "acme", workspace="labs"),
+                ("GET", "/crm/search", {"q": "acme", "workspace": "labs"}, None),
+            ),
+            (
+                lambda: crm.crm_merge(Ctx("u"), C1, P1, workspace="labs"),
+                (
+                    "GET",
+                    "/crm/companies/merge-preview",
+                    {"workspace": "labs", "a": C1, "b": P1},
+                    None,
+                ),
+            ),
+            (
+                lambda: crm.crm_merge(
+                    Ctx("u"), C1, P1, choices={"name": "b"}, preview=False, workspace="labs"
+                ),
+                (
+                    "POST",
+                    "/crm/companies/merge",
+                    {"workspace": "labs"},
+                    {"survivor_id": C1, "merged_id": P1, "choices": {"name": "b"}},
+                ),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    @pytest.mark.parametrize("bad", ["../members", "not-a-uuid"])
+    def test_merge_ids_that_are_not_uuids_reach_no_route(self, monkeypatch, bad):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        with pytest.raises(server.ToolError):
+            asyncio.run(crm.crm_merge(Ctx("u"), bad, C1, preview=False))
+        assert recorder.calls == []
+
+    def test_the_merge_description_says_the_trash(self):
+        assert "the merged company goes to Trash" in _tools()["crm_merge"].description
+
+    def test_a_viewer_gets_no_amounts_through_search_and_today(self, crm_store):
+        """Contracts §3.1 `test_viewer_gets_no_amounts_through_tools`, for the
+        S7 tools."""
+        labs = next(w for w in crm_store.rows["crm_workspaces"].values() if w["key"] == "labs")
+        crm_store.add_deal_lists(labs)
+        crm_store.add(
+            "crm_fx_rates", workspace_id=labs["id"], currency="INR", month="2026-10-01", rate=1
+        )
+        company = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "company", {"name": "Acme"}, workspace="labs")
+        )
+        crm_store.rows["crm_companies"][company["id"]]["lead_stage"] = "qualified"
+        asyncio.run(
+            crm.crm_create(
+                Ctx(OWNER["id"]),
+                "opportunity",
+                {
+                    "name": "Acme renewal",
+                    "company_id": company["id"],
+                    "amount": "1000",
+                    "currency": "INR",
+                    "next_step": "Call",
+                    "next_step_on": "2026-10-01",
+                },
+                workspace="labs",
+            )
+        )
+        found = asyncio.run(crm.crm_search(Ctx(VIEWER["id"]), "acme", workspace="labs"))
+        [deal] = found["opportunities"]
+        assert deal["name"] == "Acme renewal"
+        assert "amount" not in deal and "amount_in_inr" not in deal
+        admin = asyncio.run(crm.crm_search(Ctx(OWNER["id"]), "acme", workspace="labs"))
+        assert admin["opportunities"][0]["amount"] == "1000.00"
+        mine = asyncio.run(crm.crm_today(Ctx(VIEWER["id"]), workspace="labs"))
+        assert "amount" not in str(mine)

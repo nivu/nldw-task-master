@@ -569,3 +569,26 @@ class BulkIn(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=500)
     action: Literal["set", "assign_owner", "add_task", "delete", "add_to_campaign"]
     values: dict[str, Any] = Field(default_factory=dict)
+
+
+class MergeExpect(BaseModel):
+    """The `updated_at` each company had when the person chose; a change
+    made meanwhile refuses the merge (409)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    survivor_updated_at: str | None = Field(default=None, max_length=64)
+    merged_updated_at: str | None = Field(default=None, max_length=64)
+
+
+class MergeIn(BaseModel):
+    """FR-CRM-DUP-03 — `choices` maps a differing field to "a" (the
+    survivor's value) or "b" (the merged company's); a field left out keeps
+    the preview's `default`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    survivor_id: str = Field(min_length=1, max_length=64)
+    merged_id: str = Field(min_length=1, max_length=64)
+    choices: dict[str, Literal["a", "b"]] = Field(default_factory=dict, max_length=40)
+    expect: MergeExpect | None = None

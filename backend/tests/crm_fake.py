@@ -1781,6 +1781,349 @@ class FakeCrmStore:
         )
         return FakeQuery(self, workspace_id, kind, json.loads(json.dumps(spec)), redact).run()
 
+    # -- store: Today, search, merge (S7) -------------------------------------
+
+    def due_next_steps(self, workspace_id: str, owner_id: str, by: str) -> list[dict[str, Any]]:
+        rows = [
+            r
+            for r in self._of("crm_opportunities", workspace_id)
+            if r.get("owner_id") == owner_id
+            and r["stage"] in OPEN_STAGES
+            and not r.get("deleted_at")
+            and r.get("next_step_on")
+            and str(r["next_step_on"]) <= by
+        ]
+        return sorted(rows, key=lambda r: (str(r["next_step_on"]), r["name"]))
+
+    def tasks_for_today(self, workspace_id: str, assignee_id: str, by: str) -> list[dict]:
+        rows = [
+            r
+            for r in self._of("crm_tasks", workspace_id)
+            if r["assignee_id"] == assignee_id
+            and r["status"] != "done"
+            and not r.get("deleted_at")
+            and (r.get("bucket") == "today" or (r.get("due_on") and str(r["due_on"]) <= by))
+        ]
+        return sorted(
+            rows, key=lambda r: (r.get("due_on") is None, str(r.get("due_on")), r["title"])
+        )
+
+    def nurturing_without_next_touch(self, workspace_id: str, owner_id: str) -> list[dict]:
+        rows = [
+            r
+            for r in self._of("crm_companies", workspace_id)
+            if r.get("owner_id") == owner_id
+            and r["lead_stage"] == "nurturing"
+            and not r.get("next_touch_on")
+            and not r.get("deleted_at")
+        ]
+        return sorted(rows, key=lambda r: r["name"])
+
+    def search(self, workspace_id: str, q: str, limit: int, *, redact: bool) -> dict[str, Any]:
+        """crm_search (035) in Python: a trigram match, a word inside a
+        longer text, or a literal prefix; best first, live records only."""
+        self.queries.append({"workspace_id": workspace_id, "search": q, "redact": redact})
+        q = q.strip().lower()
+        if len(q) < 2:
+            raise store.refusal_for("CRM22", "Type at least two characters.")
+        lim = max(1, min(limit, 8))
+
+        def score(*texts: str | None) -> float | None:
+            # As 035: the best match, averaged with the first text's whole
+            # similarity, so an exact name outranks a longer one.
+            best, hit, first = 0.0, False, None
+            for text in texts:
+                if not text:
+                    continue
+                text = text.lower()
+                whole = trigram_similarity(text, q)
+                first = whole if first is None else first
+                words = max((trigram_similarity(w, q) for w in text.split()), default=0.0)
+                if whole >= 0.3 or words >= 0.6 or text.startswith(q):
+                    hit = True
+                best = max(best, whole, words)
+            return (best + (first or 0.0)) / 2 if hit else None
+
+        def ranked(rows: list[tuple[float | None, dict]]) -> list[dict]:
+            # Best first, then the most recently changed (stable sorts).
+            kept = sorted((p for p in rows if p[0] is not None), key=lambda p: p[1]["id"])
+            kept.sort(key=lambda p: str(p[1]["updated_at"]), reverse=True)
+            kept.sort(key=lambda p: p[0], reverse=True)
+            return [r for _, r in kept[:lim]]
+
+        def live(table: str) -> list[dict]:
+            return [r for r in self._of(table, workspace_id) if not r.get("deleted_at")]
+
+        domains = self._of("crm_company_domains", workspace_id)
+        companies = {r["id"]: r for r in self._of("crm_companies", workspace_id)}
+        found: dict[str, list[dict]] = {}
+        found["companies"] = ranked(
+            [
+                (
+                    score(c["name"], *[d["domain"] for d in domains if d["company_id"] == c["id"]]),
+                    {
+                        "id": c["id"],
+                        "name": c["name"],
+                        "lead_stage": c["lead_stage"],
+                        "owner_id": c.get("owner_id"),
+                        "updated_at": c["updated_at"],
+                        "domain": next(
+                            (
+                                d["domain"]
+                                for d in domains
+                                if d["company_id"] == c["id"] and d["is_primary"]
+                            ),
+                            None,
+                        ),
+                    },
+                )
+                for c in live("crm_companies")
+                if not c.get("merged_into_id")
+            ]
+        )
+        found["people"] = ranked(
+            [
+                (
+                    score(
+                        f"{p['first_name']} {p.get('last_name') or ''}".strip(),
+                        p.get("primary_email"),
+                        *(p.get("additional_emails") or []),
+                    ),
+                    {
+                        "id": p["id"],
+                        "first_name": p["first_name"],
+                        "last_name": p.get("last_name"),
+                        "primary_email": p.get("primary_email"),
+                        "company_id": p.get("company_id"),
+                        "company_name": (companies.get(p.get("company_id") or "") or {}).get(
+                            "name"
+                        ),
+                        "updated_at": p["updated_at"],
+                    },
+                )
+                for p in live("crm_people")
+            ]
+        )
+        found["opportunities"] = ranked(
+            [
+                (
+                    score(o["name"]),
+                    {
+                        "id": o["id"],
+                        "name": o["name"],
+                        "stage": o["stage"],
+                        "company_id": o["company_id"],
+                        "company_name": (companies.get(o["company_id"]) or {}).get("name"),
+                        "owner_id": o.get("owner_id"),
+                        "currency": o.get("currency"),
+                        "updated_at": o["updated_at"],
+                        **(
+                            {}
+                            if redact
+                            else {
+                                "amount": o.get("amount"),
+                                "amount_in_inr": o.get("amount_in_inr"),
+                            }
+                        ),
+                    },
+                )
+                for o in live("crm_opportunities")
+            ]
+        )
+        found["tasks"] = ranked(
+            [
+                (
+                    score(t["title"]),
+                    {
+                        "id": t["id"],
+                        "title": t["title"],
+                        "status": t["status"],
+                        "due_on": t.get("due_on"),
+                        "assignee_id": t["assignee_id"],
+                        "updated_at": t["updated_at"],
+                    },
+                )
+                for t in live("crm_tasks")
+            ]
+        )
+        found["notes"] = ranked(
+            [
+                (
+                    score(n["body"][:200]),
+                    {
+                        "id": n["id"],
+                        "kind": n["kind"],
+                        "snippet": n["body"][:200],
+                        "created_at": n.get("created_at"),
+                        "updated_at": n["updated_at"],
+                    },
+                )
+                for n in live("crm_notes")
+            ]
+        )
+        return found
+
+    def merge_companies(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_merge_companies (035): both companies re-checked in the
+        actor's workspace, then everything moves, all or nothing."""
+        self.applied.append((actor, [{"op": "merge", **plan}]))
+        ws, who = actor["workspace_id"], actor["user_id"]
+        keep_id, gone_id = plan.get("survivor_id"), plan.get("merged_id")
+        if keep_id == gone_id:
+            raise store.refusal_for("CRM22", "Pick two different companies to merge.")
+        keep = self.rows["crm_companies"].get(keep_id)
+        gone = self.rows["crm_companies"].get(gone_id)
+        if not keep or not gone or keep["workspace_id"] != ws or gone["workspace_id"] != ws:
+            raise store.refusal_for("CRM04", "No such company.")
+        for row in (keep, gone):
+            if row.get("merged_into_id"):
+                raise store.refusal_for(
+                    "CRM22", f"“{row['name']}” was already merged into another company."
+                )
+        for row in (keep, gone):
+            if row.get("deleted_at"):
+                raise store.refusal_for(
+                    "CRM22", f"“{row['name']}” is in the Trash; restore it before merging."
+                )
+        expect = plan.get("expect") or {}
+        for row, key in ((keep, "survivor_updated_at"), (gone, "merged_updated_at")):
+            if expect.get(key) and _at(expect[key]) != _at(row["updated_at"]):
+                raise store.refusal_for(
+                    "CRM09", "One of these companies changed meanwhile; reload and try again."
+                )
+        snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
+        audit_len = len(self.audit)
+        moved = dict.fromkeys(("people", "deals", "tasks", "notes", "links", "domains"), 0)
+        try:
+            changes = plan.get("survivor_changes") or {}
+            if changes:
+                self._update(actor, {"table": "crm_companies"}, keep, dict(changes))
+            moved["projects"] = sum(
+                1 for p in self.rows["projects"].values() if p.get("crm_company_id") == gone_id
+            )
+            for table, key in (("crm_people", "people"), ("crm_opportunities", "deals")):
+                for row in list(self.rows[table].values()):
+                    if row["workspace_id"] == ws and row.get("company_id") == gone_id:
+                        self._update(actor, {"table": table}, row, {"company_id": keep_id})
+                        moved[key] += 1
+            for table, owner, key in (
+                ("crm_task_links", "task_id", "tasks"),
+                ("crm_note_links", "note_id", "notes"),
+            ):
+                for link in list(self.rows[table].values()):
+                    if not (
+                        link["workspace_id"] == ws
+                        and link["record_type"] == "company"
+                        and link["record_id"] == gone_id
+                    ):
+                        continue
+                    if not any(
+                        other[owner] == link[owner]
+                        and other["record_type"] == "company"
+                        and other["record_id"] == keep_id
+                        for other in self.rows[table].values()
+                    ):
+                        self._one(
+                            actor,
+                            {
+                                "op": "insert",
+                                "table": table,
+                                "values": {
+                                    owner: link[owner],
+                                    "record_type": "company",
+                                    "record_id": keep_id,
+                                },
+                            },
+                            {},
+                        )
+                    self._delete(actor, table, link)
+                    moved[key] += 1
+            for link in list(self.rows["crm_drive_links"].values()):
+                if (
+                    link["workspace_id"] == ws
+                    and link["record_type"] == "company"
+                    and link["record_id"] == gone_id
+                ):
+                    self._update(actor, {"table": "crm_drive_links"}, link, {"record_id": keep_id})
+                    moved["links"] += 1
+
+            def readd(domain: dict[str, Any], primary: bool) -> None:
+                self._delete(actor, "crm_company_domains", domain)
+                self._one(
+                    actor,
+                    {
+                        "op": "insert",
+                        "table": "crm_company_domains",
+                        "values": {
+                            "company_id": keep_id,
+                            "domain": domain["domain"],
+                            "is_primary": primary,
+                        },
+                    },
+                    {},
+                )
+
+            for domain in sorted(
+                (
+                    d
+                    for d in self.rows["crm_company_domains"].values()
+                    if d["company_id"] == gone_id
+                ),
+                key=lambda d: d["domain"],
+            ):
+                readd(domain, False)
+                moved["domains"] += 1
+            wanted = plan.get("primary_domain")
+            if wanted:
+                mine = [
+                    d
+                    for d in self.rows["crm_company_domains"].values()
+                    if d["company_id"] == keep_id
+                ]
+                if not any(d["domain"] == wanted for d in mine):
+                    raise store.refusal_for(
+                        "CRM22", "The primary domain must be one of the two companies' domains."
+                    )
+                for d in mine:
+                    if d["is_primary"] and d["domain"] != wanted:
+                        readd(d, False)
+                for d in mine:
+                    if d["domain"] == wanted and not d["is_primary"]:
+                        readd(d, True)
+            for project in self.rows["projects"].values():
+                if project.get("crm_company_id") == gone_id:
+                    project["crm_company_id"] = keep_id
+                    self._tva_audit(
+                        actor,
+                        "project.updated",
+                        "projects",
+                        project["id"],
+                        {"crm_company_id": gone_id},
+                        {"crm_company_id": keep_id},
+                    )
+            self._update(
+                actor,
+                {"table": "crm_companies", "action": "company.merged"},
+                gone,
+                {
+                    "merged_into_id": keep_id,
+                    "deleted_at": _now(),
+                    "deleted_by": who,
+                    "deleted_group": str(uuid.uuid4()),
+                },
+            )
+            self._audit(
+                actor,
+                {"table": "crm_companies", "action": "company.merged"},
+                keep,
+                None,
+                {"merged_id": gone_id, "merged_name": gone["name"]},
+            )
+        except Exception:
+            self.rows, self.audit[audit_len:] = snapshot, []
+            raise
+        return {"survivor": dict(keep), "moved": moved}
+
     # -- store: writes ------------------------------------------------------
 
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:

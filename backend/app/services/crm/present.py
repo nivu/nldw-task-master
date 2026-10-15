@@ -437,6 +437,11 @@ def _display(kind: str, name: str, value: Any, facts: Facts) -> Any:
     return value
 
 
+def display(kind: str, name: str, value: Any, facts: Facts) -> Any:
+    """A field's value as a person reads it, for the merge dialog's choices."""
+    return _display(kind, name, value, facts)
+
+
 @dataclass
 class Around:
     """What a record's timeline names besides the record: its Drive links,
@@ -595,7 +600,15 @@ def _entry(row, kind, facts, hidden, near: Around) -> dict[str, Any] | None:
     if verb == "restored":
         return {"type": "delete", "summary": "Restored from Trash", "changes": []}
     if verb == "merged":
-        return {"type": "merge", "summary": "Merged another company into this one", "changes": []}
+        # FR-CRM-DUP-03 (035): the survivor's row names the company merged
+        # into it; the merged company's row is its move to the Trash.
+        if after.get("merged_name"):
+            said = f"Merged “{after['merged_name']}” into this company"
+        elif after.get("merged_into_id"):
+            said = "Merged into another company"
+        else:
+            said = "Merged another company into this one"
+        return {"type": "merge", "summary": said, "changes": []}
 
     changes = [
         {
@@ -620,3 +633,63 @@ def _entry(row, kind, facts, hidden, near: Around) -> dict[str, Any] | None:
         said = f"Moved from {moved['before']} to {moved['after']}"
     kind_of = "stage" if any(c["field"] in ("lead_stage", "stage") for c in changes) else "field"
     return {"type": kind_of, "summary": said, "changes": changes}
+
+
+# ---------------------------------------------------------------------------
+# Search hits — FR-CRM-SRCH-01 to -03, FR-CRM-ACC-11
+# ---------------------------------------------------------------------------
+
+
+def search_hit(kind: str, row: dict[str, Any], facts: Facts) -> dict[str, Any]:
+    """One line of the command menu: what it is and enough to tell two apart.
+    A Viewer's deal hit carries no amount (`crm_search` read none either)."""
+    if kind == "company":
+        out = {
+            "id": row["id"],
+            "record_type": "company",
+            "name": row["name"],
+            "domain": row.get("domain"),
+            "lead_stage": row.get("lead_stage"),
+            "lead_stage_label": facts.fixed_label("company.lead_stage", row.get("lead_stage")),
+        }
+    elif kind == "person":
+        out = {
+            "id": row["id"],
+            "record_type": "person",
+            "name": full_name(row.get("first_name"), row.get("last_name")),
+            "email": row.get("primary_email"),
+            "company_id": row.get("company_id"),
+            "company_name": row.get("company_name"),
+        }
+    elif kind == "opportunity":
+        out = {
+            "id": row["id"],
+            "record_type": "opportunity",
+            "name": row["name"],
+            "stage": row.get("stage"),
+            "stage_label": facts.fixed_label("opportunity.stage", row.get("stage")),
+            "company_id": row.get("company_id"),
+            "company_name": row.get("company_name"),
+            "currency": row.get("currency"),
+            "amount": money(row.get("amount")),
+            "amount_in_inr": money(row.get("amount_in_inr")),
+        }
+    elif kind == "task":
+        out = {
+            "id": row["id"],
+            "record_type": "task",
+            "name": row["title"],
+            "status": row.get("status"),
+            "status_label": facts.fixed_label("task.status", row.get("status")),
+            "due_on": row.get("due_on"),
+        }
+    else:
+        snippet = " ".join(str(row.get("snippet") or "").split())
+        out = {
+            "id": row["id"],
+            "record_type": "note",
+            "name": snippet if len(snippet) <= 80 else f"{snippet[:79]}…",
+            "kind": row.get("kind"),
+            "kind_label": objects.NOTE_KINDS.get(row.get("kind") or "note"),
+        }
+    return redact(out, kind, facts.role)
