@@ -787,6 +787,17 @@ class FakeCrmStore:
         self._audit(
             actor, {"action": "membership.removed", "table": "crm_memberships"}, m, dict(m), None
         )
+        # 040: their mailboxes in the workspace are paused.
+        for box in self.rows["crm_mailboxes"].values():
+            if box["workspace_id"] == ws and box["owner_id"] == m["user_id"] and box["is_active"]:
+                box["is_active"] = False
+                self._audit(
+                    actor,
+                    {"op": "update", "table": "crm_mailboxes"},
+                    box,
+                    {"is_active": True},
+                    {"is_active": False},
+                )
         deactivated = False
         if (
             person.get("account_type") == "crm_only"
@@ -2768,6 +2779,13 @@ class FakeCrmStore:
             for link in self._of("crm_email_links", workspace_id)
             if link["record_type"] == record_type and link["record_id"] in record_ids
         ]
+
+    def mailbox_message_ids(self, workspace_id: str, mailbox_id: str, sent_after: str) -> set:
+        return {
+            m["gmail_message_id"]
+            for m in self._of("crm_email_messages", workspace_id)
+            if m["mailbox_id"] == mailbox_id and _at(m["sent_at"]) > _at(sent_after)
+        }
 
     def email_messages(self, workspace_id: str, message_ids: list) -> list[dict[str, Any]]:
         return [

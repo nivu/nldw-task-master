@@ -188,7 +188,7 @@ class TestNothingSecretIsLogged:
         )
         monkeypatch.setattr(httpx, "get", lambda url, params, headers, timeout: _Response(404, {}))
         with pytest.raises(gmail.HistoryGone):
-            gmail.history("owner@nunnarilabs.com", "1", page_token=None)
+            gmail.history("owner@nunnarilabs.com", "1", page_token=None, page_size=50)
 
     def test_only_metadata_is_asked_for(self, key, monkeypatch):
         monkeypatch.setattr(

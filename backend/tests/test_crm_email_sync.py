@@ -12,6 +12,7 @@ credential, and the tick is checked never to read the key at all.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -149,13 +150,18 @@ class FakeGmail:
             out["nextPageToken"] = str(start + page_size)
         return out
 
-    def history(self, mailbox, start, *, page_token):
+    def history(self, mailbox, start, *, page_token, page_size):
         self.calls.append(("history", mailbox))
         box = self.box(mailbox)
-        return {
-            "history": [h for h in box["history"] if int(h["id"]) > int(start)],
+        found = [h for h in box["history"] if int(h["id"]) > int(start)]
+        first = int(page_token or 0)
+        out: dict[str, Any] = {
+            "history": found[first : first + page_size],
             "historyId": str(box["history_id"]),
         }
+        if first + page_size < len(found):
+            out["nextPageToken"] = str(first + page_size)
+        return out
 
     def message(self, mailbox, gmail_id):
         self.calls.append(("message", gmail_id))
@@ -289,6 +295,22 @@ def _sync(queue) -> dict:
     result = email_sync.tick(NOW)
     queue.drain()
     return result
+
+
+def _sync_at(queue, monkeypatch, at: datetime) -> dict:
+    """A run at another time than NOW; the clocks go back to NOW after."""
+    for module in (email_sync, flags, jobs, notifications):
+        monkeypatch.setattr(module, "_now", lambda: at)
+    result = email_sync.tick(at)
+    while queue.tasks:
+        email_sync.page(queue.tasks.pop(0), at)
+    for module in (email_sync, flags, jobs, notifications):
+        monkeypatch.setattr(module, "_now", lambda: NOW)
+    return result
+
+
+def fake_ws(fake, key: str) -> dict:
+    return next(w for w in fake.rows["crm_workspaces"].values() if w["key"] == key)
 
 
 def _messages(fake) -> list[dict]:
@@ -468,6 +490,21 @@ class TestCreating:
         assert fake.rows["crm_companies"] == {} and fake.rows["crm_people"] == {}
         assert len(_messages(fake)) == 1
 
+    def test_a_hyphen_edged_domain_is_kept_but_matched_to_nobody(self, crm):
+        """029's domain CHECK would refuse it, and with it the whole page."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        before = len(fake.rows["crm_companies"]), len(fake.rows["crm_people"])
+        mail.send(mailbox["email"], "m1", sender="x@acme-.com", to=mailbox["email"], at=NOW)
+        mail.send(mailbox["email"], "m2", sender="y@-acme.com", to=mailbox["email"], at=NOW)
+        _sync(queue)
+        [run] = _runs(fake)
+        assert run["outcome"] == "ok"
+        stored = sorted(_messages(fake), key=lambda m: m["gmail_message_id"])
+        assert [m["gmail_message_id"] for m in stored] == ["m1", "m2"]
+        assert {p["email"] for p in stored[0]["participants"]} >= {"x@acme-.com"}
+        assert all(_links(fake, m) == set() for m in stored)
+        assert (len(fake.rows["crm_companies"]), len(fake.rows["crm_people"])) == before
+
 
 class TestNewToContacted:
     """FR-CRM-PIPE-02, automation 3 — not switchable."""
@@ -524,6 +561,75 @@ class TestLabelRemoval:
         _sync(queue)
         assert [m["gmail_message_id"] for m in _messages(fake)] == ["m2"]
 
+    def test_a_re_read_after_history_is_gone_removes_what_lost_its_label(self, crm, monkeypatch):
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        acme = _company(fake, labs, "Acme", "acme.com")
+        mail.send(
+            mailbox["email"],
+            "m1",
+            sender="priya@acme.com",
+            to=mailbox["email"],
+            at=NOW - timedelta(hours=30),
+        )
+        mail.send(
+            mailbox["email"],
+            "m2",
+            sender=mailbox["email"],
+            to="priya@acme.com",
+            at=NOW - timedelta(hours=40),
+            thread="t2",
+        )
+        _sync(queue)
+        assert len(_messages(fake)) == 2
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "red"
+        # m1 loses its label while Gmail's history is too old to say so.
+        mail.unlabel(mailbox["email"], "m1")
+        real_history = mail.history
+
+        def gone(*args, **kwargs):
+            monkeypatch.setattr(gmail, "history", real_history)
+            raise gmail.HistoryGone("Gmail history is too old (404).")
+
+        monkeypatch.setattr(gmail, "history", gone)
+        _sync(queue)
+        assert [m["gmail_message_id"] for m in _messages(fake)] == ["m2"]
+        # Its Reply owed went with it.
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "none"
+        latest = sorted(_runs(fake), key=lambda r: r["started_at"])[-1]
+        assert latest["outcome"] == "ok" and latest["counts"]["removed"] == 1
+        box = fake.rows["crm_mailboxes"][mailbox["id"]]
+        assert box["backfilled_at"] and box["history_id"]
+
+    def test_changing_the_labels_removes_what_only_the_old_one_carried(self, crm):
+        http, fake, labs, _, mail, queue, mailbox, _ = crm
+        mail.send(mailbox["email"], "m1", sender="priya@acme.com", to=mailbox["email"], at=NOW)
+        mail.send(
+            mailbox["email"],
+            "m2",
+            sender="li@globex.com",
+            to=mailbox["email"],
+            at=NOW,
+            labels=("Label_1", "Label_2"),
+            thread="t2",
+        )
+        _sync(queue)
+        assert len(_messages(fake)) == 2
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"labels": ["Leads"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        _sync(queue)
+        assert [m["gmail_message_id"] for m in _messages(fake)] == ["m2"]
+
+    def test_a_first_backfill_lists_nothing_twice(self, crm):
+        """Nothing was stored before it, so there is nothing to remove."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        mail.send(mailbox["email"], "m1", sender="priya@acme.com", to=mailbox["email"], at=NOW)
+        _sync(queue)
+        assert [c for c in mail.calls if c[0] == "list"] == [("list", mailbox["email"])]
+
 
 class TestBackfill:
     """FR-CRM-SYNC-04, -08 — page-sized tasks, resumable."""
@@ -566,6 +672,22 @@ class TestBackfill:
         box = fake.rows["crm_mailboxes"][mailbox["id"]]
         assert box["backfilled_at"] == NOW.isoformat() and box["page_token"] is None
         assert box["history_id"]
+
+    def test_history_is_read_in_page_sized_pieces(self, crm, monkeypatch):
+        """FR-CRM-SYNC-04 — a bulk relabel never makes one task of it."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        monkeypatch.setattr(email_sync, "PAGE_SIZE", 2)
+        _sync(queue)  # the backfill: nothing yet
+        for n in range(5):
+            mail.send(
+                mailbox["email"], f"m{n}", sender="priya@acme.com", to=mailbox["email"], at=NOW
+            )
+        email_sync.tick(NOW)
+        assert queue.drain(limit=1) == 1
+        assert len(_messages(fake)) == 2
+        queue.drain()
+        assert len(_messages(fake)) == 5
+        assert len([c for c in mail.calls if c[0] == "history"]) == 3
 
     def test_the_last_page_releases_the_lock(self, crm):
         *_, queue, _, _ = crm
@@ -625,6 +747,62 @@ class TestTheTick:
         assert run["error_public"] == "Email sync failed (GmailError)."
         assert queue.lock is None
 
+    def test_the_page_worker_needs_no_configured_flag(self, crm, monkeypatch):
+        """Plan §2.2: worker-crm-sync holds the key and not the flag."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        mail.send(mailbox["email"], "m1", sender="priya@acme.com", to=mailbox["email"], at=NOW)
+        email_sync.tick(NOW)
+        monkeypatch.setattr(config, "CRM_GMAIL_CONFIGURED", False)
+        queue.drain()
+        assert [m["gmail_message_id"] for m in _messages(fake)] == ["m1"]
+        [run] = _runs(fake)
+        assert run["outcome"] == "ok" and run["counts"]["stored"] == 1
+
+    def test_a_page_still_stops_when_the_switch_goes_off(self, crm):
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        mail.send(mailbox["email"], "m1", sender="priya@acme.com", to=mailbox["email"], at=NOW)
+        email_sync.tick(NOW)
+        setting = next(
+            r
+            for r in fake.rows["crm_workspace_settings"].values()
+            if r["workspace_id"] == labs["id"] and r["key"] == "email_sync"
+        )
+        setting["value"] = {"enabled": False}
+        queue.drain()
+        assert _messages(fake) == [] and mail.calls == []
+
+    def test_a_mailbox_whose_owner_left_is_skipped(self, crm):
+        """FR-CRM-SYNC-01 — the owner must be a member while it is read."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        fake.rows["crm_mailboxes"][mailbox["id"]]["owner_id"] = SELLER["id"]
+        mail.send(mailbox["email"], "m1", sender="priya@acme.com", to=mailbox["email"], at=NOW)
+        membership = next(
+            m
+            for m in fake.rows["crm_memberships"].values()
+            if m["workspace_id"] == labs["id"] and m["user_id"] == SELLER["id"]
+        )
+        del fake.rows["crm_memberships"][membership["id"]]
+        _sync(queue)
+        assert _messages(fake) == [] and mail.calls == []
+        [run] = _runs(fake)
+        assert run["outcome"] == "ok" and run["counts"]["mailboxes"] == 0
+
+    def test_removing_the_owner_pauses_their_mailbox(self, crm):
+        """040 — crm_remove_membership pauses the person's mailboxes there."""
+        http, fake, labs, _, mail, queue, mailbox, _ = crm
+        fake.rows["crm_mailboxes"][mailbox["id"]]["owner_id"] = SELLER["id"]
+        membership = next(
+            m
+            for m in fake.rows["crm_memberships"].values()
+            if m["workspace_id"] == labs["id"] and m["user_id"] == SELLER["id"]
+        )
+        r = http.delete(f"/api/v1/crm/members/{membership['id']}{LABS}", headers=as_(OWNER["id"]))
+        assert r.status_code in (200, 204), r.text
+        assert fake.rows["crm_mailboxes"][mailbox["id"]]["is_active"] is False
+        assert any(
+            a["action"] == "mailbox.updated" and a["target_id"] == mailbox["id"] for a in fake.audit
+        )
+
     def test_the_tick_runs_on_the_default_queue_and_pages_on_crm_sync(self):
         from app.worker import CRM_SYNC_QUEUE, celery_app
 
@@ -641,9 +819,14 @@ class TestTheTick:
 class TestReplyOwedNotice:
     """FR-CRM-NOTIF-01 — reply owed turned red tells the owner, once."""
 
-    def test_once(self, crm):
+    @staticmethod
+    def _notices(fake) -> list[dict]:
+        return [n for n in fake.rows["crm_notifications"].values() if n["kind"] == "reply_owed_red"]
+
+    def test_once_when_it_turns_red_after_the_backfill(self, crm, monkeypatch):
         _, fake, labs, _, mail, queue, mailbox, sent = crm
         acme = _company(fake, labs, "Acme", "acme.com")
+        # Backfilled ten hours ago, when it had waited 20 hours: amber.
         mail.send(
             mailbox["email"],
             "m1",
@@ -651,15 +834,35 @@ class TestReplyOwedNotice:
             to=mailbox["email"],
             at=NOW - timedelta(hours=30),
         )
+        _sync_at(queue, monkeypatch, NOW - timedelta(hours=10))
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "amber"
+        assert self._notices(fake) == []
+        # The 30-minute flags turn it red; the next runs tell the owner once.
+        flags.recompute_workspace(labs["id"], NOW)
         _sync(queue)
         _sync(queue)
-        notices = [
-            n for n in fake.rows["crm_notifications"].values() if n["kind"] == "reply_owed_red"
-        ]
+        notices = self._notices(fake)
         assert [
             (n["user_id"], n["record_id"]) for n in notices if n["record_id"] == acme["id"]
         ] == [(SELLER["id"], acme["id"])]
         assert all("₹" not in n["title"] for n in notices)
+
+    def test_a_backfill_of_an_old_unanswered_email_tells_nobody(self, crm):
+        """FR-CRM-NOTIF-01's event is a reply owed turning red, not one that
+        was red before the mailbox was connected."""
+        _, fake, labs, _, mail, queue, mailbox, sent = crm
+        acme = _company(fake, labs, "Acme", "acme.com")
+        mail.send(
+            mailbox["email"],
+            "m1",
+            sender="priya@acme.com",
+            to=mailbox["email"],
+            at=NOW - timedelta(days=30),
+        )
+        _sync(queue)
+        _sync(queue)
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "red"
+        assert self._notices(fake) == [] and sent == []
 
 
 class TestMailboxes:
@@ -736,6 +939,29 @@ class TestMailboxes:
         )
         assert r.status_code == 422
         assert "system label" in r.json()["detail"]
+
+    def test_a_workspace_admin_may_pause_and_relabel_a_delegate_mailbox(self, crm):
+        """FR-CRM-SYNC-01 limits who registers a delegate address, not who
+        pauses it or changes its labels."""
+        http, fake, labs, academy, *_ = crm
+        delegate = fake.add(
+            "crm_mailboxes",
+            workspace_id=academy["id"],
+            email="info@nunnari.academy",
+            owner_id=SANJEEV["id"],
+            labels=["Leads"],
+            **DEFAULTS["crm_mailboxes"],
+        )
+        url = f"/api/v1/crm/mailboxes/{delegate['id']}{ACADEMY}"
+        for body in ({"is_active": False}, {"labels": ["Leads", "Sales"]}, {"is_active": True}):
+            r = http.patch(url, json=body, headers=as_(SANJEEV["id"]))
+            assert r.status_code == 200, r.text
+        row = fake.rows["crm_mailboxes"][delegate["id"]]
+        assert row["labels"] == ["Leads", "Sales"] and row["is_active"] is True
+        # Another address still needs a TVA admin.
+        r = http.patch(url, json={"email": "hello@nunnari.academy"}, headers=as_(SANJEEV["id"]))
+        assert r.status_code == 422
+        assert "owner's own email address" in r.json()["detail"]
 
     def test_an_address_registered_in_the_other_workspace(self, crm):
         """One address, one workspace: Labs has owner@nunnarilabs.com."""
@@ -843,6 +1069,26 @@ class TestRunNow:
         http, *_ = crm
         r = http.post(f"/api/v1/crm/email-sync/run{ACADEMY}", headers=as_(OWNER["id"]))
         assert r.json() == {"skipped": "Email sync is off"}
+
+    def test_not_configured_says_so(self, crm, monkeypatch):
+        http, *_ = crm
+        monkeypatch.setattr(config, "CRM_GMAIL_CONFIGURED", False)
+        r = http.post(f"/api/v1/crm/email-sync/run{LABS}", headers=as_(OWNER["id"]))
+        assert r.json() == {"skipped": "The Gmail credential is not configured"}
+
+    def test_a_failed_start_releases_the_lock(self, crm, monkeypatch):
+        http, fake, *_, queue, _, _ = crm
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("database unreachable")
+
+        monkeypatch.setattr(email_sync.store, "list_mailboxes", broken)
+        with pytest.raises(RuntimeError):
+            email_sync.tick(NOW)
+        assert queue.lock is None
+        with pytest.raises(RuntimeError):
+            email_sync.run_now(SimpleNamespace(workspace=fake_ws(fake, "labs")))
+        assert queue.lock is None
 
     def test_already_running(self, crm):
         http, *_, queue, _, _ = crm

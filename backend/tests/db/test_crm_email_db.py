@@ -335,3 +335,42 @@ class TestFlagFacts:
             "AND workspace_id IN (SELECT id FROM crm_workspaces WHERE key IN ('labs', 'academy'))"
         )
         assert rows == [{"value": {"enabled": False}}]
+
+
+class TestOwnerLeaves:
+    """040 — removing a membership pauses the person's mailboxes there."""
+
+    def test_their_mailbox_is_paused_and_audited(self, stack, ws, owner, make_profile, real):
+        member = make_profile(keep=True)
+        membership = _as_system(
+            stack,
+            "INSERT INTO crm_memberships (workspace_id, user_id, role) "
+            f"VALUES ({stack.q(ws)}, {stack.q(member)}, 'member') RETURNING id",
+        )[-1]["id"]
+        theirs = _mailbox(stack, ws, member)
+        mine = _mailbox(stack, ws, owner)
+        stack.sql(
+            f"SELECT crm_remove_membership({_j(stack, _actor(ws, owner))}, {stack.q(membership)})"
+        )
+        active = {m["id"]: m["is_active"] for m in real.list_mailboxes(ws)}
+        assert active == {theirs["id"]: False, mine["id"]: True}
+        [last] = stack.sql(
+            "SELECT action, actor_id FROM audit_log "
+            f"WHERE target_id = {stack.q(theirs['id'])} ORDER BY id DESC LIMIT 1"
+        )
+        assert (last["action"], last["actor_id"]) == ("mailbox.updated", owner)
+
+
+class TestLongReads:
+    """More rows than one PostgREST response holds (`max_rows` = 1000)."""
+
+    def test_every_link_and_stored_id_is_read(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner)
+        acme = _company(stack, ws, owner)
+        link = [{"record_type": "company", "record_id": acme["id"]}]
+        messages = [_message(f"m{n}", link) for n in range(1001)]
+        messages.append(_message("old", link, sent_at="2026-01-01T00:00:00+00:00"))
+        assert len(real.store_emails(ws, box["id"], messages)) == 1002
+        assert len(real.email_links(ws, "company", [acme["id"]])) == 1002
+        found = real.mailbox_message_ids(ws, box["id"], "2026-06-01T00:00:00+00:00")
+        assert len(found) == 1001 and "old" not in found

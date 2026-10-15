@@ -17,10 +17,17 @@ only, within 15 minutes:
   `worker-crm-sync`, the only process with the key) reads one page of one
   mailbox and enqueues the next, so no task comes near the worker's time
   limit and each resumes from the cursor stored on the mailbox
-  (FR-CRM-SYNC-04). The first connection reads the last 90 days label by
-  label (FR-CRM-SYNC-08); after that Gmail's history says what was added
-  and what lost its label (FR-CRM-SYNC-09). The last page of a workspace
-  finishes its run, and the last page of all releases the lock.
+  (FR-CRM-SYNC-04). It re-checks the workspace's switch, never the
+  `CRM_GMAIL_CONFIGURED` flag, which that worker is not given (plan §2.2):
+  a missing key fails the run where it is seen. The first connection reads
+  the last 90 days label by label (FR-CRM-SYNC-08); after that Gmail's
+  history says what was added and what lost its label (FR-CRM-SYNC-09). A
+  later re-read (history too old, or the labels changed) then removes what
+  is no longer labelled. The last page of a workspace finishes its run, and
+  the last page of all releases the lock.
+- **A mailbox whose owner left** the workspace, or whose account is
+  inactive, is skipped (FR-CRM-SYNC-01); removing a membership also pauses
+  the person's mailboxes there (040).
 - **A message** is classified by `domain/crm/email_rules.py`: internal-only
   ones are skipped; outside participants are matched to people, then to
   companies by domain; what is unknown is created (automation 2, behind its
@@ -42,13 +49,14 @@ import logging
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from app.config import settings
 from app.domain.crm import email_rules as rules
 from app.domain.crm import flags as flag_rules
 from app.domain.crm import today as today_rules
+from app.services import supabase as db
 from app.services.crm import flags, gmail, jobs, notifications, records, store
 
 logger = logging.getLogger("nldw-task-master")
@@ -72,8 +80,14 @@ CANNOT_SWITCH_ON: Final = (
     "Email sync cannot be switched on until the Gmail service-account credential is configured."
 )
 #: Addresses the sync matches and creates people for; anything stranger is
-#: kept on the message as written and matched to nobody.
-_ADDRESS = re.compile(r"^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$")
+#: kept on the message as written and matched to nobody. The domain is the
+#: one `crm_company_domains` accepts (029), so automation 2 never writes a
+#: domain the database refuses.
+_ADDRESS = re.compile(
+    r"^[a-z0-9._%+'-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+)
+#: Gmail ids per call when a re-read lists what is still labelled.
+LIST_SIZE: Final = 500
 #: Counts a page adds up.
 COUNTS: Final = (
     "fetched",
@@ -174,6 +188,24 @@ def _fail(exc: BaseException):
     return work
 
 
+def _members(workspace_id: str) -> set[str]:
+    return {m["user_id"] for m in store.list_members(workspace_id)}
+
+
+def _owner_here(ws: dict[str, Any], mailbox: dict[str, Any], members: set[str]) -> bool:
+    """FR-CRM-SYNC-01 — a mailbox is read only while its owner is an active
+    member of its workspace; otherwise it is skipped, and the skip logged."""
+    owner = db.get_profile(mailbox["owner_id"]) if mailbox["owner_id"] in members else None
+    if owner and owner.get("is_active", True):
+        return True
+    logger.warning(
+        '{"event": "crm_email_sync_owner_gone", "workspace": "%s", "mailbox": "%s"}',
+        ws["key"],
+        mailbox["id"],
+    )
+    return False
+
+
 def _start(
     workspaces: list[dict[str, Any]], now: datetime, token: str
 ) -> dict[str, dict[str, Any]]:
@@ -183,7 +215,12 @@ def _start(
     plan, out = [], {}
     for ws in workspaces:
         run = store.start_job_run(JOB, ws["id"], now)
-        mailboxes = [m["id"] for m in store.list_mailboxes(ws["id"], active_only=True)]
+        members = _members(ws["id"])
+        mailboxes = [
+            m["id"]
+            for m in store.list_mailboxes(ws["id"], active_only=True)
+            if _owner_here(ws, m, members)
+        ]
         out[ws["key"]] = {"outcome": "running", "run_id": run["id"], "mailboxes": len(mailboxes)}
         if not mailboxes:
             jobs.finish(JOB, ws, run["id"], {"outcome": "ok", "counts": {"mailboxes": 0}}, now)
@@ -230,7 +267,11 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
         for ws in ready:
             runs[ws["key"]] = jobs.run(JOB, ws, _skip(f"{RUNNING}."), now)
         return {"runs": runs}
-    runs.update(_start(ready, now, token))
+    try:
+        runs.update(_start(ready, now, token))
+    except Exception:
+        release_lock(token)
+        raise
     return {"runs": runs}
 
 
@@ -252,12 +293,18 @@ def run_now(ctx: Any) -> dict[str, Any]:
     ws = ctx.workspace
     why = off_reason(ws["id"])
     if why:
-        return {"skipped": OFF}
+        return {"skipped": why}
     token = str(uuid.uuid4())
     if not acquire_lock(token):
         return {"skipped": RUNNING}
     now = _now()
-    started = _start([ws], now, token)[ws["key"]]
+    try:
+        started = _start([ws], now, token)[ws["key"]]
+    except Exception:
+        # Never leave the lock to lapse: every run would be skipped for
+        # 15 minutes.
+        release_lock(token)
+        raise
     deadline = time.monotonic() + WAIT_SECONDS
     run = store.get_job_run(ws["id"], started["run_id"])
     while (run or {}).get("outcome") == "running" and time.monotonic() < deadline:
@@ -298,7 +345,12 @@ def page(args: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
             raise RuntimeError("The workspace no longer exists.")
         mailbox = store.get_mailbox(ws["id"], entry["mailboxes"][m])
         finished = True
-        if mailbox and mailbox["is_active"] and not off_reason(ws["id"]):
+        if (
+            mailbox
+            and mailbox["is_active"]
+            and today_rules.email_sync_on(_settings(ws["id"]))
+            and _owner_here(ws, mailbox, _members(ws["id"]))
+        ):
             finished, got = sync_page(ws, mailbox, now)
             for key, value in got.items():
                 counts[key] = int(counts.get(key) or 0) + int(value)
@@ -392,6 +444,8 @@ def sync_page(
                 "label": 0,
                 "token": None,
                 "start": str(gmail.profile(sub).get("historyId") or ""),
+                # A re-read: what was stored before may have lost its label.
+                "reconcile": bool(mailbox.get("last_synced_at")),
             }
         got: dict[str, int] = {}
         if cursor["label"] < len(labels):
@@ -408,6 +462,8 @@ def sync_page(
             else:
                 cursor = {**cursor, "label": cursor["label"] + 1, "token": None}
         if cursor["label"] >= len(labels):
+            if cursor.get("reconcile"):
+                got["removed"] = got.get("removed", 0) + _reconcile(ws, mailbox, labels, now)
             store.mailbox_progress(
                 ws["id"],
                 mailbox["id"],
@@ -426,10 +482,13 @@ def sync_page(
     if cursor.get("phase") != "history":
         cursor = {"phase": "history", "token": None}
     try:
-        changes = gmail.history(sub, mailbox["history_id"], page_token=cursor.get("token"))
+        changes = gmail.history(
+            sub, mailbox["history_id"], page_token=cursor.get("token"), page_size=PAGE_SIZE
+        )
     except gmail.HistoryGone:
         # Too old for Gmail: read the labels afresh. Stored messages are kept
-        # and a second store of one is a no-op (FR-CRM-SYNC-07).
+        # and a second store of one is a no-op (FR-CRM-SYNC-07); the re-read
+        # ends by removing those no longer labelled.
         store.mailbox_progress(
             ws["id"],
             mailbox["id"],
@@ -437,7 +496,13 @@ def sync_page(
         )
         return False, {}
     added, removed = changed_messages(changes.get("history") or [], ours)
-    got = _take(ws, mailbox, sorted(added), ours)
+    # A page's messages are stored a chunk at a time, so a page cut short by
+    # the time limit keeps what it stored and is read again from its token.
+    got = dict.fromkeys(COUNTS, 0)
+    ids = sorted(added)
+    for i in range(0, len(ids), PAGE_SIZE):
+        for key, value in _take(ws, mailbox, ids[i : i + PAGE_SIZE], ours).items():
+            got[key] += value
     got["removed"] = _drop(ws, mailbox, sorted(removed))
     if changes.get("nextPageToken"):
         cursor["token"] = changes["nextPageToken"]
@@ -453,6 +518,30 @@ def sync_page(
         },
     )
     return True, got
+
+
+def _reconcile(
+    ws: dict[str, Any], mailbox: dict[str, Any], labels: list[str], now: datetime
+) -> int:
+    """FR-CRM-SYNC-09 after a re-read: a stored message of the 90-day window
+    that no label of the mailbox carries now lost its label while history
+    could not say so, and is removed with its effect on flags. A day's
+    margin keeps the window's edge out of it."""
+    after = int(rules.backfill_after(now).timestamp())
+    labelled: set[str] = set()
+    for label in labels:
+        token = None
+        while True:
+            listed = gmail.list_messages(
+                mailbox["email"], label, after=after, page_token=token, page_size=LIST_SIZE
+            )
+            labelled |= {m["id"] for m in listed.get("messages") or []}
+            token = listed.get("nextPageToken")
+            if not token:
+                break
+    since = datetime.fromtimestamp(after, UTC) + timedelta(days=1)
+    stored = store.mailbox_message_ids(ws["id"], mailbox["id"], since.isoformat())
+    return _drop(ws, mailbox, sorted(stored - labelled))
 
 
 def changed_messages(history: list[dict[str, Any]], ours: set[str]) -> tuple[set[str], set[str]]:
@@ -711,10 +800,23 @@ def _drop(ws: dict[str, Any], mailbox: dict[str, Any], gmail_ids: list[str]) -> 
 
 
 def _people_of_company(ws_id: str, company_id: str) -> list[str]:
-    rows = store.list_records(
-        ws_id, "crm_people", filters={"company_id": company_id}, deleted=None, limit=1000
-    )
-    return [r["id"] for r in rows]
+    """All of them, page by page: a long-running client has many."""
+    ids: list[str] = []
+    while True:
+        rows = store.list_records(
+            ws_id,
+            "crm_people",
+            filters={"company_id": company_id},
+            deleted=None,
+            limit=_PEOPLE_PAGE,
+            offset=len(ids),
+        )
+        ids += [r["id"] for r in rows]
+        if len(rows) < _PEOPLE_PAGE:
+            return ids
+
+
+_PEOPLE_PAGE: Final = 1000
 
 
 def threads(

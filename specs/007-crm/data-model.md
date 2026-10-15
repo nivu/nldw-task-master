@@ -30,8 +30,9 @@ order of §1. Existing migrations are not edited.
 | `037_crm_jobs_notifications.sql` | S9 | `crm_job_runs`, `crm_notifications`, `crm_digest_sends`; settings seeds for thresholds and automations; `CREATE OR REPLACE crm_remove_membership()` deleting the person's notifications for the workspace |
 | `038_crm_flags.sql` | S9 | Flag columns and indexes on companies, people, opportunities, tasks; `crm_object_fields` rows for them |
 | `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `crm_store_emails()`, `crm_remove_emails()` (the email log's one writer); `CREATE OR REPLACE crm_audit_row()` skipping a mailbox's cursor columns; `crm_flag_facts()` replaced by a four-argument form with people and email facts; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
-| `040_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists, field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns |
-| `041_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
+| `040_crm_mailbox_owner_left.sql` | S10 | `CREATE OR REPLACE crm_remove_membership()` also pausing the removed person's mailboxes in the workspace (`is_active = false`, audited `mailbox.updated`) |
+| `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists, field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns |
+| `042_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
 
 A function that touches a table always arrives in, or is replaced in, the
 migration that creates that table or a later one. PL/pgSQL resolves table
@@ -107,7 +108,7 @@ domains refused in Python); `name` and `key` are changed by migration.
 
 `UNIQUE (workspace_id, key)`. Audited (`setting.updated`).
 
-### 3.4 `crm_select_options` — FR-CRM-LIST-01, -02, -09 (026; lists added in 040)
+### 3.4 `crm_select_options` — FR-CRM-LIST-01, -02, -09 (026; lists added in 041)
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -151,8 +152,8 @@ Options are never deleted. Audited (`option.created`, `option.updated`).
 | `opportunity.lost_reason` | uuid; every option keyed | no | both |
 | `opportunity.contact_role` | uuid | no | both |
 | `task.category` | uuid; rule key `delivery_handoff` (Labs) | no | both |
-| `campaign.type`, `campaign.status` (040) | uuid | no | both |
-| `campaign_member.status` (040) | text key | yes | both |
+| `campaign.type`, `campaign.status` (041) | uuid | no | both |
+| `campaign_member.status` (041) | text key | yes | both |
 
 ### 3.5 `crm_fx_rates` — FR-CRM-FX-02, -03 (026)
 
@@ -239,7 +240,7 @@ Indexes: GIN trigram on `lower(first_name || ' ' || coalesce(last_name,''))`
 and on `primary_email`; `(workspace_id, company_id)`; `(workspace_id,
 owner_id)`; `(workspace_id, updated_at DESC)`.
 
-### 3.9 `crm_opportunities` — FR-CRM-OPP-01, FR-CRM-FX, FR-CRM-PIPE (030; flags 038; campaign FK 040)
+### 3.9 `crm_opportunities` — FR-CRM-OPP-01, FR-CRM-FX, FR-CRM-PIPE (030; flags 038; campaign FK 041)
 
 | Column | Type | Constraints / notes |
 |---|---|---|
@@ -267,7 +268,7 @@ owner_id)`; `(workspace_id, updated_at DESC)`.
 | `lost_notes` | text | ≤ 20,000 |
 | `lost_from_stage` | text | stage the deal was lost from (FR-CRM-PIPE-12 reopen target); same CHECK as `stage` minus closed values |
 | `won_on`, `lost_on` | date | system-written |
-| `source_campaign_id` | uuid | (040) FK `crm_campaigns ON DELETE SET NULL` |
+| `source_campaign_id` | uuid | (041) FK `crm_campaigns ON DELETE SET NULL` |
 | `twenty_id` | text | unique per workspace when set |
 | `position` | numeric | |
 | stamps, soft delete | | |
@@ -570,7 +571,7 @@ skips a change to those columns alone, as 038's does flags. `crm_flag_facts`
 record's latest counted inbound and outbound email (never internal, never an
 auto-reply) for Reply owed, Client silent and Stale deal.
 
-### 3.23 Campaigns — FR-CRM-CAMP (040)
+### 3.23 Campaigns — FR-CRM-CAMP (041)
 
 `crm_campaigns`: `id`, `workspace_id`, `name` (≤ 200), `type_id`,
 `status_id`, `channel_id` (option FKs), `entity text CHECK IN
@@ -596,10 +597,10 @@ company_id, person_id)` with nulls not distinct (PG15+ `NULLS NOT DISTINCT`).
 Index `(workspace_id, campaign_id, status, position)`.
 
 The record-type CHECKs of `crm_task_links`, `crm_note_links` and
-`crm_drive_links` already allow `campaign` (030/029), so 040 adds no ALTER
+`crm_drive_links` already allow `campaign` (030/029), so 041 adds no ALTER
 there.
 
-### 3.24 `crm_bookings_targets`, `crm_csv_mappings` (041)
+### 3.24 `crm_bookings_targets`, `crm_csv_mappings` (042)
 
 `crm_bookings_targets` (audited): `id`, `workspace_id`, `entity` (NULL =
 whole workspace), `period_kind CHECK IN ('month','quarter','fy')`,
@@ -854,7 +855,7 @@ actor kind `sync`. db tests cover `/use` without an actor and an
   Changing an opportunity's `stage` through `crm_apply` is refused `CRM22`
   "Use a stage move." Only `crm_deal_transition` moves stages.
 
-### 5.3 `crm_remove_membership(p_actor jsonb, p_membership_id uuid) RETURNS jsonb` — FR-CRM-ACC-12 (027; replaced in 037)
+### 5.3 `crm_remove_membership(p_actor jsonb, p_membership_id uuid) RETURNS jsonb` — FR-CRM-ACC-12, FR-CRM-SYNC-01 (027; replaced in 037, 040)
 
 One transaction: lock the workspace's admin memberships `FOR UPDATE`; refuse
 `CRM22` "A workspace needs at least one admin." if this is the last admin
@@ -863,7 +864,10 @@ One transaction: lock the workspace's admin memberships `FOR UPDATE`; refuse
 none); refuse `CRM22` when the target profile is `is_owner` or a TVA admin
 and the actor is not a TVA admin (re-checked from `profiles`). Then delete the
 membership (audited `membership.removed`); from 037, also delete the person's
-`crm_notifications` for the workspace. If the person is `crm_only` and has no
+`crm_notifications` for the workspace; from 040, also set `is_active = false`
+on the person's `crm_mailboxes` in the workspace (audited `mailbox.updated`
+under the same actor), so the sync stops reading their Gmail there. If the
+person is `crm_only` and has no
 membership left: `profiles.is_active = false`, `deactivated_reason =
 'crm_no_membership'`, `api_tokens.revoked_at = now()` for unrevoked tokens,
 `oauth_refresh_tokens.revoked_at = now()`, plus TVA audit rows
@@ -964,7 +968,7 @@ confirmed, and only `source_opportunity_id`, `crm_company_id` and `client`
 are set; status, revenue, phases and milestones are untouched. Audited on both
 sides (`opportunity.project_linked`; TVA `project.updated` system).
 
-### 5.7 `crm_merge_companies(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DUP-03, -04 (035; replaced in 039, 040)
+### 5.7 `crm_merge_companies(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DUP-03, -04 (035; replaced in 039, 041)
 
 `p_plan = {survivor_id, merged_id, expect: {survivor_updated_at,
 merged_updated_at}, survivor_changes: {…}}`. One transaction. First, lock
@@ -975,7 +979,7 @@ merged_id` (`CRM04` / `CRM22`); check both `expect` stamps (`CRM09`). Then:
 1. Apply `survivor_changes`.
 2. Move every person, deal, task link, note link and Drive link from
    `merged_id` to `survivor_id`; the 039 version also moves email links, and
-   the 040 version also moves campaign members (each version names only
+   the 041 version also moves campaign members (each version names only
    tables that exist when it is created).
 3. Move the domains; a duplicate pair keeps one row.
 4. Set `projects.crm_company_id = survivor` where it was the merged company
@@ -1012,11 +1016,11 @@ Audited as `company.merged` on both ids.
 - Returns `{rows: [...selected columns], total: n | null (when > 10,000:
   "more"), groups: [{key, count, aggregates}], aggregates: {...}, next: cursor}`.
 
-### 5.9 `crm_search(p_workspace uuid, p_q text, p_limit int, p_redact boolean) RETURNS jsonb` — FR-CRM-SRCH (035; replaced in 040) — `STABLE`
+### 5.9 `crm_search(p_workspace uuid, p_q text, p_limit int, p_redact boolean) RETURNS jsonb` — FR-CRM-SRCH (035; replaced in 041) — `STABLE`
 
 A union across companies (name, domains), people (full name, primary and
 additional email), opportunities (name), tasks (title) and notes (first 200
-characters of the body); the 040 version adds campaigns. It uses `lower(x) %
+characters of the body); the 041 version adds campaigns. It uses `lower(x) %
 lower(p_q)` or `lower(x) LIKE <escaped lower(p_q)> || '%'` (`%`, `_` and `\`
 escaped first). Ranked by `similarity()`
 then `updated_at`, at most `p_limit` (≤ 8) per object. With `p_redact`, no
@@ -1114,7 +1118,7 @@ misses 1 s.
 | `labs` | Nunnari Labs | true | true | `nunnarilabs.com`, `deepweaver.ai` |
 | `academy` | Nunnari Academy B2B | false | false | `nunnari.academy`, `nunnarilabs.com` |
 
-### 7.2 Select lists (026; campaigns in 040)
+### 7.2 Select lists (026; campaigns in 041)
 
 Values exactly as spec FR-CRM-LIST-02 to -05, §5.6–5.9 and §6.6. Fixed lists
 carry their keys; rule-bearing options carry the system keys of §3.4.1.
@@ -1150,7 +1154,7 @@ so no `is_owner` profile exists yet and this insert adds nothing.
 `seed.sql` therefore inserts the owner's two admin memberships itself, in the
 same system-actor `DO` block, after the profiles are seeded (tasks S1c).
 
-### 7.5 Field registry and views (034; 038 and 040 add rows)
+### 7.5 Field registry and views (034; 038 and 041 add rows)
 
 `crm_object_fields` covers every field of spec §5.6–5.9 and §6.6, plus the
 derived `weighted_amount` (opportunity, amount) and `flag_level` (038).
@@ -1158,7 +1162,7 @@ derived `weighted_amount` (opportunity, amount) and `flag_level` (038).
 views with `system_key`: `companies_all`, `lead_funnel`,
 `partners_channels`, `my_accounts`, `pipeline` (default for opportunities),
 `closing_this_month`, `won_lost_quarter`, `open_tasks_by_owner`, `my_week`;
-(038) `follow_ups_owed`; (040) `members_by_status`.
+(038) `follow_ups_owed`; (041) `members_by_status`.
 
 ---
 
@@ -1168,4 +1172,4 @@ views with `system_key`: `companies_all`, `lead_funnel`,
 |---|---|
 | 025, 028, 032 (ALTERs) | Drop the added constraints, indexes, triggers and columns. Data in them is lost; TVA behaviour returns to before. 025's privilege revoke is reversed by re-granting what 004, 008, 009 and 012 granted. |
 | 026 audit_log changes | Columns can be dropped only after deleting CRM rows, which the append-only rules forbid. **Not reversible in practice**, and the file says so: rows written by the CRM are history. |
-| 026–041 new tables and functions | `DROP FUNCTION …; DROP TABLE … CASCADE` in reverse order. Each file's header gives the drop list. |
+| 026–042 new tables and functions | `DROP FUNCTION …; DROP TABLE … CASCADE` in reverse order. Each file's header gives the drop list. |

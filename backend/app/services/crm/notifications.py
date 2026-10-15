@@ -387,12 +387,29 @@ def task_reminders(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     }
 
 
+def _at(value: Any) -> datetime | None:
+    return datetime.fromisoformat(str(value)) if value else None
+
+
 def reply_owed_notices(workspace: dict[str, Any], now: datetime) -> int:
-    """FR-CRM-NOTIF-01 — a person, company or deal whose Reply owed flag is
-    red tells its owner, in the bell and by message, once per email waiting
-    (the dedupe key names when it arrived). Sent after each email sync run
-    (S10), which the 30-minute flags have turned red meanwhile."""
+    """FR-CRM-NOTIF-01 — a person, company or deal whose Reply owed flag
+    turned red tells its owner, in the bell and by message, once per email
+    waiting (the dedupe key names when it arrived). Sent after each email
+    sync run (S10), which the 30-minute flags have turned red meanwhile.
+
+    A backfill reads up to 90 days of mail at once (FR-CRM-SYNC-08), and
+    every unanswered email in it is red already: a flag that turned red
+    before the latest backfill finished was never watched turning red, so
+    it shows on the record and tells nobody."""
     ws_id = workspace["id"]
+    found = next(
+        (s["value"] for s in store.list_settings(ws_id) if s["key"] == "flag_thresholds"), None
+    )
+    red_after = timedelta(hours=flag_rules.thresholds(found)["reply_owed_red_hours"])
+    watched_from = max(
+        (_at(m["backfilled_at"]) for m in store.list_mailboxes(ws_id) if m.get("backfilled_at")),
+        default=None,
+    )
     rows = []
     for table, record_type in (
         ("crm_people", "person"),
@@ -402,6 +419,9 @@ def reply_owed_notices(workspace: dict[str, Any], now: datetime) -> int:
         for row in store.flag_rows(ws_id, table, flagged_only=True):
             owed = next((f for f in row.get("flags") or [] if f.get("kind") == "reply_owed"), None)
             if owed is None or owed.get("level") != "red" or not row.get("owner_id"):
+                continue
+            since = _at(owed.get("since"))
+            if watched_from and since and since + red_after <= watched_from:
                 continue
             name = row.get("name") or dedupe.full_name(row.get("first_name"), row.get("last_name"))
             notice = _row(

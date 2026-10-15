@@ -1622,19 +1622,55 @@ def people_by_emails(workspace_id: str, emails: list[str]) -> list[dict[str, Any
 
 
 def email_links(workspace_id: str, record_type: str, record_ids: list[str]) -> list[dict[str, Any]]:
-    """The email links naming some records (data-model §3.22)."""
-    if not record_ids:
-        return []
-    return _in_batches(
-        lambda: (
-            supabase.table("crm_email_links")
-            .select("message_id, record_type, record_id")
+    """The email links naming some records (data-model §3.22). A batch of
+    records can have more links than one response holds (`max_rows`), so
+    each batch is read page by page."""
+    rows: list[dict[str, Any]] = []
+    wanted = sorted(set(record_ids))
+    for i in range(0, len(wanted), _ID_BATCH):
+        offset = 0
+        while True:
+            page = (
+                supabase.table("crm_email_links")
+                .select("message_id, record_type, record_id")
+                .eq("workspace_id", workspace_id)
+                .eq("record_type", record_type)
+                .in_("record_id", wanted[i : i + _ID_BATCH])
+                .order("id")
+                .range(offset, offset + _PAGE - 1)
+                .execute()
+                .data
+                or []
+            )
+            rows += page
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    return rows
+
+
+def mailbox_message_ids(workspace_id: str, mailbox_id: str, sent_after: str) -> set[str]:
+    """The Gmail ids a mailbox has stored of messages sent after
+    `sent_after`, page by page (FR-CRM-SYNC-09, a re-read's removals)."""
+    found: set[str] = set()
+    offset = 0
+    while True:
+        page = (
+            supabase.table("crm_email_messages")
+            .select("gmail_message_id")
             .eq("workspace_id", workspace_id)
-            .eq("record_type", record_type)
-        ),
-        "record_id",
-        record_ids,
-    )
+            .eq("mailbox_id", mailbox_id)
+            .gt("sent_at", sent_after)
+            .order("id")
+            .range(offset, offset + _PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        found |= {r["gmail_message_id"] for r in page}
+        if len(page) < _PAGE:
+            return found
+        offset += _PAGE
 
 
 def email_messages(workspace_id: str, message_ids: list[str]) -> list[dict[str, Any]]:

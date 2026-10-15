@@ -77,15 +77,20 @@ def _check(
     owner_id: str,
     labels: list[str],
     mailbox_id: str | None = None,
+    same_address: bool = False,
 ) -> None:
-    """FR-CRM-SYNC-01, amended — each rule a 422, then the address once (409)."""
+    """FR-CRM-SYNC-01, amended — each rule a 422, then the address once (409).
+    Only a TVA admin may give a mailbox an address other than its owner's
+    own; a change that keeps the address and the owner (`same_address`)
+    leaves that choice standing, so any workspace Admin can pause or
+    relabel a delegate mailbox."""
     members = {m["user_id"] for m in store.list_members(ctx.workspace_id)}
     owner = db.get_profile(owner_id) if owner_id in members else None
     why = rules.mailbox_refusal(
         email=email,
         owner_email=(owner or {}).get("email"),
         owner_is_member=owner is not None,
-        by_tva_admin=is_tva_admin(ctx.user),
+        by_tva_admin=same_address or is_tva_admin(ctx.user),
         labels=labels,
     )
     if why:
@@ -142,7 +147,14 @@ def update_mailbox(mailbox_id: str, payload: MailboxUpdate, ctx: CrmAdminDep) ->
     email = str(sent.get("email", row["email"])).lower()
     owner_id = str(sent.get("owner_id", row["owner_id"]))
     labels = rules.clean_labels(sent["labels"]) if "labels" in sent else row["labels"]
-    _check(ctx, email=email, owner_id=owner_id, labels=labels, mailbox_id=row["id"])
+    _check(
+        ctx,
+        email=email,
+        owner_id=owner_id,
+        labels=labels,
+        mailbox_id=row["id"],
+        same_address=email == row["email"] and owner_id == row["owner_id"],
+    )
     values: dict[str, Any] = {}
     if email != row["email"]:
         values["email"] = email

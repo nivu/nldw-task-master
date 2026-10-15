@@ -211,12 +211,12 @@ def list_messages(
     return _get(mailbox, "list", "/messages", params)
 
 
-def history(mailbox: str, start: str, *, page_token: str | None) -> dict[str, Any]:
-    """One page of what changed since `start`: `{history: [...],
-    nextPageToken, historyId}`. A 404 is `HistoryGone`."""
+def history(mailbox: str, start: str, *, page_token: str | None, page_size: int) -> dict[str, Any]:
+    """One page of what changed since `start`, at most `page_size` records:
+    `{history: [...], nextPageToken, historyId}`. A 404 is `HistoryGone`."""
     params: list[tuple[str, Any]] = [
         ("startHistoryId", start),
-        ("maxResults", 500),
+        ("maxResults", page_size),
         ("historyTypes", "messageAdded"),
         ("historyTypes", "messageDeleted"),
         ("historyTypes", "labelAdded"),
