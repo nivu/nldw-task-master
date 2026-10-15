@@ -441,7 +441,7 @@ MUST name every missing field in one sentence, not only the first.
 |---|---|
 | FR-CRM-DUP-01 | A company domain (including additional domains) and a person's primary email MUST be unique per workspace; a clash is refused 409 naming the existing record. |
 | FR-CRM-DUP-02 | Creating a company or person, in the web app and through MCP, MUST show possible duplicates by name similarity before saving; the person may continue. The Twenty importer's dry run does the same (FR-CRM-MIG-04), and *(1b)* so does CSV import (FR-CRM-IO-03). |
-| FR-CRM-DUP-03 | Basic merge, companies only: an Admin or Member picks the surviving company and a value per differing field; every person, deal, task, note, Drive link and *(1b)* email and campaign membership moves to the survivor; the merged company's id resolves to the survivor; the merge is written to both timelines and the audit. Merge of people and other objects is Phase 2. |
+| FR-CRM-DUP-03 | Basic merge, companies only: an Admin or Member picks the surviving company and a value per differing field; every person, deal, task, note, Drive link and *(1b)* email and campaign membership moves to the survivor; the merged company's id resolves to the survivor (still when that survivor is merged later) and the merged company cannot be restored from the Trash; the merge is written to both timelines and the audit. Merge of people and other objects is Phase 2. |
 | FR-CRM-DUP-04 | Merging two companies each linked to TVA projects keeps both links; the TVA projects are unchanged except their company link. |
 
 ### 5.14 Trash — FR-CRM-DEL

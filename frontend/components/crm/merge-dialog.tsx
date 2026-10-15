@@ -232,7 +232,13 @@ export function MergeDialog({
             </>
           ) : (
             <>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  reset();
+                  onOpenChange(false);
+                }}
+              >
                 Cancel
               </Button>
               <Button onClick={review} disabled={busy || !other}>

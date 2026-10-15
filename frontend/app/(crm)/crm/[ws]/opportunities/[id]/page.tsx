@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { AmountText } from "@/components/crm/amount-field";
+import { useQuickActions } from "@/components/crm/command-menu";
 import { ContactsPanel } from "@/components/crm/contacts-panel";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
@@ -157,7 +158,8 @@ function dealGroups(bootstrap: CrmBootstrap, members: CrmMember[], deal: CrmOppo
  * Labs (FR-CRM-TVA) the deal's TVA project is in Related, with its status and
  * phase dates for every role; Closed Won goes through the handoff; a Labs
  * admin may Link TVA project on a deal at Proposal or later that has none
- * (FR-CRM-TVA-18).
+ * (FR-CRM-TVA-18). Move stage, Link TVA project and Delete are also the
+ * command menu's quick actions here (FR-CRM-SRCH-02).
  */
 export default function OpportunityPage() {
   const { id } = useParams<{ id: string }>();
@@ -173,6 +175,36 @@ export default function OpportunityPage() {
     () => Promise.all([getCrmRecord<CrmOpportunity>(ws, "opportunities", id), getCrmMembers(ws)]),
     [ws, id]
   );
+  const loaded = data?.[0].record;
+  const canEdit = bootstrap.role !== "viewer";
+  const mayDelete =
+    bootstrap.role === "admin" || (bootstrap.role === "member" && loaded?.owner_id === bootstrap.me.id);
+  const labs = bootstrap.workspace.tva_linked;
+  // FR-CRM-TVA-18: imported deals reach their projects this way.
+  const mayLinkProject =
+    labs &&
+    bootstrap.role === "admin" &&
+    !!loaded &&
+    !loaded.project &&
+    ["proposal", "negotiation", "closed_won"].includes(loaded.stage);
+  const quickActions = useMemo(
+    () =>
+      loaded
+        ? [
+            ...(canEdit
+              ? STAGE_ORDER.filter((s) => s !== loaded.stage).map((s) => ({
+                  id: `stage-${s}`,
+                  label: `Move to ${stageLabel(bootstrap, s)}…`,
+                  run: () => setTarget(s),
+                }))
+              : []),
+            ...(mayLinkProject ? [{ id: "link-project", label: "Link TVA project…", run: () => setLinking(true) }] : []),
+            ...(mayDelete ? [{ id: "delete", label: `Delete ${loaded.name}…`, run: () => setDeleting(true) }] : []),
+          ]
+        : [],
+    [loaded, canEdit, mayLinkProject, mayDelete, bootstrap]
+  );
+  useQuickActions(loaded ? { record_type: "opportunity", record_id: loaded.id } : null, quickActions);
 
   if (error) {
     return (
@@ -188,9 +220,6 @@ export default function OpportunityPage() {
 
   const [page, members] = data;
   const deal = page.record;
-  const canEdit = bootstrap.role !== "viewer";
-  const mayDelete =
-    bootstrap.role === "admin" || (bootstrap.role === "member" && deal.owner_id === bootstrap.me.id);
   const refresh = () => {
     reload();
     setVersion((v) => v + 1);
@@ -221,13 +250,6 @@ export default function OpportunityPage() {
   }
 
   const stages = STAGE_ORDER.filter((s) => s !== deal.stage);
-  const labs = bootstrap.workspace.tva_linked;
-  // FR-CRM-TVA-18: imported deals reach their projects this way.
-  const mayLinkProject =
-    labs &&
-    bootstrap.role === "admin" &&
-    !deal.project &&
-    ["proposal", "negotiation", "closed_won"].includes(deal.stage);
 
   return (
     <>

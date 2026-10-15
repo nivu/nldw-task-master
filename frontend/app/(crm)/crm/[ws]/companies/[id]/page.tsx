@@ -151,10 +151,10 @@ export default function CompanyPage() {
             ...(canEdit ? [{ id: "merge", label: `Merge ${loaded.name}…`, run: () => setMerging(true) }] : []),
             ...(mayDelete ? [{ id: "delete", label: `Delete ${loaded.name}…`, run: () => setDeleting(true) }] : []),
           ]
-        : null,
+        : [],
     [loaded, canEdit, mayDelete]
   );
-  useQuickActions(quickActions);
+  useQuickActions(loaded ? { record_type: "company", record_id: loaded.id } : null, quickActions);
 
   if (error) {
     return (

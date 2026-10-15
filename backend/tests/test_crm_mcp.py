@@ -703,6 +703,31 @@ class TestTodaySearchMergeTools:
                     {"survivor_id": C1, "merged_id": P1, "choices": {"name": "b"}},
                 ),
             ),
+            (
+                lambda: crm.crm_merge(
+                    Ctx("u"),
+                    C1,
+                    P1,
+                    preview=False,
+                    survivor_updated_at="2026-10-01T00:00:00+00:00",
+                    merged_updated_at="2026-10-02T00:00:00+00:00",
+                    workspace="labs",
+                ),
+                (
+                    "POST",
+                    "/crm/companies/merge",
+                    {"workspace": "labs"},
+                    {
+                        "survivor_id": C1,
+                        "merged_id": P1,
+                        "choices": {},
+                        "expect": {
+                            "survivor_updated_at": "2026-10-01T00:00:00+00:00",
+                            "merged_updated_at": "2026-10-02T00:00:00+00:00",
+                        },
+                    },
+                ),
+            ),
         ],
     )
     def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):

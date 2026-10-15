@@ -222,7 +222,26 @@ def pair(stack, labs, owner):
         "INSERT INTO projects (name, status, crm_company_id) "
         f"VALUES ({stack.q('Pilot ' + t)}, 'tentative', {stack.q(gone)}) RETURNING id"
     )[0]["id"]
-    return {"keep": keep, "gone": gone, "actor": actor, "project": project, "t": t, **ids}
+    # Won from the merged company's deal: it moves through 033's trigger.
+    sourced = stack.sql(
+        "INSERT INTO projects (name, status, client, crm_company_id, source_opportunity_id) "
+        f"VALUES ({stack.q('Rollout ' + t)}, 'tentative', {stack.q('Acme Corp ' + t)}, "
+        f"{stack.q(gone)}, {stack.q(ids['deal'])}) RETURNING id"
+    )[0]["id"]
+    own = stack.sql(
+        "INSERT INTO projects (name, status, crm_company_id) "
+        f"VALUES ({stack.q('Support ' + t)}, 'tentative', {stack.q(keep)}) RETURNING id"
+    )[0]["id"]
+    return {
+        "keep": keep,
+        "gone": gone,
+        "actor": actor,
+        "project": project,
+        "sourced": sourced,
+        "own": own,
+        "t": t,
+        **ids,
+    }
 
 
 def _snapshot(stack, keep: str, gone: str) -> dict:
@@ -265,7 +284,7 @@ class TestTheMerge:
             "notes": 1,
             "links": 1,
             "domains": 2,
-            "projects": 1,
+            "projects": 2,
         }
         assert _row(stack, "crm_people", pair["person"])["company_id"] == keep
         assert _row(stack, "crm_opportunities", pair["deal"])["company_id"] == keep
@@ -333,6 +352,55 @@ class TestTheMerge:
         assert {"workspace_id": None, "action": "project.updated"}.items() <= rows[-1].items()
         assert rows[-1]["before"] == {"crm_company_id": gone}
         assert rows[-1]["after"] == {"crm_company_id": keep}
+
+    def test_a_deal_sourced_project_takes_the_survivors_chosen_name(self, stack, pair):
+        """FR-CRM-DUP-04, FR-CRM-TVA-01 — the deal's move carries its project
+        to the survivor (033's trigger), after the chosen values, so the
+        client is the survivor's chosen name; the survivor's own project
+        stays. Each move is a TVA audit row."""
+        keep, gone, t = pair["keep"], pair["gone"], pair["t"]
+        plan = _plan(stack, keep, gone, survivor_changes={"name": f"Acme Group {t}"})
+        _merge(stack, pair["actor"], plan)
+        sourced = _row(stack, "projects", pair["sourced"])
+        assert (sourced["crm_company_id"], sourced["client"]) == (keep, f"Acme Group {t}")
+        assert _row(stack, "projects", pair["own"])["crm_company_id"] == keep
+        for project in (pair["sourced"], pair["project"]):
+            rows = stack.sql(
+                "SELECT workspace_id, after FROM audit_log "
+                f"WHERE target_table = 'projects' AND target_id = {stack.q(project)} "
+                "AND action = 'project.updated'"
+            )
+            assert rows and rows[-1]["workspace_id"] is None
+            assert rows[-1]["after"]["crm_company_id"] == keep
+        [moved] = stack.sql(
+            "SELECT after FROM audit_log WHERE target_table = 'projects' "
+            f"AND target_id = {stack.q(pair['sourced'])} AND action = 'project.updated'"
+        )
+        assert moved["after"]["client"] == f"Acme Group {t}"
+
+    def test_a_chained_merge_keeps_the_way_to_the_live_company(self, stack, pair, labs, owner):
+        """A into B, then B into C: A points at B and B at C, which is what
+        `records.get` follows to the live company (FR-CRM-DUP-03)."""
+        keep, gone = pair["keep"], pair["gone"]
+        _merge(stack, pair["actor"], _plan(stack, keep, gone))
+        third = _company(stack, labs, owner, f"Acme Ltd {pair['t']}")
+        _merge(stack, pair["actor"], _plan(stack, third, keep))
+        hops = stack.sql(
+            "WITH RECURSIVE chain AS ("
+            f" SELECT id, merged_into_id, deleted_at, 0 AS n FROM crm_companies"
+            f" WHERE id = {stack.q(gone)}"
+            " UNION ALL SELECT c.id, c.merged_into_id, c.deleted_at, chain.n + 1"
+            " FROM crm_companies c JOIN chain ON c.id = chain.merged_into_id)"
+            " SELECT id, deleted_at IS NULL AS live FROM chain ORDER BY n"
+        )
+        assert hops == [
+            {"id": gone, "live": False},
+            {"id": keep, "live": False},
+            {"id": third, "live": True},
+        ]
+        # Everything that was the first merged company's now sits on the last.
+        assert _row(stack, "crm_people", pair["person"])["company_id"] == third
+        assert _row(stack, "projects", pair["sourced"])["crm_company_id"] == third
 
     def test_both_ids_are_audited_as_merged(self, stack, pair):
         keep, gone = pair["keep"], pair["gone"]

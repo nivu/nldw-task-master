@@ -242,6 +242,32 @@ class TestEverythingMoves:
         assert page["record"]["id"] == made["acme"]["id"]
         assert page["merged_from"] == {"id": made["dup"]["id"], "name": "Acme Corp"}
 
+    def test_a_merged_id_still_resolves_after_its_survivor_is_merged(self, crm):
+        """A into B, then B into C: A's id opens C."""
+        http, _, made = crm
+        me = as_(OWNER["id"])
+        third = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Acme Ltd"}, headers=me
+        ).json()
+        assert _merge(http, made["acme"]["id"], made["dup"]["id"]).status_code == 200
+        assert _merge(http, third["id"], made["acme"]["id"]).status_code == 200
+        r = http.get(f"/api/v1/crm/companies/{made['dup']['id']}{LABS}", headers=me)
+        assert r.status_code == 200, r.text
+        assert r.json()["record"]["id"] == third["id"]
+        assert r.json()["merged_from"] == {"id": made["dup"]["id"], "name": "Acme Corp"}
+
+    def test_a_merged_company_cannot_be_restored(self, crm):
+        http, fake, made = crm
+        _merge(http, made["acme"]["id"], made["dup"]["id"])
+        r = http.post(
+            f"/api/v1/crm/companies/{made['dup']['id']}/restore{LABS}", headers=as_(OWNER["id"])
+        )
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "This company was merged into another; open the survivor instead.",
+        )
+        assert fake.rows["crm_companies"][made["dup"]["id"]]["deleted_at"]
+
     def test_a_merged_company_cannot_be_merged_again(self, crm):
         http, _, made = crm
         _merge(http, made["acme"]["id"], made["dup"]["id"])

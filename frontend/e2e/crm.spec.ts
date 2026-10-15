@@ -480,6 +480,36 @@ test.describe("Today, search and merge (S7)", () => {
     await page.waitForURL(`**/crm/labs/companies/${company.id}`);
   });
 
+  test("Cmd+K on a person makes a task linked to them, and offers the record's actions (FR-CRM-SRCH-02)", async ({
+    page,
+    request,
+  }) => {
+    const token = await tokenFor(request, PEOPLE.user);
+    const tag = `E2E task ${Date.now().toString(36)}`;
+    const person = await crmApi(request, token, "POST", "/people?workspace=labs", { first_name: `${tag} Pat` });
+
+    await signIn(page, PEOPLE.user);
+    // Nowhere to link a task: the menu does not offer one.
+    await page.goto("/crm/labs");
+    await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.getByRole("combobox", { name: "Search the CRM" }).fill(tag);
+    await expect(page.getByRole("option", { name: /^New company/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /^New task/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await page.goto(`/crm/labs/people/${person.id}`);
+    await expect(page.getByRole("heading", { name: `${tag} Pat` })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("option", { name: "Copy link" })).toBeVisible();
+    await expect(page.getByRole("option", { name: `Delete ${tag} Pat…` })).toBeVisible();
+    await page.getByRole("combobox", { name: "Search the CRM" }).fill(`${tag} call`);
+    await page.getByRole("option", { name: new RegExp(`^New task “${tag} call”`) }).click();
+    await page.waitForURL("**/crm/labs/tasks");
+    const after = await crmApi(request, token, "GET", `/people/${person.id}?workspace=labs`);
+    expect(after.tasks.map((t: { title: string }) => t.title)).toContain(`${tag} call`);
+  });
+
   test("Today shows its sections, the email ones saying sync is off (FR-CRM-TODAY-01, -02)", async ({ page }) => {
     await signIn(page, PEOPLE.user);
     await page.goto("/crm/labs");

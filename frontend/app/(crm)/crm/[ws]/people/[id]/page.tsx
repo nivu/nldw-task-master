@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
+import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import { NotesTab } from "@/components/crm/note-composer";
@@ -80,7 +81,8 @@ function personGroups(members: CrmMember[], searchCompanies: RelationSearch, cur
 
 /**
  * A person — spec 007 FR-CRM-PER-01, FR-CRM-REC-01 to -04, FR-CRM-LINK-03,
- * FR-CRM-DEL-04. The deals they are on are in Related.
+ * FR-CRM-DEL-04. The deals they are on are in Related; Delete is also the
+ * command menu's quick action here (FR-CRM-SRCH-02).
  */
 export default function PersonPage() {
   const { id } = useParams<{ id: string }>();
@@ -97,6 +99,17 @@ export default function PersonPage() {
     (q, after) => searchCompanyChoices(ws, q, after),
     [ws]
   );
+  const loaded = data?.[0].record;
+  const me = bootstrap.me.id;
+  // FR-CRM-DEL-04: what they own, or created when nobody owns it.
+  const mine = loaded && (loaded.owner_id ? loaded.owner_id === me : loaded.created_by === me);
+  const mayDelete = bootstrap.role === "admin" || (bootstrap.role === "member" && !!mine);
+  const quickActions = useMemo(
+    () =>
+      loaded && mayDelete ? [{ id: "delete", label: `Delete ${loaded.name}…`, run: () => setDeleting(true) }] : [],
+    [loaded, mayDelete]
+  );
+  useQuickActions(loaded ? { record_type: "person", record_id: loaded.id } : null, quickActions);
 
   if (error) {
     return (
@@ -113,10 +126,6 @@ export default function PersonPage() {
   const [page, members] = data;
   const person = page.record;
   const canEdit = bootstrap.role !== "viewer";
-  const me = bootstrap.me.id;
-  // FR-CRM-DEL-04: what they own, or created when nobody owns it.
-  const mine = person.owner_id ? person.owner_id === me : person.created_by === me;
-  const mayDelete = bootstrap.role === "admin" || (bootstrap.role === "member" && mine);
   const refresh = () => {
     reload();
     setVersion((v) => v + 1);

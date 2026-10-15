@@ -27,8 +27,10 @@ import { OBJECT_PATH } from "@/lib/crm/view-fields";
  * workspace's companies, people, deals, tasks and notes, with its saved views
  * by name. From it the person jumps to a record or a view, creates a record
  * named after what they typed, or runs a quick action of the record page they
- * are on. A page offers its quick actions with `useQuickActions`; the server
- * decides every result (one workspace, no Trash, no amounts for a Viewer).
+ * are on. A record page names itself and offers its quick actions with
+ * `useQuickActions`; a new task needs a record to link to (FR-CRM-TASK-01), so
+ * it is offered only there. The server decides every result (one workspace,
+ * no Trash, no amounts for a Viewer).
  */
 
 export interface QuickAction {
@@ -37,15 +39,29 @@ export interface QuickAction {
   run: () => void;
 }
 
-const QuickActionsContext = createContext<((actions: QuickAction[] | null) => void) | null>(null);
+/** The record page that is open: a new task from the menu links to it. */
+export interface OpenRecord {
+  record_type: "company" | "person" | "opportunity";
+  record_id: string;
+}
 
-/** Offer the open record's quick actions in the command menu while mounted. */
-export function useQuickActions(actions: QuickAction[] | null) {
+interface Offered {
+  record: OpenRecord;
+  actions: QuickAction[];
+}
+
+const QuickActionsContext = createContext<((offered: Offered | null) => void) | null>(null);
+
+/** Name the open record and offer its quick actions in the command menu while
+ *  mounted; `record` is null until the page has loaded it. */
+export function useQuickActions(record: OpenRecord | null, actions: QuickAction[]) {
   const set = useContext(QuickActionsContext);
+  const recordType = record?.record_type;
+  const recordId = record?.record_id;
   useEffect(() => {
-    set?.(actions);
+    set?.(recordType && recordId ? { record: { record_type: recordType, record_id: recordId }, actions } : null);
     return () => set?.(null);
-  }, [set, actions]);
+  }, [set, recordType, recordId, actions]);
 }
 
 const MIN_CHARS = 2;
@@ -97,7 +113,7 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState<{ object: Creatable; found: CrmDuplicates } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [actions, setActions] = useState<QuickAction[] | null>(null);
+  const [offered, setOffered] = useState<Offered | null>(null);
   const [views, setViews] = useState<CrmSearchResult["views"]>([]);
   const asked = useRef(0);
 
@@ -173,7 +189,7 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
         ? { name: text, owner_id: bootstrap.me.id }
         : object === "people"
           ? { first_name: first, ...(rest.length ? { last_name: rest.join(" ") } : {}), owner_id: bootstrap.me.id }
-          : { title: text };
+          : { title: text, links: offered ? [offered.record] : [], assignee_id: bootstrap.me.id };
     setBusy(true);
     setError(null);
     try {
@@ -198,7 +214,7 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
     : views.slice(0, 8);
 
   return (
-    <QuickActionsContext.Provider value={setActions}>
+    <QuickActionsContext.Provider value={setOffered}>
       {children}
       <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
         <DialogContent className="top-[20%] translate-y-0 gap-0 p-0 sm:max-w-xl" showCloseButton={false}>
@@ -261,9 +277,9 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
                 </Command.Group>
               )}
 
-              {actions && actions.length > 0 && (
+              {offered && (
                 <Command.Group heading="This record" className="text-xs text-muted-foreground">
-                  {actions.map((a) => (
+                  {offered.actions.map((a) => (
                     <Command.Item
                       key={a.id}
                       value={`action-${a.id}`}
@@ -339,7 +355,7 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
                     [
                       ["companies", "company"],
                       ["people", "person"],
-                      ["tasks", "task"],
+                      ...(offered ? ([["tasks", "task"]] as const) : []),
                     ] as const
                   ).map(([object, noun]) => (
                     <Command.Item

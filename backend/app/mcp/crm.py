@@ -386,6 +386,8 @@ async def crm_merge(
     merged_id: str,
     choices: dict[str, Literal["a", "b"]] | None = None,
     preview: bool = True,
+    survivor_updated_at: str | None = None,
+    merged_updated_at: str | None = None,
     workspace: str | None = None,
 ) -> dict:
     """WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST: preview first, read the
@@ -395,7 +397,10 @@ async def crm_merge(
     (a is the survivor, b the merged one), each differing field with both
     values and the default side, and the counts that move. Then call with
     preview=false and choices {field: "a"|"b"} for any field to keep
-    differently from its default; the survivor keeps every domain of both."""
+    differently from its default; the survivor keeps every domain of both.
+    With preview=false also pass the preview's a.updated_at as
+    survivor_updated_at and b.updated_at as merged_updated_at: if either
+    company changed since the preview, the merge is refused (preview again)."""
     a = _id("company", survivor_id)
     b = _id("company", merged_id)
     params = {"workspace": workspace}
@@ -403,10 +408,10 @@ async def crm_merge(
         return await _api(
             ctx, "GET", "/crm/companies/merge-preview", params={**params, "a": a, "b": b}
         )
-    return await _api(
-        ctx,
-        "POST",
-        "/crm/companies/merge",
-        params=params,
-        body={"survivor_id": a, "merged_id": b, "choices": choices or {}},
-    )
+    body: dict[str, Any] = {"survivor_id": a, "merged_id": b, "choices": choices or {}}
+    if survivor_updated_at or merged_updated_at:
+        body["expect"] = {
+            "survivor_updated_at": survivor_updated_at,
+            "merged_updated_at": merged_updated_at,
+        }
+    return await _api(ctx, "POST", "/crm/companies/merge", params=params, body=body)

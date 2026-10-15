@@ -46,6 +46,9 @@ from app.services.crm.context import actor
 
 #: FR-CRM-DEL-01.
 TRASH_DAYS = 90
+#: FR-CRM-DUP-03 — how far `get` follows merged ids (A into B, B into C...).
+MERGE_HOPS = 10
+MERGED_NO_RESTORE = "This company was merged into another; open the survivor instead."
 
 
 @dataclass(frozen=True)
@@ -491,7 +494,11 @@ def get(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
     merged_from = None
     if row and kind == "company" and row.get("merged_into_id") and row.get("deleted_at"):
         merged_from = {"id": row["id"], "name": row["name"]}
-        row = store.get_record(ctx.workspace_id, "crm_companies", row["merged_into_id"])
+        # A survivor merged later itself: follow the chain to the live one.
+        for _ in range(MERGE_HOPS):
+            if not (row and row.get("merged_into_id") and row.get("deleted_at")):
+                break
+            row = store.get_record(ctx.workspace_id, "crm_companies", row["merged_into_id"])
     if row is None or row.get("deleted_at"):
         raise no_such(kind)
 
@@ -970,6 +977,8 @@ def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
     row = store.get_record(ctx.workspace_id, table, record_id) if _uuid(record_id) else None
     if row is None or not row.get("deleted_at"):
         raise CrmRefused(404, f"No such {show.NOUNS[kind]} in the Trash.")
+    if kind == "company" and row.get("merged_into_id"):
+        raise CrmRefused(422, MERGED_NO_RESTORE)
     group = row.get("deleted_group")
     back: list[tuple[str, dict[str, Any]]] = []
     if group:
