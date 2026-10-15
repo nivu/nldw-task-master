@@ -285,6 +285,7 @@ class TestTheMerge:
             "links": 1,
             "domains": 2,
             "projects": 2,
+            "emails": 0,
         }
         assert _row(stack, "crm_people", pair["person"])["company_id"] == keep
         assert _row(stack, "crm_opportunities", pair["deal"])["company_id"] == keep

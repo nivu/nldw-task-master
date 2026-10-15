@@ -22,8 +22,12 @@ import type {
   CrmContact,
   CrmDriveLink,
   CrmDuplicates,
+  CrmEmailThreads,
   CrmFxRate,
   CrmLists,
+  CrmMailbox,
+  CrmMailboxes,
+  CrmMailboxIn,
   CrmMember,
   CrmObject,
   CrmOpportunity,
@@ -48,6 +52,7 @@ import type {
   CrmViewIn,
   CrmViewUpdate,
   CrmWorkspace,
+  EmailSyncResult,
   HandoffIn,
   HandoffPreview,
   HandoffResult,
@@ -608,3 +613,36 @@ export const getCrmJobs = (workspace: string, job?: CrmJobName) =>
 
 /** Every workspace's job runs for the TVA admin panel: `error_public` only. */
 export const getTvaCrmJobs = () => call<TvaCrmJobs>("/tva-admin/jobs");
+
+// ---------------------------------------------------------------------------
+// 1b — Gmail label sync (§2.10; FR-CRM-SYNC). Mailboxes and run-now are
+// Admin settings (Q-62); a record's emails are for any member.
+// ---------------------------------------------------------------------------
+
+export const getCrmMailboxes = (workspace: string) =>
+  call<CrmMailboxes>(`/mailboxes${query(workspace)}`);
+
+export const addCrmMailbox = (workspace: string, mailbox: CrmMailboxIn) =>
+  call<CrmMailbox>(`/mailboxes${query(workspace)}`, { method: "POST", ...body(mailbox) });
+
+export const updateCrmMailbox = (workspace: string, id: string, changes: Partial<CrmMailboxIn>) =>
+  call<CrmMailbox>(`/mailboxes/${encodeURIComponent(id)}${query(workspace)}`, {
+    method: "PATCH",
+    ...body(changes),
+  });
+
+export const removeCrmMailbox = (workspace: string, id: string) =>
+  call<{ removed: boolean }>(`/mailboxes/${encodeURIComponent(id)}${query(workspace)}`, {
+    method: "DELETE",
+  });
+
+export const runCrmEmailSync = (workspace: string) =>
+  call<EmailSyncResult>(`/email-sync/run${query(workspace)}`, { method: "POST" });
+
+/** A company's, person's or deal's threads, newest first (FR-CRM-REC-03). */
+export const getCrmEmails = (
+  workspace: string,
+  object: "companies" | "people" | "opportunities",
+  id: string,
+  before?: string
+) => call<CrmEmailThreads>(`/${object}/${encodeURIComponent(id)}/emails${query(workspace, { before })}`);

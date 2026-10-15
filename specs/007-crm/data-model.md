@@ -29,7 +29,7 @@ order of §1. Existing migrations are not edited.
 | `036_crm_imports.sql` | S8 | `crm_import_runs`; `twenty_id` on `crm_tasks` and `crm_notes`; `crm_similar_many()` (the dry run's possible-duplicate check for many names in one call); `crm_record_import()` (a run and its audit row together) |
 | `037_crm_jobs_notifications.sql` | S9 | `crm_job_runs`, `crm_notifications`, `crm_digest_sends`; settings seeds for thresholds and automations; `CREATE OR REPLACE crm_remove_membership()` deleting the person's notifications for the workspace |
 | `038_crm_flags.sql` | S9 | Flag columns and indexes on companies, people, opportunities, tasks; `crm_object_fields` rows for them |
-| `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
+| `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `crm_store_emails()`, `crm_remove_emails()` (the email log's one writer); `CREATE OR REPLACE crm_audit_row()` skipping a mailbox's cursor columns; `crm_flag_facts()` replaced by a four-argument form with people and email facts; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
 | `040_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists, field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns |
 | `041_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
 
@@ -558,6 +558,17 @@ gmail_message_id)` (FR-CRM-SYNC-07). No body column (Q-29). Index
 `record_type CHECK IN ('company','person','opportunity')`, `record_id`;
 `UNIQUE (message_id, record_type, record_id)`; index `(workspace_id,
 record_type, record_id)`.
+
+The two logs are written only by `crm_store_emails(workspace, mailbox,
+messages)` (a page's messages and links, `ON CONFLICT DO NOTHING`, returning
+the Gmail ids stored) and `crm_remove_emails(workspace, mailbox, ids)`
+(FR-CRM-SYNC-09; returns the records the removed copies were linked to).
+A mailbox's cursor (`history_id`, `page_token`, `backfilled_at`,
+`last_synced_at`) is written directly by the sync: 039's `crm_audit_row()`
+skips a change to those columns alone, as 038's does flags. `crm_flag_facts`
+(039, four arguments: deals, companies and people) also returns each
+record's latest counted inbound and outbound email (never internal, never an
+auto-reply) for Reply owed, Client silent and Stale deal.
 
 ### 3.23 Campaigns — FR-CRM-CAMP (040)
 

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { useCrm } from "@/components/crm/shell";
@@ -14,6 +15,9 @@ import { useAsync } from "@/lib/use-async";
  * The CRM's home: what to do today, in the person's own day. A workspace
  * Admin may pick any member and see their Today instead (a sales-only
  * exception to TVA's no-ranking rule); the server refuses anyone else.
+ * Replies owed and silent clients come from Gmail sync (S10); while it is
+ * off those sections say so, and an Admin is pointed at the Mailboxes
+ * settings (FR-CRM-TODAY-02).
  */
 export default function TodayPage() {
   const { bootstrap } = useCrm();
@@ -56,6 +60,15 @@ export default function TodayPage() {
           </label>
         )}
       </div>
+      {admin && !bootstrap.email_sync_on && (
+        <p className="text-xs text-muted-foreground">
+          Replies owed and silent clients come from Gmail label sync.{" "}
+          <Link href={`/crm/${ws}/settings?tab=mailboxes`} className="underline">
+            Set it up in Settings
+          </Link>
+          .
+        </p>
+      )}
       {today.error ? (
         <p className="text-sm text-muted-foreground">{today.error}</p>
       ) : !today.data ? (

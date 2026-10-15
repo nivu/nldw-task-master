@@ -14,6 +14,7 @@ from app.api.crm import (
     audit,
     capacity,
     deals,
+    email,
     imports,
     jobs,
     members,
@@ -46,4 +47,5 @@ ROUTERS = [
     imports.router,
     notifications.router,
     jobs.router,
+    email.router,
 ]

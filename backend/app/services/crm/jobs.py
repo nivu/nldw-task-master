@@ -47,8 +47,11 @@ class Job:
     every: timedelta
 
 
-#: Data-model §3.18 `job`. Email sync arrives with its own schedule in S10.
+#: Data-model §3.18 `job`.
 JOBS: Final = {
+    # The tick runs every 15 minutes and records a run (or a skip) in every
+    # workspace; the pages it enqueues finish that run (FR-CRM-SYNC-04).
+    "email_sync": Job("Email sync", timedelta(minutes=15)),
     "flags": Job("Follow-up flags", timedelta(minutes=30)),
     "automations": Job("Stale-deal notices", timedelta(minutes=30)),
     "digests": Job("Digests", timedelta(minutes=15)),
@@ -101,14 +104,33 @@ def run(
             job,
             (workspace or {}).get("key", "-"),
         )
-        values = {
-            "outcome": "failed",
-            "counts": {},
-            "error": f"{type(exc).__name__}: {exc}"[:2000],
-            "error_public": public_error(job, exc),
-        }
-    values["finished_at"] = max(_now(), now).isoformat()
-    store.finish_job_run(started["id"], values)
+        values = failure(job, exc)
+    finish(job, workspace, started["id"], values, now)
+    return {"outcome": values["outcome"], "counts": values["counts"]}
+
+
+def failure(job: str, exc: BaseException) -> dict[str, Any]:
+    """A failed run's values: `error` for members, `error_public` for anyone."""
+    return {
+        "outcome": "failed",
+        "counts": {},
+        "error": f"{type(exc).__name__}: {exc}"[:2000],
+        "error_public": public_error(job, exc),
+    }
+
+
+def finish(
+    job: str,
+    workspace: dict[str, Any] | None,
+    run_id: str,
+    values: dict[str, Any],
+    started: datetime | None = None,
+) -> None:
+    """Records a run's end, and alerts on a third failure in a row. Used by
+    `run`, and by email sync, whose run ends in the last page task it
+    enqueued (FR-CRM-SYNC-04)."""
+    values = {**values, "finished_at": max(_now(), started or _now()).isoformat()}
+    store.finish_job_run(run_id, values)
     logger.info(
         '{"event": "crm_job_done", "job": "%s", "workspace": "%s", "outcome": "%s"}',
         job,
@@ -117,10 +139,9 @@ def run(
     )
     if values["outcome"] == "failed":
         try:
-            _alert_if_streak(job, workspace, started["id"], values["error_public"])
+            _alert_if_streak(job, workspace, run_id, values["error_public"])
         except Exception:
             logger.exception('{"event": "crm_job_alert_failed", "job": "%s"}', job)
-    return {"outcome": values["outcome"], "counts": values["counts"]}
 
 
 def crm_job(job: str, *, per_workspace: bool = True):

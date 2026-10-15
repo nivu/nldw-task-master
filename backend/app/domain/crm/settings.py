@@ -200,12 +200,23 @@ def automations_refusal(value: Any) -> str | None:
     return None
 
 
-#: Keys a workspace admin edits in Settings, each with its validator. Email
-#: sync arrives with it (S10).
+def email_sync_refusal(value: Any) -> str | None:
+    """FR-CRM-SYNC-03, Q-23 — the switch is `{"enabled": true|false}`. That it
+    cannot go on before the credential exists is the route's check: it
+    reads configuration, which a pure rule does not."""
+    if not isinstance(value, dict) or set(value) != {"enabled"}:
+        return 'Email sync takes {"enabled": true} or {"enabled": false}.'
+    if not isinstance(value["enabled"], bool):
+        return "Email sync is on (true) or off (false)."
+    return None
+
+
+#: Keys a workspace admin edits in Settings, each with its validator.
 VALIDATORS: Final = {
     "stage_probabilities": stage_probabilities_refusal,
     "flag_thresholds": flags.thresholds_refusal,
     "automations": automations_refusal,
+    "email_sync": email_sync_refusal,
 }
 
 

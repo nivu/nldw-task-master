@@ -93,6 +93,8 @@ TRASH_TABLES = (
 LINKS_OF = {"task": "crm_task_links", "note": "crm_note_links"}
 #: The records whose page has Tasks and Notes tabs (FR-CRM-REC-03).
 SHOW_TABS = objects.TASK_NOTE_TARGETS
+#: 1b: the records whose page has an Emails tab (FR-CRM-REC-03).
+EMAIL_TABS = ("company", "person", "opportunity")
 
 
 def no_such(kind: str) -> CrmRefused:
@@ -526,6 +528,13 @@ def get(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
     if kind in SHOW_TABS:
         answer["tasks"] = present_rows(ws, "task", linked(ws.id, "task", kind, row["id"]))
         answer["notes"] = present_rows(ws, "note", linked(ws.id, "note", kind, row["id"]))
+    if kind in EMAIL_TABS:
+        # 1b (S10): the latest threads, for `crm_get` (FR-CRM-MCP-02); the
+        # Emails tab pages through the rest. Imported here: email sync
+        # reads records through this module.
+        from app.services.crm import email_sync
+
+        answer["emails"] = email_sync.recent(ctx, kind, row["id"])
     if merged_from:
         answer["merged_from"] = merged_from
     return answer

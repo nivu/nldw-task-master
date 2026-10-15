@@ -11,6 +11,8 @@ three failures in a row alert the admins.
 | `crm.purge_trash` | 01:10 daily | `trash_purge` |
 | `crm.recompute_flags` | every 30 min | `flags`, then `automations` (stale-deal notices) |
 | `crm.digest_tick` | every 15 min | `digests` (no workspace), then `reminders` |
+| `crm.email_sync_tick` | every 15 min | `email_sync` (a run or a skip per workspace) |
+| `crm.email_sync_page` | enqueued, `crm_sync` queue | ends its workspace's `email_sync` run |
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import digests, flags, jobs, notifications, records
+from app.services.crm import digests, email_sync, flags, jobs, notifications, records
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -101,3 +103,24 @@ def digest_tick() -> dict:
     reminders."""
     now = datetime.now(UTC)
     return {"digests": _digests(now), "reminders": _reminders(now)}
+
+
+# ---------------------------------------------------------------------------
+# Gmail label sync — FR-CRM-SYNC-04, automations 2 and 3
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="crm.email_sync_tick")
+def email_sync_tick() -> dict:
+    """Every 15 minutes, on the shared worker: checks each workspace's switch
+    and `CRM_GMAIL_CONFIGURED` (never the key), takes the single-flight lock
+    and enqueues the first page onto `crm_sync`."""
+    return email_sync.tick(datetime.now(UTC))
+
+
+@celery_app.task(name="crm.email_sync_page", soft_time_limit=240, time_limit=300)
+def email_sync_page(args: dict) -> dict:
+    """One page of one mailbox, on `worker-crm-sync` only (the one process
+    with the key), well inside the worker's 10-minute limit; it enqueues the
+    next page itself and resumes from the cursor stored on the mailbox."""
+    return email_sync.page(args, datetime.now(UTC))

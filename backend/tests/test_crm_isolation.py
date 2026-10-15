@@ -7,7 +7,7 @@ Labs's lists contain nothing of Academy. A record id is answered 404 whether
 it is absent or belongs to another workspace, so its existence is never
 disclosed. Later slices add their objects' routes here; S4 added deals,
 tasks, notes, deal contacts and stage moves, S5 the handoff and project
-links.
+links, S10 the Emails tab and `crm_get`'s emails (FR-CRM-SYNC-10).
 """
 
 from __future__ import annotations
@@ -256,3 +256,127 @@ class TestListsHoldNothingOfIt:
             headers=as_(OWNER["id"]),
         )
         assert r.json() == {"exact": None, "similar": []}
+
+
+def _fake():
+    """The FakeCrmStore the fixture installed (its methods replace the store's)."""
+    from app.services.crm import store
+
+    return store.get_record.__self__
+
+
+def _email(fake, workspace_id: str, record_type: str, record_id: str) -> dict:
+    """A message stored by Gmail sync (S10), linked to one record."""
+    mailbox = fake.add(
+        "crm_mailboxes",
+        workspace_id=workspace_id,
+        email=f"box{len(fake.rows['crm_mailboxes'])}@nunnari.academy",
+        owner_id=OWNER["id"],
+        labels=["Leads"],
+        is_active=True,
+    )
+    msg = fake.add(
+        "crm_email_messages",
+        workspace_id=workspace_id,
+        mailbox_id=mailbox["id"],
+        gmail_message_id="g1",
+        thread_id="t-academy",
+        subject="College intake",
+        sent_at="2026-10-13T09:00:00+00:00",
+        direction="inbound",
+        from_email="p@college.edu",
+        participants=[{"email": "p@college.edu", "name": "Priya", "role": "from"}],
+        is_internal=False,
+        is_auto=False,
+    )
+    fake.add(
+        "crm_email_links",
+        workspace_id=workspace_id,
+        message_id=msg["id"],
+        record_type=record_type,
+        record_id=record_id,
+    )
+    return msg
+
+
+class TestEmails:
+    """S10, FR-CRM-SYNC-10 — email records are visible only to members of
+    their workspace: the Emails tab and `crm_get`'s emails."""
+
+    @pytest.mark.parametrize("plural", ["companies", "people", "opportunities"])
+    def test_another_workspaces_record_has_no_emails_tab_here(self, crm, plural):
+        http, made = crm
+        r = http.get(
+            f"/api/v1/crm/{plural}/{made[plural]['id']}/emails{LABS}", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 404, r.text
+
+    def test_a_non_member_is_not_told_the_workspace_exists(self, crm):
+        from crm_fake import OUTSIDER
+
+        http, made = crm
+        r = http.get(
+            f"/api/v1/crm/companies/{made['companies']['id']}/emails{ACADEMY}",
+            headers=as_(OUTSIDER["id"]),
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"] == "No such workspace."
+
+    def test_a_labs_record_never_shows_an_academy_email(self, crm, monkeypatch):
+        from app.services.crm import store
+
+        http, made = crm
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        fake = _fake()
+        _email(fake, academy["id"], "company", made["companies"]["id"])
+        labs_co = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Labs Co"}, headers=as_(OWNER["id"])
+        ).json()
+        here = http.get(
+            f"/api/v1/crm/companies/{labs_co['id']}/emails{LABS}", headers=as_(OWNER["id"])
+        ).json()
+        assert here["threads"] == []
+        page = http.get(f"/api/v1/crm/companies/{labs_co['id']}{LABS}", headers=as_(OWNER["id"]))
+        assert page.json()["emails"] == []
+        # In its own workspace it is there.
+        there = http.get(
+            f"/api/v1/crm/companies/{made['companies']['id']}/emails{ACADEMY}",
+            headers=as_(OWNER["id"]),
+        ).json()
+        assert [t["thread_id"] for t in there["threads"]] == ["t-academy"]
+
+    def test_a_link_to_another_workspaces_record_is_refused(self, crm):
+        from app.services.crm import CrmRefused, store
+
+        http, made = crm
+        workspaces = {w["key"]: w for w in store.list_workspaces()}
+        fake = _fake()
+        labs_box = fake.add(
+            "crm_mailboxes",
+            workspace_id=workspaces["labs"]["id"],
+            email="owner@nunnarilabs.com",
+            owner_id=OWNER["id"],
+            labels=["Sales"],
+            is_active=True,
+        )
+        with pytest.raises(CrmRefused) as refused:
+            store.store_emails(
+                workspaces["labs"]["id"],
+                labs_box["id"],
+                [
+                    {
+                        "gmail_message_id": "x",
+                        "thread_id": "t",
+                        "subject": None,
+                        "sent_at": "2026-10-13T09:00:00+00:00",
+                        "direction": "inbound",
+                        "from_email": "p@college.edu",
+                        "participants": [],
+                        "is_internal": False,
+                        "is_auto": False,
+                        "links": [{"record_type": "company", "record_id": made["companies"]["id"]}],
+                    }
+                ],
+            )
+        assert refused.value.status == 404
+        assert fake.rows["crm_email_messages"] == {}

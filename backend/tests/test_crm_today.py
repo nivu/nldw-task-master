@@ -24,7 +24,9 @@ from crm_fake import (
 )
 from crm_fake import client as crm_client
 
+from app.config import settings as config
 from app.domain.crm import today as rules
+from app.services.crm import flags
 from app.services.crm import today as service
 
 NOW = datetime(2026, 10, 14, 14, 30, tzinfo=UTC)
@@ -125,7 +127,15 @@ class TestSections:
         for key in ("next_steps", "tasks", "loose_ends"):
             assert "off_reason" not in _section(answer, key)
 
-    def test_once_sync_is_on_they_no_longer_say_so(self, crm):
+    def test_once_sync_is_on_they_no_longer_say_so(self, crm, monkeypatch):
+        http, fake, labs, _ = crm
+        _sync_on(fake, labs, monkeypatch)
+        answer = _today(http).json()
+        assert "off_reason" not in _section(answer, "replies_owed")
+        assert "off_reason" not in _section(answer, "silent_clients")
+
+    def test_the_switch_alone_is_not_enough_without_the_credential(self, crm):
+        """S10, Q-23: live means switched on AND the credential configured."""
         http, fake, labs, _ = crm
         fake.add(
             "crm_workspace_settings",
@@ -134,8 +144,88 @@ class TestSections:
             value={"enabled": True},
         )
         answer = _today(http).json()
-        assert "off_reason" not in _section(answer, "replies_owed")
-        assert "off_reason" not in _section(answer, "silent_clients")
+        assert _section(answer, "replies_owed")["off_reason"] == "Email sync is off"
+
+
+def _sync_on(fake, labs, monkeypatch):
+    fake.add(
+        "crm_workspace_settings",
+        workspace_id=labs["id"],
+        key="email_sync",
+        value={"enabled": True},
+    )
+    monkeypatch.setattr(config, "CRM_GMAIL_CONFIGURED", True)
+
+
+class TestEmailSections:
+    """S10 — FR-CRM-TODAY-01 sections 1 and 4 from stored email facts, red
+    first; an automatic reply never counts (FR-CRM-FLAG-04)."""
+
+    def _mail(self, fake, labs, mailbox, record_type, record, direction, at, *, auto=False):
+        msg = fake.add(
+            "crm_email_messages",
+            workspace_id=labs["id"],
+            mailbox_id=mailbox["id"],
+            gmail_message_id=f"g{len(fake.rows['crm_email_messages'])}",
+            thread_id="t1",
+            subject="Hello",
+            sent_at=at,
+            direction=direction,
+            from_email="x@acme.com",
+            participants=[],
+            is_internal=False,
+            is_auto=auto,
+        )
+        fake.add(
+            "crm_email_links",
+            workspace_id=labs["id"],
+            message_id=msg["id"],
+            record_type=record_type,
+            record_id=record["id"],
+        )
+
+    def test_replies_owed_red_first_and_silent_clients(self, crm, monkeypatch):
+        http, fake, labs, acme = crm
+        _sync_on(fake, labs, monkeypatch)
+        mailbox = fake.add(
+            "crm_mailboxes",
+            workspace_id=labs["id"],
+            email="owner@nunnarilabs.com",
+            owner_id=OWNER["id"],
+            labels=["Sales"],
+            is_active=True,
+        )
+        priya = _row(
+            fake, "crm_people", labs, first_name="Priya", last_name="Raman", owner_id=SELLER["id"]
+        )
+        globex = _company(fake, labs, "Globex", lead_stage="deal_open", owner_id=SELLER["id"])
+        deal = _deal(fake, labs, acme, "Acme pilot", "2026-10-30")
+        # Priya wrote 30 hours ago (red); Globex 14 hours ago (amber).
+        self._mail(fake, labs, mailbox, "person", priya, "inbound", "2026-10-13T08:30:00+00:00")
+        self._mail(fake, labs, mailbox, "company", globex, "inbound", "2026-10-14T00:30:00+00:00")
+        # We wrote on the deal four days ago; only an auto-reply came back.
+        self._mail(
+            fake, labs, mailbox, "opportunity", deal, "outbound", "2026-10-10T09:00:00+00:00"
+        )
+        self._mail(
+            fake,
+            labs,
+            mailbox,
+            "opportunity",
+            deal,
+            "inbound",
+            "2026-10-11T09:00:00+00:00",
+            auto=True,
+        )
+        flags.recompute_workspace(labs["id"], NOW)
+        answer = _today(http).json()
+        owed = _section(answer, "replies_owed")["items"]
+        assert [(i["title"], i["level"], i["record_type"]) for i in owed] == [
+            ("Priya Raman", "red", "person"),
+            ("Globex", "amber", "company"),
+        ]
+        silent = _section(answer, "silent_clients")["items"]
+        assert [(i["title"], i["level"]) for i in silent] == [("Acme pilot", "red")]
 
 
 class TestNextSteps:

@@ -45,6 +45,7 @@ CALLER_LINES = {
     "crm_import": (
         "WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts\nand conflicts."
     ),
+    "crm_run_email_sync": "WORKSPACE ADMINS ONLY. CONFIRM FIRST.",
 }
 READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search"}
 DESTRUCTIVE = {"crm_move_stage", "crm_handoff", "crm_merge"}

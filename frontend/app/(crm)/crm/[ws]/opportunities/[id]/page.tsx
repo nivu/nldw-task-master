@@ -9,6 +9,7 @@ import { useQuickActions } from "@/components/crm/command-menu";
 import { ContactsPanel } from "@/components/crm/contacts-panel";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { EmailsTab } from "@/components/crm/emails-tab";
 import type { Choice } from "@/components/crm/field-editor";
 import { LinkProjectDialog } from "@/components/crm/link-project-dialog";
 import { LostDialog } from "@/components/crm/lost-dialog";
@@ -369,6 +370,15 @@ export default function OpportunityPage() {
             links={page.links}
             canEdit={canEdit}
             onChange={refresh}
+          />
+        }
+        emails={
+          <EmailsTab
+            workspace={ws}
+            object="opportunities"
+            recordId={deal.id}
+            timeZone={bootstrap.me.timezone}
+            syncOn={bootstrap.email_sync_on}
           />
         }
         related={

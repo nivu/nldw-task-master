@@ -7,6 +7,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { EmailsTab } from "@/components/crm/emails-tab";
 import { NotesTab } from "@/components/crm/note-composer";
 import { Chip, RecordPage, type FieldGroup } from "@/components/crm/record-page";
 import { RelatedPanel } from "@/components/crm/related-panel";
@@ -198,6 +199,15 @@ export default function PersonPage() {
             link={{ record_type: "person", record_id: person.id }}
             timeZone={bootstrap.me.timezone}
             onChange={refresh}
+          />
+        }
+        emails={
+          <EmailsTab
+            workspace={ws}
+            object="people"
+            recordId={person.id}
+            timeZone={bootstrap.me.timezone}
+            syncOn={bootstrap.email_sync_on}
           />
         }
         related={

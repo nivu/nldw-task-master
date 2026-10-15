@@ -13,8 +13,10 @@ view filters and sorts by them on the server. They are recomputed:
 
 They are written by `crm_set_flags` (038): no audit row and no change to
 `updated_at`, because a recompute is not an edit. Email flags (Reply owed,
-Client silent) read the messages email sync stores (1b, S10); until then a
-record has none and those flags are none.
+Client silent) and a deal's email activity read the messages email sync
+stores (S10): `crm_flag_facts` (039) gives each record its latest inbound and
+outbound message that counts, never an internal or automatic one
+(FR-CRM-FLAG-04). A record with no stored email has none of those flags.
 """
 
 from __future__ import annotations
@@ -60,6 +62,17 @@ def _zones() -> dict[str, str]:
     }
 
 
+def _mail(facts: dict[str, Any], record_type: str, record_id: str) -> list[dict[str, Any]]:
+    """A record's email facts as the messages the rules read: its latest
+    inbound and outbound, which is all Reply owed and Client silent need."""
+    found = ((facts.get("emails") or {}).get(record_type) or {}).get(record_id) or {}
+    return [
+        {"direction": direction, "sent_at": found[key]}
+        for key, direction in (("in", "inbound"), ("out", "outbound"))
+        if found.get(key)
+    ]
+
+
 def _compute(
     workspace_id: str,
     *,
@@ -90,6 +103,7 @@ def _compute(
             today=today(deal.get("owner_id")),
             t=t,
             last_activity=activity.get(deal["id"]),
+            messages=_mail(facts, "opportunity", deal["id"]),
         )
         deal_flags[deal["id"]] = {**deal, **out}
         computed["crm_opportunities"].append({"id": deal["id"], **out})
@@ -105,6 +119,7 @@ def _compute(
             t=t,
             has_open_task=company["id"] in with_open_task,
             open_deals=open_deals,
+            messages=_mail(facts, "company", company["id"]),
         )
         computed["crm_companies"].append({"id": company["id"], **out})
     for task in tasks:
@@ -112,7 +127,12 @@ def _compute(
         computed["crm_tasks"].append({"id": task["id"], **out})
     for person in people:
         computed["crm_people"].append(
-            {"id": person["id"], **rules.for_person(person, now=now, t=t)}
+            {
+                "id": person["id"],
+                **rules.for_person(
+                    person, now=now, t=t, messages=_mail(facts, "person", person["id"])
+                ),
+            }
         )
 
     changed = {}
@@ -131,19 +151,25 @@ def _compute(
 def recompute_workspace(workspace_id: str, now: datetime | None = None) -> dict[str, int]:
     """Automation 4 — every flagged table of the workspace. Deals and tasks
     are those open, or still flagged (so a closed one is cleared); people
-    only while they can have a flag, which needs email sync (1b)."""
+    only while they can have a flag: those with stored email (S10), and
+    those still flagged."""
     now = now or _now()
     deals = store.flag_rows(workspace_id, "crm_opportunities", open_or_flagged=True)
     companies = store.flag_rows(workspace_id, "crm_companies")
     tasks = store.flag_rows(workspace_id, "crm_tasks", open_or_flagged=True)
-    people = store.flag_rows(workspace_id, "crm_people", flagged_only=True)
-    facts = store.flag_facts(workspace_id, None, None)
+    facts = store.flag_facts(workspace_id, None, None, None)
+    people = {p["id"]: p for p in store.flag_rows(workspace_id, "crm_people", flagged_only=True)}
+    with_mail = sorted(set((facts.get("emails") or {}).get("person") or {}) - set(people))
+    if with_mail:
+        people.update(
+            {p["id"]: p for p in store.flag_rows(workspace_id, "crm_people", ids=with_mail)}
+        )
     return _compute(
         workspace_id,
         deals=deals,
         companies=companies,
         tasks=tasks,
-        people=people,
+        people=list(people.values()),
         facts=facts,
         now=now,
     )
@@ -179,9 +205,12 @@ def recompute(
         return {"changed": 0}
     facts = (
         store.flag_facts(
-            workspace_id, [d["id"] for d in deal_rows], [c["id"] for c in company_rows]
+            workspace_id,
+            [d["id"] for d in deal_rows],
+            [c["id"] for c in company_rows],
+            [p["id"] for p in people_rows],
         )
-        if deal_rows or company_rows
+        if deal_rows or company_rows or people_rows
         else {}
     )
     return _compute(

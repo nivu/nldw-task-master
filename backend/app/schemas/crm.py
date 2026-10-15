@@ -617,3 +617,28 @@ class NotificationsRead(BaseModel):
 
     ids: list[UUID] | None = Field(default=None, max_length=500)
     all: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Gmail sync — contracts §2.10 (S10, FR-CRM-SYNC-01)
+# ---------------------------------------------------------------------------
+
+
+class MailboxIn(BaseModel):
+    """A mailbox to sync: its address, its owner (a member) and its labels."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    email: EmailStr
+    owner_id: str = Field(min_length=1, max_length=64)
+    labels: list[str] = Field(min_length=1, max_length=20)
+    is_active: bool = True
+
+
+class MailboxUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    email: EmailStr | None = None
+    owner_id: str | None = Field(default=None, min_length=1, max_length=64)
+    labels: list[str] | None = Field(default=None, min_length=1, max_length=20)
+    is_active: bool | None = None

@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
+import { EmailsTab } from "@/components/crm/emails-tab";
 import { MergeDialog } from "@/components/crm/merge-dialog";
 import { NotesTab } from "@/components/crm/note-composer";
 import type { Choice } from "@/components/crm/field-editor";
@@ -261,6 +262,15 @@ export default function CompanyPage() {
             link={{ record_type: "company", record_id: company.id }}
             timeZone={bootstrap.me.timezone}
             onChange={refresh}
+          />
+        }
+        emails={
+          <EmailsTab
+            workspace={ws}
+            object="companies"
+            recordId={company.id}
+            timeZone={bootstrap.me.timezone}
+            syncOn={bootstrap.email_sync_on}
           />
         }
         related={

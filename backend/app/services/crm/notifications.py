@@ -31,6 +31,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.domain.crm import dedupe
 from app.domain.crm import flags as flag_rules
 from app.domain.crm import today as today_rules
 from app.domain.crm.digests import long_date
@@ -384,3 +385,36 @@ def task_reminders(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
         "overdue": sent_overdue["added"],
         "undeliverable": sent_overdue["undeliverable"],
     }
+
+
+def reply_owed_notices(workspace: dict[str, Any], now: datetime) -> int:
+    """FR-CRM-NOTIF-01 — a person, company or deal whose Reply owed flag is
+    red tells its owner, in the bell and by message, once per email waiting
+    (the dedupe key names when it arrived). Sent after each email sync run
+    (S10), which the 30-minute flags have turned red meanwhile."""
+    ws_id = workspace["id"]
+    rows = []
+    for table, record_type in (
+        ("crm_people", "person"),
+        ("crm_companies", "company"),
+        ("crm_opportunities", "opportunity"),
+    ):
+        for row in store.flag_rows(ws_id, table, flagged_only=True):
+            owed = next((f for f in row.get("flags") or [] if f.get("kind") == "reply_owed"), None)
+            if owed is None or owed.get("level") != "red" or not row.get("owner_id"):
+                continue
+            name = row.get("name") or dedupe.full_name(row.get("first_name"), row.get("last_name"))
+            notice = _row(
+                ws_id,
+                row["owner_id"],
+                "reply_owed_red",
+                f"Reply owed: “{name}”",
+                f"reply_owed_red:{record_type}:{row['id']}:{owed.get('since') or ''}",
+                record_type,
+                row["id"],
+            )
+            notice["body"] = (
+                f"{owed.get('detail') or 'Their email is waiting.'} In {workspace['name']}."
+            )
+            rows.append(notice)
+    return send(rows, out_of_app=True, profiles=_profiles())["added"] if rows else 0

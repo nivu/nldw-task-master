@@ -20,7 +20,7 @@ from app.api.deps import AnyAccountDep, CurrentUser
 from app.api.errors import ProblemDetail
 from app.schemas.crm import PreferencesUpdate
 from app.services import supabase as db
-from app.services.crm import jobs, notifications, store
+from app.services.crm import email_sync, jobs, notifications, store
 from app.services.crm.context import workspaces_of
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -64,8 +64,9 @@ def bootstrap(ctx: CrmReadDep) -> dict:
         },
         "lists": present_lists(ctx),
         "settings_public": {"stage_probabilities": settings.get("stage_probabilities")},
-        # Gmail sync is built in 1b (FR-CRM-SYNC); until then it is off.
-        "email_sync_on": False,
+        # FR-CRM-TODAY-02: Gmail sync is live here (switch on, credential
+        # configured); until it is, the email sections say it is off.
+        "email_sync_on": email_sync.live(settings),
         # 1b: the bell's count, and for an Admin the jobs that are late
         # (FR-CRM-NOTIF-01, FR-CRM-JOB-03): staleness is checked on read.
         "unread": notifications.unread_for(ctx.user.id),

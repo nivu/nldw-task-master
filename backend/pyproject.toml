@@ -20,6 +20,11 @@ dependencies = [
     # FR-CRM-CHG-08) with it. Already locked through mcp; direct, so an mcp
     # upgrade cannot silently remove it.
     "python-multipart",
+    # Spec 007 Gmail sync (FR-CRM-SYNC-03): signs the service account's RS256
+    # assertion for Google's token endpoint, in place of a Google client
+    # library (plan §2.1). Already locked through mcp; direct for the same
+    # reason as python-multipart.
+    "pyjwt[crypto]",
 ]
 
 [tool.setuptools]

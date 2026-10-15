@@ -10,8 +10,8 @@ that read across workspaces are account-level and are listed in
 Writes never go through `.table(...).insert/update`: they go through
 `apply()` (or another CRM database function), which sets the actor in the
 same transaction so the audit trigger records the change (FR-CRM-AUD-06).
-The one exception is `touch_last_used`, a column the trigger ignores, and
-the job log, which is a log with no audit trigger (data-model §3.18) and
+The exceptions are `touch_last_used` and `mailbox_progress`, columns the
+trigger ignores (a mailbox's sync cursor, 039), and the job log, which is a log with no audit trigger (data-model §3.18) and
 no record content: notifications and digest markers, also logs, go through
 their own database functions so membership and "exactly once" are held by
 the database.
@@ -87,6 +87,9 @@ ACCOUNT_LEVEL = frozenset(
         "release_digest",
         "set_digest_channels",
         "list_all_memberships",
+        # Gmail sync (039): one address is registered in one workspace only,
+        # so the check that it is free reads every workspace's mailboxes.
+        "find_mailbox_by_email",
     }
 )
 
@@ -117,6 +120,8 @@ UNIQUE_MESSAGES = {
     "crm_saved_views_name": "There is already a view with that name here.",
     "crm_saved_views_one_default": "This list's default view changed meanwhile; reload.",
     "crm_favourites_target": "That is already a favourite.",
+    # FR-CRM-SYNC-01 (039); the route names it first.
+    "crm_mailboxes_email": "That address is already registered as a mailbox in a workspace.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -1324,14 +1329,24 @@ def flag_rows(
 
 
 def flag_facts(
-    workspace_id: str, deal_ids: list[str] | None, company_ids: list[str] | None
+    workspace_id: str,
+    deal_ids: list[str] | None,
+    company_ids: list[str] | None,
+    person_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """038 `crm_flag_facts` — `{activity: {deal id: time}, open_task_companies:
-    [id]}`, for some deals and companies or (None) all of the workspace."""
+    """039 `crm_flag_facts` — `{activity: {deal id: time}, open_task_companies:
+    [id], emails: {company|person|opportunity: {id: {in, out}}}}`, for some
+    deals, companies and people or (None) all of the workspace; an empty
+    list is none."""
     return (
         rpc(
             "crm_flag_facts",
-            {"p_workspace": workspace_id, "p_deal_ids": deal_ids, "p_company_ids": company_ids},
+            {
+                "p_workspace": workspace_id,
+                "p_deal_ids": deal_ids,
+                "p_company_ids": company_ids,
+                "p_person_ids": person_ids,
+            },
         )
         or {}
     )
@@ -1466,3 +1481,175 @@ def tasks_due_by(workspace_id: str, by: str) -> list[dict[str, Any]]:
         if len(page) < _PAGE:
             return rows
         offset += _PAGE
+
+
+def get_job_run(workspace_id: str, run_id: str) -> dict[str, Any] | None:
+    """One run of the workspace, for `POST /crm/email-sync/run` waiting on
+    the run it started."""
+    rows = (
+        supabase.table("crm_job_runs")
+        .select(_JOB_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", run_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# Gmail sync — S10 (data-model §3.22; FR-CRM-SYNC)
+# ---------------------------------------------------------------------------
+
+_MAILBOX_COLUMNS = (
+    "id, workspace_id, email, owner_id, labels, is_active, history_id, page_token, "
+    "backfilled_at, last_synced_at, created_at, updated_at"
+)
+#: The cursor columns the sync writes itself; 039's audit trigger ignores a
+#: change to these alone.
+MAILBOX_PROGRESS = frozenset({"history_id", "page_token", "backfilled_at", "last_synced_at"})
+
+
+def list_mailboxes(workspace_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
+    query = (
+        supabase.table("crm_mailboxes").select(_MAILBOX_COLUMNS).eq("workspace_id", workspace_id)
+    )
+    if active_only:
+        query = query.eq("is_active", True)
+    return query.order("email").execute().data or []
+
+
+def get_mailbox(workspace_id: str, mailbox_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_mailboxes")
+        .select(_MAILBOX_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", mailbox_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def find_mailbox_by_email(email: str) -> dict[str, Any] | None:
+    """FR-CRM-SYNC-01 — the mailbox with this address in any workspace: one
+    address is registered once. Only its id and workspace are read."""
+    rows = (
+        supabase.table("crm_mailboxes").select("id, workspace_id").eq("email", email).execute().data
+    )
+    return rows[0] if rows else None
+
+
+def mailbox_progress(workspace_id: str, mailbox_id: str, values: dict[str, Any]) -> None:
+    """The sync's resume point. Written directly: the audit trigger skips a
+    change to these columns alone (039), and anything else is refused here."""
+    unknown = set(values) - MAILBOX_PROGRESS
+    if unknown:
+        raise ValueError(f"not a mailbox cursor column: {sorted(unknown)}")
+    supabase.table("crm_mailboxes").update(values).eq("workspace_id", workspace_id).eq(
+        "id", mailbox_id
+    ).execute()
+
+
+def stored_message_ids(workspace_id: str, mailbox_id: str, gmail_ids: list[str]) -> set[str]:
+    """Which of these Gmail ids the mailbox has stored already."""
+    found: set[str] = set()
+    for batch in text_batches(gmail_ids):
+        found |= {
+            r["gmail_message_id"]
+            for r in (
+                supabase.table("crm_email_messages")
+                .select("gmail_message_id")
+                .eq("workspace_id", workspace_id)
+                .eq("mailbox_id", mailbox_id)
+                .in_("gmail_message_id", batch)
+                .execute()
+                .data
+                or []
+            )
+        }
+    return found
+
+
+def store_emails(workspace_id: str, mailbox_id: str, messages: list[dict[str, Any]]) -> list[str]:
+    """039 `crm_store_emails` — a page's messages with their links, each
+    once (FR-CRM-SYNC-07); returns the Gmail ids stored by this call."""
+    if not messages:
+        return []
+    return (
+        rpc(
+            "crm_store_emails",
+            {"p_workspace": workspace_id, "p_mailbox": mailbox_id, "p_messages": messages},
+        )
+        or []
+    )
+
+
+def remove_emails(workspace_id: str, mailbox_id: str, gmail_ids: list[str]) -> dict[str, Any]:
+    """039 `crm_remove_emails` — `{removed, records}` (FR-CRM-SYNC-09)."""
+    if not gmail_ids:
+        return {"removed": 0, "records": []}
+    return rpc(
+        "crm_remove_emails",
+        {"p_workspace": workspace_id, "p_mailbox": mailbox_id, "p_ids": sorted(set(gmail_ids))},
+    ) or {"removed": 0, "records": []}
+
+
+_PERSON_MATCH = (
+    "id, first_name, last_name, company_id, primary_email, additional_emails, owner_id, "
+    "last_inbound_at, last_outbound_at, last_contact_at, deleted_at"
+)
+
+
+def people_by_emails(workspace_id: str, emails: list[str]) -> list[dict[str, Any]]:
+    """FR-CRM-SYNC-05 — people with any of these emails, primary or
+    additional, Trash included (an address stays theirs, FR-CRM-DUP-01)."""
+    rows: dict[str, dict[str, Any]] = {}
+    for batch in text_batches(emails):
+        for query in (
+            supabase.table("crm_people")
+            .select(_PERSON_MATCH)
+            .eq("workspace_id", workspace_id)
+            .in_("primary_email", batch),
+            supabase.table("crm_people")
+            .select(_PERSON_MATCH)
+            .eq("workspace_id", workspace_id)
+            .ov("additional_emails", batch),
+        ):
+            for row in query.execute().data or []:
+                rows[row["id"]] = row
+    return list(rows.values())
+
+
+def email_links(workspace_id: str, record_type: str, record_ids: list[str]) -> list[dict[str, Any]]:
+    """The email links naming some records (data-model §3.22)."""
+    if not record_ids:
+        return []
+    return _in_batches(
+        lambda: (
+            supabase.table("crm_email_links")
+            .select("message_id, record_type, record_id")
+            .eq("workspace_id", workspace_id)
+            .eq("record_type", record_type)
+        ),
+        "record_id",
+        record_ids,
+    )
+
+
+def email_messages(workspace_id: str, message_ids: list[str]) -> list[dict[str, Any]]:
+    """Stored messages by id."""
+    if not message_ids:
+        return []
+    return _in_batches(
+        lambda: (
+            supabase.table("crm_email_messages")
+            .select(
+                "id, mailbox_id, thread_id, subject, sent_at, direction, from_email, "
+                "participants, is_auto"
+            )
+            .eq("workspace_id", workspace_id)
+        ),
+        "id",
+        message_ids,
+    )

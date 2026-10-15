@@ -1,7 +1,8 @@
 """Viewer redaction — spec 007 FR-CRM-ACC-11, FR-CRM-AUD-05, FR-CRM-MCP-07;
 plan §5.5; spec §11 AC "Viewers receive no amount field" (so far: every deal
 read route, `crm_get`, and lists through `POST /crm/query` and `crm_list`
-with their group and footer totals; from S9 the bell and the digests).
+with their group and footer totals; from S9 the bell and the digests; from
+S10 the Emails tab and `crm_get`'s emails).
 
 A recursive walk over each answer a Viewer gets, looking for any amount key,
 and for any timeline change naming an amount field. The denylist is written
@@ -278,3 +279,58 @@ class TestBellAndDigests:
             now,
         )
         assert any(f.endswith(".amount") for f in _walk(admin_parts))
+
+
+class TestEmails:
+    """S10 — the Emails tab and `crm_get`'s emails, for a Viewer, carry
+    subjects and participants only: no amount, and no body (Q-29)."""
+
+    def test_a_viewer_reads_threads_with_no_amount(self, crm):
+        from app.services.crm import store
+
+        http, made = crm
+        fake = store.get_record.__self__
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        mailbox = fake.add(
+            "crm_mailboxes",
+            workspace_id=academy["id"],
+            email="owner@nunnari.academy",
+            owner_id=OWNER["id"],
+            labels=["Leads"],
+            is_active=True,
+        )
+        msg = fake.add(
+            "crm_email_messages",
+            workspace_id=academy["id"],
+            mailbox_id=mailbox["id"],
+            gmail_message_id="g1",
+            thread_id="t1",
+            subject="Re: the proposal",
+            sent_at="2026-10-13T09:00:00+00:00",
+            direction="inbound",
+            from_email="p@college.edu",
+            participants=[{"email": "p@college.edu", "name": "Priya", "role": "from"}],
+            is_internal=False,
+            is_auto=False,
+        )
+        for record_type, key in (("opportunity", "deal"), ("company", "company")):
+            fake.add(
+                "crm_email_links",
+                workspace_id=academy["id"],
+                message_id=msg["id"],
+                record_type=record_type,
+                record_id=made[key]["id"],
+            )
+        tab = http.get(
+            f"/api/v1/crm/opportunities/{made['deal']['id']}/emails{ACADEMY}",
+            headers=as_(VIEWER["id"]),
+        )
+        assert tab.status_code == 200
+        assert [t["subject"] for t in tab.json()["threads"]] == ["Re: the proposal"]
+        assert _walk(tab.json()) == []
+        assert "body" not in tab.text
+        got = asyncio.run(
+            tools.crm_get(Ctx(VIEWER["id"]), "opportunity", made["deal"]["id"], workspace="academy")
+        )
+        assert [t["thread_id"] for t in got["emails"]] == ["t1"]
+        assert _walk(got) == []

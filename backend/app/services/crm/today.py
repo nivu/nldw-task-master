@@ -11,8 +11,9 @@ time zone. A Today line carries no amount, so it reads the same for every
 role.
 
 From 1b, sections 1 and 4 list the person's records whose Reply owed or
-Client silent flag is up, red first, once email sync is on; and an Admin's
-Today names any background job that is late (FR-CRM-JOB-03).
+Client silent flag is up, red first, once email sync is live in the
+workspace: its switch on and the Gmail credential configured (S10); and an
+Admin's Today names any background job that is late (FR-CRM-JOB-03).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any
 
 from app.domain.crm import today as rules
 from app.services import supabase as db
-from app.services.crm import CrmRefused, jobs, store
+from app.services.crm import CrmRefused, email_sync, jobs, store
 from app.services.crm import records as base
 
 
@@ -105,7 +106,7 @@ def build(
     with_open = {lk["record_id"] for lk in company_links if lk["task_id"] in open_ids}
 
     settings = {row["key"]: row["value"] for row in store.list_settings(ws_id)}
-    sync_on = rules.email_sync_on(settings)
+    sync_on = email_sync.live(settings)
     built = {
         "next_steps": rules.next_steps(deals, day),
         "tasks": rules.tasks(tasks, day, linked, opens),

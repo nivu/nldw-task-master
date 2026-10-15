@@ -1,6 +1,8 @@
 """Workspace settings, select lists and FX rates — spec 007 contracts §2.3;
 FR-CRM-LIST-01 to -06, -09, FR-CRM-FX-02, FR-CRM-PIPE-11; from 1b the flag
-thresholds (FR-CRM-FLAG-01) and the automation switches (FR-CRM-AUTO-02).
+thresholds (FR-CRM-FLAG-01), the automation switches (FR-CRM-AUTO-02) and
+the email sync switch, which cannot go on until the Gmail credential exists
+(FR-CRM-SYNC-03, Q-23).
 
 Everything here is Admin only except reading the lists, which every member
 needs for the pickers. Each change goes through `crm_apply`, so it is
@@ -19,9 +21,10 @@ from fastapi import APIRouter, Path
 
 from app.api.crm.deps import CrmAdminDep, CrmContext, CrmReadDep
 from app.api.errors import ProblemDetail
+from app.config import settings as config
 from app.domain.crm import settings as rules
 from app.schemas.crm import FxRateIn, OptionCreate, OptionUpdate, SettingUpdate
-from app.services.crm import store
+from app.services.crm import email_sync, store
 from app.services.crm.context import actor
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -63,6 +66,8 @@ def update_setting(key: str, payload: SettingUpdate, ctx: CrmAdminDep) -> dict:
     why = rules.setting_refusal(key, payload.value)
     if why:
         raise ProblemDetail(422, why)
+    if key == "email_sync" and payload.value["enabled"] and not config.CRM_GMAIL_CONFIGURED:
+        raise ProblemDetail(422, email_sync.CANNOT_SWITCH_ON)
     store.apply(
         actor(ctx),
         [

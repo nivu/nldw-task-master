@@ -24,7 +24,8 @@ import type { CrmTimezone } from "@/lib/crm/format";
  *
  * A header with the name, key fields as chips and the actions; a left panel
  * with every field, grouped and inline-editable, empty ones folded away; and
- * the tabs Timeline, Tasks, Notes, Files and Related. On a phone the panel
+ * the tabs Timeline, Tasks, Notes, Files, Emails (1b, companies, people and
+ * deals) and Related. On a phone the panel
  * stacks above the tabs. Companies, people and deals use it; campaigns reuse
  * it as they arrive. The Move stage action is a deal's, passed in `actions`.
  * A record can be pinned to the sidebar's favourites (FR-CRM-UI-02).
@@ -227,6 +228,7 @@ export function RecordPage({
   tasks,
   notes,
   files,
+  emails,
   related,
   pin,
   flags,
@@ -245,6 +247,8 @@ export function RecordPage({
   tasks?: React.ReactNode;
   notes?: React.ReactNode;
   files: React.ReactNode;
+  /** 1b: the threads Gmail sync stored (FR-CRM-REC-03); no tab without it. */
+  emails?: React.ReactNode;
   related: React.ReactNode;
   /** The record, to pin it to the sidebar. */
   pin?: { recordType: ViewObjectKind; id: string };
@@ -300,6 +304,7 @@ export function RecordPage({
               <TabsTrigger value="tasks">Tasks</TabsTrigger>
               <TabsTrigger value="notes">Notes</TabsTrigger>
               <TabsTrigger value="files">Files</TabsTrigger>
+              {emails && <TabsTrigger value="emails">Emails</TabsTrigger>}
               <TabsTrigger value="related">Related</TabsTrigger>
             </TabsList>
             <TabsContent value="timeline" className="pt-4">
@@ -314,6 +319,11 @@ export function RecordPage({
             <TabsContent value="files" className="pt-4">
               {files}
             </TabsContent>
+            {emails && (
+              <TabsContent value="emails" className="pt-4">
+                {emails}
+              </TabsContent>
+            )}
             <TabsContent value="related" className="pt-4">
               {related}
             </TabsContent>

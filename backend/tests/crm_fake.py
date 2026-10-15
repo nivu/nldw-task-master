@@ -115,6 +115,10 @@ TABLES = (
     "crm_job_runs",
     "crm_notifications",
     "crm_digest_sends",
+    # Gmail sync (039): the mailboxes (audited) and the email log.
+    "crm_mailboxes",
+    "crm_email_messages",
+    "crm_email_links",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -151,6 +155,7 @@ NOUNS = {
     "crm_opportunities": "opportunity",
     "crm_workspace_settings": "setting",
     "crm_select_options": "option",
+    "crm_mailboxes": "mailbox",
 }
 #: A polymorphic link's record type → its table (027 `crm_check_refs`).
 TARGETS = {
@@ -265,6 +270,13 @@ DEFAULTS = {
         "position": 0,
     },
     "crm_favourites": {"record_type": None, "position": 0},
+    "crm_mailboxes": {
+        "is_active": True,
+        "history_id": None,
+        "page_token": None,
+        "backfilled_at": None,
+        "last_synced_at": None,
+    },
 }
 
 
@@ -991,6 +1003,14 @@ class FakeCrmStore:
                         for link in list(self.rows[links].values()):
                             if link["record_type"] == kinds[table] and link["record_id"] == target:
                                 self._delete(actor, links, link)
+                    # 039: the email links to it (a log: no audit row).
+                    for link in list(self.rows["crm_email_links"].values()):
+                        if (
+                            link["workspace_id"] == ws
+                            and link["record_type"] == kinds[table]
+                            and link["record_id"] == target
+                        ):
+                            del self.rows["crm_email_links"][link["id"]]
                     # 034: the favourites that pin it.
                     for fav in list(self.rows["crm_favourites"].values()):
                         if (
@@ -1008,7 +1028,12 @@ class FakeCrmStore:
         return {"purged": len(items)}
 
     def _cascade(self, actor, table: str, target: str) -> None:
-        """The foreign-key actions a purge sets off (029, 030)."""
+        """The foreign-key actions a purge sets off (029, 030), and a
+        mailbox's delete (039: its messages and their links)."""
+        if table == "crm_mailboxes":
+            for msg in list(self.rows["crm_email_messages"].values()):
+                if msg["mailbox_id"] == target:
+                    self._forget_message(msg["id"])
         if table == "crm_companies":
             if any(d["company_id"] == target for d in self.rows["crm_opportunities"].values()):
                 raise store.refusal_for("23503", "violates foreign key constraint")
@@ -2020,7 +2045,9 @@ class FakeCrmStore:
                 )
         snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
         audit_len = len(self.audit)
-        moved = dict.fromkeys(("people", "deals", "tasks", "notes", "links", "domains"), 0)
+        moved = dict.fromkeys(
+            ("people", "deals", "tasks", "notes", "links", "domains", "emails"), 0
+        )
         try:
             changes = plan.get("survivor_changes") or {}
             if changes:
@@ -2065,6 +2092,24 @@ class FakeCrmStore:
                         )
                     self._delete(actor, table, link)
                     moved[key] += 1
+            # 039: email links, a log, move without audit rows.
+            for link in list(self.rows["crm_email_links"].values()):
+                if not (
+                    link["workspace_id"] == ws
+                    and link["record_type"] == "company"
+                    and link["record_id"] == gone_id
+                ):
+                    continue
+                if any(
+                    other["message_id"] == link["message_id"]
+                    and other["record_type"] == "company"
+                    and other["record_id"] == keep_id
+                    for other in self.rows["crm_email_links"].values()
+                ):
+                    del self.rows["crm_email_links"][link["id"]]
+                else:
+                    link["record_id"] = keep_id
+                moved["emails"] += 1
             for link in list(self.rows["crm_drive_links"].values()):
                 if (
                     link["workspace_id"] == ws
@@ -2459,9 +2504,13 @@ class FakeCrmStore:
         return out
 
     def flag_facts(
-        self, workspace_id: str, deal_ids: list[str] | None, company_ids: list[str] | None
+        self,
+        workspace_id: str,
+        deal_ids: list[str] | None,
+        company_ids: list[str] | None,
+        person_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """038 crm_flag_facts."""
+        """039 crm_flag_facts."""
         activity: dict[str, str] = {}
         for d in self._of("crm_opportunities", workspace_id):
             if d.get("deleted_at") or (deal_ids is not None and d["id"] not in deal_ids):
@@ -2505,7 +2554,22 @@ class FakeCrmStore:
                 and (company_ids is None or link["record_id"] in company_ids)
             ):
                 companies.add(link["record_id"])
-        return {"activity": activity, "open_task_companies": sorted(companies)}
+        wanted = {"opportunity": deal_ids, "company": company_ids, "person": person_ids}
+        emails: dict[str, dict[str, dict[str, Any]]] = {}
+        for link in self._of("crm_email_links", workspace_id):
+            ids = wanted[link["record_type"]]
+            msg = self.rows["crm_email_messages"].get(link["message_id"])
+            if (ids is not None and link["record_id"] not in ids) or msg is None:
+                continue
+            if msg["is_internal"] or msg["is_auto"]:
+                continue
+            facts = emails.setdefault(link["record_type"], {}).setdefault(
+                link["record_id"], {"in": None, "out": None}
+            )
+            key = "in" if msg["direction"] == "inbound" else "out"
+            if facts[key] is None or _at(msg["sent_at"]) > _at(facts[key]):
+                facts[key] = msg["sent_at"]
+        return {"activity": activity, "open_task_companies": sorted(companies), "emails": emails}
 
     def set_flags(
         self, workspace_id: str, table: str, rows: list[dict[str, Any]], at: datetime
@@ -2571,6 +2635,143 @@ class FakeCrmStore:
             and not t.get("deleted_at")
             and t.get("due_on")
             and str(t["due_on"])[:10] <= by
+        ]
+
+    def get_job_run(self, workspace_id: str, run_id: str) -> dict[str, Any] | None:
+        run = self.rows["crm_job_runs"].get(run_id)
+        return dict(run) if run and run["workspace_id"] == workspace_id else None
+
+    # -- store: Gmail sync (S10, 039) ----------------------------------------
+
+    def list_mailboxes(self, workspace_id: str, *, active_only: bool = False) -> list[dict]:
+        rows = [
+            dict(m)
+            for m in self._of("crm_mailboxes", workspace_id)
+            if not active_only or m["is_active"]
+        ]
+        return sorted(rows, key=lambda m: m["email"])
+
+    def get_mailbox(self, workspace_id: str, mailbox_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_mailboxes"].get(mailbox_id)
+        return dict(row) if row and row["workspace_id"] == workspace_id else None
+
+    def find_mailbox_by_email(self, email: str) -> dict[str, Any] | None:
+        return next(
+            (
+                {"id": m["id"], "workspace_id": m["workspace_id"]}
+                for m in self.rows["crm_mailboxes"].values()
+                if m["email"] == email
+            ),
+            None,
+        )
+
+    def mailbox_progress(self, workspace_id: str, mailbox_id: str, values: dict) -> None:
+        assert set(values) <= store.MAILBOX_PROGRESS, values
+        row = self.rows["crm_mailboxes"][mailbox_id]
+        assert row["workspace_id"] == workspace_id
+        # 039: the audit trigger skips the cursor columns, and so does this.
+        row.update(json.loads(json.dumps(values)))
+
+    def stored_message_ids(self, workspace_id: str, mailbox_id: str, gmail_ids: list) -> set:
+        return {
+            m["gmail_message_id"]
+            for m in self._of("crm_email_messages", workspace_id)
+            if m["mailbox_id"] == mailbox_id and m["gmail_message_id"] in gmail_ids
+        }
+
+    def store_emails(self, workspace_id: str, mailbox_id: str, messages: list[dict]) -> list:
+        """039 crm_store_emails: each message once; a link outside the
+        workspace refuses the page (crm_check_refs, CRM04)."""
+        mailbox = self.rows["crm_mailboxes"].get(mailbox_id)
+        if mailbox is None or mailbox["workspace_id"] != workspace_id:
+            raise store.refusal_for("CRM04", "No such mailbox.")
+        snapshot = {
+            t: {k: dict(v) for k, v in self.rows[t].items()}
+            for t in ("crm_email_messages", "crm_email_links")
+        }
+        stored = []
+        try:
+            for m in json.loads(json.dumps(messages)):
+                if any(
+                    r["mailbox_id"] == mailbox_id and r["gmail_message_id"] == m["gmail_message_id"]
+                    for r in self.rows["crm_email_messages"].values()
+                ):
+                    continue
+                links = m.pop("links", [])
+                msg = self.add(
+                    "crm_email_messages",
+                    workspace_id=workspace_id,
+                    mailbox_id=mailbox_id,
+                    created_at=_now(),
+                    **m,
+                )
+                for link in links:
+                    target = self.rows[TARGETS[link["record_type"]]].get(link["record_id"])
+                    if target is None or target["workspace_id"] != workspace_id:
+                        raise store.refusal_for(
+                            "CRM04", f"No such {link['record_type']} in this workspace."
+                        )
+                    if not any(
+                        r["message_id"] == msg["id"]
+                        and r["record_type"] == link["record_type"]
+                        and r["record_id"] == link["record_id"]
+                        for r in self.rows["crm_email_links"].values()
+                    ):
+                        self.add(
+                            "crm_email_links",
+                            workspace_id=workspace_id,
+                            message_id=msg["id"],
+                            created_at=_now(),
+                            **link,
+                        )
+                stored.append(m["gmail_message_id"])
+        except Exception:
+            self.rows.update(snapshot)
+            raise
+        return stored
+
+    def _forget_message(self, message_id: str) -> None:
+        del self.rows["crm_email_messages"][message_id]
+        for link in list(self.rows["crm_email_links"].values()):
+            if link["message_id"] == message_id:
+                del self.rows["crm_email_links"][link["id"]]
+
+    def remove_emails(self, workspace_id: str, mailbox_id: str, gmail_ids: list) -> dict:
+        gone = [
+            m
+            for m in self._of("crm_email_messages", workspace_id)
+            if m["mailbox_id"] == mailbox_id and m["gmail_message_id"] in gmail_ids
+        ]
+        records = {
+            (link["record_type"], link["record_id"])
+            for link in self.rows["crm_email_links"].values()
+            if link["message_id"] in {m["id"] for m in gone}
+        }
+        for m in gone:
+            self._forget_message(m["id"])
+        return {
+            "removed": len(gone),
+            "records": [{"record_type": t, "record_id": r} for t, r in sorted(records)],
+        }
+
+    def people_by_emails(self, workspace_id: str, emails: list[str]) -> list[dict[str, Any]]:
+        wanted = set(emails)
+        return [
+            dict(p)
+            for p in self._of("crm_people", workspace_id)
+            if p.get("primary_email") in wanted or wanted & set(p.get("additional_emails") or [])
+        ]
+
+    def email_links(self, workspace_id: str, record_type: str, record_ids: list) -> list:
+        return [
+            {k: link[k] for k in ("message_id", "record_type", "record_id")}
+            for link in self._of("crm_email_links", workspace_id)
+            if link["record_type"] == record_type and link["record_id"] in record_ids
+        ]
+
+    def email_messages(self, workspace_id: str, message_ids: list) -> list[dict[str, Any]]:
+        return [
+            dict(m) for m in self._of("crm_email_messages", workspace_id) if m["id"] in message_ids
         ]
 
     # -- store: writes ------------------------------------------------------
@@ -2891,6 +3092,14 @@ class FakeCrmStore:
                     and other["visibility"] == row["visibility"] == "shared"
                 ):
                     clash("crm_saved_views_one_default")
+            return
+        if table == "crm_mailboxes":
+            # 039: one address in one workspace, across workspaces.
+            if any(
+                other["id"] != row["id"] and other["email"] == row["email"]
+                for other in self.rows[table].values()
+            ):
+                clash("crm_mailboxes_email")
             return
         if table == "crm_favourites":
             if any(

@@ -18,12 +18,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getCrmAudit,
   getCrmFxRates,
+  addCrmMailbox,
   getCrmJobs,
   getCrmLists,
+  getCrmMailboxes,
   getCrmMembers,
   getCrmSettings,
   inviteCrmMember,
+  removeCrmMailbox,
   removeCrmMember,
+  runCrmEmailSync,
+  updateCrmMailbox,
   updateCrmMember,
   updateCrmSetting,
 } from "@/lib/api/crm";
@@ -31,11 +36,14 @@ import type {
   AutomationSwitches,
   CrmAuditEntry,
   CrmJobName,
+  CrmMailbox,
+  EmailSyncResult,
   FlagThresholds,
   StageKey,
   StageProbabilities,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
+import { formatDate } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
 
 const STAGES: StageKey[] = [
@@ -55,6 +63,7 @@ const TABS = [
   "domains",
   "thresholds",
   "automations",
+  "mailboxes",
   "jobs",
   "audit",
 ];
@@ -62,7 +71,8 @@ const TABS = [
 /**
  * Workspace settings — spec 007 FR-CRM-LIST-06, FR-CRM-ACC-04 to -12,
  * FR-CRM-AUD-03; from 1b the flag thresholds (FR-CRM-FLAG-01), the
- * automation switches (FR-CRM-AUTO-02) and the job log (FR-CRM-JOB-01).
+ * automation switches (FR-CRM-AUTO-02), the Gmail mailboxes and the sync
+ * switch (FR-CRM-SYNC-01, -03) and the job log (FR-CRM-JOB-01).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -100,6 +110,7 @@ export default function SettingsPage() {
           <TabsTrigger value="domains">Allowed domains</TabsTrigger>
           <TabsTrigger value="thresholds">Thresholds</TabsTrigger>
           <TabsTrigger value="automations">Automations</TabsTrigger>
+          <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
@@ -123,6 +134,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="automations" className="pt-4">
           <AutomationsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="mailboxes" className="pt-4">
+          <MailboxesTab workspace={ws} />
         </TabsContent>
         <TabsContent value="jobs" className="pt-4">
           <JobsTab workspace={ws} />
@@ -565,5 +579,253 @@ function JobsTab({ workspace }: { workspace: string }) {
         <JobsTable runs={data?.runs ?? []} timeZone={bootstrap.me.timezone} />
       </CardContent>
     </Card>
+  );
+}
+
+function labelsOf(text: string): string[] {
+  return text
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
+function syncReport(result: EmailSyncResult): string {
+  if ("skipped" in result) return `${result.skipped}.`;
+  if (result.outcome === "running") {
+    return "The sync is still running; its counts will show under Jobs.";
+  }
+  if (result.outcome === "failed") return "The sync failed; see Jobs for why.";
+  return (
+    `Read ${result.mailboxes} mailbox${result.mailboxes === 1 ? "" : "es"}: ` +
+    `${result.stored} new message${result.stored === 1 ? "" : "s"} stored, ` +
+    `${result.removed} removed, ${result.matched_people} people matched, ` +
+    `${result.created_companies} companies and ${result.created_people} people created.`
+  );
+}
+
+/**
+ * FR-CRM-SYNC-01 to -04 — the Gmail mailboxes this workspace syncs, their
+ * owners (members of the workspace) and labels; the sync switch, which stays
+ * off until the service-account credential exists (Q-23); and Run now
+ * (Admins only, Q-62). Only subjects and participants are stored (Q-29).
+ */
+function MailboxesTab({ workspace }: { workspace: string }) {
+  const { bootstrap, reload: reloadShell } = useCrm();
+  const { data, error, setError, reload } = useAsync(
+    () => Promise.all([getCrmMailboxes(workspace), getCrmMembers(workspace)]),
+    [workspace]
+  );
+  const [email, setEmail] = useState("");
+  const [ownerId, setOwnerId] = useState("");
+  const [labels, setLabels] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<string | null>(null);
+  const [mailboxes, members] = data ?? [null, []];
+  const sync = mailboxes?.sync;
+
+  async function act(work: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await work();
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function add(event: React.FormEvent) {
+    event.preventDefault();
+    await act(async () => {
+      await addCrmMailbox(workspace, {
+        email: email.trim(),
+        owner_id: ownerId || bootstrap.me.id,
+        labels: labelsOf(labels),
+      });
+      setEmail("");
+      setLabels("");
+    });
+  }
+
+  async function editLabels(mailbox: CrmMailbox) {
+    const text = window.prompt(
+      `Labels for ${mailbox.email}, separated by commas. Changing them reads the labels afresh.`,
+      mailbox.labels.join(", ")
+    );
+    if (text === null) return;
+    await act(() => updateCrmMailbox(workspace, mailbox.id, { labels: labelsOf(text) }));
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Gmail sync</CardTitle>
+          <CardDescription>
+            Every 15 minutes, threads carrying a mailbox&apos;s labels land on the right people and
+            companies: subject, participants, direction and date, never the message itself. The
+            first run reads the last 90 days. Email among our own domains only is skipped.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Problem message={error} />
+          {sync && !sync.configured && (
+            <p role="status" className="rounded-md bg-muted p-3 text-sm">
+              The Gmail service-account credential is not configured yet, so sync cannot be
+              switched on. A TVA admin sets it up on the sync worker.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="size-4"
+                checked={sync?.enabled ?? false}
+                disabled={!sync || busy || (!sync.configured && !sync.enabled)}
+                onChange={(e) =>
+                  act(async () => {
+                    await updateCrmSetting(workspace, "email_sync", { enabled: e.target.checked });
+                    reloadShell();
+                  })
+                }
+              />
+              <span>Email sync {sync?.enabled ? "on" : "off"}</span>
+            </label>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!sync?.live || busy}
+              onClick={() =>
+                act(async () => {
+                  setReport(null);
+                  setReport(syncReport(await runCrmEmailSync(workspace)));
+                })
+              }
+            >
+              Run now
+            </Button>
+            {report && (
+              <span role="status" className="text-sm text-muted-foreground">
+                {report}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Mailboxes</CardTitle>
+          <CardDescription>
+            A mailbox is its owner&apos;s own address at{" "}
+            {(mailboxes?.gmail_domains ?? []).join(", ")}; only a TVA admin can add another
+            (such as a shared address). Its owner must be a member here and owns what the sync
+            creates. Name your own Gmail labels (for example Sales); Inbox, Sent and the
+            categories are refused. An address belongs to one workspace only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {mailboxes && mailboxes.mailboxes.length === 0 && (
+            <p className="text-sm text-muted-foreground">No mailbox yet.</p>
+          )}
+          {mailboxes && mailboxes.mailboxes.length > 0 && (
+            <ul className="divide-y rounded-md border">
+              {mailboxes.mailboxes.map((m) => (
+                <li key={m.id} className="flex flex-wrap items-start justify-between gap-2 p-3">
+                  <div className="min-w-0 space-y-0.5 text-sm">
+                    <p className="break-all font-medium">{m.email}</p>
+                    <p className="text-muted-foreground">
+                      Owner {m.owner_name ?? "—"} · Labels {m.labels.join(", ")}
+                      {m.is_active ? "" : " · Paused"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {m.last_synced_at
+                        ? `Last synced ${formatDate(m.last_synced_at, bootstrap.me.timezone)}`
+                        : "Not synced yet"}
+                      {m.last_synced_at && !m.backfilled_at ? " · reading the last 90 days" : ""}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button variant="outline" size="sm" disabled={busy} onClick={() => editLabels(m)}>
+                      Labels
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        act(() => updateCrmMailbox(workspace, m.id, { is_active: !m.is_active }))
+                      }
+                    >
+                      {m.is_active ? "Pause" : "Resume"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Remove ${m.email}? The emails stored from it are removed too.`
+                          )
+                        ) {
+                          act(() => removeCrmMailbox(workspace, m.id));
+                        }
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form onSubmit={add} className="grid max-w-2xl gap-3 sm:grid-cols-3">
+            <label className="space-y-1 text-sm">
+              <span className="block text-muted-foreground">Address</span>
+              <Input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@nunnarilabs.com"
+                className="h-8"
+              />
+            </label>
+            <label className="space-y-1 text-sm">
+              <span className="block text-muted-foreground">Owner</span>
+              <select
+                className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                value={ownerId || bootstrap.me.id}
+                onChange={(e) => setOwnerId(e.target.value)}
+              >
+                {members.map((m) => (
+                  <option key={m.user_id} value={m.user_id}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-sm">
+              <span className="block text-muted-foreground">Labels (comma-separated)</span>
+              <Input
+                required
+                value={labels}
+                onChange={(e) => setLabels(e.target.value)}
+                placeholder="Sales, Leads"
+                className="h-8"
+              />
+            </label>
+            <div className="sm:col-span-3">
+              <Button type="submit" disabled={busy}>
+                Add mailbox
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

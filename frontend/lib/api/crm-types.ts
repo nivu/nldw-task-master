@@ -682,6 +682,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
   notes?: CrmNote[];
   /** A merged company answers with its survivor (FR-CRM-DUP-03). */
   merged_from?: { id: string; name: string };
+  /** 1b: companies, people and deals — the latest email threads (S10). */
+  emails?: CrmEmailThread[];
 }
 
 export interface CrmPage<T> {
@@ -1136,3 +1138,73 @@ export interface AutomationSwitches {
   task_reminders: boolean;
   campaign_conversion: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// 1b — Gmail label sync (contracts §2.10; S10, FR-CRM-SYNC)
+// ---------------------------------------------------------------------------
+
+/** A thread on a record's Emails tab: metadata only, never a body (Q-29). */
+export interface CrmEmailThread {
+  thread_id: string;
+  subject: string | null;
+  last_at: string;
+  direction: "inbound" | "outbound";
+  participants: { email: string; name: string }[];
+  /** The synced mailbox it came from. */
+  mailbox: string | null;
+  messages: number;
+}
+
+export interface CrmEmailThreads {
+  threads: CrmEmailThread[];
+  /** Pass as `before` for older threads; null at the end. */
+  next: string | null;
+}
+
+export interface CrmMailbox {
+  id: string;
+  email: string;
+  owner_id: string;
+  owner_name: string | null;
+  labels: string[];
+  is_active: boolean;
+  backfilled_at: string | null;
+  last_synced_at: string | null;
+  updated_at: string;
+}
+
+export interface CrmMailboxes {
+  mailboxes: CrmMailbox[];
+  sync: {
+    /** The workspace's switch. */
+    enabled: boolean;
+    /** The Gmail credential exists on the sync worker (never the key itself). */
+    configured: boolean;
+    /** Both: sync runs every 15 minutes. */
+    live: boolean;
+  };
+  /** The domains the service account can read (FR-CRM-SYNC-03). */
+  gmail_domains: string[];
+}
+
+export interface CrmMailboxIn {
+  email: string;
+  owner_id: string;
+  labels: string[];
+  is_active?: boolean;
+}
+
+export type EmailSyncResult =
+  | { skipped: "Email sync is off" | "A sync is already running" }
+  | {
+      run_id: string;
+      outcome: "running" | "ok" | "failed";
+      mailboxes: number;
+      fetched: number;
+      stored: number;
+      removed: number;
+      matched_people: number;
+      created_companies: number;
+      created_people: number;
+      skipped_internal: number;
+    };
