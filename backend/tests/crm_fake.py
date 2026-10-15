@@ -111,6 +111,10 @@ TABLES = (
     "crm_saved_views",
     "crm_favourites",
     "crm_import_runs",
+    # Logs (037): the job log, the bell and the digests' sent markers.
+    "crm_job_runs",
+    "crm_notifications",
+    "crm_digest_sends",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -165,6 +169,8 @@ class CheckViolation(AssertionError):
 
 #: Column defaults the database would fill on insert.
 _TRASH = {"deleted_at": None, "deleted_by": None, "deleted_group": None}
+#: 038's flag columns.
+_FLAGS = {"flag_level": "none", "flags": [], "flags_computed_at": None}
 DEFAULTS = {
     "crm_select_options": {
         "system_key": None,
@@ -183,6 +189,7 @@ DEFAULTS = {
         "last_outbound_at": None,
         "last_contact_at": None,
         "position": 0,
+        **_FLAGS,
         **_TRASH,
     },
     "crm_company_domains": {"is_primary": False},
@@ -198,6 +205,7 @@ DEFAULTS = {
         "last_outbound_at": None,
         "last_contact_at": None,
         "position": 0,
+        **_FLAGS,
         **_TRASH,
     },
     "crm_drive_links": dict(_TRASH),
@@ -228,6 +236,7 @@ DEFAULTS = {
         "lost_on": None,
         "twenty_id": None,
         "position": 0,
+        **_FLAGS,
         **_TRASH,
     },
     "crm_opportunity_contacts": {"role_id": None},
@@ -240,6 +249,7 @@ DEFAULTS = {
         "completed_at": None,
         "twenty_id": None,
         "position": 0,
+        **_FLAGS,
         **_TRASH,
     },
     "crm_notes": {"kind": "note", "occurred_on": None, "twenty_id": None, **_TRASH},
@@ -258,14 +268,17 @@ DEFAULTS = {
 }
 
 
-#: Migration 034's seeds, read from the file itself, so the fake's registry
-#: and seeded views are the database's (data-model §3.15, §7.5).
-MIGRATION_034 = Path(__file__).resolve().parents[2] / "supabase/migrations/034_crm_views.sql"
+#: The seeds of migrations 034 and 038, read from the files themselves, so
+#: the fake's registry and seeded views are the database's (data-model §3.15,
+#: §7.5).
+MIGRATIONS = Path(__file__).resolve().parents[2] / "supabase/migrations"
+MIGRATION_034 = MIGRATIONS / "034_crm_views.sql"
+MIGRATION_038 = MIGRATIONS / "038_crm_flags.sql"
 _BOOL = {"true": True, "false": False}
 
 
 def _read_034() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    text = MIGRATION_034.read_text()
+    text = MIGRATION_034.read_text() + MIGRATION_038.read_text()
     field_rows = re.findall(
         r"\('(\w+)', '(\w+)', '(\w+)', '(\w+)', (true|false), (true|false), (true|false), "
         r"(true|false), (true|false), '(\w+)'\)",
@@ -336,6 +349,8 @@ class FakeCrmStore:
         self.tokens: dict[str, int] = {}
         # Every crm_query call, to check what reached the database.
         self.queries: list[dict[str, Any]] = []
+        # Every crm_set_flags call: (table, rows).
+        self.flag_writes: list[tuple[str, int]] = []
 
     # -- set-up helpers (not store names) -----------------------------------
 
@@ -749,6 +764,13 @@ class FakeCrmStore:
             who
         ):
             raise store.refusal_for("CRM22", "Ask a TVA admin to change this membership.")
+        # 037: the person's notifications for the workspace go with it.
+        for n in [
+            n
+            for n in self.rows["crm_notifications"].values()
+            if n["workspace_id"] == ws and n["user_id"] == m["user_id"]
+        ]:
+            del self.rows["crm_notifications"][n["id"]]
         del self.rows["crm_memberships"][m["id"]]
         self._audit(
             actor, {"action": "membership.removed", "table": "crm_memberships"}, m, dict(m), None
@@ -2226,6 +2248,318 @@ class FakeCrmStore:
             for r in rows[:limit]
         ]
 
+    # -- store: the job log (S9, 037) ----------------------------------------
+
+    def start_job_run(self, job: str, workspace_id: str | None, started_at: datetime) -> dict:
+        return dict(
+            self.add(
+                "crm_job_runs",
+                workspace_id=workspace_id,
+                job=job,
+                started_at=started_at.isoformat(),
+                finished_at=None,
+                outcome="running",
+                counts={},
+                error=None,
+                error_public=None,
+                alerted=False,
+            )
+        )
+
+    def finish_job_run(self, run_id: str, values: dict[str, Any]) -> None:
+        self.rows["crm_job_runs"][run_id].update(json.loads(json.dumps(values)))
+
+    def _runs(self) -> list[dict[str, Any]]:
+        # Newest first; a run added later is newer when two share a start.
+        rows = list(self.rows["crm_job_runs"].values())
+        order = {r["id"]: i for i, r in enumerate(rows)}
+        return sorted(rows, key=lambda r: (r["started_at"], order[r["id"]]), reverse=True)
+
+    def job_streak(self, job: str, workspace_id: str | None, limit: int = 200) -> list[dict]:
+        return [
+            {k: r[k] for k in ("id", "outcome", "alerted", "started_at")}
+            for r in self._runs()
+            if r["job"] == job and r["workspace_id"] == workspace_id and r["outcome"] != "running"
+        ][:limit]
+
+    def mark_job_alerted(self, run_id: str) -> None:
+        self.rows["crm_job_runs"][run_id]["alerted"] = True
+
+    def list_job_runs(self, workspace_id: str, *, job: str | None = None, limit: int = 50):
+        return [
+            {k: v for k, v in r.items() if k != "updated_at"}
+            for r in self._runs()
+            if r["workspace_id"] == workspace_id and (job is None or r["job"] == job)
+        ][:limit]
+
+    def list_all_job_runs(self, *, job: str | None = None, limit: int = 100) -> list[dict]:
+        return [
+            {k: v for k, v in r.items() if k not in ("updated_at", "error")}
+            for r in self._runs()
+            if job is None or r["job"] == job
+        ][:limit]
+
+    def latest_job_runs(self) -> list[dict[str, Any]]:
+        latest: dict[tuple, dict[str, Any]] = {}
+        for r in reversed(self._runs()):
+            latest[(r["job"], r["workspace_id"])] = r
+        return [
+            {k: r[k] for k in ("job", "workspace_id", "started_at", "finished_at", "outcome")}
+            for r in latest.values()
+        ]
+
+    # -- store: notifications and digests (S9, 037) -------------------------
+
+    def notify(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """crm_notify: members only, once per (person, dedupe key)."""
+        added = []
+        for r in rows:
+            member = any(
+                m["workspace_id"] == r["workspace_id"] and m["user_id"] == r["user_id"]
+                for m in self.rows["crm_memberships"].values()
+            )
+            seen = any(
+                n["user_id"] == r["user_id"] and n["dedupe_key"] == r["dedupe_key"]
+                for n in self.rows["crm_notifications"].values()
+            )
+            if not member or seen:
+                continue
+            row = self.add(
+                "crm_notifications",
+                workspace_id=r["workspace_id"],
+                user_id=r["user_id"],
+                kind=r["kind"],
+                record_type=r.get("record_type"),
+                record_id=r.get("record_id"),
+                title=r["title"][:200],
+                dedupe_key=r["dedupe_key"],
+                created_at=_now(),
+                read_at=None,
+            )
+            added.append(dict(row))
+        return added
+
+    def _inbox(self, user_id: str, workspace_ids: list[str]) -> list[dict[str, Any]]:
+        rows = [
+            dict(n)
+            for n in self.rows["crm_notifications"].values()
+            if n["user_id"] == user_id and n["workspace_id"] in workspace_ids
+        ]
+        return sorted(rows, key=lambda n: n["created_at"], reverse=True)
+
+    def list_notifications(
+        self,
+        user_id: str,
+        workspace_ids: list[str],
+        *,
+        unread_only: bool = False,
+        before: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        rows = self._inbox(user_id, workspace_ids)
+        if unread_only:
+            rows = [n for n in rows if n["read_at"] is None]
+        if before:
+            rows = [n for n in rows if _at(n["created_at"]) < _at(before)]
+        return rows[:limit]
+
+    def unread_count(self, user_id: str, workspace_ids: list[str]) -> int:
+        return sum(1 for n in self._inbox(user_id, workspace_ids) if n["read_at"] is None)
+
+    def mark_read(
+        self, user_id: str, workspace_ids: list[str], ids: list[str] | None, at: datetime
+    ) -> int:
+        updated = 0
+        for n in self.rows["crm_notifications"].values():
+            if (
+                n["user_id"] == user_id
+                and n["workspace_id"] in workspace_ids
+                and n["read_at"] is None
+                and (ids is None or n["id"] in ids)
+            ):
+                n["read_at"] = at.isoformat()
+                updated += 1
+        return updated
+
+    def claim_digest(
+        self, user_id: str, kind: str, local_date: str, workspace_id: str | None
+    ) -> str | None:
+        """crm_digest_claim: ON CONFLICT DO NOTHING RETURNING id."""
+        if any(
+            d["user_id"] == user_id
+            and d["kind"] == kind
+            and d["local_date"] == local_date
+            and d["workspace_id"] == workspace_id
+            for d in self.rows["crm_digest_sends"].values()
+        ):
+            return None
+        return self.add(
+            "crm_digest_sends",
+            user_id=user_id,
+            kind=kind,
+            local_date=local_date,
+            workspace_id=workspace_id,
+            channels=[],
+            sent_at=_now(),
+        )["id"]
+
+    def set_digest_channels(self, send_id: str, channels: list[str]) -> None:
+        self.rows["crm_digest_sends"][send_id]["channels"] = list(channels)
+
+    def list_all_memberships(self) -> list[dict[str, Any]]:
+        return [
+            {k: m[k] for k in ("id", "workspace_id", "user_id", "role")}
+            for m in self.rows["crm_memberships"].values()
+        ]
+
+    # -- store: flags (S9, 038) ----------------------------------------------
+
+    def flag_rows(
+        self,
+        workspace_id: str,
+        table: str,
+        *,
+        ids: list[str] | None = None,
+        company_ids: list[str] | None = None,
+        open_or_flagged: bool = False,
+        flagged_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        assert table in store.FLAG_COLUMNS, table
+        columns = [c.strip() for c in store.FLAG_COLUMNS[table].split(",")]
+        out = []
+        for r in self._of(table, workspace_id):
+            r = {**_FLAGS, **r}
+            if r.get("deleted_at"):
+                continue
+            if ids is not None and r["id"] not in ids:
+                continue
+            if company_ids is not None and r.get("company_id") not in company_ids:
+                continue
+            if flagged_only and r["flag_level"] == "none":
+                continue
+            if open_or_flagged and r["flag_level"] == "none":
+                if table == "crm_opportunities" and r["stage"] not in OPEN_STAGES:
+                    continue
+                if table == "crm_tasks" and r["status"] == "done":
+                    continue
+            out.append({c: r.get(c) for c in columns})
+        return out
+
+    def flag_facts(
+        self, workspace_id: str, deal_ids: list[str] | None, company_ids: list[str] | None
+    ) -> dict[str, Any]:
+        """038 crm_flag_facts."""
+        activity: dict[str, str] = {}
+        for d in self._of("crm_opportunities", workspace_id):
+            if d.get("deleted_at") or (deal_ids is not None and d["id"] not in deal_ids):
+                continue
+            times = [d.get("created_at"), d.get("stage_entered_at")]
+            for link in self.rows["crm_note_links"].values():
+                note = self.rows["crm_notes"].get(link["note_id"])
+                if (
+                    link["record_type"] == "opportunity"
+                    and link["record_id"] == d["id"]
+                    and note
+                    and not note.get("deleted_at")
+                ):
+                    on = note.get("occurred_on")
+                    times.append(
+                        f"{on}T00:00:00+00:00"
+                        if note.get("kind", "note") != "note" and on
+                        else note.get("created_at")
+                    )
+            for link in self.rows["crm_task_links"].values():
+                task = self.rows["crm_tasks"].get(link["task_id"])
+                if (
+                    link["record_type"] == "opportunity"
+                    and link["record_id"] == d["id"]
+                    and task
+                    and not task.get("deleted_at")
+                ):
+                    times += [task.get("created_at"), task.get("completed_at")]
+            known = [_at(t) for t in times if t]
+            if known:
+                activity[d["id"]] = max(known).isoformat()
+        companies = set()
+        for link in self.rows["crm_task_links"].values():
+            task = self.rows["crm_tasks"].get(link["task_id"])
+            if (
+                link["workspace_id"] == workspace_id
+                and link["record_type"] == "company"
+                and task
+                and task["status"] != "done"
+                and not task.get("deleted_at")
+                and (company_ids is None or link["record_id"] in company_ids)
+            ):
+                companies.add(link["record_id"])
+        return {"activity": activity, "open_task_companies": sorted(companies)}
+
+    def set_flags(
+        self, workspace_id: str, table: str, rows: list[dict[str, Any]], at: datetime
+    ) -> int:
+        """038 crm_set_flags: no audit row, `updated_at` untouched."""
+        assert table in store.FLAG_COLUMNS, table
+        changed = 0
+        for r in rows:
+            row = self.rows[table].get(r["id"])
+            if row is None or row["workspace_id"] != workspace_id:
+                continue
+            flags = json.loads(json.dumps(r["flags"]))
+            if (row.get("flag_level", "none"), row.get("flags") or []) != (r["flag_level"], flags):
+                changed += 1
+            row.update(flag_level=r["flag_level"], flags=flags, flags_computed_at=at.isoformat())
+        self.flag_writes.append((table, len(rows)))
+        return changed
+
+    def flagged_owned(self, workspace_id: str, table: str, owner_id: str) -> list[dict]:
+        return [
+            r
+            for r in self.flag_rows(workspace_id, table, flagged_only=True)
+            if self.rows[table][r["id"]].get("owner_id") == owner_id
+        ]
+
+    def flag_counts(self, workspace_id: str) -> dict[str, dict[str, int]]:
+        counts: dict[str, dict[str, int]] = {}
+        for table in store.FLAG_COLUMNS:
+            levels = [r["flag_level"] for r in self.flag_rows(workspace_id, table)]
+            counts[table] = {lvl: levels.count(lvl) for lvl in ("red", "amber")}
+        return counts
+
+    def stage_moves_since(self, workspace_id: str, since: datetime) -> list[dict[str, Any]]:
+        rows = [
+            {k: h[k] for k in ("opportunity_id", "from_stage", "to_stage", "at")}
+            for h in self._of("crm_stage_history", workspace_id)
+            if _at(h["at"]) >= since
+        ]
+        return sorted(rows, key=lambda h: h["at"])
+
+    def closed_since(self, workspace_id: str, since: str) -> list[dict[str, Any]]:
+        rows = [
+            {k: d.get(k) for k in ("id", "name", "stage", "amount_in_inr", "won_on", "lost_on")}
+            | {"owner_id": d.get("owner_id")}
+            for d in self._of("crm_opportunities", workspace_id)
+            if not d.get("deleted_at")
+            and (str(d.get("won_on") or "") >= since or str(d.get("lost_on") or "") >= since)
+        ]
+        return sorted(rows, key=lambda d: d["name"])
+
+    def deal_amounts(self, workspace_id: str, ids: list[str]) -> dict[str, Any]:
+        return {
+            d["id"]: d.get("amount_in_inr")
+            for d in self._of("crm_opportunities", workspace_id)
+            if d["id"] in ids
+        }
+
+    def tasks_due_by(self, workspace_id: str, by: str) -> list[dict[str, Any]]:
+        return [
+            {k: t.get(k) for k in ("id", "title", "status", "due_on", "assignee_id")}
+            for t in self._of("crm_tasks", workspace_id)
+            if t["status"] != "done"
+            and not t.get("deleted_at")
+            and t.get("due_on")
+            and str(t["due_on"])[:10] <= by
+        ]
+
     # -- store: writes ------------------------------------------------------
 
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:
@@ -2767,6 +3101,9 @@ class FakeQuery:
         if typ == "fixed_select" and col in _FIXED_ORDER:
             order = _FIXED_ORDER[col]
             return order.index(v) + 1 if v in order else None
+        if typ == "flag":
+            # 038: none, amber, red.
+            return ("none", "amber", "red").index(v) + 1 if v in ("none", "amber", "red") else None
         if typ == "person":
             person = self.fake.profiles.get(v) or PEOPLE.get(v)
             return person["display_name"].lower() if person else None
@@ -2785,7 +3122,7 @@ class FakeQuery:
     @staticmethod
     def rank_type(f: dict[str, Any]) -> str:
         typ = f["type"]
-        if typ == "select" or (typ == "fixed_select" and f["column_sql"] in _FIXED_ORDER):
+        if typ in ("select", "flag") or (typ == "fixed_select" and f["column_sql"] in _FIXED_ORDER):
             return "integer"
         return {
             "number": "numeric",

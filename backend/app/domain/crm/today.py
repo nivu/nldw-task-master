@@ -151,6 +151,52 @@ def loose_ends(companies: list[dict[str, Any]], with_open_tasks: set[str]) -> li
     return sorted(items, key=lambda i: (i["title"].lower(), i["record_id"]))
 
 
+def _flag_items(rows: list[dict[str, Any]], kind: str, record_type: str) -> list[dict[str, Any]]:
+    items = []
+    for row in rows:
+        flag = next((f for f in row.get("flags") or [] if f.get("kind") == kind), None)
+        if flag is None or flag.get("level") not in ("amber", "red"):
+            continue
+        title = row.get("name") or " ".join(
+            p for p in (row.get("first_name"), row.get("last_name")) if p
+        )
+        items.append(
+            {
+                "record_type": record_type,
+                "record_id": row["id"],
+                "title": title,
+                "detail": flag.get("detail") or "",
+                "due_on": None,
+                "level": flag["level"],
+            }
+        )
+    return items
+
+
+def _red_first(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(items, key=lambda i: (i["level"] != "red", i["title"].lower(), i["record_id"]))
+
+
+def replies_owed(
+    people: list[dict[str, Any]],
+    companies: list[dict[str, Any]],
+    deals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Section 1 (1b) — the person's records with a Reply owed flag, red
+    first (FR-CRM-TODAY-01; flags from domain/crm/flags.py)."""
+    return _red_first(
+        _flag_items(people, "reply_owed", "person")
+        + _flag_items(companies, "reply_owed", "company")
+        + _flag_items(deals, "reply_owed", "opportunity")
+    )
+
+
+def silent_clients(deals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Section 4 (1b) — the person's open deals whose client went silent,
+    red first."""
+    return _red_first(_flag_items(deals, "client_silent", "opportunity"))
+
+
 def assemble(*, sync_on: bool, built: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """The five sections in order. An email section while sync is off carries
     `off_reason` and no items (FR-CRM-TODAY-02)."""

@@ -18,6 +18,8 @@ from app.mcp import server
 # Routes that deliberately have no tool: the health probe and the Slack
 # webhook, which Slack calls and no person performs (spec 004 §2.2).
 EXCLUDED = {("GET", "/health"), ("POST", "/api/v1/slack/interactions")}
+# Spec 007 FR-CRM-JOB-03: the CRM job health is for an uptime monitor.
+EXCLUDED |= {("GET", "/health/jobs")}
 # Token management is session-only (FR-TOK-04) and so has no tool either.
 EXCLUDED |= {
     ("GET", "/api/v1/me/tokens"),

@@ -193,6 +193,7 @@ export default function CompanyPage() {
             </p>
           )
         }
+        flags={company}
         chips={[
           <Chip key="stage" label="Lead stage" value={company.lead_stage_label} />,
           <Chip key="owner" label="Owner" value={company.owner_name ?? "—"} />,

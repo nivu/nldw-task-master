@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final, Literal
 
+from app.domain.crm import flags
+
 Scope = Literal["all", "tva_linked", "not_tva_linked"]
 
 #: The fixed opportunity stages, in pipeline order (FR-CRM-LIST-02, Q-71).
@@ -171,9 +173,40 @@ def stage_probabilities_refusal(value: Any) -> str | None:
     return None
 
 
-#: Keys a workspace admin edits in Settings, each with its validator. Later
-#: slices add flag thresholds, automations and email sync (1b).
-VALIDATORS: Final = {"stage_probabilities": stage_probabilities_refusal}
+#: FR-CRM-AUTO-02 — the switchable automations (2, 5, 6, 7, 8) by key, with
+#: what Settings calls them. 1, 3, 4, 9 and 10 are the pipeline rules and
+#: flags themselves and have no switch.
+AUTOMATIONS: Final = {
+    "email_records": "Create companies and people from synced email",
+    "stale_notice": "Stale-deal notice",
+    "digests": "Daily and weekly digests",
+    "task_reminders": "Task due reminders",
+    "campaign_conversion": "Campaign conversion prompt",
+}
+
+
+def automations_refusal(value: Any) -> str | None:
+    """FR-CRM-AUTO-02 — an on/off for each switchable automation."""
+    if not isinstance(value, dict):
+        return "Automations must give on or off for each automation."
+    unknown = sorted(set(value) - set(AUTOMATIONS))
+    if unknown:
+        return f"Unknown automation: {', '.join(unknown)}."
+    missing = [AUTOMATIONS[k] for k in AUTOMATIONS if k not in value]
+    if missing:
+        return f"Automations need {_and(missing)}."
+    if any(not isinstance(v, bool) for v in value.values()):
+        return "Each automation is on (true) or off (false)."
+    return None
+
+
+#: Keys a workspace admin edits in Settings, each with its validator. Email
+#: sync arrives with it (S10).
+VALIDATORS: Final = {
+    "stage_probabilities": stage_probabilities_refusal,
+    "flag_thresholds": flags.thresholds_refusal,
+    "automations": automations_refusal,
+}
 
 
 def setting_refusal(key: str, value: Any) -> str | None:

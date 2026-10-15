@@ -55,6 +55,8 @@ _FIXED_LABELS = {
     "entity": objects.ENTITIES,
     "project_category": objects.PROJECT_CATEGORIES,
     "kind": objects.NOTE_KINDS,
+    # 038 (FR-CRM-FLAG-05): never colour alone, so a group says it in words.
+    "flag_level": {"none": "No flag", "amber": "Amber", "red": "Red"},
 }
 #: The record a `relation` field names, by field.
 _RELATIONS = {

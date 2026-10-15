@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { FlagDot } from "@/components/crm/flag-dot";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { CrmToday, TodayItem, TodaySectionKey } from "@/lib/api/crm-types";
@@ -80,6 +81,10 @@ export function TodayList({
                           <span className="block truncate text-xs text-muted-foreground">{item.detail}</span>
                         )}
                       </span>
+                      {(item.level === "red" || item.level === "amber") && (
+                        // Sections 1 and 4 (1b): the flag, red first, in words too.
+                        <FlagDot level={item.level} timeZone={timeZone} className="shrink-0" />
+                      )}
                       {item.due_on && (
                         <span
                           className={

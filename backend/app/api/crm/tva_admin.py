@@ -9,7 +9,9 @@ CRM record table, and the audit it shows carries no record content.
 Every route is on TVA's `AdminDep` (an active staff admin; a CRM-only
 account is refused before it), never on the CRM guard: a membership grants
 nothing here, and none is needed. The job-run metadata of contracts §2.4
-arrives with the job log in 1b.
+(1b) is shown with `error_public` only: a run's `error` may name records,
+which a TVA admin sees only as a member of that workspace, in its own Jobs
+tab (FR-CRM-JOB-01, Q-69).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from app.schemas.crm import (
     TvaInvitationIn,
 )
 from app.services import supabase as db
-from app.services.crm import members, store
+from app.services.crm import jobs, members, store
 
 router = APIRouter(prefix="/crm/tva-admin", tags=["crm"])
 
@@ -170,6 +172,31 @@ def change_account_type(user_id: str, payload: AccountTypeUpdate, admin: AdminDe
         "lead_id": profile.get("lead_id"),
         "dashboard_access": profile.get("dashboard_access"),
         "changed": bool(done.get("changed")),
+    }
+
+
+@router.get("/jobs")
+def list_jobs(
+    admin: AdminDep,
+    job: str | None = Query(default=None, max_length=40),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    """Contracts §2.4 — every workspace's runs and the digest tick's (no
+    workspace), newest first: metadata and `error_public`, never `error`;
+    and the jobs that are late anywhere (FR-CRM-JOB-03)."""
+    keys = {w["id"]: w["key"] for w in store.list_workspaces()}
+    return {
+        "runs": [
+            jobs.present_run(r, with_error=False, keys=keys)
+            for r in store.list_all_job_runs(job=job, limit=limit)
+        ],
+        "stale_jobs": [
+            {
+                **{k: v for k, v in s.items() if k != "workspace_id"},
+                "workspace": keys.get(s.get("workspace_id") or ""),
+            }
+            for s in jobs.stale()
+        ],
     }
 
 

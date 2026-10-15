@@ -14,15 +14,18 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { cleanValue, FieldEditor } from "@/components/crm/field-editor";
+import { FlagDot } from "@/components/crm/flag-dot";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type {
   AggregateFn,
   CrmBootstrap,
+  CrmFlag,
   CrmMember,
   CrmQueryGroup,
   CrmTotals,
+  FlagLevel,
   ViewAggregate,
   ViewColumn,
   ViewObjectKind,
@@ -455,6 +458,21 @@ function Cell({
           )}
         </div>
         {detail && <div className="truncate text-xs text-muted-foreground">{detail}</div>}
+      </div>
+    );
+  }
+  if (meta?.type === "flag") {
+    // FR-CRM-FLAG-05: a dot with its level in words, and the flags on hover.
+    return (
+      <div className="truncate p-2">
+        <FlagDot
+          level={row.flag_level as FlagLevel | undefined}
+          flags={(row.flags as CrmFlag[] | undefined) ?? []}
+          computedAt={(row.flags_computed_at as string | null | undefined) ?? null}
+          recordType={kind}
+          timeZone={timeZone}
+          showNone
+        />
       </div>
     );
   }

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { AuditTable } from "@/components/crm/audit-table";
 import { InviteDialog } from "@/components/crm/invite-dialog";
+import { JobsTable } from "@/components/crm/jobs-table";
 import { MembersTable } from "@/components/crm/members-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import {
   getTvaCrmAudit,
+  getTvaCrmJobs,
   getTvaCrmMembers,
   getTvaCrmWorkspaces,
   setTvaAllowedDomains,
@@ -31,7 +33,8 @@ import { useAsync } from "@/lib/use-async";
  * their roles (the owner's and a TVA admin's included, FR-CRM-ACC-09),
  * invitations, removals, the domain allow-list and account types. None of
  * it opens a CRM record, and the audit below names who changed whose access,
- * never what a record says.
+ * never what a record says. From 1b the job runs of every workspace are here
+ * too, as metadata and `error_public` only (FR-CRM-JOB-01, Q-69).
  */
 export function CrmWorkspacesPanel() {
   const { data, error, setError, reload } = useAsync(() => getTvaCrmWorkspaces(), []);
@@ -56,8 +59,35 @@ export function CrmWorkspacesPanel() {
           onError={setError}
         />
       ))}
+      <JobRuns />
       <AdministrationAudit nonce={auditNonce} />
     </div>
+  );
+}
+
+function JobRuns() {
+  const { data, error } = useAsync(() => getTvaCrmJobs(), []);
+  const late = data?.stale_jobs ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Background jobs</CardTitle>
+        <CardDescription>
+          Every CRM job run in every workspace: when, the outcome and its counts. Errors here name
+          no record; a workspace&apos;s admins see the full error in its Settings.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 p-0 pb-4">
+        {error && <p className="px-4 text-sm text-destructive">{error}</p>}
+        {late.length > 0 && (
+          <p role="status" className="px-4 text-sm font-medium">
+            Late:{" "}
+            {late.map((s) => `${s.label}${s.workspace ? ` (${s.workspace})` : ""}`).join(", ")}.
+          </p>
+        )}
+        <JobsTable runs={data?.runs ?? []} timeZone="Asia/Kolkata" showWorkspace />
+      </CardContent>
+    </Card>
   );
 }
 

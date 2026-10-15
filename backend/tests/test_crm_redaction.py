@@ -1,7 +1,7 @@
 """Viewer redaction — spec 007 FR-CRM-ACC-11, FR-CRM-AUD-05, FR-CRM-MCP-07;
 plan §5.5; spec §11 AC "Viewers receive no amount field" (so far: every deal
 read route, `crm_get`, and lists through `POST /crm/query` and `crm_list`
-with their group and footer totals).
+with their group and footer totals; from S9 the bell and the digests).
 
 A recursive walk over each answer a Viewer gets, looking for any amount key,
 and for any timeline change naming an amount field. The denylist is written
@@ -21,6 +21,7 @@ from crm_fake import client as crm_client
 
 from app.mcp import crm as tools
 from app.services.crm import deals
+from app.services.crm import digests as digest_service
 from app.services.crm import views as view_service
 
 ACADEMY = "?workspace=academy"
@@ -221,3 +222,59 @@ class TestListsAndTotals:
             )
             assert got["rows"], view
             assert _walk(got) == [], view
+
+
+class TestBellAndDigests:
+    """FR-CRM-NOTIF-05 with FR-CRM-ACC-11 (S9) — the deal is $1,200 at 84,
+    ₹1,00,800: neither figure reaches a Viewer through the bell or a digest."""
+
+    FIGURES = ("1200", "1,200", "100800", "1,00,800")
+
+    def _viewer_owns_the_deal(self, http, made):
+        r = http.patch(
+            f"/api/v1/crm/opportunities/{made['deal']['id']}{ACADEMY}",
+            json={"owner_id": VIEWER["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+
+    def test_the_bell(self, crm):
+        http, made = crm
+        self._viewer_owns_the_deal(http, made)
+        http.post(
+            f"/api/v1/crm/opportunities/{made['deal']['id']}/stage{ACADEMY}",
+            json={"stage": "negotiation", "changes": {"proposal_sent_on": "2026-10-12"}},
+            headers=as_(OWNER["id"]),
+        )
+        r = http.get("/api/v1/crm/notifications", headers=as_(VIEWER["id"]))
+        assert r.status_code == 200, r.text
+        assert {n["kind"] for n in r.json()} == {"assigned", "stage_changed"}
+        assert _walk(r.json()) == []
+        assert not any(f in r.text for f in self.FIGURES)
+
+    def test_the_daily_digest(self, crm):
+        from datetime import UTC, datetime
+
+        from app.services.crm import store
+
+        http, made = crm
+        self._viewer_owns_the_deal(http, made)
+        now = datetime(2026, 10, 20, 3, 30, tzinfo=UTC)
+        mine = [m for m in store.list_all_memberships() if m["user_id"] == VIEWER["id"]]
+        workspaces = {w["id"]: w for w in store.list_workspaces()}
+        viewer = {**VIEWER, "timezone": "Asia/Kolkata"}
+        parts = digest_service.daily_parts(viewer, mine, workspaces, now)
+        items = [i for p in parts for s in p["sections"] for i in s["items"]]
+        assert [i["title"] for i in items] == ["College - AI course"]
+        assert _walk(parts) == []
+        body = digest_service.rules.daily_body("Devansh", now.date(), parts, "x")
+        assert not any(f in body for f in self.FIGURES)
+        # The same deal, for its admin, does carry it.
+        owner = [m for m in store.list_all_memberships() if m["user_id"] == OWNER["id"]]
+        admin_parts = digest_service.daily_parts(
+            {**OWNER, "id": VIEWER["id"]},
+            [{**m, "user_id": VIEWER["id"]} for m in owner],
+            workspaces,
+            now,
+        )
+        assert any(f.endswith(".amount") for f in _walk(admin_parts))

@@ -40,7 +40,7 @@ from app.schemas.crm import (
     TaskUpdate,
 )
 from app.services import supabase as db
-from app.services.crm import CrmRefused, store, tva
+from app.services.crm import CrmRefused, flags, notifications, store, tva
 from app.services.crm import present as show
 from app.services.crm.context import actor
 
@@ -49,6 +49,8 @@ TRASH_DAYS = 90
 #: FR-CRM-DUP-03 — how far `get` follows merged ids (A into B, B into C...).
 MERGE_HOPS = 10
 MERGED_NO_RESTORE = "This company was merged into another; open the survivor instead."
+#: Ids per read by id: they travel in the URL.
+ID_BATCH = 100
 
 
 @dataclass(frozen=True)
@@ -381,11 +383,16 @@ def live(ws_id: str, kind: str, record_id: str) -> dict[str, Any]:
 
 def by_id(ws_id: str, table: str, ids: set[str] | list[str]) -> dict[str, dict[str, Any]]:
     """Records of one table by id, Trash included (a name stays readable)."""
-    wanted = sorted(i for i in ids if i)
-    if not wanted:
-        return {}
-    rows = store.list_records(ws_id, table, any_of={"id": wanted}, deleted=None, limit=len(wanted))
-    return {r["id"]: r for r in rows}
+    wanted = sorted({i for i in ids if i})
+    found: dict[str, dict[str, Any]] = {}
+    # In batches: the ids go into the URL, which PostgREST caps.
+    for i in range(0, len(wanted), ID_BATCH):
+        batch = wanted[i : i + ID_BATCH]
+        for row in store.list_records(
+            ws_id, table, any_of={"id": batch}, deleted=None, limit=len(batch)
+        ):
+            found[row["id"]] = row
+    return found
 
 
 def link_names(ws_id: str, links: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
@@ -748,7 +755,12 @@ def create(ctx: Any, kind: str, payload: Any, *, check_duplicates: bool) -> dict
         for domain, primary in domains
     ]
     done = store.apply(actor(ctx), ops)
-    return present_rows(ws, kind, [done[0]["row"]])[0]
+    row = done[0]["row"]
+    reflag(ws.id, kind, [row])
+    notifications.quietly(
+        notifications.assigned(ctx, kind, row["id"], record_name(kind, row), row.get("owner_id"))
+    )
+    return present_rows(ws, kind, [row])[0]
 
 
 def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
@@ -803,7 +815,54 @@ def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
     if expect:
         main["expect_updated_at"] = expect
     done = store.apply(actor(ctx), [main, *ops])
-    return present_rows(ws, kind, [done[0]["row"]])[0]
+    after = done[0]["row"]
+    reflag(ws.id, kind, [after])
+    if "owner_id" in changes:
+        notifications.quietly(
+            notifications.assigned(
+                ctx, kind, record_id, record_name(kind, after), changes["owner_id"]
+            )
+        )
+    return present_rows(ws, kind, [after])[0]
+
+
+def record_name(kind: str, row: dict[str, Any]) -> str:
+    """What a notification calls a record."""
+    if kind == "person":
+        return dedupe.full_name(row["first_name"], row.get("last_name"))
+    if kind in ("task",):
+        return row["title"]
+    if kind == "note":
+        return "a note"
+    return row["name"]
+
+
+def reflag(ws_id: str, kind: str, rows: list[dict[str, Any]], *, links: list | None = None) -> None:
+    """FR-CRM-FLAG-02 — after a write, recompute the flags it can change: the
+    record's own, a deal's company's, and a task's or note's linked deals and
+    companies (their activity and open tasks). Never fails the write."""
+    touched: dict[str, set[str]] = {"companies": set(), "people": set(), "deals": set()}
+    tasks: set[str] = set()
+    for row in rows:
+        if kind == "company":
+            touched["companies"].add(row["id"])
+        elif kind == "person":
+            touched["people"].add(row["id"])
+        elif kind == "opportunity":
+            touched["deals"].add(row["id"])
+            touched["companies"].add(row.get("company_id") or "")
+        elif kind == "task":
+            tasks.add(row["id"])
+    if kind in LINKS_OF and rows:
+        try:
+            found = links
+            if found is None:
+                found = store.list_links(ws_id, LINKS_OF[kind], owner_ids=[r["id"] for r in rows])
+            for key, ids in flags.linked_records(found).items():
+                touched[key] |= ids
+        except Exception:
+            flags.logger.exception('{"event": "crm_flags_links_failed"}')
+    flags.after_write(ws_id, tasks=tasks, **touched)
 
 
 def _owns(row: dict[str, Any], user_id: str) -> bool:
@@ -882,6 +941,7 @@ def soft_delete(
                 )
         ops += _company_deals(ctx, row, group, deals=deals, move_to=move_deals_to)
     store.apply(actor(ctx), ops)
+    reflag(ctx.workspace_id, kind, [row])
     return {"deleted_group": group}
 
 
@@ -1029,6 +1089,7 @@ def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
             )
     done = store.apply(actor(ctx), ops)
     restored = [d["row"] for d in done if d["id"] == record_id][-1]
+    reflag(ws.id, kind, [restored])
     return present_rows(ws, kind, [restored])[0]
 
 
@@ -1285,7 +1346,27 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
         for m in mentions or []
     ]
     done = store.apply(actor(ctx), ops)
-    return present_rows(ws, kind, [done[0]["row"]])[0]
+    row = done[0]["row"]
+    targets = [{"record_type": t, "record_id": i} for t, i in links or []]
+    reflag(ws.id, kind, [row], links=targets)
+    if kind == "task":
+        notifications.quietly(
+            notifications.assigned(ctx, "task", row["id"], row["title"], row.get("assignee_id"))
+        )
+    elif mentions:
+        notifications.quietly(
+            notifications.mentioned(ctx, row["id"], mentions, _about(ws.id, targets))
+        )
+    return present_rows(ws, kind, [row])[0]
+
+
+def _about(ws_id: str, links: list[dict[str, Any]]) -> dict[str, str] | None:
+    """The first record a note is linked to, which its notification opens."""
+    if not links:
+        return None
+    first = links[0]
+    name = link_names(ws_id, [first]).get((first["record_type"], first["record_id"]))
+    return {**first, "name": name or ""}
 
 
 def _may_change_task(ctx: Any, row: dict[str, Any], sent: set[str]) -> None:
@@ -1311,8 +1392,11 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     owner = "task_id" if kind == "task" else "note_id"
 
     ops: list[dict[str, Any]] = []
+    current_links: list[dict[str, Any]] | None = None
+    had_mentions: set[str] = set()
     if links is not None:
         current = store.list_links(ctx.workspace_id, LINKS_OF[kind], owner_ids=[record_id])
+        current_links = current
         have = {(lk["record_type"], lk["record_id"]): lk for lk in current}
         ops += [
             {"op": "delete", "table": LINKS_OF[kind], "id": lk["id"]}
@@ -1331,6 +1415,7 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     if mentions is not None:
         current = store.list_mentions(ctx.workspace_id, [record_id])
         have_m = {m["member_id"]: m for m in current}
+        had_mentions = set(have_m)
         ops += [
             {"op": "delete", "table": "crm_note_mentions", "id": m["id"]}
             for member, m in have_m.items()
@@ -1358,7 +1443,20 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     if expect:
         main["expect_updated_at"] = expect
     done = store.apply(actor(ctx), [main, *ops])
-    return present_rows(ws, kind, [done[0]["row"]])[0]
+    after = done[0]["row"]
+    now_links = store.list_links(ctx.workspace_id, LINKS_OF[kind], owner_ids=[record_id])
+    reflag(ws.id, kind, [after], links=[*now_links, *(current_links or [])])
+    if kind == "task" and "assignee_id" in changes:
+        notifications.quietly(
+            notifications.assigned(ctx, "task", record_id, after["title"], changes["assignee_id"])
+        )
+    if kind == "note" and mentions:
+        new = [m for m in mentions if m not in had_mentions]
+        if new:
+            notifications.quietly(
+                notifications.mentioned(ctx, record_id, new, _about(ws.id, now_links))
+            )
+    return present_rows(ws, kind, [after])[0]
 
 
 def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
@@ -1381,4 +1479,5 @@ def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
             }
         ],
     )
+    reflag(ws.id, "task", [done[0]["row"]])
     return present_rows(ws, "task", [done[0]["row"]])[0]

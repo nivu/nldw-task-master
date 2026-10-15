@@ -21,6 +21,8 @@ import {
   Users,
 } from "lucide-react";
 
+import { Bell, useUnreadCount } from "@/components/crm/bell";
+import { StaleBanner } from "@/components/crm/stale-banner";
 import { ViewIcon } from "@/components/crm/view-switcher";
 import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
@@ -46,6 +48,9 @@ import { cn } from "@/lib/utils";
  * FR-CRM-UI-02) and, for admins, Settings. Each later slice adds its own
  * entry. On a phone the bottom bar has room for four; the rest, favourites
  * included, are under More.
+ *
+ * From 1b the tools hold the bell (FR-CRM-NOTIF-01), and an Admin sees a
+ * banner above every page while a background job is late (FR-CRM-JOB-03).
  */
 
 const COLLAPSED_KEY = "crm.sidebar.collapsed";
@@ -94,6 +99,7 @@ export function CrmShell({
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [unread, setUnread] = useUnreadCount(bootstrap.unread ?? 0);
   const ws = bootstrap.workspace.key;
   const staff = bootstrap.me.account_type === "staff";
   // The views map a pinned view to its list; a failure leaves the sidebar
@@ -208,6 +214,7 @@ export function CrmShell({
 
   const tools = (
     <>
+      <Bell count={unread} onCount={setUnread} timeZone={bootstrap.me.timezone} />
       {/* /help is the TVA guide, inside the TVA flow: staff only (FR-CRM-UI-04). */}
       {staff && (
         <Button
@@ -296,7 +303,14 @@ export function CrmShell({
 
         {/* Full width (D9): CRM tables need the room TVA's 5xl column lacks. */}
         <div className={cn("flex-1", collapsed ? "md:pl-16" : "md:pl-60")}>
-          <main className="w-full px-4 py-6 pb-20 md:px-6 md:pb-6">{children}</main>
+          <main className="w-full px-4 py-6 pb-20 md:px-6 md:pb-6">
+            <StaleBanner
+              jobs={bootstrap.stale_jobs ?? []}
+              workspace={ws}
+              timeZone={bootstrap.me.timezone}
+            />
+            {children}
+          </main>
         </div>
 
         <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t bg-background md:hidden">

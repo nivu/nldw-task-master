@@ -1,5 +1,6 @@
 """Workspace settings, select lists and FX rates — spec 007 contracts §2.3;
-FR-CRM-LIST-01 to -06, -09, FR-CRM-FX-02, FR-CRM-PIPE-11.
+FR-CRM-LIST-01 to -06, -09, FR-CRM-FX-02, FR-CRM-PIPE-11; from 1b the flag
+thresholds (FR-CRM-FLAG-01) and the automation switches (FR-CRM-AUTO-02).
 
 Everything here is Admin only except reading the lists, which every member
 needs for the pickers. Each change goes through `crm_apply`, so it is

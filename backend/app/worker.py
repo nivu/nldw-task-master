@@ -112,4 +112,10 @@ celery_app.conf.beat_schedule = {
     "lapse-compoff": {"task": "ops.lapse_compoff", "schedule": crontab(hour=0, minute=20)},
     # Spec 007 FR-CRM-DEL-01, plan §5.11: Trash older than 90 days, per workspace.
     "crm-purge-trash": {"task": "crm.purge_trash", "schedule": crontab(hour=1, minute=10)},
+    # Spec 007 FR-CRM-FLAG-02, plan §5.11: every workspace's follow-up flags,
+    # then the stale-deal notices they raise (automations 4 and 5).
+    "crm-recompute-flags": {"task": "crm.recompute_flags", "schedule": crontab(minute="*/30")},
+    # FR-CRM-NOTIF-03, -04, automation 7: digests go to whoever is at 09:00
+    # their own time, so the tick runs every quarter hour; task reminders too.
+    "crm-digest-tick": {"task": "crm.digest_tick", "schedule": crontab(minute="*/15")},
 }

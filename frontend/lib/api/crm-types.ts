@@ -80,6 +80,10 @@ export interface CrmBootstrap {
   lists: CrmLists;
   settings_public: { stage_probabilities: StageProbabilities | null };
   email_sync_on: boolean;
+  /** The bell's unread count (1b, FR-CRM-NOTIF-01). */
+  unread: number;
+  /** Late background jobs; Admins only, empty for everyone else (FR-CRM-JOB-03). */
+  stale_jobs: StaleJob[];
 }
 
 /** GET /crm/settings — Admin only. The allow-list is read-only here. */
@@ -276,6 +280,35 @@ export interface Phone {
   whatsapp: boolean;
 }
 
+/** Spec 007 §6.2 — follow-up and deal-health flags (1b). */
+export type FlagLevel = "none" | "amber" | "red";
+
+export interface CrmFlag {
+  kind:
+    | "reply_owed"
+    | "client_silent"
+    | "next_step"
+    | "close_date"
+    | "stale_deal"
+    | "loose_end"
+    | "task_overdue"
+    | "deal";
+  /** What the dot says on hover: "Reply owed", "Stale deal"… */
+  label: string;
+  level: "amber" | "red";
+  since: string | null;
+  detail: string;
+  /** A company's `deal` entry names the deal. */
+  record_id?: string;
+}
+
+/** FR-CRM-FLAG-02, -05 — on companies, people, deals and tasks. */
+export interface RecordFlags {
+  flag_level: FlagLevel;
+  flags: CrmFlag[];
+  flags_computed_at: string | null;
+}
+
 interface RecordStamps {
   created_at: string;
   created_by: string | null;
@@ -287,7 +320,7 @@ interface RecordStamps {
 }
 
 /** Contracts §2.5.1 company. Option ids travel with their label. */
-export interface CrmCompany extends RecordStamps {
+export interface CrmCompany extends RecordStamps, RecordFlags {
   id: string;
   record_type: "company";
   name: string;
@@ -327,7 +360,7 @@ export interface CrmCompany extends RecordStamps {
 }
 
 /** Contracts §2.5.1 person. */
-export interface CrmPerson extends RecordStamps {
+export interface CrmPerson extends RecordStamps, RecordFlags {
   id: string;
   record_type: "person";
   /** First and last name together. */
@@ -357,7 +390,7 @@ export type CrmCurrency = "INR" | "AUD" | "USD";
  * Contracts §2.5.1 opportunity. Money is a decimal string. For a Viewer every
  * amount key is absent, never zero (FR-CRM-ACC-11): hence the optional ones.
  */
-export interface CrmOpportunity extends RecordStamps {
+export interface CrmOpportunity extends RecordStamps, RecordFlags {
   id: string;
   record_type: "opportunity";
   name: string;
@@ -416,7 +449,7 @@ export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskBucket = "today" | "this_week" | "this_month" | "later";
 
 /** Contracts §2.5.1 task — linked to at least one record (FR-CRM-TASK-01). */
-export interface CrmTask extends RecordStamps {
+export interface CrmTask extends RecordStamps, RecordFlags {
   id: string;
   record_type: "task";
   title: string;
@@ -882,7 +915,8 @@ export interface TodayItem {
   title: string;
   detail: string;
   due_on: string | null;
-  level: "overdue" | "today" | null;
+  /** Due lines: overdue or today; flag lines (sections 1 and 4): red or amber. */
+  level: "overdue" | "today" | "red" | "amber" | null;
   /** A task line opens the first record it is linked to. */
   opens?: SearchTarget | null;
 }
@@ -901,6 +935,8 @@ export interface CrmToday {
   timezone: string;
   person: { id: string; name: string | null };
   sections: TodaySection[];
+  /** For an Admin: background jobs that are late (FR-CRM-JOB-03). */
+  stale_jobs?: StaleJob[];
 }
 
 /** Where a task or note hit opens: the first record it is linked to. */
@@ -1007,4 +1043,96 @@ export interface ImportRun {
   counts: Partial<Record<ImportObject, ImportCounts>> | null;
   created_at: string;
   applied_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 1b — the job log, the bell, thresholds and automations (contracts §2.4, §2.10)
+// ---------------------------------------------------------------------------
+
+export type CrmJobName =
+  | "email_sync"
+  | "flags"
+  | "digests"
+  | "reminders"
+  | "trash_purge"
+  | "automations";
+
+/** A job more than twice its interval late (FR-CRM-JOB-03). */
+export interface StaleJob {
+  job: CrmJobName;
+  label: string;
+  last_started_at: string;
+  overdue_minutes: number;
+}
+
+/** One run of a background job (FR-CRM-JOB-01). */
+export interface CrmJobRun {
+  id: string;
+  job: CrmJobName;
+  label: string;
+  started_at: string;
+  finished_at: string | null;
+  outcome: "running" | "ok" | "failed" | "skipped";
+  counts: Record<string, number | string>;
+  /** Names no record: what anyone may see. */
+  error_public: string | null;
+  /** May name records: only for the workspace's own Admins. */
+  error?: string | null;
+  alerted: boolean;
+}
+
+/** GET /crm/jobs — this workspace's runs. */
+export interface CrmJobs {
+  runs: CrmJobRun[];
+  stale_jobs: StaleJob[];
+  jobs: { job: CrmJobName; label: string; every_minutes: number }[];
+}
+
+/** GET /crm/tva-admin/jobs — every workspace's runs, `error_public` only. */
+export interface TvaCrmJobs {
+  runs: (CrmJobRun & { workspace: string | null })[];
+  stale_jobs: (StaleJob & { workspace: string | null })[];
+}
+
+/** GET /crm/notifications — FR-CRM-NOTIF-01. Titles never carry an amount. */
+export interface CrmNotification {
+  id: string;
+  workspace_key: string;
+  kind:
+    | "assigned"
+    | "mentioned"
+    | "stage_changed"
+    | "reply_owed_red"
+    | "handoff_waiting"
+    | "revenue_confirm"
+    | "task_due"
+    | "task_overdue"
+    | "stale_deal"
+    | "job_failed"
+    | "invited";
+  title: string;
+  record_type: ViewObjectKind | null;
+  record_id: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+/** `flag_thresholds` (FR-CRM-FLAG-01). */
+export interface FlagThresholds {
+  reply_owed_red_hours: number;
+  reply_owed_amber_hours: number;
+  silent_red_days: number;
+  silent_amber_days: number;
+  close_amber_days: number;
+  stale_red_days: number;
+  stale_amber_days: number;
+}
+
+/** `automations` — the switches of automations 2, 5, 6, 7 and 8 (FR-CRM-AUTO-02). */
+export interface AutomationSwitches {
+  email_records: boolean;
+  stale_notice: boolean;
+  digests: boolean;
+  task_reminders: boolean;
+  campaign_conversion: boolean;
 }

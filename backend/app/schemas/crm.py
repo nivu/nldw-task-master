@@ -607,3 +607,12 @@ class ImportIn(BaseModel):
     object: str | None = Field(default=None, max_length=40)
     mapping: dict[str, str] | None = None
     fixup_next_step: bool = False
+
+
+class NotificationsRead(BaseModel):
+    """Contracts §2.10 — mark some of one's notifications read, or all."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str] | None = Field(default=None, max_length=500)
+    all: bool = False

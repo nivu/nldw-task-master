@@ -10,7 +10,11 @@ that read across workspaces are account-level and are listed in
 Writes never go through `.table(...).insert/update`: they go through
 `apply()` (or another CRM database function), which sets the actor in the
 same transaction so the audit trigger records the change (FR-CRM-AUD-06).
-The one exception is `touch_last_used`, a column the trigger ignores.
+The one exception is `touch_last_used`, a column the trigger ignores, and
+the job log, which is a log with no audit trigger (data-model §3.18) and
+no record content: notifications and digest markers, also logs, go through
+their own database functions so membership and "exactly once" are held by
+the database.
 
 Postgres messages never reach a client unmapped: `rpc()` turns the CRM's
 SQLSTATEs into `CrmRefused` with their one-sentence message, a unique
@@ -63,6 +67,24 @@ ACCOUNT_LEVEL = frozenset(
         "record_import",
         # Pure: splits values for URL filters.
         "text_batches",
+        # The job log (037): runs of every workspace, and the digest tick's,
+        # which has none. Readers scope by workspace where the caller is one.
+        "start_job_run",
+        "finish_job_run",
+        "job_streak",
+        "mark_job_alerted",
+        "list_all_job_runs",
+        "latest_job_runs",
+        # The bell (037): a person's own notifications, in the workspaces
+        # they are a member of now; crm_notify adds only to members.
+        "notify",
+        "list_notifications",
+        "unread_count",
+        "mark_read",
+        # Digests span a person's workspaces (FR-CRM-NOTIF-03).
+        "claim_digest",
+        "set_digest_channels",
+        "list_all_memberships",
     }
 )
 
@@ -465,6 +487,31 @@ def list_records(
 
     `deleted`: False the live records, True the Trash, None both.
     """
+    long_lists = {c: v for c, v in (any_of or {}).items() if len(v) > _ID_BATCH}
+    if long_lists:
+        # A long id list goes in batches (PostgREST caps the URL): each batch
+        # read as far as the page asked for, then merged in the same order.
+        column, values = next(iter(long_lists.items()))
+        wanted = sorted(set(values))
+        merged: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(wanted), _ID_BATCH):
+            for row in list_records(
+                workspace_id,
+                table,
+                q=q,
+                filters=filters,
+                any_of={**(any_of or {}), column: wanted[i : i + _ID_BATCH]},
+                not_equal=not_equal,
+                deleted=deleted,
+                limit=offset + limit,
+                offset=0,
+            ):
+                merged[row["id"]] = row
+        rows = sorted(merged.values(), key=lambda r: r["id"])
+        rows.sort(key=lambda r: r["updated_at"], reverse=True)
+        if deleted is True:
+            rows.sort(key=lambda r: r["deleted_at"], reverse=True)
+        return rows[offset : offset + limit]
     query = supabase.table(_table(table)).select("*").eq("workspace_id", workspace_id)
     for column, value in (filters or {}).items():
         query = query.eq(column, value)
@@ -499,20 +546,28 @@ def list_domains(
 ) -> list[dict[str, Any]]:
     """Company domains, primary first. Trashed companies keep theirs
     (FR-CRM-DUP-01)."""
-    query = (
-        supabase.table("crm_company_domains")
-        .select("id, company_id, domain, is_primary, created_at")
-        .eq("workspace_id", workspace_id)
-    )
+    if company_ids == [] or domains == []:
+        return []
+
+    def query_for() -> Any:
+        return (
+            supabase.table("crm_company_domains")
+            .select("id, company_id, domain, is_primary, created_at")
+            .eq("workspace_id", workspace_id)
+        )
+
     if company_ids is not None:
-        if not company_ids:
-            return []
-        query = query.in_("company_id", company_ids)
-    if domains is not None:
-        if not domains:
-            return []
-        query = query.in_("domain", domains)
-    return query.order("is_primary", desc=True).order("domain").execute().data or []
+        rows = _in_batches(query_for, "company_id", company_ids)
+        if domains is not None:
+            wanted = set(domains)
+            rows = [r for r in rows if r["domain"] in wanted]
+    elif domains is not None:
+        rows = []
+        for batch in text_batches(domains):
+            rows += query_for().in_("domain", batch).execute().data or []
+    else:
+        rows = query_for().execute().data or []
+    return sorted(rows, key=lambda r: (not r["is_primary"], r["domain"]))
 
 
 def similar(workspace_id: str, kind: str, name: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -544,6 +599,19 @@ def purge(actor: dict[str, Any], items: list[dict[str, str]]) -> dict[str, Any]:
     return rpc("crm_purge", {"p_actor": actor, "p_plan": {"items": items}}) or {}
 
 
+def _in_batches(query_for, column: str, values: list[str] | None) -> list[dict[str, Any]]:
+    """Runs `query_for()` once per batch of `values` in `column`: an id
+    list in a URL grows with the data, and PostgREST refuses a request line
+    past a few kilobytes. None means no such filter (one query)."""
+    if values is None:
+        return query_for().execute().data or []
+    wanted = sorted(set(values))
+    rows: list[dict[str, Any]] = []
+    for i in range(0, len(wanted), _ID_BATCH):
+        rows += query_for().in_(column, wanted[i : i + _ID_BATCH]).execute().data or []
+    return rows
+
+
 def list_links(
     workspace_id: str,
     table: str,
@@ -556,32 +624,37 @@ def list_links(
     notes (`owner_ids`), or those naming some records."""
     if table not in LINK_TABLES:
         raise ValueError(f"not a CRM link table: {table}")
-    query = supabase.table(table).select("*").eq("workspace_id", workspace_id)
-    if owner_ids is not None:
-        if not owner_ids:
-            return []
-        query = query.in_(LINK_TABLES[table], owner_ids)
-    if record_type is not None:
-        query = query.eq("record_type", record_type)
-    if record_ids is not None:
-        if not record_ids:
-            return []
-        query = query.in_("record_id", record_ids)
-    return query.order("created_at").execute().data or []
+    if owner_ids == [] or record_ids == []:
+        return []
+
+    def query_for() -> Any:
+        query = supabase.table(table).select("*").eq("workspace_id", workspace_id)
+        if record_type is not None:
+            query = query.eq("record_type", record_type)
+        return query
+
+    if owner_ids is not None and record_ids is not None:
+        wanted = set(record_ids)
+        rows = [
+            r
+            for r in _in_batches(query_for, LINK_TABLES[table], owner_ids)
+            if r["record_id"] in wanted
+        ]
+    elif owner_ids is not None:
+        rows = _in_batches(query_for, LINK_TABLES[table], owner_ids)
+    else:
+        rows = _in_batches(query_for, "record_id", record_ids)
+    return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
 
 
 def list_mentions(workspace_id: str, note_ids: list[str]) -> list[dict[str, Any]]:
     """The members each note mentions (FR-CRM-NOTE-02)."""
     if not note_ids:
         return []
-    return (
-        supabase.table("crm_note_mentions")
-        .select("*")
-        .eq("workspace_id", workspace_id)
-        .in_("note_id", note_ids)
-        .execute()
-        .data
-        or []
+    return _in_batches(
+        lambda: supabase.table("crm_note_mentions").select("*").eq("workspace_id", workspace_id),
+        "note_id",
+        note_ids,
     )
 
 
@@ -592,16 +665,22 @@ def list_contacts(
     person_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Deal contacts with their Role in deal (data-model §3.10)."""
-    query = supabase.table("crm_opportunity_contacts").select("*").eq("workspace_id", workspace_id)
+    if opportunity_ids == [] or person_ids == []:
+        return []
+
+    def query_for() -> Any:
+        return (
+            supabase.table("crm_opportunity_contacts").select("*").eq("workspace_id", workspace_id)
+        )
+
     if opportunity_ids is not None:
-        if not opportunity_ids:
-            return []
-        query = query.in_("opportunity_id", opportunity_ids)
-    if person_ids is not None:
-        if not person_ids:
-            return []
-        query = query.in_("person_id", person_ids)
-    return query.order("created_at").execute().data or []
+        rows = _in_batches(query_for, "opportunity_id", opportunity_ids)
+        if person_ids is not None:
+            wanted = set(person_ids)
+            rows = [r for r in rows if r["person_id"] in wanted]
+    else:
+        rows = _in_batches(query_for, "person_id", person_ids)
+    return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
 
 
 def list_stage_history(workspace_id: str, opportunity_id: str) -> list[dict[str, Any]]:
@@ -963,3 +1042,401 @@ def list_import_runs(workspace_id: str, limit: int = 20) -> list[dict[str, Any]]
         .data
         or []
     )
+
+
+# ---------------------------------------------------------------------------
+# The job log — S9 (data-model §3.18; FR-CRM-JOB)
+# ---------------------------------------------------------------------------
+
+_JOB_COLUMNS = (
+    "id, workspace_id, job, started_at, finished_at, outcome, counts, error, error_public, alerted"
+)
+
+
+def start_job_run(job: str, workspace_id: str | None, started_at: datetime) -> dict[str, Any]:
+    """A run begins: its row, outcome `running`."""
+    rows = (
+        supabase.table("crm_job_runs")
+        .insert({"job": job, "workspace_id": workspace_id, "started_at": started_at.isoformat()})
+        .execute()
+        .data
+    )
+    return rows[0]
+
+
+def finish_job_run(run_id: str, values: dict[str, Any]) -> None:
+    """A run ends: `outcome`, `finished_at`, `counts` and, when it failed,
+    `error` and `error_public`."""
+    supabase.table("crm_job_runs").update(values).eq("id", run_id).execute()
+
+
+def job_streak(job: str, workspace_id: str | None, limit: int = 200) -> list[dict[str, Any]]:
+    """The job's latest finished runs in one workspace (or the digest tick's),
+    newest first, for the three-failure alert (FR-CRM-JOB-02)."""
+    query = (
+        supabase.table("crm_job_runs")
+        .select("id, outcome, alerted, started_at")
+        .eq("job", job)
+        .neq("outcome", "running")
+    )
+    query = (
+        query.is_("workspace_id", "null")
+        if workspace_id is None
+        else query.eq("workspace_id", workspace_id)
+    )
+    return query.order("started_at", desc=True).limit(limit).execute().data or []
+
+
+def mark_job_alerted(run_id: str) -> None:
+    supabase.table("crm_job_runs").update({"alerted": True}).eq("id", run_id).execute()
+
+
+def list_job_runs(
+    workspace_id: str, *, job: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """This workspace's runs, newest first, with `error` (members only).
+    Never a row of another workspace or one with none (FR-CRM-JOB-01)."""
+    query = supabase.table("crm_job_runs").select(_JOB_COLUMNS).eq("workspace_id", workspace_id)
+    if job:
+        query = query.eq("job", job)
+    return query.order("started_at", desc=True).limit(limit).execute().data or []
+
+
+def list_all_job_runs(*, job: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Every workspace's runs and the digest tick's, newest first, for the
+    TVA admin panel: metadata and `error_public` only, never `error`."""
+    query = supabase.table("crm_job_runs").select(
+        "id, workspace_id, job, started_at, finished_at, outcome, counts, error_public, alerted"
+    )
+    if job:
+        query = query.eq("job", job)
+    return query.order("started_at", desc=True).limit(limit).execute().data or []
+
+
+def latest_job_runs() -> list[dict[str, Any]]:
+    """037 `crm_job_latest` — the latest run of each job in each workspace,
+    and the digest tick's: no counts, no error."""
+    return rpc("crm_job_latest", {}) or []
+
+
+# ---------------------------------------------------------------------------
+# Notifications and digests — S9 (data-model §3.19, §3.20; FR-CRM-NOTIF)
+# ---------------------------------------------------------------------------
+
+_NOTIFICATION_COLUMNS = (
+    "id, workspace_id, user_id, kind, record_type, record_id, title, dedupe_key, created_at, "
+    "read_at"
+)
+
+
+def notify(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """037 `crm_notify` — adds the notifications whose person is a member of
+    their workspace and whose dedupe key is new; returns those added."""
+    if not rows:
+        return []
+    return rpc("crm_notify", {"p_rows": rows}) or []
+
+
+def list_notifications(
+    user_id: str,
+    workspace_ids: list[str],
+    *,
+    unread_only: bool = False,
+    before: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """A person's notifications in the workspaces they belong to now,
+    newest first (FR-CRM-WS-02)."""
+    if not workspace_ids:
+        return []
+    query = (
+        supabase.table("crm_notifications")
+        .select(_NOTIFICATION_COLUMNS)
+        .eq("user_id", user_id)
+        .in_("workspace_id", workspace_ids)
+    )
+    if unread_only:
+        query = query.is_("read_at", "null")
+    if before:
+        query = query.lt("created_at", before)
+    return query.order("created_at", desc=True).order("id").limit(limit).execute().data or []
+
+
+def unread_count(user_id: str, workspace_ids: list[str]) -> int:
+    if not workspace_ids:
+        return 0
+    response = (
+        supabase.table("crm_notifications")
+        .select("id", count="exact", head=True)
+        .eq("user_id", user_id)
+        .in_("workspace_id", workspace_ids)
+        .is_("read_at", "null")
+        .execute()
+    )
+    return int(response.count or 0)
+
+
+def mark_read(user_id: str, workspace_ids: list[str], ids: list[str] | None, at: datetime) -> int:
+    """Marks the person's own unread notifications read: `ids`, or every
+    one when None. Ids go in batches, as every list in a URL does."""
+    if not workspace_ids or ids == []:
+        return 0
+    batches: list[list[str] | None] = (
+        [None] if ids is None else [ids[i : i + _ID_BATCH] for i in range(0, len(ids), _ID_BATCH)]
+    )
+    updated = 0
+    for batch in batches:
+        query = (
+            supabase.table("crm_notifications")
+            .update({"read_at": at.isoformat()})
+            .eq("user_id", user_id)
+            .in_("workspace_id", workspace_ids)
+            .is_("read_at", "null")
+        )
+        if batch is not None:
+            query = query.in_("id", batch)
+        updated += len(query.execute().data or [])
+    return updated
+
+
+def claim_digest(user_id: str, kind: str, local_date: str, workspace_id: str | None) -> str | None:
+    """037 `crm_digest_claim` — the sent marker's id when this digest was not
+    sent yet, else None (exactly once, FR-CRM-NOTIF-03, -04)."""
+    found = rpc(
+        "crm_digest_claim",
+        {
+            "p_user": user_id,
+            "p_kind": kind,
+            "p_local_date": local_date,
+            "p_workspace": workspace_id,
+            "p_channels": [],
+        },
+    )
+    return found or None
+
+
+def set_digest_channels(send_id: str, channels: list[str]) -> None:
+    supabase.table("crm_digest_sends").update({"channels": channels}).eq("id", send_id).execute()
+
+
+def list_all_memberships() -> list[dict[str, Any]]:
+    """Every membership of every workspace: the digest tick's recipients."""
+    return (
+        supabase.table("crm_memberships")
+        .select("id, workspace_id, user_id, role")
+        .order("user_id")
+        .execute()
+        .data
+        or []
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flags — S9 (data-model §3.21; FR-CRM-FLAG)
+# ---------------------------------------------------------------------------
+
+#: The tables with flags, and the columns a flag reads from each.
+FLAG_COLUMNS = {
+    "crm_companies": "id, name, lead_stage, next_touch_on, owner_id, deleted_at, flag_level, flags",
+    "crm_people": "id, first_name, last_name, company_id, owner_id, deleted_at, flag_level, flags",
+    "crm_opportunities": (
+        "id, name, stage, company_id, owner_id, next_step_on, expected_close_on, "
+        "stage_entered_at, created_at, deleted_at, flag_level, flags"
+    ),
+    "crm_tasks": "id, title, status, due_on, assignee_id, deleted_at, flag_level, flags",
+}
+#: Rows per page when a whole workspace is read.
+_PAGE = 1000
+
+
+def flag_rows(
+    workspace_id: str,
+    table: str,
+    *,
+    ids: list[str] | None = None,
+    company_ids: list[str] | None = None,
+    open_or_flagged: bool = False,
+    flagged_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Live rows of a flagged table with what their flags read: some `ids`,
+    a deal table's rows of some companies, or the whole workspace page by
+    page. `open_or_flagged` keeps deals in an open stage and open tasks, and
+    any row that carries a flag still (so a closed one is cleared);
+    `flagged_only` keeps flagged rows."""
+    if table not in FLAG_COLUMNS:
+        raise ValueError(f"not a flagged table: {table}")
+
+    def base() -> Any:
+        query = (
+            supabase.table(table)
+            .select(FLAG_COLUMNS[table])
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+        )
+        if flagged_only:
+            query = query.neq("flag_level", "none")
+        if open_or_flagged and table == "crm_opportunities":
+            query = query.or_(f"stage.in.({','.join(_OPEN_STAGES)}),flag_level.neq.none")
+        if open_or_flagged and table == "crm_tasks":
+            query = query.or_("status.neq.done,flag_level.neq.none")
+        return query
+
+    rows: list[dict[str, Any]] = []
+    if ids is not None or company_ids is not None:
+        column, wanted = ("id", ids) if ids is not None else ("company_id", company_ids)
+        values = sorted(set(wanted or []))
+        for i in range(0, len(values), _ID_BATCH):
+            rows += base().in_(column, values[i : i + _ID_BATCH]).execute().data or []
+        return rows
+    offset = 0
+    while True:
+        page = base().order("id").range(offset, offset + _PAGE - 1).execute().data or []
+        rows += page
+        if len(page) < _PAGE:
+            return rows
+        offset += _PAGE
+
+
+def flag_facts(
+    workspace_id: str, deal_ids: list[str] | None, company_ids: list[str] | None
+) -> dict[str, Any]:
+    """038 `crm_flag_facts` — `{activity: {deal id: time}, open_task_companies:
+    [id]}`, for some deals and companies or (None) all of the workspace."""
+    return (
+        rpc(
+            "crm_flag_facts",
+            {"p_workspace": workspace_id, "p_deal_ids": deal_ids, "p_company_ids": company_ids},
+        )
+        or {}
+    )
+
+
+def set_flags(workspace_id: str, table: str, rows: list[dict[str, Any]], at: datetime) -> int:
+    """038 `crm_set_flags` — stores computed flags, in chunks; returns how
+    many rows' flags changed. Writes no audit row and leaves `updated_at`
+    alone: a recompute is not an edit (data-model §3.21)."""
+    changed = 0
+    for i in range(0, len(rows), _PAGE):
+        changed += int(
+            rpc(
+                "crm_set_flags",
+                {
+                    "p_workspace": workspace_id,
+                    "p_table": table,
+                    "p_rows": rows[i : i + _PAGE],
+                    "p_at": at.isoformat(),
+                },
+            )
+            or 0
+        )
+    return changed
+
+
+def flagged_owned(workspace_id: str, table: str, owner_id: str) -> list[dict[str, Any]]:
+    """Today §1 and §4 — a person's live flagged companies, people or deals."""
+    if table not in ("crm_companies", "crm_people", "crm_opportunities"):
+        raise ValueError(f"not an owned flagged table: {table}")
+    return (
+        supabase.table(table)
+        .select(FLAG_COLUMNS[table])
+        .eq("workspace_id", workspace_id)
+        .eq("owner_id", owner_id)
+        .neq("flag_level", "none")
+        .is_("deleted_at", "null")
+        .limit(500)
+        .execute()
+        .data
+        or []
+    )
+
+
+def flag_counts(workspace_id: str) -> dict[str, dict[str, int]]:
+    """The weekly digest's flag counts: live rows at red and amber, per
+    table."""
+    counts: dict[str, dict[str, int]] = {}
+    for table in FLAG_COLUMNS:
+        counts[table] = {}
+        for level in ("red", "amber"):
+            response = (
+                supabase.table(table)
+                .select("id", count="exact", head=True)
+                .eq("workspace_id", workspace_id)
+                .eq("flag_level", level)
+                .is_("deleted_at", "null")
+                .execute()
+            )
+            counts[table][level] = int(response.count or 0)
+    return counts
+
+
+def stage_moves_since(workspace_id: str, since: datetime) -> list[dict[str, Any]]:
+    """The weekly digest's pipeline movement (data-model §3.11)."""
+    return (
+        supabase.table("crm_stage_history")
+        .select("opportunity_id, from_stage, to_stage, at")
+        .eq("workspace_id", workspace_id)
+        .gte("at", since.isoformat())
+        .order("at")
+        .limit(5000)
+        .execute()
+        .data
+        or []
+    )
+
+
+def closed_since(workspace_id: str, since: str) -> list[dict[str, Any]]:
+    """Live deals won or lost on or after `since` (YYYY-MM-DD)."""
+    return (
+        supabase.table("crm_opportunities")
+        .select("id, name, stage, amount_in_inr, won_on, lost_on, owner_id")
+        .eq("workspace_id", workspace_id)
+        .is_("deleted_at", "null")
+        .or_(f"won_on.gte.{since},lost_on.gte.{since}")
+        .order("name")
+        .limit(1000)
+        .execute()
+        .data
+        or []
+    )
+
+
+def deal_amounts(workspace_id: str, ids: list[str]) -> dict[str, Any]:
+    """Deal id → amount in INR, for a digest's next-step lines."""
+    found: dict[str, Any] = {}
+    wanted = sorted(set(ids))
+    for i in range(0, len(wanted), _ID_BATCH):
+        for row in (
+            supabase.table("crm_opportunities")
+            .select("id, amount_in_inr")
+            .eq("workspace_id", workspace_id)
+            .in_("id", wanted[i : i + _ID_BATCH])
+            .execute()
+            .data
+            or []
+        ):
+            found[row["id"]] = row.get("amount_in_inr")
+    return found
+
+
+def tasks_due_by(workspace_id: str, by: str) -> list[dict[str, Any]]:
+    """Automation 7 — live open tasks due on or before `by`, page by page."""
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = (
+            supabase.table("crm_tasks")
+            .select("id, title, status, due_on, assignee_id")
+            .eq("workspace_id", workspace_id)
+            .neq("status", "done")
+            .is_("deleted_at", "null")
+            .lte("due_on", by)
+            .order("id")
+            .range(offset, offset + _PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows += page
+        if len(page) < _PAGE:
+            return rows
+        offset += _PAGE

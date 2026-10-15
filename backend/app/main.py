@@ -206,6 +206,20 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/health/jobs", tags=["health"])
+def health_jobs(response: Response) -> dict[str, Any]:
+    """Spec 007 FR-CRM-JOB-03, Q-72 — for an external uptime monitor: each CRM
+    job's last run and whether it is more than twice its interval late. No
+    counts, no errors, no record content; 503 while any job is late, so a
+    monitor that only reads the status alerts too."""
+    from app.services.crm import jobs
+
+    report = jobs.health()
+    if report["status"] != "ok":
+        response.status_code = 503
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Mount API routers under /api/v1
 #

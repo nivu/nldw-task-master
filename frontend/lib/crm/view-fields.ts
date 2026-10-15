@@ -51,6 +51,12 @@ const CATEGORIES: Choice[] = [
   { value: "product", label: "Product" },
 ];
 const CURRENCIES: Choice[] = ["INR", "AUD", "USD"].map((c) => ({ value: c, label: c }));
+/** 038: a flag's level, worst last (FR-CRM-FLAG-05). */
+const FLAG_LEVELS: Choice[] = [
+  { value: "none", label: "No flag" },
+  { value: "amber", label: "Amber" },
+  { value: "red", label: "Red" },
+];
 const NOTE_KINDS: Choice[] = [
   { value: "note", label: "Note" },
   { value: "call", label: "Call" },
@@ -115,6 +121,7 @@ export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
     v("last_inbound_at", "Last inbound", "datetime"),
     v("last_outbound_at", "Last outbound", "datetime"),
     v("last_contact_at", "Last contact", "datetime"),
+    v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
   ],
@@ -131,6 +138,7 @@ export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
     v("last_inbound_at", "Last inbound", "datetime"),
     v("last_outbound_at", "Last outbound", "datetime"),
     v("last_contact_at", "Last contact", "datetime"),
+    v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
   ],
@@ -175,6 +183,7 @@ export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
     v("stage_entered_at", "Stage entered", "datetime"),
     v("won_on", "Won on", "date"),
     v("lost_on", "Lost on", "date"),
+    v("flag_level", "Deal health", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
   ],
@@ -187,6 +196,7 @@ export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
     v("category_id", "Category", "select", { listKey: "task.category", ...E }),
     v("assignee_id", "Assignee", "person", E),
     v("completed_at", "Completed", "datetime"),
+    v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
   ],

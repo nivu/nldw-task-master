@@ -3,7 +3,9 @@ contracts §2.1; FR-CRM-WS-01 to -04, FR-CRM-ACC-15.
 
 `/crm/workspaces`, `/use` and `/me/preferences` take no `workspace`: they are
 about the person, not one workspace, so they sit on `AnyAccountDep` directly.
-`/crm/bootstrap` is the one call a CRM page makes on load.
+`/crm/bootstrap` is the one call a CRM page makes on load; from 1b it also
+carries the bell's unread count and, for Admins, the background jobs that
+are late.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from app.api.deps import AnyAccountDep, CurrentUser
 from app.api.errors import ProblemDetail
 from app.schemas.crm import PreferencesUpdate
 from app.services import supabase as db
-from app.services.crm import store
+from app.services.crm import jobs, notifications, store
 from app.services.crm.context import workspaces_of
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -64,6 +66,10 @@ def bootstrap(ctx: CrmReadDep) -> dict:
         "settings_public": {"stage_probabilities": settings.get("stage_probabilities")},
         # Gmail sync is built in 1b (FR-CRM-SYNC); until then it is off.
         "email_sync_on": False,
+        # 1b: the bell's count, and for an Admin the jobs that are late
+        # (FR-CRM-NOTIF-01, FR-CRM-JOB-03): staleness is checked on read.
+        "unread": notifications.unread_for(ctx.user.id),
+        "stale_jobs": jobs.stale_for(ctx),
     }
 
 

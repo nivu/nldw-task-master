@@ -30,6 +30,9 @@ import type {
   CrmOption,
   CrmPage,
   CrmFavourite,
+  CrmJobName,
+  CrmJobs,
+  CrmNotification,
   CrmPerson,
   CrmQueryResult,
   CrmRecord,
@@ -65,6 +68,7 @@ import type {
   StagePreview,
   TaskStatus,
   TvaCrmAuditEntry,
+  TvaCrmJobs,
   TvaCrmWorkspace,
   TvaInvitationIn,
   ViewObjectKind,
@@ -579,3 +583,28 @@ export const applyCrmImport = async (workspace: string, runId: string, file: Fil
   );
 
 export const listCrmImports = (workspace: string) => call<ImportRun[]>(`/imports${query(workspace)}`);
+
+// ---------------------------------------------------------------------------
+// 1b — the bell and the job log (§2.4, §2.10; FR-CRM-NOTIF-01, FR-CRM-JOB)
+// ---------------------------------------------------------------------------
+
+/** The person's notifications, across their workspaces (no `workspace`). */
+export const getCrmNotifications = (opts: { unreadOnly?: boolean; before?: string } = {}) => {
+  const params = new URLSearchParams();
+  if (opts.unreadOnly) params.set("unread_only", "true");
+  if (opts.before) params.set("before", opts.before);
+  const qs = params.toString();
+  return call<CrmNotification[]>(`/notifications${qs ? `?${qs}` : ""}`);
+};
+
+export const getCrmUnreadCount = () => call<{ count: number }>("/notifications/unread-count");
+
+export const markCrmNotificationsRead = (which: { ids: string[] } | { all: true }) =>
+  call<{ updated: number }>("/notifications/read", { method: "POST", ...body(which) });
+
+/** This workspace's job runs, with their errors; Admins only. */
+export const getCrmJobs = (workspace: string, job?: CrmJobName) =>
+  call<CrmJobs>(`/jobs${query(workspace, { job })}`);
+
+/** Every workspace's job runs for the TVA admin panel: `error_public` only. */
+export const getTvaCrmJobs = () => call<TvaCrmJobs>("/tva-admin/jobs");

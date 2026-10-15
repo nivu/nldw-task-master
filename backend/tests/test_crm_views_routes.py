@@ -106,6 +106,8 @@ class TestSeededViews:
         "won_lost_quarter": ("opportunity", "Won and lost this quarter", "table"),
         "open_tasks_by_owner": ("task", "Open tasks by owner", "table"),
         "my_week": ("task", "My week", "kanban"),
+        # 038 (1b).
+        "follow_ups_owed": ("company", "Follow-ups owed", "table"),
     }
 
     @pytest.mark.parametrize("query", [LABS, ACADEMY])

@@ -150,6 +150,17 @@ def _stamps(row: dict[str, Any], facts: Facts) -> dict[str, Any]:
     }
 
 
+def _flags(row: dict[str, Any]) -> dict[str, Any]:
+    """FR-CRM-FLAG-02, -05, REC-01 (1b) — the record's follow-up or deal
+    health: its worst level, each flag, and when they were computed. Flags
+    carry no amount."""
+    return {
+        "flag_level": row.get("flag_level") or "none",
+        "flags": row.get("flags") or [],
+        "flags_computed_at": row.get("flags_computed_at"),
+    }
+
+
 def company(
     row: dict[str, Any], facts: Facts, domains: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
@@ -180,6 +191,7 @@ def company(
         "last_inbound_at": row.get("last_inbound_at"),
         "last_outbound_at": row.get("last_outbound_at"),
         "last_contact_at": row.get("last_contact_at"),
+        **_flags(row),
         **_stamps(row, facts),
     }
     for name in (
@@ -220,6 +232,7 @@ def person(
         "last_inbound_at": row.get("last_inbound_at"),
         "last_outbound_at": row.get("last_outbound_at"),
         "last_contact_at": row.get("last_contact_at"),
+        **_flags(row),
         **_stamps(row, facts),
     }
     return redact(out, "person", facts.role)
@@ -277,6 +290,7 @@ def opportunity(
         "lost_on": row.get("lost_on"),
         # FR-CRM-CO-02, REC-03: the Labs deal's TVA project.
         "project": (projects or {}).get(row["id"]),
+        **_flags(row),
         **_stamps(row, facts),
     }
     for name in (
@@ -323,6 +337,7 @@ def task(
         "assignee_name": facts.name(row.get("assignee_id")),
         "completed_at": row.get("completed_at"),
         "links": [link_target(link, names or {}) for link in links or []],
+        **_flags(row),
         **_stamps(row, facts),
     }
 

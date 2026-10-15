@@ -261,6 +261,7 @@ export default function OpportunityPage() {
             {deal.company_name}
           </Link>
         }
+        flags={deal}
         chips={[
           <Chip key="stage" label="Stage" value={deal.stage_label} />,
           <Chip key="owner" label="Owner" value={deal.owner_name ?? "—"} />,

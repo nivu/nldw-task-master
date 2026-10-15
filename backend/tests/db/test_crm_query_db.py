@@ -580,6 +580,8 @@ class TestRegistryAndSeeds:
             "won_lost_quarter",
             "open_tasks_by_owner",
             "my_week",
+            # 038 (1b).
+            "follow_ups_owed",
         }
         assert by["labs"] == by["academy"]
         for key, (kind, *_, config) in by["labs"].items():

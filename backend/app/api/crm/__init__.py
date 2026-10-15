@@ -15,8 +15,10 @@ from app.api.crm import (
     capacity,
     deals,
     imports,
+    jobs,
     members,
     merge,
+    notifications,
     records,
     search,
     settings,
@@ -42,4 +44,6 @@ ROUTERS = [
     deals.projects_router,
     views.router,
     imports.router,
+    notifications.router,
+    jobs.router,
 ]

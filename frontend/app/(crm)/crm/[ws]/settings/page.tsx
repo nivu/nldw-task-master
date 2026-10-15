@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { AuditTable } from "@/components/crm/audit-table";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
 import { InviteDialog } from "@/components/crm/invite-dialog";
+import { JobsTable } from "@/components/crm/jobs-table";
 import { ListEditor } from "@/components/crm/list-editor";
 import { MembersTable } from "@/components/crm/members-table";
 import { useCrm } from "@/components/crm/shell";
@@ -16,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getCrmAudit,
   getCrmFxRates,
+  getCrmJobs,
   getCrmLists,
   getCrmMembers,
   getCrmSettings,
@@ -24,7 +27,14 @@ import {
   updateCrmMember,
   updateCrmSetting,
 } from "@/lib/api/crm";
-import type { CrmAuditEntry, StageKey, StageProbabilities } from "@/lib/api/crm-types";
+import type {
+  AutomationSwitches,
+  CrmAuditEntry,
+  CrmJobName,
+  FlagThresholds,
+  StageKey,
+  StageProbabilities,
+} from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
 
@@ -37,15 +47,30 @@ const STAGES: StageKey[] = [
   "closed_lost",
 ];
 
+const TABS = [
+  "members",
+  "lists",
+  "probabilities",
+  "fx",
+  "domains",
+  "thresholds",
+  "automations",
+  "jobs",
+  "audit",
+];
+
 /**
  * Workspace settings — spec 007 FR-CRM-LIST-06, FR-CRM-ACC-04 to -12,
- * FR-CRM-AUD-03. Admins only; the server refuses everyone else whatever this
- * page shows.
+ * FR-CRM-AUD-03; from 1b the flag thresholds (FR-CRM-FLAG-01), the
+ * automation switches (FR-CRM-AUTO-02) and the job log (FR-CRM-JOB-01).
+ * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
   const { bootstrap } = useCrm();
   const ws = bootstrap.workspace.key;
-  const [tab, setTab] = useState("members");
+  // The late-jobs banner links to ?tab=jobs.
+  const asked = useSearchParams().get("tab");
+  const [tab, setTab] = useState(asked && TABS.includes(asked) ? asked : "members");
 
   if (bootstrap.role !== "admin") {
     return (
@@ -73,6 +98,9 @@ export default function SettingsPage() {
           <TabsTrigger value="probabilities">Probabilities</TabsTrigger>
           <TabsTrigger value="fx">FX rates</TabsTrigger>
           <TabsTrigger value="domains">Allowed domains</TabsTrigger>
+          <TabsTrigger value="thresholds">Thresholds</TabsTrigger>
+          <TabsTrigger value="automations">Automations</TabsTrigger>
+          <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
         <TabsContent value="members" className="pt-4">
@@ -89,6 +117,15 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="domains" className="pt-4">
           <DomainsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="thresholds" className="pt-4">
+          <ThresholdsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="automations" className="pt-4">
+          <AutomationsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="jobs" className="pt-4">
+          <JobsTab workspace={ws} />
         </TabsContent>
         <TabsContent value="audit" className="pt-4">
           <AuditTab workspace={ws} />
@@ -323,6 +360,209 @@ function AuditTab({ workspace }: { workspace: string }) {
           }))}
           onOlder={rows.length === 50 ? () => setBefore(rows[rows.length - 1].id) : undefined}
         />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** FR-CRM-FLAG-01 — spec §6.2's thresholds, per workspace. */
+const THRESHOLDS: { key: keyof FlagThresholds; label: string; unit: string }[] = [
+  { key: "reply_owed_amber_hours", label: "Reply owed: amber after", unit: "hours" },
+  { key: "reply_owed_red_hours", label: "Reply owed: red after", unit: "hours" },
+  { key: "silent_amber_days", label: "Client silent: amber after", unit: "days" },
+  { key: "silent_red_days", label: "Client silent: red after", unit: "days" },
+  { key: "close_amber_days", label: "Close date: amber within", unit: "days" },
+  { key: "stale_amber_days", label: "Stale deal: amber after", unit: "days" },
+  { key: "stale_red_days", label: "Stale deal: red after", unit: "days" },
+];
+
+function ThresholdsTab({ workspace }: { workspace: string }) {
+  const { data, error, setError, reload } = useAsync(() => getCrmSettings(workspace), [workspace]);
+  const [draft, setDraft] = useState<Partial<Record<keyof FlagThresholds, string>>>({});
+  const [saved, setSaved] = useState(false);
+  const current = (data?.settings.flag_thresholds ?? {}) as Partial<FlagThresholds>;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Follow-up and deal-health thresholds</CardTitle>
+        <CardDescription>
+          When a flag turns amber and red. Next step and task flags follow their dates; a company
+          in Nurturing with no open task and no next touch is always a loose end. Flags are
+          recomputed on every change and every 30 minutes.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="space-y-3"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setError(null);
+            setSaved(false);
+            const value = Object.fromEntries(
+              THRESHOLDS.map(({ key }) => [key, Number(draft[key] ?? current[key] ?? 0)])
+            );
+            try {
+              await updateCrmSetting(workspace, "flag_thresholds", value);
+              setDraft({});
+              setSaved(true);
+              reload();
+            } catch (err) {
+              setError(errorMessage(err));
+            }
+          }}
+        >
+          <Problem message={error} />
+          <div className="grid max-w-xl gap-3 sm:grid-cols-2">
+            {THRESHOLDS.map(({ key, label, unit }) => (
+              <label key={key} className="space-y-1 text-sm">
+                <span className="block text-muted-foreground">
+                  {label} ({unit})
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={draft[key] ?? String(current[key] ?? "")}
+                  onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+                  className="h-8"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <Button type="submit">Save</Button>
+            {saved && <span className="text-sm text-muted-foreground">Saved.</span>}
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** FR-CRM-AUTO-02 — automations 2, 5, 6, 7 and 8. The rest are the pipeline
+ *  rules themselves and cannot be switched off. */
+const AUTOMATIONS: { key: keyof AutomationSwitches; label: string; detail: string }[] = [
+  {
+    key: "email_records",
+    label: "Companies and people from synced email",
+    detail: "Unknown senders on labelled mail become companies and people (with email sync).",
+  },
+  {
+    key: "stale_notice",
+    label: "Stale-deal notice",
+    detail: "Tells a deal's owner when it goes quiet, and the admins at red.",
+  },
+  {
+    key: "digests",
+    label: "Daily and weekly digests",
+    detail: "Each person's Today at 09:00 their time; admins' week on Mondays.",
+  },
+  {
+    key: "task_reminders",
+    label: "Task due reminders",
+    detail: "In the bell on the due date, and a message once it is overdue.",
+  },
+  {
+    key: "campaign_conversion",
+    label: "Campaign conversion prompt",
+    detail: "Converting a campaign member prompts for a deal and records the campaign.",
+  },
+];
+
+function AutomationsTab({ workspace }: { workspace: string }) {
+  const { data, error, setError, reload } = useAsync(() => getCrmSettings(workspace), [workspace]);
+  const current = (data?.settings.automations ?? null) as AutomationSwitches | null;
+
+  async function toggle(key: keyof AutomationSwitches, on: boolean) {
+    if (!current) return;
+    setError(null);
+    try {
+      await updateCrmSetting(workspace, "automations", { ...current, [key]: on });
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Automations</CardTitle>
+        <CardDescription>
+          Switched off, an automation sends nothing; its runs are still logged under Jobs. Stage
+          rules, the TVA lifecycle, follow-up flags and the Closed Lost and Closed Won tasks are
+          part of the pipeline and are always on.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        <ul className="divide-y">
+          {AUTOMATIONS.map(({ key, label, detail }) => (
+            <li key={key} className="flex items-start gap-3 py-2">
+              <input
+                id={`automation-${key}`}
+                type="checkbox"
+                className="mt-1 size-4"
+                checked={current?.[key] ?? true}
+                disabled={!current}
+                onChange={(e) => toggle(key, e.target.checked)}
+              />
+              <label htmlFor={`automation-${key}`} className="text-sm">
+                <span className="block font-medium">
+                  {label}: {(current?.[key] ?? true) ? "on" : "off"}
+                </span>
+                <span className="text-muted-foreground">{detail}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function JobsTab({ workspace }: { workspace: string }) {
+  const { bootstrap } = useCrm();
+  const [job, setJob] = useState<CrmJobName | "">("");
+  const { data, error } = useAsync(
+    () => getCrmJobs(workspace, job || undefined),
+    [workspace, job]
+  );
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Jobs</CardTitle>
+        <CardDescription>
+          Every background run in this workspace. Three failures in a row alert the admins; a job
+          more than twice its interval late shows a banner on every page.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 p-0 pb-4">
+        <div className="space-y-3 px-4">
+          <Problem message={error} />
+          {data && data.stale_jobs.length > 0 && (
+            <p role="status" className="text-sm font-medium">
+              Late: {data.stale_jobs.map((s) => s.label).join(", ")}.
+            </p>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Job</span>
+            <select
+              className="h-8 rounded-md border bg-background px-2 text-sm"
+              value={job}
+              onChange={(e) => setJob(e.target.value as CrmJobName | "")}
+            >
+              <option value="">All</option>
+              {data?.jobs.map((j) => (
+                <option key={j.job} value={j.job}>
+                  {j.label} (every {j.every_minutes >= 1440 ? "day" : `${j.every_minutes} min`})
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <JobsTable runs={data?.runs ?? []} timeZone={bootstrap.me.timezone} />
       </CardContent>
     </Card>
   );

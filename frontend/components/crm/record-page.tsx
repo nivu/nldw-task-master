@@ -10,11 +10,12 @@ import {
   isEmpty,
   type FieldSpec,
 } from "@/components/crm/field-editor";
+import { FlagChip } from "@/components/crm/flag-dot";
 import { useCrm } from "@/components/crm/shell";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { addCrmFavourite, removeCrmFavourite } from "@/lib/api/crm";
-import type { ViewObjectKind } from "@/lib/api/crm-types";
+import type { RecordFlags, ViewObjectKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import type { CrmTimezone } from "@/lib/crm/format";
 
@@ -228,6 +229,7 @@ export function RecordPage({
   files,
   related,
   pin,
+  flags,
 }: {
   title: string;
   subtitle?: React.ReactNode;
@@ -246,6 +248,8 @@ export function RecordPage({
   related: React.ReactNode;
   /** The record, to pin it to the sidebar. */
   pin?: { recordType: ViewObjectKind; id: string };
+  /** 1b: its follow-up or deal-health flags, as a header chip (FR-CRM-REC-01). */
+  flags?: RecordFlags & { record_type: string };
 }) {
   const [tab, setTab] = useState("timeline");
 
@@ -262,7 +266,20 @@ export function RecordPage({
             {actions}
           </div>
         </div>
-        {chips.length > 0 && <div className="flex flex-wrap gap-1.5">{chips}</div>}
+        {(chips.length > 0 || (flags && flags.flag_level !== "none")) && (
+          <div className="flex flex-wrap gap-1.5">
+            {chips}
+            {flags && (
+              <FlagChip
+                level={flags.flag_level}
+                flags={flags.flags}
+                computedAt={flags.flags_computed_at}
+                recordType={flags.record_type}
+                timeZone={timeZone}
+              />
+            )}
+          </div>
+        )}
         {notice}
       </header>
 

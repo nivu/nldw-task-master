@@ -11,6 +11,11 @@ company's move to Deal open together), `crm_deal_transition` for a stage
 move and every side effect it has, CRM and TVA (FR-CRM-PIPE-15), and
 `crm_link_project` for Link TVA project.
 
+From 1b every write here recomputes the deal's flags and its company's
+(FR-CRM-FLAG-02), and tells the people it concerns: a new owner, the owner
+of a deal someone else moved, whoever a handoff left a task (FR-CRM-NOTIF-01).
+Neither ever fails the write.
+
 A deal's stage never changes through an edit: only a move changes it, and
 `crm_apply` refuses it too. In Labs (FR-CRM-WS-05), a move also carries its
 project action (`services/crm/tva.py`), a deal edit that changes probability
@@ -32,7 +37,7 @@ from app.schemas.crm import (
     StagePreviewIn,
 )
 from app.services import supabase as db
-from app.services.crm import CrmRefused, store, tva
+from app.services.crm import CrmRefused, flags, notifications, store, tva
 from app.services.crm import present as show
 from app.services.crm import records as base
 from app.services.crm.context import actor
@@ -167,7 +172,23 @@ def create(ctx: Any, payload: Any) -> dict[str, Any]:
             }
         )
     done = store.apply(actor(ctx), ops)
-    return base.present_rows(ws, "opportunity", [done[0]["row"]])[0]
+    deal = done[0]["row"]
+    base.reflag(ws.id, "opportunity", [deal])
+    notifications.quietly(
+        notifications.assigned(ctx, "opportunity", deal["id"], deal["name"], deal["owner_id"])
+    )
+    return base.present_rows(ws, "opportunity", [deal])[0]
+
+
+def _after_edit(ctx: Any, ws: base.Workspace, before: dict, after: dict, changes: dict) -> None:
+    """Flags of the deal and of its company, old and new; a new owner told."""
+    base.reflag(ws.id, "opportunity", [after, {**after, "company_id": before["company_id"]}])
+    if "owner_id" in changes:
+        notifications.quietly(
+            notifications.assigned(
+                ctx, "opportunity", after["id"], after["name"], changes["owner_id"]
+            )
+        )
 
 
 def update(ctx: Any, deal_id: str, payload: Any) -> dict[str, Any]:
@@ -231,6 +252,7 @@ def update(ctx: Any, deal_id: str, payload: Any) -> dict[str, Any]:
                 "project": {"action": "sync_probability", "probability": changes["probability"]},
             },
         )
+        _after_edit(ctx, ws, row, done["opportunity"], changes)
         return base.present_rows(ws, "opportunity", [done["opportunity"]])[0]
     op: dict[str, Any] = {
         "op": "update",
@@ -241,6 +263,7 @@ def update(ctx: Any, deal_id: str, payload: Any) -> dict[str, Any]:
     if expect:
         op["expect_updated_at"] = expect
     done = store.apply(actor(ctx), [op, *company_ops])
+    _after_edit(ctx, ws, row, done[0]["row"], changes)
     return base.present_rows(ws, "opportunity", [done[0]["row"]])[0]
 
 
@@ -396,7 +419,31 @@ def move(ctx: Any, deal_id: str, body: StageMoveIn) -> dict[str, Any]:
     if refusal:
         raise refusal
     done = store.deal_transition(actor(ctx), planned.plan)
+    _after_move(ctx, ws, done)
     return _answer(ws, done)
+
+
+def _after_move(ctx: Any, ws: base.Workspace, done: dict[str, Any]) -> None:
+    """A move changes the deal's flags, its company's, and those of the
+    tasks it closed; the owner hears of a move someone else made."""
+    deal = done["opportunity"]
+    base.reflag(ws.id, "opportunity", [deal])
+    try:
+        tasks = {
+            lk["task_id"]
+            for lk in store.list_links(
+                ws.id, "crm_task_links", record_type="opportunity", record_ids=[deal["id"]]
+            )
+        }
+    except Exception:
+        flags.logger.exception('{"event": "crm_flags_links_failed"}')
+        tasks = set()
+    flags.after_write(ws.id, tasks=tasks)
+    notifications.quietly(
+        notifications.stage_changed(
+            ctx, deal, ws.facts.fixed_label("opportunity.stage", deal["stage"])
+        )
+    )
 
 
 def _answer(ws: base.Workspace, done: dict[str, Any]) -> dict[str, Any]:
@@ -589,6 +636,17 @@ def handoff_confirm(ctx: Any, deal_id: str, body: HandoffIn) -> dict[str, Any]:
     plan["project"] = action
     plan["create_tasks"] = tasks
     done = store.deal_transition(actor(ctx), plan)
+    _after_move(ctx, ws, done)
+    notifications.quietly(
+        notifications.handoff_waiting(
+            ctx,
+            done["opportunity"],
+            [
+                {**task, "id": task_id}
+                for task_id, task in zip(done.get("tasks_created") or [], tasks, strict=False)
+            ],
+        )
+    )
     answer = _answer(ws, done)
     answer["revenue_written"] = "revenue" in action
     answer["tasks_created"] = [
