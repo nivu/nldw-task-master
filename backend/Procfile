@@ -5,3 +5,7 @@ worker: celery -A app.worker worker --loglevel=info
 # date has passed stay pending forever — records that are neither absence nor
 # attendance, which is exactly what §1 says the email workflow already produces.
 beat: celery -A app.worker beat --loglevel=info
+# Spec 007 Gmail sync (FR-CRM-SYNC-04): its own queue, one task at a time, so a
+# backfill never takes the shared worker's slots. The only process given the
+# Gmail key; run it once sync is switched on.
+worker_crm_sync: celery -A app.worker worker -Q crm_sync --concurrency=1 --loglevel=info

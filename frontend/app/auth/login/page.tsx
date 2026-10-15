@@ -65,7 +65,7 @@ function SignIn() {
   // Spec 006 FR-OAUTH-02 — an OAuth consent page sends people here and needs
   // them back afterwards. Only same-origin paths are honoured.
   const wanted = searchParams.get("next") ?? "";
-  const next = wanted.startsWith("/") && !wanted.startsWith("//") ? wanted : "/calendar";
+  const next = wanted.startsWith("/") && !wanted.startsWith("//") ? wanted : "/";
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">

@@ -1,7 +1,9 @@
-"""The CEO dashboard — spec 003 FR-DASH-02, FR-DASH-05, FR-DASH-08/09."""
+"""The CEO dashboard — spec 003 FR-DASH-02, FR-DASH-05, FR-DASH-08/09; its
+pipeline figure without archived tentative projects — spec 007 FR-CRM-CHG-04."""
 
 from __future__ import annotations
 
+import inspect
 from datetime import date
 from decimal import Decimal as D
 
@@ -249,3 +251,127 @@ class TestAttention:
         )
         assert [a["severity"] for a in out] == ["high", "medium", "low"]
         assert out[0]["detail"] == "Project health is red."
+
+
+# ---------------------------------------------------------------------------
+# The pipeline figure — spec 007 FR-CRM-CHG-04
+# ---------------------------------------------------------------------------
+
+
+class _Company:
+    """One tentative project with revenue this month, and one archived
+    confirmed project earning 50,000 last month with hours logged then."""
+
+    def __init__(self) -> None:
+        oct_ = {"starts_on": "2026-10-01", "ends_on": "2026-10-31"}
+        self.projects = [
+            {
+                "id": "p-flux",
+                "name": "Flux",
+                "client": "Flux",
+                "revenue": "100000",
+                "is_archived": False,
+                "category": "client",
+                "status": "tentative",
+                "probability": 50,
+            },
+            {
+                "id": "p-old",
+                "name": "Old",
+                "client": "Old",
+                "revenue": "50000",
+                "is_archived": True,
+                "category": "client",
+                "status": "confirmed",
+                "probability": None,
+            },
+        ]
+        sep = {"starts_on": "2026-09-01", "ends_on": "2026-09-30"}
+        self.phases = [
+            {"id": "ph", "project_id": "p-flux", "phase": "delivery", "budget_hours": None, **oct_},
+            {"id": "ph-o", "project_id": "p-old", "phase": "delivery", "budget_hours": None, **sep},
+        ]
+        self.entries = [
+            {
+                "user_id": "u1",
+                "project_id": "p-old",
+                "date": "2026-09-15",
+                "hours_office": "8",
+                "hours_home": "0",
+            }
+        ]
+
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
+        return [
+            {
+                "id": "u1",
+                "display_name": "Asha",
+                "is_active": True,
+                "role": "user",
+                "logs_time": True,
+                "account_type": "staff",
+            }
+        ]
+
+    def list_cost_periods(self, user_id=None):
+        return [{"user_id": "u1", "annual_ctc": "1200000", "starts_on": "2026-01-01"}]
+
+    def list_projects(self, *, include_archived=False):
+        return [dict(p) for p in self.projects if include_archived or not p["is_archived"]]
+
+    def get_project(self, project_id):
+        return next((dict(p) for p in self.projects if p["id"] == project_id), None)
+
+    def list_phases(self, project_id=None):
+        return [p for p in self.phases if project_id in (None, p["project_id"])]
+
+    def list_time_entries(self, *, start=None, end=None, **_):
+        return [
+            e
+            for e in self.entries
+            if (start is None or start.isoformat() <= e["date"])
+            and (end is None or e["date"] <= end.isoformat())
+        ]
+
+
+@pytest.fixture
+def company(monkeypatch) -> _Company:
+    from app.services import dashboard, pnl, settings_store
+    from app.services import supabase as db
+
+    fake = _Company()
+    for name, fn in inspect.getmembers(db, inspect.isfunction):
+        if fn.__module__ == db.__name__ and not name.startswith("_"):
+            empty = (
+                (lambda *a, **k: None)
+                if name.startswith("get_") or name == "default_location_id"
+                else (lambda *a, **k: [])
+            )
+            monkeypatch.setattr(db, name, getattr(fake, name, None) or empty)
+    for module in (dashboard, pnl):
+        monkeypatch.setattr(module, "today_in_company_tz", lambda: MON)
+    monkeypatch.setattr(pnl, "_currency", lambda: "INR")
+    settings_store.invalidate()
+    yield fake
+    settings_store.invalidate()
+
+
+class TestThePipelineFigure:
+    def _money(self):
+        from app.services import dashboard
+
+        return dashboard.summary(True)["money"]
+
+    def test_a_tentative_project_is_in_the_pipeline(self, company):
+        assert self._money()["pipeline"]["revenue"] == "100000.00"
+
+    def test_an_archived_tentative_project_is_not(self, company):
+        company.projects[0]["is_archived"] = True
+        assert self._money()["pipeline"]["revenue"] == "0.00"
+
+    def test_an_archived_confirmed_project_keeps_last_months_actuals(self, company):
+        last = self._money()["last_month"]
+        assert last["revenue"] == "50000.00"
+        assert last["complete"] is True
+        company.projects[1]["is_archived"] = False
+        assert self._money()["last_month"] == last

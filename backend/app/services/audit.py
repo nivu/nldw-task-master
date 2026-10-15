@@ -33,6 +33,9 @@ def record(
     actor_id: str | None,
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    actor_label: str | None = None,
+    channel: str | None = None,
 ) -> None:
     """Append one entry.
 
@@ -42,19 +45,28 @@ def record(
     The database-level trigger still captures every booking transition
     independently, so the integrity-critical half of the record survives even
     if this call fails.
+
+    Spec 007 FR-CRM-CHG-09: `workspace_id`, `actor_label` and `channel` are
+    for the few account-administration rows the backend writes itself around
+    the CRM (invitations' profile creation, account-type changes). CRM table
+    changes are never written here: their audit row comes from the database,
+    in the same transaction (FR-CRM-AUD-06).
     """
+    entry: dict[str, Any] = {
+        "actor_id": actor_id,
+        "actor_label": actor_label or ("system" if actor_id is None else "user"),
+        "action": action,
+        "target_table": target_table,
+        "target_id": target_id,
+        "before": _redact(before),
+        "after": _redact(after),
+    }
+    if workspace_id is not None:
+        entry["workspace_id"] = workspace_id
+    if channel is not None:
+        entry["channel"] = channel
     try:
-        db.insert_audit(
-            {
-                "actor_id": actor_id,
-                "actor_label": "system" if actor_id is None else "user",
-                "action": action,
-                "target_table": target_table,
-                "target_id": target_id,
-                "before": _redact(before),
-                "after": _redact(after),
-            }
-        )
+        db.insert_audit(entry)
     except Exception:
         logger.exception(
             '{"event": "audit_write_failed", "action": "%s", "target": "%s"}',

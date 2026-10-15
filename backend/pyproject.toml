@@ -16,6 +16,15 @@ dependencies = [
     "supabase",
     "python-dotenv",
     "mcp>=2.2.0",
+    # FastAPI parses multipart uploads (the 4 MB Twenty import, spec 007
+    # FR-CRM-CHG-08) with it. Already locked through mcp; direct, so an mcp
+    # upgrade cannot silently remove it.
+    "python-multipart",
+    # Spec 007 Gmail sync (FR-CRM-SYNC-03): signs the service account's RS256
+    # assertion for Google's token endpoint, in place of a Google client
+    # library (plan §2.1). Already locked through mcp; direct for the same
+    # reason as python-multipart.
+    "pyjwt[crypto]",
 ]
 
 [tool.setuptools]
@@ -39,6 +48,11 @@ line-length = 100
 #   I            import sorting
 #   UP           pyupgrade — keep syntax current with target-version
 select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+# Spec 007: real-database tests, skipped unless CRM_DB_TESTS=1 with the local
+# Supabase stack up (tests/db/conftest.py). CI runs them in the `db` job.
+markers = ["db: needs the local Supabase stack (CRM_DB_TESTS=1)"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

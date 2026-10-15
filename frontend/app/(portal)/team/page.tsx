@@ -53,7 +53,7 @@ export default function TeamPage() {
         getTeamConsumption(),
         getMe(),
       ]);
-      return { day: teamDay, consumption: usage.people, isAdmin: me.role === "admin" };
+      return { day: teamDay, consumption: usage.people, isAdmin: me.account_type === "staff" && me.role === "admin" };
     },
     [day]
   );

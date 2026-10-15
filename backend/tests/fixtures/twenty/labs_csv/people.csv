@@ -1,0 +1,4 @@
+id,firstName,lastName,email,additionalEmails,phone,jobTitle,companyId,lastInboundAt,lastOutboundAt
+p-zara,Zara,Iyer,zara@zenith.ai,zara.iyer@gmail.com;zi@zenith.ai,98450 11111,Head of Data,c-zenith,2026-09-28T09:00:00Z,2026-09-29T10:00:00Z
+p-omar,Omar,Shah,omar@orbitlabs.io,,,Founder,c-orbit,,
+p-priya,Priya,,priya@pixelpaint.in,,,,c-pixel,,

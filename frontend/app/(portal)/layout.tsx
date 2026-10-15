@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Briefcase,
   CalendarDays,
   Users,
   CheckSquare,
@@ -35,6 +36,11 @@ import { cn } from "@/lib/utils";
  * NFR-01 — the calendar must be usable on a phone, because leave is often
  * marked from bed or in transit. So navigation is a bottom bar on small
  * screens (where thumbs are) and a collapsible left sidebar on wide ones.
+ *
+ * Spec 007 FR-CRM-UI-03, -04: `/me` is asked first and no page renders (so no
+ * other TVA request fires) until it answers. A CRM-only seller is sent to
+ * `/crm` and never sees this shell; a staff member with a CRM membership
+ * gets a CRM link.
  */
 
 const COLLAPSED_KEY = "portal.sidebar.collapsed";
@@ -55,8 +61,13 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   const router = useRouter();
 
   useEffect(() => {
-    getMe().then(setMe).catch(() => setFailed(true));
-  }, []);
+    getMe()
+      .then((who) => {
+        if (who.account_type === "crm_only") router.replace("/crm");
+        setMe(who);
+      })
+      .catch(() => setFailed(true));
+  }, [router]);
 
   // A per-browser convenience. Storage can be unavailable (private windows,
   // blocked site data); the sidebar then simply starts expanded.
@@ -92,21 +103,27 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
     );
   }
 
+  // A CRM-only account renders nothing here while it is sent to /crm.
+  if (me?.account_type === "crm_only") return null;
+
   // Only the links this person can actually use. The server re-checks every
   // one of these routes regardless — hiding a link is tidiness, not security.
+  const caps = me?.account_type === "staff" ? me.capabilities : undefined;
   const links = [
     { href: "/home", label: "Home", icon: Home, section: "mine", show: true },
     { href: "/calendar", label: "Calendar", icon: CalendarDays, section: "mine", show: true },
     { href: "/timesheet", label: "Time", icon: Clock, section: "mine", show: true },
-    { href: "/team", label: "Team", icon: Users, section: "team", show: me?.capabilities.team_view },
-    { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: me?.capabilities.team_view },
-    { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: me?.capabilities.team_view },
+    { href: "/team", label: "Team", icon: Users, section: "team", show: caps?.team_view },
+    { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: caps?.team_view },
+    { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: caps?.team_view },
     // Spec 003 FR-DASH — by the owner's authorisation, not by role.
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: me?.capabilities.dashboard },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: caps?.dashboard },
     // Spec 003 — the manager tier runs projects from its own page, not from
     // inside the admin panel it may not enter (FR-ROLE-03).
-    { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: me?.capabilities.manage_projects },
-    { href: "/admin", label: "Admin", icon: Settings, section: "manage", show: me?.capabilities.admin_panel },
+    { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: caps?.manage_projects },
+    { href: "/admin", label: "Admin", icon: Settings, section: "manage", show: caps?.admin_panel },
+    // Spec 007 FR-CRM-UI-03 — only with a membership; /crm refuses the rest.
+    { href: "/crm", label: "CRM", icon: Briefcase, section: "mine", show: (me?.crm.workspaces.length ?? 0) > 0 },
     { href: "/account", label: "Account", icon: User, section: "footer", show: true },
   ].filter((link) => link.show);
 
@@ -223,7 +240,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
       {/* pb-20 leaves room for the mobile bar so the last row is never
           hidden behind it; the left padding makes room for the sidebar. */}
       <div className={cn("flex-1", collapsed ? "md:pl-16" : "md:pl-60")}>
-        <main className="mx-auto w-full max-w-5xl px-4 py-6 pb-20 md:pb-6">{children}</main>
+        <main className="mx-auto w-full max-w-5xl px-4 py-6 pb-20 md:pb-6">{me && children}</main>
       </div>
 
       {/* Phone: the four everyday links, and a More sheet for the rest, so

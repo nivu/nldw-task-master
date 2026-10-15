@@ -55,7 +55,7 @@ def project_health(project_id: str) -> dict[str, Any] | None:
         rates = pnl_service.rate_book(window[0], window[1])
         holidays = holidays_between(window[0], window[1])
         planned_cost: Decimal | None = ZERO
-        for a in db.list_allocations(project_id=project_id):
+        for a in db.list_counting_allocations(project_id=project_id):
             overlap = pnl.overlap(
                 date.fromisoformat(a["starts_on"]),
                 date.fromisoformat(a["ends_on"]),

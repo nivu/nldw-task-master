@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { safeNext } from "../lib/safe-next";
 import { openDayNumbered, openLastBookableDay, PEOPLE, signIn } from "./helpers";
 
 /**
@@ -25,6 +26,15 @@ test.describe("signing in", () => {
     // system that bypasses the admin, which FR-AUTH-02 forbids outright.
     await expect(page.getByRole("link", { name: /sign up|register|create account/i })).toHaveCount(0);
     await expect(page.getByText(/Accounts are created by an admin/i)).toBeVisible();
+  });
+
+  test("the OAuth callback sends people back to this site only", () => {
+    // /auth/callback redirects to `${origin}${next}`; these would leave it.
+    for (const away of ["//evil.test", "/\\evil.test", "https://evil.test", "evil", "", null]) {
+      expect(safeNext(away)).toBe("/");
+    }
+    expect(safeNext("/crm/labs?view=1")).toBe("/crm/labs?view=1");
+    expect(safeNext("/")).toBe("/");
   });
 
   test("Google is offered as the way in (FR-AUTH-08)", async ({ page }) => {

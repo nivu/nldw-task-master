@@ -23,10 +23,34 @@ export type BookingStatus =
   | "released"
   | "unrecognised";
 
-export interface Me {
+/** Spec 007 FR-CRM-ACC-01 — a CRM-only seller is not staff and sees no TVA. */
+export type AccountType = "staff" | "crm_only";
+
+/** Spec 007 contracts §1 — a CRM workspace the person belongs to. */
+export interface MeCrmWorkspace {
+  id: string;
+  key: string;
+  name: string;
+  role: "admin" | "member" | "viewer";
+  last_used: boolean;
+}
+
+export interface MePreferences {
+  timezone: "Asia/Kolkata" | "Australia/Sydney";
+  number_format: "indian_short" | "full";
+}
+
+interface MeBase {
   id: string;
   email: string;
   display_name: string;
+  /** Spec 007 — every account's CRM workspaces; empty until S1b adds them. */
+  crm: { workspaces: MeCrmWorkspace[] };
+}
+
+export interface StaffMe extends MeBase {
+  account_type: "staff";
+  preferences?: MePreferences;
   role: Role;
   lead_id: string | null;
   /** A hint for which navigation to render. Never a permission — every
@@ -43,6 +67,17 @@ export interface Me {
     grant_dashboard: boolean;
   };
 }
+
+/** Spec 007 contracts §1 — the backend sends no `role`, `lead_id` or
+ *  `capabilities` for a CRM-only account, only `preferences`; from S1c the
+ *  portal layout sends them to /crm before the TVA shell renders. */
+export interface CrmOnlyMe extends MeBase {
+  account_type: "crm_only";
+  preferences: MePreferences;
+}
+
+/** Narrow on `account_type` before reading `role` or `capabilities`. */
+export type Me = StaffMe | CrmOnlyMe;
 
 export interface Balance {
   category: Category;
@@ -206,6 +241,9 @@ export interface PortalUser {
   role: Role;
   lead_id: string | null;
   is_active: boolean;
+  /** Spec 007 FR-CRM-CHG-02 — `crm_only` appears only in the admin's user
+   *  list; every person picker leaves them out. */
+  account_type?: AccountType;
   /** Spec 006 FR-LOC-01. */
   location_id?: string | null;
   /** Spec 002 FR-ANALYTICS-07 — false: never counted as missing time.
@@ -397,6 +435,20 @@ export interface Project {
   logged_hours?: string;
   /** Spec 003 FR-FIN-02 — present only for managers and admins. */
   revenue?: string | null;
+  /**
+   * Spec 007 FR-CRM-CHG-05 — linked to a CRM deal, which controls the
+   * status, the probability and, while tentative, the archived state.
+   */
+  crm_managed?: boolean;
+  /** Spec 007 FR-CRM-TVA-02 — the company and source deal, for Labs members only; never an amount. */
+  crm?: ProjectCrm;
+}
+
+export interface ProjectCrm {
+  /** The workspace key, for links into the CRM. */
+  workspace: string;
+  company: { id: string; name: string } | null;
+  opportunity: { id: string; name: string; owner_name: string | null; won_on: string | null } | null;
 }
 
 export interface ProjectEffort {
@@ -446,6 +498,19 @@ export interface Forecast {
   over_allocated: OverAllocation[];
   /** The same with tentative allocations added. */
   over_with_tentative: OverAllocation[];
+  /**
+   * Spec 007 FR-CRM-CHG-17 — per week, supply (contracted hours less
+   * holidays and leave) against confirmed and tentative demand. From the same
+   * service as the CRM capacity check; present even when nothing is allocated.
+   */
+  weeks: ForecastWeek[];
+}
+
+export interface ForecastWeek {
+  week_start: string;
+  supply_hours: string;
+  confirmed_hours: string;
+  tentative_hours: string;
 }
 
 export interface OverAllocation {
@@ -489,6 +554,9 @@ export interface AllocationRow {
   starts_on: string;
   ends_on: string;
   percent: string;
+  /** Spec 007 FR-CRM-CHG-03, D5 — released when its deal was lost; it counts
+   *  nowhere and cannot be edited or removed until the deal is reopened. */
+  released: { at: string; reason: string } | null;
 }
 
 // ---------------------------------------------------------------------------

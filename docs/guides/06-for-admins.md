@@ -48,6 +48,30 @@ lead with nobody assigned has an empty team and cannot allocate anyone.
 
 Only an admin can change a role.
 
+### Account types
+
+Every account is either **staff** or **CRM only**. Staff use the portal as
+described in these guides. A CRM-only account belongs to a seller who works
+only in the sales CRM: it is created when a CRM workspace admin invites
+someone new, signs in with Google like everyone else, and sees the CRM and
+nothing else. It appears in People marked **CRM only**, and is left out of
+every count, list, report, reminder and job of the portal: it has no leave,
+no timesheet, no lead, cannot be allocated and cannot lead a project. To make
+a staff member CRM-only (or the reverse), use **CRM workspaces** below; the
+change first checks they lead nobody and hold no allocation.
+
+## CRM workspaces
+
+**Admin → CRM workspaces** lets a portal admin run the sales CRM's
+memberships without joining a workspace: see each workspace and its members,
+invite someone into any workspace, change or remove a membership (including
+the owner's and other admins', which workspace admins cannot touch), change
+an account's type, and set each workspace's **allowed domains**, the email
+domains it may invite from. Public webmail domains are refused. A portal
+admin may also invite an existing staff member on a personal address,
+bypassing the allowed domains. The CRM's own settings are covered in
+*Running a CRM workspace*.
+
 ### CTC
 
 CTC (cost to company) is the annual cost the portal attributes to a person's

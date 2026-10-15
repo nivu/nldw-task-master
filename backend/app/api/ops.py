@@ -8,7 +8,14 @@ from decimal import Decimal
 from fastapi import APIRouter, Query
 from fastapi.responses import PlainTextResponse, Response
 
-from app.api.deps import AdminDep, CurrentUserDep, LeadDep, ManagerDep, SessionDep
+from app.api.deps import (
+    AdminDep,
+    AnySessionDep,
+    CurrentUserDep,
+    LeadDep,
+    ManagerDep,
+    SessionDep,
+)
 from app.api.errors import ProblemDetail
 from app.config import settings
 from app.domain import invoicing as invoice_rules
@@ -213,6 +220,8 @@ def close_review(user_id: str, quarter: str, user: LeadDep) -> dict:
         user, Person(**{k: subject[k] for k in ("id", "role", "lead_id", "is_active")})
     ):
         raise ProblemDetail(403, "Only this person's lead or an admin can close their review.")
+    if refusal := timesheet_rules.staff_subject_refusal(subject, "review"):
+        raise ProblemDetail(422, refusal)
     review_service.close(user_id=user_id, quarter=quarter, actor_id=user.id)
     return {"user_id": user_id, "quarter": quarter, "status": "closed"}
 
@@ -280,10 +289,13 @@ def calendar_feed(key: str) -> Response:
 # ---------------------------------------------------------------------------
 
 oauth = APIRouter(prefix="/oauth", tags=["oauth"])
+# Spec 007 contracts §1 — any account, from a browser session: a CRM-only
+# seller connects Claude the same way. The token they approve is them, so
+# every TVA route still refuses it.
 
 
 @oauth.get("/transaction/{txn}", include_in_schema=False)
-def oauth_transaction(txn: str, user: SessionDep) -> dict:
+def oauth_transaction(txn: str, user: AnySessionDep) -> dict:
     from app.services.oauth import provider
 
     row = provider.transaction(txn)
@@ -293,7 +305,7 @@ def oauth_transaction(txn: str, user: SessionDep) -> dict:
 
 
 @oauth.post("/approve", include_in_schema=False)
-def oauth_approve(payload: OAuthApprove, user: SessionDep) -> dict:
+def oauth_approve(payload: OAuthApprove, user: AnySessionDep) -> dict:
     from mcp.server.auth.provider import AuthorizeError
 
     from app.services.oauth import provider
@@ -558,8 +570,11 @@ def set_checklist_template(kind: str, payload: ChecklistTemplateIn, admin_user: 
 
 @admin.post("/checklists", status_code=201)
 def start_checklist(payload: ChecklistStart, admin_user: AdminDep) -> dict:
-    if db.get_profile(payload.user_id) is None:
+    person = db.get_profile(payload.user_id)
+    if person is None:
         raise ProblemDetail(404, "No such person.")
+    if refusal := timesheet_rules.staff_subject_refusal(person, "checklist"):
+        raise ProblemDetail(422, refusal)
     row = checklist_service.start(
         user_id=payload.user_id, kind=payload.kind, actor_id=admin_user.id
     )

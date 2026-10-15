@@ -24,11 +24,17 @@ def monday_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def _subject(user_id: str) -> Person:
+def _subject(user_id: str) -> tuple[dict[str, Any], Person]:
     profile = db.get_profile(user_id)
     if profile is None:
         raise SignoffRefused("No such person.", status=404)
-    return Person(**{k: profile[k] for k in ("id", "role", "lead_id", "is_active")})
+    return profile, Person(**{k: profile[k] for k in ("id", "role", "lead_id", "is_active")})
+
+
+def _staff_only(profile: dict[str, Any]) -> None:
+    """Spec 007 FR-CRM-CHG-02 — a CRM-only account has no week to sign off."""
+    if refusal := rules.staff_subject_refusal(profile, "timesheet"):
+        raise SignoffRefused(refusal)
 
 
 def confirm(
@@ -36,10 +42,12 @@ def confirm(
 ) -> dict[str, Any]:
     if week_start.weekday() != 0:
         raise SignoffRefused("A week starts on a Monday.")
-    if not can_decide(actor, _subject(user_id)):
+    profile, subject = _subject(user_id)
+    if not can_decide(actor, subject):
         raise SignoffRefused(
             "Only this person's lead or an admin can confirm their week.", status=403
         )
+    _staff_only(profile)
     if week_start > monday_of(today_in_company_tz()):
         raise SignoffRefused("That week has not happened yet.")
     row = db.upsert_confirmation(
@@ -64,10 +72,12 @@ def confirm(
 
 def reopen(*, user_id: str, week_start: date, actor: Person) -> None:
     """FR-SIGN-03 — only while the week is still editable."""
-    if not can_decide(actor, _subject(user_id)):
+    profile, subject = _subject(user_id)
+    if not can_decide(actor, subject):
         raise SignoffRefused(
             "Only this person's lead or an admin can reopen their week.", status=403
         )
+    _staff_only(profile)
     today = today_in_company_tz()
     if rules.week_closed(week_start, today, grace_days=_grace_days()):
         raise SignoffRefused(

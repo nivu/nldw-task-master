@@ -24,7 +24,7 @@ export default async function HelpLayout({ children }: { children: React.ReactNo
           <div className="ml-auto flex items-center gap-1">
             <ThemeToggle />
             <Link
-              href="/calendar"
+              href="/"
               className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
             >
               Open the portal

@@ -144,16 +144,27 @@ def get_profile_by_email_ignoring_case(email: str) -> dict[str, Any] | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def list_profiles(*, active_only: bool = False) -> list[dict[str, Any]]:
+def list_profiles(
+    *, active_only: bool = False, include_crm_only: bool = False
+) -> list[dict[str, Any]]:
+    """Staff profiles, by name. Spec 007 FR-CRM-CHG-02: CRM-only accounts are
+    left out by default, which keeps them out of every TVA people population
+    at once. `include_crm_only` is for the few places that must name them:
+    Admin → People and the audit's actor names."""
     query = supabase.table("profiles").select("*").order("display_name")
     if active_only:
         query = query.eq("is_active", True)
+    if not include_crm_only:
+        query = query.eq("account_type", "staff")
     return query.execute().data or []
 
 
 def list_reports(lead_id: str, *, active_only: bool = True) -> list[dict[str, Any]]:
-    """A lead's direct reports — the population FR-LEAD-01 shows."""
-    query = supabase.table("profiles").select("*").eq("lead_id", lead_id)
+    """A lead's direct reports — the population FR-LEAD-01 shows. Staff only
+    (a CRM-only account has no lead, and 025 enforces it; this says so too)."""
+    query = (
+        supabase.table("profiles").select("*").eq("lead_id", lead_id).eq("account_type", "staff")
+    )
     if active_only:
         query = query.eq("is_active", True)
     return query.order("display_name").execute().data or []
@@ -183,6 +194,12 @@ def get_booking(booking_id: str) -> dict[str, Any] | None:
     return response.data[0] if response.data else None
 
 
+#: People per `user_id=in.(…)` request. Every staff id in one URL passes
+#: PostgREST's request-line limit (414) at a few hundred people, so a list of
+#: everybody (the capacity service's) goes in batches.
+USER_ID_BATCH = 100
+
+
 def list_bookings(
     *,
     user_ids: list[str] | None = None,
@@ -191,18 +208,25 @@ def list_bookings(
     statuses: list[str] | None = None,
     columns: str = BOOKING_FULL_COLUMNS,
 ) -> list[dict[str, Any]]:
-    query = supabase.table("bookings").select(columns)
-    if user_ids is not None:
-        if not user_ids:
-            return []
-        query = query.in_("user_id", user_ids)
-    if start is not None:
-        query = query.gte("date", start.isoformat())
-    if end is not None:
-        query = query.lte("date", end.isoformat())
-    if statuses is not None:
-        query = query.in_("status", statuses)
-    return query.order("date").execute().data or []
+    def read(batch: list[str] | None) -> list[dict[str, Any]]:
+        query = supabase.table("bookings").select(columns)
+        if batch is not None:
+            query = query.in_("user_id", batch)
+        if start is not None:
+            query = query.gte("date", start.isoformat())
+        if end is not None:
+            query = query.lte("date", end.isoformat())
+        if statuses is not None:
+            query = query.in_("status", statuses)
+        return query.order("date").execute().data or []
+
+    if user_ids is None:
+        return read(None)
+    wanted = sorted(set(user_ids))
+    rows: list[dict[str, Any]] = []
+    for i in range(0, len(wanted), USER_ID_BATCH):
+        rows += read(wanted[i : i + USER_ID_BATCH])
+    return sorted(rows, key=lambda r: r.get("date") or "") if len(wanted) > USER_ID_BATCH else rows
 
 
 def find_booking_on(user_id: str, day: date, statuses: list[str]) -> dict[str, Any] | None:
@@ -368,11 +392,13 @@ def insert_audit(entry: dict[str, Any]) -> None:
     supabase.table("audit_log").insert(entry).execute()
 
 
-def list_audit(limit: int = 200) -> list[dict[str, Any]]:
-    return (
-        supabase.table("audit_log").select("*").order("at", desc=True).limit(limit).execute().data
-        or []
-    )
+def list_audit(limit: int = 200, *, tva_only: bool = True) -> list[dict[str, Any]]:
+    """Newest first. Spec 007 FR-CRM-AUD-04: CRM rows (those with a workspace)
+    are left out by default, for everyone, TVA admins included."""
+    query = supabase.table("audit_log").select("*")
+    if tva_only:
+        query = query.is_("workspace_id", "null")
+    return query.order("at", desc=True).limit(limit).execute().data or []
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +424,99 @@ def insert_project(data: dict[str, Any]) -> dict[str, Any]:
 
 def update_project(project_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("projects").update(data).eq("id", project_id).execute().data[0]
+
+
+# Spec 007 FR-CRM-TVA-01 — the reads the CRM makes of TVA projects (032's
+# `crm_company_id`, `source_opportunity_id`, `crm_archived_at` come with
+# every `select("*")` above). The CRM never writes a project here: its TVA
+# side is written by `crm_deal_transition` and `crm_link_project` (033).
+
+
+def get_project_by_source_opportunity(opportunity_id: str) -> dict[str, Any] | None:
+    """The deal's project: at most one, by the unique index (032)."""
+    rows = (
+        supabase.table("projects")
+        .select("*")
+        .eq("source_opportunity_id", opportunity_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_crm_projects(
+    *, opportunity_ids: list[str] | None = None, company_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Projects linked to any of these deals, or to any of these companies
+    (FR-CRM-CO-02, -REC-03), in one query, by name."""
+    parts = []
+    if opportunity_ids:
+        parts.append(f"source_opportunity_id.in.({','.join(opportunity_ids)})")
+    if company_ids:
+        parts.append(f"crm_company_id.in.({','.join(company_ids)})")
+    if not parts:
+        return []
+    return (
+        supabase.table("projects").select("*").or_(",".join(parts)).order("name").execute().data
+        or []
+    )
+
+
+def list_linkable_projects(status: str | None = None) -> list[dict[str, Any]]:
+    """FR-CRM-TVA-05, -18 — projects no deal is linked to, not archived."""
+    query = (
+        supabase.table("projects")
+        .select("id, name, status, client")
+        .is_("source_opportunity_id", "null")
+        .eq("is_archived", False)
+    )
+    if status is not None:
+        query = query.eq("status", status)
+    return query.order("name").execute().data or []
+
+
+def find_project_by_name(name: str) -> dict[str, Any] | None:
+    """The project whose name equals `name` ignoring case and outer spaces,
+    archived included — what `projects_name_unique` (008) compares."""
+    wanted = name.strip().lower()
+    if not wanted:
+        return None
+    pattern = wanted.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = supabase.table("projects").select("*").ilike("name", f"%{pattern}%").execute().data
+    return next((r for r in rows or [] if r["name"].strip().lower() == wanted), None)
+
+
+def list_project_phases(project_ids: list[str]) -> list[dict[str, Any]]:
+    """The phases of some projects, in one query."""
+    if not project_ids:
+        return []
+    return (
+        supabase.table("project_phases")
+        .select("*")
+        .in_("project_id", project_ids)
+        .order("starts_on")
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_project_milestones(project_id: str) -> list[dict[str, Any]]:
+    """For the handoff's pre-fill and the reopen-won check (FR-CRM-PIPE-13)."""
+    return (
+        supabase.table("project_milestones")
+        .select("*")
+        .eq("project_id", project_id)
+        .order("due_on")
+        .execute()
+        .data
+        or []
+    )
+
+
+def project_has_time_entries(project_id: str) -> bool:
+    return has_time_entries(project_id)
 
 
 def list_phases(project_id: str | None = None) -> list[dict[str, Any]]:
@@ -433,7 +552,36 @@ def list_allocations(
     return query.order("starts_on").execute().data or []
 
 
+def list_counting_allocations(
+    *, user_ids: list[str] | None = None, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    """The allocations that count as somebody being busy — spec 007
+    FR-CRM-CHG-03, -04. Released rows (migration 028) and every allocation on
+    an archived project are left out; `list_allocations` keeps every row for
+    the Admin allocations list, which shows released ones marked.
+
+    Every allocation reader (forecast, resources, bench, hiring, planned
+    hours and cost, health, the CEO dashboard, the Time page, the capacity
+    check) reads through here, so none of them can forget either rule.
+    """
+    query = supabase.table("allocations").select("*").is_("released_at", "null")
+    if user_ids is not None:
+        if not user_ids:
+            return []
+        query = query.in_("user_id", user_ids)
+    if project_id is not None:
+        query = query.eq("project_id", project_id)
+    rows = query.order("starts_on").execute().data or []
+    archived = {
+        p["id"]
+        for p in supabase.table("projects").select("id").eq("is_archived", True).execute().data
+        or []
+    }
+    return [row for row in rows if row["project_id"] not in archived]
+
+
 def get_allocation(allocation_id: str) -> dict[str, Any] | None:
+    """Every column, the release markers (028) among them."""
     response = supabase.table("allocations").select("*").eq("id", allocation_id).limit(1).execute()
     return response.data[0] if response.data else None
 
@@ -652,6 +800,17 @@ def insert_compoff_credit(data: dict[str, Any]) -> dict[str, Any]:
 
 def update_compoff_credit(credit_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return supabase.table("compoff_credits").update(data).eq("id", credit_id).execute().data[0]
+
+
+def has_pending_decisions(user_id: str) -> dict[str, bool]:
+    """Spec 007 FR-CRM-CHG-02 — whether leave or a comp-off claim of this
+    person's is waiting for a decision, before they are made CRM-only."""
+
+    def pending(table: str) -> bool:
+        query = supabase.table(table).select("id").eq("user_id", user_id).eq("status", "pending")
+        return bool(query.limit(1).execute().data)
+
+    return {"leave": pending("bookings"), "compoff": pending("compoff_credits")}
 
 
 def list_confirmations(

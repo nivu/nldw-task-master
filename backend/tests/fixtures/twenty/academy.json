@@ -1,0 +1,21 @@
+{
+  "data": {
+    "companies": [
+      {"id": "c-acme", "name": "Acme College", "domainName": "acmecollege.edu.in", "accountOwnerEmail": "owner@nunnarilabs.com"},
+      {"id": "c-psg", "name": "PSG Tech", "domainName": "psgtech.ac.in", "stage": "NURTURING", "accountOwnerEmail": "owner@nunnarilabs.com"}
+    ],
+    "people": [
+      {"id": "p-ravi", "firstName": "Ravi", "lastName": "Kumar", "email": "ravi@acmecollege.edu.in", "companyId": "c-acme"},
+      {"id": "p-meena", "firstName": "Meena", "email": "meena@psgtech.ac.in", "companyId": "c-psg"}
+    ],
+    "opportunities": [
+      {"id": "o-acme-bootcamp", "name": "Acme AI bootcamp", "companyId": "c-acme", "pointOfContactId": "p-ravi", "stage": "NEGOTIATION", "amount": "450000", "currency": "INR", "closeDate": "2026-12-15", "nextStep": "Agree the batch dates", "nextStepOn": "2026-10-22", "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-09-01T06:00:00Z"}
+    ],
+    "tasks": [
+      {"id": "t-dates", "title": "Propose batch dates", "status": "IN_PROGRESS", "dueAt": "2026-10-21", "assigneeEmail": "owner@nunnarilabs.com", "targets": [{"type": "opportunity", "id": "o-acme-bootcamp"}]}
+    ],
+    "notes": [
+      {"id": "n-psg", "body": "PSG asked to talk again after the semester.", "targets": [{"type": "company", "id": "c-psg"}]}
+    ]
+  }
+}

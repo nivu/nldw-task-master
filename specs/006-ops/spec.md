@@ -59,7 +59,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 | ID | Requirement |
 |---|---|
 | FR-STMT-01 | Per project per month: hours by person by day, by phase, totals; **no money**. |
-| FR-STMT-02 | Available as CSV and as a printable page. |
+| FR-STMT-02 | Available as CSV and as a printable page. *Amended 14 October 2026 by `007`: the CSV now downloads through the portal's proxy, which carries files (`007` FR-CRM-CHG-08).* |
 | FR-STMT-03 | Weeks not yet confirmed are marked on the statement. |
 | FR-STMT-04 | Manager tier. |
 
@@ -69,7 +69,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 |---|---|
 | FR-UTIL-01 | Per person per month: billable hours (projects with a client), internal project hours, activity hours, capacity hours (working days × the person's contracted hours a day — 8 full time, `005` FR-CTC-06 — less approved leave, not work from home), utilisation = billable ÷ capacity. Q-04. |
 | FR-UTIL-02 | Target utilisation is a setting (`utilisation_target`, 80). Below target is shown, never ranked. |
-| FR-UTIL-03 | Bench: per person per week for the next N weeks, allocated %; under `bench_threshold` (60) is bench. Manager tier. |
+| FR-UTIL-03 | Bench: per person per week for the next N weeks, allocated %; under `bench_threshold` (60) is bench. Manager tier. *Amended 14 October 2026 by `007`: released allocations and archived projects are not counted, and CRM-only accounts are not on the bench (`007` FR-CRM-CHG-02, -03, -04).* |
 | FR-UTIL-04 | Leads see utilisation for their reports; managers everyone. |
 
 ## 5. Project health — FR-HEALTH
@@ -99,7 +99,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 
 | ID | Requirement |
 |---|---|
-| FR-HIRE-01 | Per month for the next N: demand hours (confirmed allocations × capacity, FR-HIRE-03), supply hours (headcount capacity × target utilisation), shortfall, FTE needed (shortfall ÷ one person's hours at target), and the cost of those FTE at a given annual CTC. |
+| FR-HIRE-01 | Per month for the next N: demand hours (confirmed allocations × capacity, FR-HIRE-03), supply hours (headcount capacity × target utilisation), shortfall, FTE needed (shortfall ÷ one person's hours at target), and the cost of those FTE at a given annual CTC. *Amended 14 October 2026 by `007`: demand ignores released allocations and archived projects; supply is staff only (`007` FR-CRM-CHG-02, -03, -04).* |
 | FR-HIRE-02 | The CTC to price with is an input to the view, never a person's. |
 | FR-HIRE-03 | Demand (FR-HIRE-01) MUST count confirmed allocations only, like the bench. Allocations to tentative projects (`002` FR-PROJ-08) MUST be shown beside it per month as tentative demand hours and MUST NOT count toward the shortfall, FTE needed or their cost: work not yet won hires nobody. |
 
@@ -151,7 +151,7 @@ token. All times Asia/Kolkata. Each is a setting an admin can switch off.
 
 | ID | Requirement |
 |---|---|
-| FR-DIGEST-01 | Monday 09:00 to every manager and admin: last week's coverage, who is over-allocated this week, margin to date per active project, people with no CTC, bench. Setting `digest_enabled`. |
+| FR-DIGEST-01 | Monday 09:00 to every manager and admin: last week's coverage, who is over-allocated this week, margin to date per active project, people with no CTC, bench. Setting `digest_enabled`. *Amended 14 October 2026 by `007`: released allocations and archived projects count nowhere, and CRM-only accounts are in no list (`007` FR-CRM-CHG-02, -03, -04).* |
 | FR-DIGEST-02 | An admin can run it now. |
 
 ## Y. Year frames — FR-YEAR

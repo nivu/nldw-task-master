@@ -484,11 +484,59 @@ def project_lead_refusal(person: dict | None) -> str | None:
     `person` is their profile, or None when the id matches nobody. Any role
     will do — the lead is a label, not a permission — but they must exist and
     still be active: a project led by someone who has left is led by nobody.
+    Spec 007 FR-CRM-CHG-02 — and not a CRM-only account, who is not staff.
     """
     if person is None:
         return "That lead does not exist."
+    if person.get("account_type") == "crm_only":
+        return "A CRM-only account cannot lead a project."
     if not person.get("is_active"):
         return f"{person.get('display_name') or 'That person'} is not active."
+    return None
+
+
+def allocation_person_refusal(person: dict) -> str | None:
+    """Spec 007 FR-CRM-CHG-02 — a CRM-only account is never allocated.
+
+    Allocated people count as capacity in every TVA report; a seller who is
+    not staff must not. The database refuses it too (`tva_staff_only`, 025).
+    """
+    if person.get("account_type") == "crm_only":
+        return "A CRM-only account cannot be allocated."
+    return None
+
+
+def lead_person_refusal(person: dict) -> str | None:
+    """Spec 007 FR-CRM-CHG-02 — a CRM-only account is nobody's lead.
+
+    A lead approves leave and timesheets, which a seller who is not staff
+    cannot do. The database refuses it too (`tva_staff_only`, 025).
+    """
+    if person.get("account_type") == "crm_only":
+        return "A CRM-only account cannot be anyone's lead."
+    return None
+
+
+_NOT_STAFF = {
+    "leave": "A CRM-only account has no leave.",
+    "checklist": "A CRM-only account has no checklists.",
+    "ctc": "A CRM-only account has no CTC.",
+    "absence": "A CRM-only account has no absences to record.",
+    "timesheet": "A CRM-only account has no timesheet.",
+    "review": "A CRM-only account has no review.",
+}
+
+
+def staff_subject_refusal(person: dict, subject: str) -> str | None:
+    """Spec 007 FR-CRM-CHG-02 — leave, checklists, CTC, absences, timesheet
+    sign-off and reviews leave CRM-only accounts out, so nothing of the kind
+    is written for one.
+
+    `subject` is "leave", "checklist", "ctc", "absence", "timesheet" or
+    "review".
+    """
+    if person.get("account_type") == "crm_only":
+        return _NOT_STAFF[subject]
     return None
 
 

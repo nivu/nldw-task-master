@@ -4,6 +4,8 @@ Two things here are worth more than the rest: the edit window, because it is
 deliberately NOT the rule `001` uses and the difference is easy to "fix" by
 mistake; and capacity, because a wrong number there is invisible — it produces
 a plausible forecast that is simply untrue.
+
+The Time page offers only allocations that count — spec 007 FR-CRM-CHG-03.
 """
 
 from __future__ import annotations
@@ -412,3 +414,50 @@ class TestArchivedProjects:
             archived_entry_refusal(project_name="Atlas", is_archived=True, already_logged=True)
             is None
         )
+
+
+class TestTheTimePageOffersCountingAllocationsOnly:
+    """Spec 007 FR-CRM-CHG-03 — the Time page pre-fills from today's
+    allocations (NFR-02); a released one is not offered, and is again once the
+    deal is reopened and it is un-released."""
+
+    DAY = date(2026, 9, 8)
+
+    @pytest.fixture
+    def page(self, monkeypatch):
+        from app.services import supabase as db
+        from app.services import timesheets as service
+
+        span = {"starts_on": "2026-09-01", "ends_on": "2026-09-30", "percent": "50"}
+        allocations = [
+            {"id": "a-acme", "user_id": "u1", "project_id": "p-acme", **span},
+            {"id": "a-beta", "user_id": "u1", "project_id": "p-beta", **span}
+            | {"released_at": "2026-09-01T09:00:00+05:30", "release_reason": "Deal lost"},
+        ]
+        projects = [
+            {"id": pid, "name": name, "client": name, "is_archived": False, "status": "confirmed"}
+            for pid, name in (("p-acme", "Acme"), ("p-beta", "Beta"))
+        ]
+
+        def counting(*, user_ids=None, project_id=None):
+            return [dict(a) for a in allocations if not a.get("released_at")]
+
+        monkeypatch.setattr(db, "list_counting_allocations", counting)
+        monkeypatch.setattr(db, "list_allocations", lambda **_: [dict(a) for a in allocations])
+        monkeypatch.setattr(db, "list_time_entries", lambda **_: [])
+        monkeypatch.setattr(db, "list_projects", lambda **_: [dict(p) for p in projects])
+        monkeypatch.setattr(db, "find_booking_on", lambda *a: None)
+        monkeypatch.setattr(service, "today_in_company_tz", lambda: self.DAY)
+        monkeypatch.setattr(service, "_grace_days", lambda: 7)
+        monkeypatch.setattr(service, "_max_hours", lambda: DEFAULT_MAX_HOURS_PER_DAY)
+
+        def offered() -> list[str]:
+            return [p["id"] for p in service.day_for("u1", self.DAY)["projects"]]
+
+        return allocations, offered
+
+    def test_a_released_allocation_is_not_offered(self, page):
+        allocations, offered = page
+        assert offered() == ["p-acme"]
+        allocations[1].pop("released_at")
+        assert offered() == ["p-acme", "p-beta"]

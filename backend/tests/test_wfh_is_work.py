@@ -66,7 +66,7 @@ class FakeDb:
     def get_profile(self, user_id):
         return dict(self.profiles[user_id]) if user_id in self.profiles else None
 
-    def list_profiles(self, *, active_only=False):
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
         return list(self.profiles.values())
 
     def list_reports(self, lead_id, *, active_only=True):

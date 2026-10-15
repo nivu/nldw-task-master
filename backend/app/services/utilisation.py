@@ -97,7 +97,7 @@ def bench(weeks: int = 8) -> dict[str, Any]:
     monday = today - timedelta(days=today.weekday())
     starts = [monday + timedelta(weeks=n) for n in range(weeks)]
     people = sorted(db.list_profiles(active_only=True), key=lambda p: p["display_name"])
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
     tentative_ids = {
         p["id"] for p in db.list_projects(include_archived=True) if rules.is_tentative(p)
     }
@@ -171,7 +171,7 @@ def hiring(months: int, annual_ctc: Decimal, start: str | None = None) -> dict[s
 
     people = db.list_profiles(active_only=True)
     user_ids = [p["id"] for p in people]
-    allocations = db.list_allocations()
+    allocations = db.list_counting_allocations()
     tentative_ids = {
         p["id"] for p in db.list_projects(include_archived=True) if rules.is_tentative(p)
     }

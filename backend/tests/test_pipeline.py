@@ -177,7 +177,7 @@ class FakeDb:
         self.entries: list[dict] = []
         self.audit: list[dict] = []
 
-    def list_profiles(self, *, active_only=False):
+    def list_profiles(self, *, active_only=False, include_crm_only=False):
         return self.profiles
 
     def list_cost_periods(self, user_id=None):
@@ -191,6 +191,18 @@ class FakeDb:
 
     def list_allocations(self, *, user_ids=None, project_id=None):
         return [a for a in self.allocations if user_ids is None or a["user_id"] in user_ids]
+
+    def list_counting_allocations(self, *, user_ids=None, project_id=None):
+        # Spec 007 FR-CRM-CHG-03, -04: not released, not on an archived project.
+        archived = {p["id"] for p in self.projects if p["is_archived"]}
+        return [
+            a
+            for a in self.list_allocations(user_ids=user_ids, project_id=project_id)
+            if not a.get("released_at") and a["project_id"] not in archived
+        ]
+
+    def default_location_id(self):
+        return None
 
     def list_time_entries(self, *, user_ids=None, start=None, end=None, **_):
         return self.entries

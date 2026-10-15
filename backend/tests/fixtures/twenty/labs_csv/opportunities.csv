@@ -1,0 +1,4 @@
+id,name,companyId,pointOfContactId,stage,amount,currency,closeDate,nextStep,nextStepOn,ownerEmail,lostReason,createdAt
+o-zenith-poc,Zenith POC,c-zenith,p-zara,SCREENING,250000,INR,2026-12-01,Scope call,2026-10-21,owner@nunnarilabs.com,,2026-09-15T06:00:00Z
+o-orbit-build,Orbit build,c-orbit,p-omar,LOST,900000,INR,2026-08-01,,,deepika@nunnarilabs.com,No budget,2026-06-01T06:00:00Z
+o-pixel-site,Pixel site,c-pixel,p-priya,CUSTOMER,150000,INR,2026-09-30,,,owner@nunnarilabs.com,,2026-08-01T06:00:00Z

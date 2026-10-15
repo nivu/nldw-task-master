@@ -1,0 +1,24 @@
+{
+  "companies": [
+    {"id": "c-psg", "name": "PSG Tech", "domainName": "psgtech.ac.in", "stage": "QUALIFIED", "accountOwnerEmail": "owner@nunnarilabs.com"},
+    {"id": "c-kct", "name": "KCT College", "domainName": "kct.ac.in", "accountOwnerEmail": "owner@nunnarilabs.com"}
+  ],
+  "people": [
+    {"id": "p-arun", "name": {"firstName": "Arun", "lastName": "Prakash"}, "emails": {"primaryEmail": "arun@psgtech.ac.in"}, "companyId": "c-psg"}
+  ],
+  "opportunities": [
+    {"id": "o-psg-mou", "name": "PSG Tech - MoU", "companyId": "c-psg", "stage": "NEW", "amount": {"amount": "200000", "currencyCode": "INR"}, "nextStep": "Send the MoU draft", "nextStepOn": "2026-10-24", "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-10-05T06:00:00Z"}
+  ],
+  "campaigns": [
+    {"id": "cmp-webinars", "name": "Academy weekly webinars Oct 2026 - Jan 2027", "type": "Webinar", "status": "Live", "startDate": "2026-10-03", "endDate": "2027-01-30", "goal": "Saturdays 19:00-21:00", "budget": {"amount": "50000", "currency": "INR"}, "ownerEmail": "owner@nunnarilabs.com", "createdAt": "2026-10-01T06:00:00Z"},
+    {"id": "cmp-mou", "name": "College MoU and course outreach", "type": "College outreach", "status": "Live", "ownerEmail": "owner@nunnarilabs.com"}
+  ],
+  "campaignMembers": [
+    {"id": "m-arun", "campaignId": "cmp-webinars", "personId": "p-arun", "status": "REGISTERED", "lastTouchAt": "2026-10-10"},
+    {"id": "m-kct", "campaignId": "cmp-webinars", "companyId": "c-kct", "status": "ATTENDED"},
+    {"id": "m-psg", "campaignId": "cmp-mou", "companyId": "c-psg", "status": "CONVERTED", "convertedOpportunityId": "o-psg-mou"},
+    {"id": "m-kct-mou", "campaignId": "cmp-mou", "companyId": "c-kct", "status": "CONVERTED"},
+    {"id": "m-meera", "campaignId": "cmp-webinars", "personId": "p-meera", "status": "TARGETED"},
+    {"id": "m-lost", "campaignId": "cmp-missing", "companyId": "c-kct", "status": "INVITED"}
+  ]
+}

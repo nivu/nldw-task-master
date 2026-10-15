@@ -32,8 +32,13 @@ def rotate(user_id: str) -> str:
 
 def resolve(key: str) -> dict[str, Any] | None:
     """Which person a key belongs to. Linear over active profiles — tens of
-    people, and the alternative is storing a second secret per person."""
+    people, and the alternative is storing a second secret per person.
+
+    Never a CRM-only account (spec 007 FR-CRM-CHG-01): `list_profiles` leaves
+    them out, and the check below says so where it matters."""
     for profile in db.list_profiles(active_only=True):
+        if profile.get("account_type") == "crm_only":
+            continue
         if key_for(profile) == key:
             return profile
     return None

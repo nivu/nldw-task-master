@@ -1,11 +1,12 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getStatement, statementCsvPath } from "@/lib/api/portal";
+import { download } from "@/lib/api/backend";
+import { errorMessage, getStatement, statementCsvPath } from "@/lib/api/portal";
 import type { Statement } from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { createClient } from "@/lib/supabase/client";
@@ -30,20 +31,28 @@ function StatementView() {
   const projectId = params.get("project") ?? "";
   const period = params.get("period") ?? isoMonth(new Date());
   const { data, error } = useAsync<Statement>(() => getStatement(projectId, period), [projectId, period]);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   async function downloadCsv() {
+    setDownloadError(null);
     const { data: session } = await createClient().auth.getSession();
-    const token = session.session?.access_token;
-    const response = await fetch(`/api/proxy${statementCsvPath(projectId, period)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${data?.project.name ?? "statement"}-${period}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      // The proxy passes the CSV through with its type and file name (006
+      // FR-STMT-02, 007 FR-CRM-CHG-08).
+      const { blob, filename } = await download(
+        statementCsvPath(projectId, period),
+        session.session?.access_token,
+        `${data?.project.name ?? "statement"}-${period}.csv`
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setDownloadError(errorMessage(e));
+    }
   }
 
   if (error) return <div role="alert" className="rounded-md bg-destructive/10 p-4 text-sm text-destructive">{error}</div>;
@@ -64,6 +73,9 @@ function StatementView() {
         <Button variant="outline" size="sm" onClick={downloadCsv}>Download CSV</Button>
         <Button size="sm" onClick={() => window.print()}>Print</Button>
       </div>
+      {downloadError && (
+        <p role="alert" className="text-sm text-destructive print:hidden">{downloadError}</p>
+      )}
 
       <div className="space-y-1">
         <h2 className="text-xl font-semibold">{data.project.name}</h2>

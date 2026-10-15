@@ -19,7 +19,7 @@ import { createClient } from "@/lib/supabase/client";
  * *Supabase's* callback, which is a different URL — Supabase sits in the
  * middle and hands off to us afterwards.
  */
-export function GoogleButton({ next = "/calendar" }: { next?: string }) {
+export function GoogleButton({ next = "/" }: { next?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

@@ -57,6 +57,29 @@ Everything you can do in the portal, and nothing you cannot:
 - If the owner has authorised you, whatever your role: the company dashboard
   (`ceo_dashboard`).
 
+## The sales CRM from Claude
+
+If you belong to a CRM workspace, the same connection carries the `crm_*`
+tools, with the role you hold in each workspace:
+
+| Your role in the workspace | Claude can |
+|---|---|
+| Any (Admin, Member, Viewer) | list your workspaces (`crm_workspaces`), run Today (`crm_today`), search (`crm_search`), read any record (`crm_get`) and lists by filter or saved view (`crm_list`). A Viewer gets no amounts |
+| Admin or Member | create and update records (`crm_create`, `crm_update`), set a deal's next step (`crm_set_next_step`), add tasks and notes (`crm_add_task`, `crm_add_note`), move deals (`crm_move_stage`), do the Labs handoff (`crm_handoff`), merge companies (`crm_merge`), work campaign members (`crm_campaign_members`), complete tasks (`crm_complete_task`); a Viewer may complete a task assigned to them |
+| Admin, and Members for their own numbers | read the dashboard (`crm_dashboard`) |
+| Admin only | another member's Today, imports (`crm_import`) and running email sync now (`crm_run_email_sync`) |
+
+Linking a Labs deal to an existing TVA project also needs you to be a TVA
+manager or admin. Deleting records, settings, invitations, saved views and
+exports stay in the web app.
+
+If you belong to more than one workspace, Claude reads from the one you used
+last, but every change must name its workspace, or it is refused with your
+workspaces listed.
+
+**CRM-only accounts** connect Claude from the CRM's own **Account** page
+(`/crm/account`), the same way; their token reaches the CRM tools only.
+
 Before anything is changed, Claude is instructed to show you exactly what it
 is about to do and wait for your yes. If it does not, say no and tell an
 admin.

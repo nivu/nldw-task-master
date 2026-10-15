@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     # derived from the service key when unset.
     FEED_SECRET: str = ""
 
+    # ------------------------------------------------------------------
+    # Spec 007 Gmail label sync — FR-CRM-SYNC-03, plan §2.2, Q-23
+    #
+    # The service-account key, raw JSON or base64 of it, is set on the
+    # `worker-crm-sync` service ONLY: it is the one process that calls Gmail.
+    # The API, beat and the shared worker never hold it; they read the
+    # non-secret CRM_GMAIL_CONFIGURED flag instead, which says the key exists
+    # there. Sync is inert while the flag is false.
+    # ------------------------------------------------------------------
+    GOOGLE_SERVICE_ACCOUNT_JSON: SecretStr | None = None
+    CRM_GMAIL_CONFIGURED: bool = False
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

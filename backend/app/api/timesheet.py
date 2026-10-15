@@ -15,12 +15,14 @@ from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentUserDep, LeadDep, ManagerDep
 from app.api.errors import ProblemDetail
+from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person, can_view_timesheet
 from app.domain.calendar import today_in_company_tz
 from app.schemas import TimesheetDay
 from app.services import analytics as analytics_service
 from app.services import supabase as db
 from app.services import timesheets as timesheet_service
+from app.services.crm.tva import ProjectLinks
 
 router = APIRouter(prefix="/timesheet", tags=["timesheet"])
 
@@ -85,6 +87,9 @@ def someone_elses_week(user_id: str, user: CurrentUserDep, week_start: date | No
         # 404 rather than 403: confirming that a colleague's timesheet exists
         # already says something about them.
         raise ProblemDetail(404, "No such person.")
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no timesheet to show.
+    if timesheet_rules.staff_subject_refusal(subject_row, "timesheet"):
+        raise ProblemDetail(404, "No such person.")
 
     return {
         "user_id": user_id,
@@ -148,10 +153,17 @@ def project_list(user: LeadDep) -> list[dict]:
 
 @analytics.get("/projects/{project_id}")
 def project_detail(project_id: str, user: LeadDep) -> dict:
-    """FR-ANALYTICS-02/03 — the budget conversation."""
+    """FR-ANALYTICS-02/03 — the budget conversation. Spec 007 FR-CRM-TVA-02:
+    a deal-managed project says so, and names its company and deal to Labs
+    members only, as `/admin/projects` does."""
     result = analytics_service.project_effort(project_id)
     if not result:
         raise ProblemDetail(404, "No such project.")
+    row = db.get_project(project_id) or {}
+    result["project"]["crm_managed"] = bool(row.get("source_opportunity_id"))
+    block = ProjectLinks(user, [row]).block(row)
+    if block is not None:
+        result["project"]["crm"] = block
     return result
 
 

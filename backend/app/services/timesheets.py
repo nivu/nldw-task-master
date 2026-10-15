@@ -48,23 +48,29 @@ def _max_hours() -> Decimal:
 # ---------------------------------------------------------------------------
 
 
-def leave_days_for(user_ids: list[str], start: date, end: date) -> dict[str, dict[date, Decimal]]:
+def leave_days_for(
+    user_ids: list[str], start: date, end: date, *, statuses: frozenset[str] = CONSUMING_STATES
+) -> dict[str, dict[date, Decimal]]:
     """Approved and pending leave per person per day, as fractions of a day.
 
     Only consuming states count (`001` §6.4). A withdrawn or rejected booking
     never removed any capacity, so counting it would understate the team.
+    `statuses` narrows that further (the capacity service's supply takes
+    approved leave only).
     Work from home is not leave: it is a working day at full capacity, so it
     is left out (`rules.LEAVE_CATEGORIES`).
     """
     out: dict[str, dict[date, Decimal]] = {}
-    for user_id, days in bookings_by_day_for(user_ids, start, end).items():
+    for user_id, days in bookings_by_day_for(user_ids, start, end, statuses=statuses).items():
         for day, booking in days.items():
             if is_leave(booking["category"]):
                 out.setdefault(user_id, {})[day] = Decimal(booking["duration"])
     return out
 
 
-def bookings_by_day_for(user_ids: list[str], start: date, end: date) -> dict[str, dict[date, dict]]:
+def bookings_by_day_for(
+    user_ids: list[str], start: date, end: date, *, statuses: frozenset[str] = CONSUMING_STATES
+) -> dict[str, dict[date, dict]]:
     """Approved and pending bookings of every category, per person per day.
 
     Each value is `{category, label, duration}`, so a view can tell work from
@@ -74,7 +80,7 @@ def bookings_by_day_for(user_ids: list[str], start: date, end: date) -> dict[str
         user_ids=user_ids,
         start=start,
         end=end,
-        statuses=sorted(CONSUMING_STATES),
+        statuses=sorted(statuses),
         columns="user_id,date,duration,category,status",
     )
     out: dict[str, dict[date, dict]] = {}
@@ -109,7 +115,7 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
     entries = db.list_time_entries(user_ids=[user_id], start=day, end=day)
     allocations = [
         a
-        for a in db.list_allocations(user_ids=[user_id])
+        for a in db.list_counting_allocations(user_ids=[user_id])
         if date.fromisoformat(a["starts_on"]) <= day <= date.fromisoformat(a["ends_on"])
     ]
     projects = {p["id"]: p for p in db.list_projects(include_archived=True)}

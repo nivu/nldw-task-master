@@ -36,7 +36,10 @@ export default function ApprovalsPage() {
     []
   );
   const { data: me } = useAsync<Me>(() => getMe(), []);
-  const scope = me?.capabilities.admin_panel ? "waiting across the organisation" : "waiting on you";
+  const scope =
+    me?.account_type === "staff" && me.capabilities.admin_panel
+      ? "waiting across the organisation"
+      : "waiting on you";
 
   async function decide(id: string, approve: boolean) {
     setBusy(id);

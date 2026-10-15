@@ -67,6 +67,18 @@ celery_app.conf.update(
 celery_app.autodiscover_tasks(["app.tasks"])
 
 # ---------------------------------------------------------------------------
+# Spec 007 Gmail sync — FR-CRM-SYNC-04, Q-74, plan §2.2
+#
+# Its page tasks go to their own queue, served only by the `worker-crm-sync`
+# service (`celery -A app.worker worker -Q crm_sync --concurrency=1`), the one
+# process that holds the Gmail key. The shared worker consumes the default
+# queue only, so a long backfill never takes the slots leave notifications
+# need. Everything else stays on the default queue.
+# ---------------------------------------------------------------------------
+CRM_SYNC_QUEUE = "crm_sync"
+celery_app.conf.task_routes = {"crm.email_sync_page": {"queue": CRM_SYNC_QUEUE}}
+
+# ---------------------------------------------------------------------------
 # Scheduled work — spec Q-04
 #
 # The lock sweep promotes pending bookings whose own date has passed. It runs
@@ -110,4 +122,16 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=15),
     },
     "lapse-compoff": {"task": "ops.lapse_compoff", "schedule": crontab(hour=0, minute=20)},
+    # Spec 007 FR-CRM-DEL-01, plan §5.11: Trash older than 90 days, per workspace.
+    "crm-purge-trash": {"task": "crm.purge_trash", "schedule": crontab(hour=1, minute=10)},
+    # Spec 007 FR-CRM-FLAG-02, plan §5.11: every workspace's follow-up flags,
+    # then the stale-deal notices they raise (automations 4 and 5).
+    "crm-recompute-flags": {"task": "crm.recompute_flags", "schedule": crontab(minute="*/30")},
+    # FR-CRM-NOTIF-03, -04, automation 7: digests go to whoever is at 09:00
+    # their own time, so the tick runs every quarter hour; task reminders too.
+    "crm-digest-tick": {"task": "crm.digest_tick", "schedule": crontab(minute="*/15")},
+    # FR-CRM-SYNC-04: labelled Gmail threads within 15 minutes. The tick runs
+    # on the default queue and only enqueues pages onto CRM_SYNC_QUEUE; while
+    # sync is off or unconfigured it records a skip and does nothing else.
+    "crm-email-sync-tick": {"task": "crm.email_sync_tick", "schedule": crontab(minute="*/15")},
 }

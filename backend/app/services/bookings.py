@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain import rules
+from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person, can_decide
 from app.domain.calendar import period_of, today_in_company_tz
 from app.services import audit, balances, settings_store
@@ -226,6 +227,9 @@ def decide(
         raise BookingRefused(
             "You can only approve or reject bookings for your own reports.", status=403
         )
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no leave to decide.
+    if refusal := timesheet_rules.staff_subject_refusal(subject_row, "leave"):
+        raise BookingRefused(refusal)
 
     target = "approved" if approve else "rejected"
     refusal = rules.check_transition(booking["status"], target)
@@ -282,6 +286,9 @@ def flag_unrecognised(
     )
     if not can_decide(actor, subject):
         raise BookingRefused("You can only flag absences for your own reports.", status=403)
+    # Spec 007 FR-CRM-CHG-02 — nothing of TVA's is written about a CRM-only account.
+    if refusal := timesheet_rules.staff_subject_refusal(subject_row, "absence"):
+        raise BookingRefused(refusal)
 
     today = today_in_company_tz()
     if day >= today:
@@ -352,6 +359,8 @@ def backfill(
     subject = db.get_profile(user_id)
     if subject is None:
         raise BookingRefused("No such person.", status=404)
+    if refusal := timesheet_rules.staff_subject_refusal(subject, "leave"):
+        raise BookingRefused(refusal)
 
     from app.services.holidays import holiday_on_for_user
 

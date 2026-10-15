@@ -110,10 +110,11 @@ export default function AnalyticsPage() {
     ]);
     // Spec 006 FR-HEALTH — a colour per project for the manager tier.
     const health: Record<string, "green" | "amber" | "red"> = {};
-    if (me.capabilities.financials) {
+    const financials = me.account_type === "staff" && me.capabilities.financials;
+    if (financials) {
       for (const h of await getProjectsHealth()) health[h.project_id] = h.overall;
     }
-    return { projects, coverage, forecast, current, financials: me.capabilities.financials, health };
+    return { projects, coverage, forecast, current, financials, health };
   }, []);
 
   if (error) {
@@ -283,6 +284,52 @@ export default function AnalyticsPage() {
               ))}
             </CardContent>
           </Card>
+
+          {/* Spec 007 FR-CRM-CHG-17 — supply against demand per week, from the
+              capacity service the CRM capacity check also reads. */}
+          {data.forecast.weeks.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Supply and demand by week</CardTitle>
+                <CardDescription>
+                  Supply is everyone&apos;s contracted hours less holidays and leave.
+                  Released allocations and archived projects are not counted.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="overflow-x-auto p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="p-3 font-medium">Week of</th>
+                      <th className="p-3 text-right font-medium">Supply</th>
+                      <th className="p-3 text-right font-medium">Confirmed</th>
+                      <th className="p-3 text-right font-medium">Tentative</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {data.forecast.weeks.map((week) => (
+                      <tr key={week.week_start}>
+                        <td className="whitespace-nowrap p-3">{week.week_start}</td>
+                        <td className="p-3 text-right tabular-nums">{week.supply_hours}h</td>
+                        <td
+                          className={cn(
+                            "p-3 text-right tabular-nums",
+                            Number(week.confirmed_hours) > Number(week.supply_hours) &&
+                              "font-medium text-amber-700 dark:text-amber-400"
+                          )}
+                        >
+                          {week.confirmed_hours}h
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-muted-foreground">
+                          {week.tentative_hours}h
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
 
           {/* FR-ALLOC-04 — surfaced, not forbidden. */}
           {data.forecast.over_allocated.length > 0 && (

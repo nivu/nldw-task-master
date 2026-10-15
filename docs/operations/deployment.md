@@ -11,7 +11,7 @@ is not written down, write it down.
 | Frontend | <https://tva.nunnarilabs.com> (custom domain, below; <https://nunnari-employee-portal.netlify.app> still works) |
 | Backend | <https://api-production-9edd.up.railway.app> |
 | Supabase | project `worjtvnpizpyfimwotkl`, region `ap-south-1` (Mumbai) |
-| Railway | project `nunnari-employee-portal` — `api`, `worker`, `beat`, `Redis` |
+| Railway | project `nunnari-employee-portal` — `api`, `worker`, `beat`, `Redis`; `worker-crm-sync` is created only when the CRM's Gmail sync is switched on (section 6) |
 
 Three pieces, deployed in this order because each needs the previous one's URL:
 
@@ -92,6 +92,7 @@ quietly starting a second API where a scheduler was meant to be.
 | `worker` | `worker` | Notifications (FR-NOTIF) |
 | `beat` | `beat` | **The Q-04 nightly sweep.** Without it, pending bookings whose date has passed stay pending forever |
 | `redis` | — | Railway's Redis template. The broker |
+| `worker-crm-sync` | `worker_crm_sync` | The CRM's Gmail sync pages only (queue `crm_sync`, one at a time). **Not created until sync is switched on** — section 6 |
 
 Deploy each from `backend/`, so the build context contains the Dockerfile's
 `COPY` sources:
@@ -361,6 +362,121 @@ page must have no Money or Resources tab.
 - Untick **Logs time** under Admin → People for anyone who keeps no
   timesheet.
 
+## 6. The sales CRM (spec 007)
+
+The CRM ships in the same image, the same three services and the same
+frontend as the rest of the portal. Releasing it is a normal release
+(below) with migrations `025` to `044`, plus the settings here. Read
+[`docs/architecture/crm.md`](../architecture/crm.md) first; it explains what
+each piece is for.
+
+### First release
+
+1. **Migrations `025`–`044`** with `npx supabase db push`, as every release.
+   `026` makes the owner (`profiles.is_owner`) an Admin of both workspaces,
+   Nunnari Labs and Nunnari Academy B2B, and seeds their select lists, stage
+   probabilities and saved views. Nobody else is a member until invited.
+   `025` revokes every table privilege from `anon` and `authenticated`: the
+   browser reads nothing from Supabase directly any more, only through the
+   proxy.
+2. **`api`, `worker` and `beat` from the same commit.** The CRM adds Celery
+   tasks (`crm.*`) and beat entries (the trash purge, flags every 30 minutes,
+   the digest and email-sync ticks every 15); a worker left on an older commit
+   drops them silently.
+3. **Netlify**, with `--skip-functions-cache`. The proxy now carries uploads
+   up to 4 MB and CSV/JSON downloads.
+4. **Check**, signed in as the owner: the sidebar shows **CRM**; `/crm/labs`
+   and `/crm/academy` open on Today; Settings → Members lists the owner as
+   Admin. Then:
+
+   ```bash
+   curl -s https://<railway-domain>/health/jobs        # {"status":"ok",…}; 503 while a job is late
+   ```
+
+   A CRM job is "late" only once beat has had time to run it (up to a day for
+   the trash purge), so expect `ok` once the first ticks have run.
+5. **Invite the sales team** from Settings → Members in each workspace (spec
+   §4.4). Each invitee signs in with Google at the invited address.
+
+### Settings, by service
+
+Nothing new is needed on `api`, `worker` or `beat` for the CRM to work.
+Gmail sync stays **off**, and says so in the CRM, until both of these exist:
+
+| Variable | Service | Value |
+|---|---|---|
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | `worker-crm-sync` **only** | The service-account key: the raw JSON, or base64 of it. Never on `api`, `worker` or `beat`; never in Netlify |
+| `CRM_GMAIL_CONFIGURED` | `api`, `beat` and `worker` | `true` once the key is set on `worker-crm-sync`. A non-secret flag: the API, the tick and Settings read it instead of the key |
+
+The service account needs domain-wide delegation in Google Workspace for the
+`https://www.googleapis.com/auth/gmail.readonly` scope only, in each domain
+the CRM syncs (`nunnarilabs.com`, `deepweaver.ai`, `nunnari.academy`). It
+reads only the mailboxes and labels listed in CRM Settings, and stores
+subjects and participants, never bodies.
+
+### Switching Gmail sync on
+
+1. Create the `worker-crm-sync` service in the Railway project from the same
+   repository and `backend/Dockerfile`, with `PROCESS_TYPE=worker_crm_sync`
+   and the same base variables as `worker` (`SUPABASE_URL`,
+   `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `FRONTEND_URL`). Deploy it like
+   the others:
+
+   ```bash
+   cd backend && railway up . --path-as-root --service worker-crm-sync
+   ```
+
+   It is a second always-on worker, so it adds to the Railway bill (spec Q-74);
+   that is why it is created only now.
+2. Set `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-sync`.
+3. Set `CRM_GMAIL_CONFIGURED=true` on `api`, `beat` and `worker`, and redeploy
+   them (from the same commit as `worker-crm-sync`).
+4. In each workspace, an Admin adds the mailboxes and labels under Settings →
+   Mailboxes, then turns sync on. **Run now** checks it end to end; the run
+   appears under Settings → Jobs.
+
+To switch it off: turn it off in each workspace, set `CRM_GMAIL_CONFIGURED`
+back to `false`, and stop `worker-crm-sync`.
+
+### Email to CRM-only people
+
+CRM-only sellers are generally not in Nunnari's Slack, so the only way to
+reach them out of the app is email, which needs a production SMTP sender
+(`SMTP_*` on `api`, which sends invitations, and on `worker` and `beat`, which
+send digests and reminders; spec Q-73; the Google Workspace SMTP relay
+is the recommendation). Until it is set, they get the in-app bell only, their
+invitation link has to be sent by hand, and each digest run counts them as
+*undeliverable* in Settings → Jobs.
+
+### Monitoring
+
+Point an external uptime monitor at `GET https://<railway-domain>/health/jobs`.
+It answers 503 while any CRM job is more than twice its interval late, which
+is how a stopped `beat` shows itself. It carries no counts, errors or record
+content.
+
+### The database tests in CI
+
+The `db` job in `.github/workflows/ci.yml` starts a local Supabase, applies
+every migration with `supabase db reset` and runs `pytest -m db` against it:
+grants, triggers, constraints and the database functions. It never touches
+the hosted project (the tests refuse any non-loopback URL).
+
+### Never commit `supabase/config.toml` local changes
+
+The local password sign-in script (`backend/scripts/ops/local_password_auth.sh`)
+edits `supabase/config.toml`. That edit must never be committed: a later
+`supabase config push` would enable password sign-in in production. Before
+every commit, `git diff --cached --name-only | grep -c config.toml` must
+print `0`.
+
+### Cutover from the old CRM
+
+Two scheduled Claude tasks named "CRM follow-up sweep" live outside this
+repository and read the old CRM. At cutover, repoint them at this portal's
+`crm_*` tools (a morning `crm_today` per workspace) or retire them (spec
+D16). The Twenty import itself is Settings → Import, dry run first.
+
 ## Releasing a change
 
 Every release, in this order:
@@ -369,8 +485,9 @@ Every release, in this order:
    `npx supabase db push`. New code reads and writes the new columns: deployed
    ahead of its migration, creating a person fails and editing one returns an
    error after the change was saved.
-2. **`api`, `worker` and `beat` from the same commit.** A worker left on the
-   old commit drops any new Celery task the api sends it, silently.
+2. **`api`, `worker` and `beat` from the same commit** — and `worker-crm-sync`
+   too, once it exists. A worker left on the old commit drops any new Celery
+   task the api sends it, silently.
 3. **Netlify**, with `--skip-functions-cache` (section 3), so the server
    function picks up `next.config.ts` (security headers included).
 4. **Check.** The section 5 curls, plus:

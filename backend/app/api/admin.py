@@ -37,6 +37,7 @@ from app.services import audit, balances, settings_store
 from app.services import bookings as booking_service
 from app.services import pnl as pnl_service
 from app.services import supabase as db
+from app.services.crm.tva import ProjectLinks
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -70,8 +71,11 @@ def list_users(admin: AdminDep) -> list[dict]:
             # and the owner flag itself is never changed through the app.
             "dashboard_access": row.get("dashboard_access") is True,
             "is_owner": row.get("is_owner") is True,
+            # Spec 007 FR-CRM-CHG-02 — CRM-only sellers are listed here, and
+            # only here in TVA, so an admin can see and deactivate them.
+            "account_type": row.get("account_type") or "staff",
         }
-        for row in db.list_profiles()
+        for row in db.list_profiles(include_crm_only=True)
     ]
 
 
@@ -94,8 +98,12 @@ def create_user(payload: UserCreate, admin: AdminDep) -> dict:
     if db.get_profile_by_email(payload.email):
         raise ProblemDetail(409, f"{payload.email} already has an account.")
 
-    if payload.lead_id and db.get_profile(payload.lead_id) is None:
-        raise ProblemDetail(422, "That lead does not exist.")
+    if payload.lead_id:
+        lead = db.get_profile(payload.lead_id)
+        if lead is None:
+            raise ProblemDetail(422, "That lead does not exist.")
+        if refusal := rules.lead_person_refusal(lead):
+            raise ProblemDetail(422, refusal)
 
     if problem := rules.check_employment_dates(payload.joined_on, payload.left_on):
         raise ProblemDetail(422, problem)
@@ -170,6 +178,15 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
 
+    # Spec 007 FR-CRM-CHG-02 — a CRM-only account has no TVA role, lead,
+    # timesheet or dashboard (025 `profiles_crm_only_shape`). Giving it one is
+    # converting it to staff, which is its own deliberate step.
+    if existing.get("account_type") == "crm_only" and (
+        any(k in changes for k in ("role", "lead_id", "logs_time"))
+        or changes.get("dashboard_access") is True
+    ):
+        raise ProblemDetail(422, "Change the account type first.")
+
     # Spec 003 FR-DASH-03 — the owner alone grants and revokes dashboard
     # access. Being an admin is not enough; that is the point of the flag.
     if "dashboard_access" in changes:
@@ -187,8 +204,12 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if changes.get("lead_id") == user_id:
         raise ProblemDetail(422, "Somebody cannot be their own lead.")
 
-    if changes.get("lead_id") and db.get_profile(changes["lead_id"]) is None:
-        raise ProblemDetail(422, "That lead does not exist.")
+    if changes.get("lead_id"):
+        lead = db.get_profile(changes["lead_id"])
+        if lead is None:
+            raise ProblemDetail(422, "That lead does not exist.")
+        if refusal := rules.lead_person_refusal(lead):
+            raise ProblemDetail(422, refusal)
 
     if user_id == admin.id and changes.get("role") and changes["role"] != "admin":
         # Removing your own admin rights locks the panel for everyone if you
@@ -205,6 +226,11 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     joined_on, left_on = rules.employment({**existing, **changes})
     if problem := rules.check_employment_dates(joined_on, left_on):
         raise ProblemDetail(422, problem)
+
+    # Spec 007 FR-CRM-ACC-04 — an admin's deactivation is recorded as such, so
+    # a CRM workspace admin's invitation cannot quietly undo it.
+    if "is_active" in changes and changes["is_active"] is not None:
+        changes["deactivated_reason"] = None if changes["is_active"] else "admin"
 
     updated = db.update_profile(user_id, changes)
     # FR-DASH-03 — access changes get their own audit action, so who was let
@@ -302,8 +328,11 @@ def add_ctc(user_id: str, payload: CtcPeriodIn, admin: AdminDep) -> dict:
     period that started earlier is closed the day before this one starts,
     which is how "CTC changes next month" is entered. Any other overlap is
     refused by the database (FR-CTC-02)."""
-    if db.get_profile(user_id) is None:
+    person = db.get_profile(user_id)
+    if person is None:
         raise ProblemDetail(404, "No such user.")
+    if refusal := rules.staff_subject_refusal(person, "ctc"):
+        raise ProblemDetail(422, refusal)
     if payload.ends_on is not None and payload.ends_on < payload.starts_on:
         raise ProblemDetail(422, "The end date is before the start date.")
 
@@ -398,8 +427,12 @@ def set_allowance(payload: AllowanceIn, admin: AdminDep) -> dict:
     change cannot retroactively invalidate bookings already approved in a
     closed period. `user_id` omitted sets the organisation default.
     """
-    if payload.user_id and db.get_profile(payload.user_id) is None:
-        raise ProblemDetail(422, "No such user.")
+    if payload.user_id:
+        person = db.get_profile(payload.user_id)
+        if person is None:
+            raise ProblemDetail(422, "No such user.")
+        if refusal := rules.staff_subject_refusal(person, "leave"):
+            raise ProblemDetail(422, refusal)
 
     row = db.upsert_allowance(
         {
@@ -826,10 +859,16 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
 
 @router.get("/audit")
 def read_audit(admin: AdminDep, limit: int = Query(default=200, le=1000)) -> list[dict]:
-    """NFR-06 — readable, and by construction not writable."""
-    names = {p["id"]: p["display_name"] for p in db.list_profiles()}
+    """NFR-06 — readable, and by construction not writable.
+
+    Spec 007 FR-CRM-AUD-04: TVA rows only — a CRM row (one with a workspace)
+    is not shown here, to anyone. CRM-only actors are named too: a seller's
+    action must not show up as an unknown person, and a TVA change a deal
+    move made for them reads "*Name* (via CRM deal)" (FR-CRM-TVA-03)."""
+    names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     return [
-        {**row, "actor": actor_name(row.get("actor_id"), names)} for row in db.list_audit(limit)
+        {**row, "actor": actor_name(row.get("actor_id"), names, row.get("actor_label"))}
+        for row in db.list_audit(limit, tva_only=True)
     ]
 
 
@@ -891,7 +930,8 @@ def list_projects(user: LeadDep) -> list[dict]:
             }
         )
     names = {p["id"]: p["display_name"] for p in db.list_profiles()}
-    return [_present_project(p, user, phases.get(p["id"], []), names) for p in projects]
+    crm = ProjectLinks(user, projects)
+    return [_present_project(p, user, phases.get(p["id"], []), names, crm) for p in projects]
 
 
 def _present_project(
@@ -899,12 +939,16 @@ def _present_project(
     user,  # noqa: ANN001
     phases: list[dict] | None = None,
     names: dict[str, str] | None = None,
+    crm: ProjectLinks | None = None,
 ) -> dict:
     """Money — FR-FIN-02. Revenue goes to managers and admins only; a lead
     gets the project without the key (FR-ROLE-07).
 
     `names` maps profile id to display name for the lead (spec 002
-    FR-PROJ-07); without it the one lead is looked up."""
+    FR-PROJ-07); without it the one lead is looked up. Spec 007: `crm_managed`
+    says a CRM deal controls the status, probability and (while tentative)
+    archived state (FR-CRM-CHG-05), and `crm`, for Labs members only, names
+    the company and the deal (FR-CRM-TVA-02)."""
     lead_id = row.get("lead_id")
     if lead_id and names is None:
         lead = db.get_profile(lead_id)
@@ -920,11 +964,16 @@ def _present_project(
         # Spec 002 FR-PROJ-08 — pipeline, and the chance it is won. Not money.
         "status": row.get("status", "confirmed"),
         "probability": row.get("probability"),
+        "crm_managed": bool(row.get("source_opportunity_id")),
     }
     if user.is_manager:
         out["revenue"] = str(row["revenue"]) if row.get("revenue") is not None else None
     if phases is not None:
         out["phases"] = phases
+    crm = crm or ProjectLinks(user, [row])
+    block = crm.block(row)
+    if block is not None:
+        out["crm"] = block
     return out
 
 
@@ -991,6 +1040,15 @@ def update_project(project_id: str, payload: ProjectUpdate, user: LeadDep) -> di
         del changes["status"]  # nor a status; probability can be cleared
     if not changes:
         raise ProblemDetail(422, "Nothing to change.")
+    if existing.get("source_opportunity_id"):
+        # Spec 007 FR-CRM-CHG-05, -TVA-15, D15: a CRM deal controls status and
+        # probability, and archive while the project is tentative. A
+        # confirmed linked project archives here as any other.
+        controlled = ["status", "probability"]
+        if rules.is_tentative(existing):
+            controlled.append("is_archived")
+        if any(k in changes and changes[k] != existing.get(k) for k in controlled):
+            raise ProblemDetail(422, ProjectLinks(user, [existing]).managed_by(existing))
     if "revenue" in changes and not user.is_manager:
         raise ProblemDetail(403, "Only a manager or admin can set revenue.")
     if "revenue" in changes and changes["revenue"] is not None:
@@ -1066,6 +1124,12 @@ def set_phase(project_id: str, payload: PhaseIn, user: LeadDep) -> dict:
     }
 
 
+#: Spec 007 D5, contracts §1.1. A released row is kept exactly as it was so
+#: that reopening the deal restores it; editing or removing it would make the
+#: reopen restore something else.
+RELEASED = "This allocation was released when its deal was lost; reopen the deal to restore it."
+
+
 @router.get("/allocations")
 def list_allocations(user: LeadDep) -> list[dict]:
     """A lead sees only their reports' allocations — FR-ROLE-08."""
@@ -1084,6 +1148,12 @@ def list_allocations(user: LeadDep) -> list[dict]:
             "starts_on": a["starts_on"],
             "ends_on": a["ends_on"],
             "percent": str(a["percent"]),
+            # Spec 007 FR-CRM-CHG-03 — every row, a released one marked.
+            "released": (
+                {"at": a["released_at"], "reason": a.get("release_reason")}
+                if a.get("released_at")
+                else None
+            ),
         }
         for a in db.list_allocations(user_ids=user_ids)
     ]
@@ -1103,6 +1173,8 @@ def create_allocation(payload: AllocationIn, user: LeadDep) -> dict:
     person = db.get_profile(payload.user_id)
     if person is None:
         raise ProblemDetail(404, "No such person.")
+    if refusal := rules.allocation_person_refusal(person):
+        raise ProblemDetail(422, refusal)
     if not rules.may_allocate(
         actor_id=user.id, actor_is_manager=user.is_manager, person_lead_id=person.get("lead_id")
     ):
@@ -1158,6 +1230,8 @@ def remove_allocation(allocation_id: str, user: LeadDep) -> dict:
         mine = [p["id"] for p in db.list_reports(user.id, active_only=False)]
         if allocation_id not in {a["id"] for a in db.list_allocations(user_ids=mine)}:
             raise ProblemDetail(403, "A lead can only remove their own reports' allocations.")
+    if existing.get("released_at"):
+        raise ProblemDetail(422, RELEASED)
     db.delete_allocation(allocation_id)
     audit.record(
         action="allocation.deleted",
@@ -1190,6 +1264,8 @@ def update_allocation(allocation_id: str, payload: AllocationUpdate, user: LeadD
         person_lead_id=person.get("lead_id") if person else None,
     ):
         raise ProblemDetail(403, "A lead can only change their own reports' allocations.")
+    if existing.get("released_at"):
+        raise ProblemDetail(422, RELEASED)
 
     old = (date.fromisoformat(existing["starts_on"]), date.fromisoformat(existing["ends_on"]))
     starts_on = changes.get("starts_on", old[0])

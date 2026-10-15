@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import ProblemDetail, problem_handler, problem_response, unhandled_handler
 from app.config import settings
+from app.services.crm import CrmRefused
 
 # ---------------------------------------------------------------------------
 # Structured JSON logging
@@ -181,6 +182,9 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Respon
 # anything unforeseen.
 # ---------------------------------------------------------------------------
 app.add_exception_handler(ProblemDetail, problem_handler)
+# Spec 007 — the CRM services refuse with the same shape, without importing
+# the API layer.
+app.add_exception_handler(CrmRefused, problem_handler)
 app.add_exception_handler(Exception, unhandled_handler)
 
 
@@ -200,6 +204,20 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 @app.get("/health", tags=["health"])
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/jobs", tags=["health"])
+def health_jobs(response: Response) -> dict[str, Any]:
+    """Spec 007 FR-CRM-JOB-03, Q-72 — for an external uptime monitor: each CRM
+    job's last run and whether it is more than twice its interval late. No
+    counts, no errors, no record content; 503 while any job is late, so a
+    monitor that only reads the status alerts too."""
+    from app.services.crm import jobs
+
+    report = jobs.health()
+    if report["status"] != "ok":
+        response.status_code = 503
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +249,13 @@ def _mount_routers() -> None:
     for router in ops.ROUTERS:
         app.include_router(router, prefix="/api/v1")
     logger.info("Mounted router: app.api.ops (%d routers)", len(ops.ROUTERS))
+
+    # Spec 007 — the sales CRM, every path under /api/v1/crm/.
+    from app.api import crm
+
+    for router in crm.ROUTERS:
+        app.include_router(router, prefix="/api/v1")
+    logger.info("Mounted router: app.api.crm (%d routers)", len(crm.ROUTERS))
 
     for module_path, attr_name in router_modules:
         module = importlib.import_module(module_path)

@@ -19,9 +19,12 @@ const PUBLIC_ROUTES = ["/auth/", "/help"];
 /**
  * Prefixes that require a signed-in user.
  *
- * "/" is included and matched exactly: the root immediately redirects to the
- * calendar, which is the primary view after sign-in (FR-CAL-01), so an
- * unauthenticated visitor must be stopped here rather than bounced twice.
+ * "/" is included and matched exactly: the root immediately redirects to
+ * Home, where sign-in lands, so an unauthenticated visitor must be stopped
+ * here rather than bounced twice.
+ *
+ * "/crm" is the sales CRM (spec 007 FR-CRM-UI-05): nothing under it renders
+ * for an anonymous visitor.
  */
 const PROTECTED_ROUTES = [
   "/home",
@@ -35,6 +38,7 @@ const PROTECTED_ROUTES = [
   "/dashboard",
   "/admin",
   "/account",
+  "/crm",
   "/",
 ];
 

@@ -13,6 +13,7 @@ import Link from "next/link";
 
 import { BackfillPanel } from "@/components/portal/backfill-panel";
 import { ChecklistsPanel, LocationsPanel, NotificationsPanel } from "@/components/portal/admin-ops";
+import { CrmWorkspacesPanel } from "@/components/portal/crm-workspaces-panel";
 import {
   addCtc,
   createUser,
@@ -109,11 +110,14 @@ export default function AdminPage() {
       settings,
       backfills,
       locations,
-      canGrantDashboard: me.capabilities.grant_dashboard,
+      canGrantDashboard: me.account_type === "staff" && me.capabilities.grant_dashboard,
     };
   }, []);
 
   const users = data?.users ?? [];
+  // Spec 007 FR-CRM-CHG-02 — CRM-only accounts are in the People table only;
+  // they have no lead, leave or checklist, so no other picker offers them.
+  const staff = users.filter((u) => u.account_type !== "crm_only");
   const allowances = data?.allowances ?? [];
   const holidays = data?.holidays ?? [];
   const settings = data?.settings ?? [];
@@ -150,11 +154,12 @@ export default function AdminPage() {
           <TabsTrigger value="checklists">Checklists</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="policy">Policy</TabsTrigger>
+          <TabsTrigger value="crm">CRM workspaces</TabsTrigger>
         </TabsList>
 
         <TabsContent value="people" className="space-y-4 pt-4">
           <NewUserForm
-            leads={users.filter((u) => u.role !== "user" && u.is_active)}
+            leads={staff.filter((u) => u.role !== "user" && u.is_active)}
             onDone={(message) => {
               setNotice(message);
               reload();
@@ -299,7 +304,7 @@ export default function AdminPage() {
 
         <TabsContent value="backfill" className="space-y-4 pt-4">
           <BackfillPanel
-            people={users}
+            people={staff}
             entries={backfills}
             onDone={(message) => {
               setNotice(message);
@@ -310,7 +315,7 @@ export default function AdminPage() {
         </TabsContent>
 
         <TabsContent value="checklists" className="space-y-4 pt-4">
-          <ChecklistsPanel people={users.filter((u) => u.is_active)} onError={setError} />
+          <ChecklistsPanel people={staff.filter((u) => u.is_active)} onError={setError} />
         </TabsContent>
 
         <TabsContent value="notifications" className="space-y-4 pt-4">
@@ -370,6 +375,11 @@ export default function AdminPage() {
               ))}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Spec 007 FR-CRM-CHG-11 — administered without joining a workspace. */}
+        <TabsContent value="crm" className="space-y-4 pt-4">
+          <CrmWorkspacesPanel />
         </TabsContent>
       </Tabs>
     </div>
@@ -559,6 +569,12 @@ function UserTable({
               <tr className={user.is_active ? "" : "opacity-50"}>
                 <td className="p-3">
                   <span className="font-medium">{user.display_name}</span>
+                  {/* Spec 007 FR-CRM-CHG-02 — listed here, counted nowhere. */}
+                  {user.account_type === "crm_only" && (
+                    <Badge variant="outline" className="ml-2">
+                      CRM only
+                    </Badge>
+                  )}
                   <span className="block text-xs text-muted-foreground">{user.email}</span>
                 </td>
                 <td className="p-3">
@@ -567,7 +583,7 @@ function UserTable({
                     aria-label={`Role for ${user.display_name}`}
                     className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
                     value={user.role}
-                    disabled={!user.is_active}
+                    disabled={!user.is_active || user.account_type === "crm_only"}
                     onChange={async (e) => {
                       try {
                         await updateUser(user.id, { role: e.target.value });
@@ -618,7 +634,7 @@ function UserTable({
                     aria-label={`${user.display_name} logs time`}
                     className="h-4 w-4"
                     checked={user.logs_time !== false}
-                    disabled={!user.is_active}
+                    disabled={!user.is_active || user.account_type === "crm_only"}
                     onChange={async (e) => {
                       try {
                         await updateUser(user.id, { logs_time: e.target.checked });
@@ -665,6 +681,7 @@ function UserTable({
                         aria-label={`${user.display_name} may see the dashboard`}
                         className="h-4 w-4"
                         checked={user.dashboard_access === true}
+                        disabled={user.account_type === "crm_only"}
                         onChange={async (e) => {
                           try {
                             await updateUser(user.id, { dashboard_access: e.target.checked });

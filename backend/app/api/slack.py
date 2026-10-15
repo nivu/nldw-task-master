@@ -151,6 +151,10 @@ def _resolve_actor(payload: dict) -> Person:
     profile = db.get_profile_by_email_ignoring_case(email)
     if profile is None or not profile["is_active"]:
         raise ProblemDetail(403, "That Slack account is not linked to an active portal user.")
+    if profile.get("account_type") == "crm_only":
+        # Spec 007 FR-CRM-CHG-01 — this route acts as the person without a
+        # session, so it applies the refusal `deps.current_user` would.
+        raise ProblemDetail(403, "This account is for the CRM only.")
 
     return Person(
         id=profile["id"],
