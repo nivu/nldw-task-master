@@ -171,7 +171,7 @@ export function TaskDialog({
   bootstrap: CrmBootstrap;
   members: CrmMember[];
   /** The record the task is for, when it is opened from one. */
-  link?: { record_type: Target; record_id: string; name: string };
+  link?: { record_type: Target | "campaign"; record_id: string; name: string };
   onCreated: (task: CrmTask) => void;
 }) {
   const [title, setTitle] = useState("");
@@ -373,7 +373,7 @@ export function TasksTab({
   bootstrap: CrmBootstrap;
   members: CrmMember[];
   tasks: CrmTask[];
-  link: { record_type: Target; record_id: string; name: string };
+  link: { record_type: Target | "campaign"; record_id: string; name: string };
   onChange: () => void;
 }) {
   const [adding, setAdding] = useState(false);

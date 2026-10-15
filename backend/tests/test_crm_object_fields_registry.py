@@ -47,11 +47,13 @@ class TestRegistry:
             )
 
     def test_the_amount_flags_match_the_redaction_list(self):
-        """Every amount the presenter omits for a Viewer is an amount to the
-        query too (plan §5.5), and nothing else is."""
+        """Every stored amount the presenter omits for a Viewer is an amount
+        to the query too (plan §5.5), and nothing else is. A campaign's
+        figures derived on read (041) are redacted but have no column."""
         for kind in objects.VIEW_FIELDS:
             flagged = {f for (k, f), row in _database().items() if k == kind and row["is_amount"]}
-            assert flagged == set(objects.AMOUNT_FIELDS[kind]), kind
+            stored = objects.AMOUNT_FIELDS[kind] - objects.DERIVED_AMOUNTS.get(kind, frozenset())
+            assert flagged == set(stored), kind
 
     def test_fields_shared_with_the_record_registry_agree(self):
         for (kind, name), row in _database().items():

@@ -1,6 +1,6 @@
 "use client";
 
-import { ListPlus, Pencil, Trash2, UserRound, X } from "lucide-react";
+import { ListPlus, Megaphone, Pencil, Trash2, UserRound, X } from "lucide-react";
 import { useState } from "react";
 
 import { cleanValue, FieldEditor } from "@/components/crm/field-editor";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { bulkCrm } from "@/lib/api/crm";
+import { bulkCrm, searchCampaignChoices } from "@/lib/api/crm";
 import type { BulkAction, BulkResult, CrmBootstrap, CrmMember, ViewObjectKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import {
@@ -32,19 +32,21 @@ import {
  * Bulk actions — spec 007 FR-CRM-VIEW-07; contracts §2.5 `POST /crm/bulk`.
  *
  * On the selected rows: set a field, assign an owner, add a task to each,
- * or move them to the Trash. Each record goes through the same rules as one
- * edit would (permissions, pipeline rules, a Labs deal's TVA project), so
- * some may succeed and others not; the result names each one refused and
- * why. Campaigns and export join in 1b.
+ * (1b) add companies or people to a campaign, or move them to the Trash.
+ * Each record goes through the same rules as one edit would (permissions,
+ * pipeline rules, a Labs deal's TVA project, Do not contact), so some may
+ * succeed and others not; the result names each one refused and why.
+ * Export joins in 1b (S11b).
  */
 
 type Row = Record<string, unknown> & { id: string };
-type Mode = "set" | "owner" | "task" | "delete";
+type Mode = "set" | "owner" | "task" | "campaign" | "delete";
 
 const TITLES: Record<Mode, string> = {
   set: "Edit a field",
   owner: "Assign owner",
   task: "Add a task to each",
+  campaign: "Add to campaign",
   delete: "Move to Trash",
 };
 
@@ -75,6 +77,7 @@ export function BulkBar({
   const [owner, setOwner] = useState<string>("");
   const [task, setTask] = useState({ title: "", due_on: "", assignee_id: bootstrap.me.id });
   const [people, setPeople] = useState<"unlink" | "delete">("unlink");
+  const [campaign, setCampaign] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkResult | null>(null);
@@ -115,6 +118,10 @@ export function BulkBar({
     } else if (mode === "owner") {
       action = "assign_owner";
       values = { owner_id: owner };
+    } else if (mode === "campaign") {
+      // FR-CRM-CAMP-03: Do not contact and existing members are refused, named.
+      action = "add_to_campaign";
+      values = { campaign_id: campaign };
     } else if (mode === "task") {
       action = "add_task";
       values = {
@@ -140,9 +147,16 @@ export function BulkBar({
   }
 
   if (count === 0) return null;
-  const canTask = kind === "company" || kind === "person" || kind === "opportunity";
+  const canTask = kind === "company" || kind === "person" || kind === "opportunity" || kind === "campaign";
+  const canCampaign = kind === "company" || kind === "person";
   const ready =
-    mode === "owner" ? Boolean(owner) : mode === "task" ? Boolean(task.title.trim() && task.assignee_id) : true;
+    mode === "owner"
+      ? Boolean(owner)
+      : mode === "task"
+        ? Boolean(task.title.trim() && task.assignee_id)
+        : mode === "campaign"
+          ? Boolean(campaign)
+          : true;
 
   return (
     <>
@@ -165,6 +179,11 @@ export function BulkBar({
         {canTask && (
           <Button size="sm" variant="outline" onClick={() => open("task")}>
             <ListPlus /> Add task
+          </Button>
+        )}
+        {canCampaign && (
+          <Button size="sm" variant="outline" onClick={() => open("campaign")}>
+            <Megaphone /> Add to campaign
           </Button>
         )}
         <Button size="sm" variant="destructive" onClick={() => open("delete")}>
@@ -308,6 +327,26 @@ export function BulkBar({
                     </div>
                   </div>
                 </>
+              )}
+              {mode === "campaign" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="bulk-campaign">Campaign</Label>
+                  <FieldEditor
+                    id="bulk-campaign"
+                    spec={{
+                      name: "campaign_id",
+                      label: "Campaign",
+                      type: "relation",
+                      choices: [],
+                      search: (q, after) => searchCampaignChoices(bootstrap.workspace.key, q, after),
+                    }}
+                    value={campaign}
+                    onChange={(v) => setCampaign((v as string | null) ?? null)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    People marked Do not contact are not added, and nobody is added twice.
+                  </p>
+                </div>
               )}
               {mode === "delete" && (
                 <div className="space-y-2 text-sm">

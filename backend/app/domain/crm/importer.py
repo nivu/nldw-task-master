@@ -28,6 +28,12 @@ Rules the plan follows, beyond the spec's:
   people, deals, tasks and notes land on the survivor.
 - A re-run refreshes a record from the file, but a field the file leaves
   blank keeps what the CRM has.
+- (1b) A campaign member names its campaign and a company, a person or
+  both; a person marked Do not contact in the CRM is not added (FR-CRM-
+  PER-02), and a member already on the campaign under another id is
+  reported, not doubled. A member with a converted deal is Converted, and
+  the deal records the campaign as its source (attribution) unless the file
+  names another; Converted with no deal in the file is imported as Engaged.
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 from app.domain.crm import dedupe, fx
-from app.domain.crm.objects import LEAD_STAGES
+from app.domain.crm.objects import LEAD_STAGES, MEMBER_STATUSES
 from app.domain.crm.pipeline import OPEN, default_probability
 from app.domain.crm.settings import STAGE_LABELS
 
@@ -55,21 +61,40 @@ FIXUP_NEXT_STEP: Final = "Review after import"
 ZONE: Final = ZoneInfo("Asia/Kolkata")
 
 #: The objects of a Twenty export, in the order they are written: each
-#: refers only to those before it. Campaigns arrive in 1b (S11a).
-OBJECTS: Final = ("companies", "people", "opportunities", "tasks", "notes", "attachments")
+#: refers only to those before it (a deal to its source campaign, a member
+#: to its converted deal). Campaigns and their members from 1b (S11a).
+OBJECTS: Final = (
+    "companies",
+    "people",
+    "campaigns",
+    "opportunities",
+    "campaign_members",
+    "tasks",
+    "notes",
+    "attachments",
+)
 TABLES: Final = {
     "companies": "crm_companies",
     "people": "crm_people",
+    "campaigns": "crm_campaigns",
     "opportunities": "crm_opportunities",
+    "campaign_members": "crm_campaign_members",
     "tasks": "crm_tasks",
     "notes": "crm_notes",
 }
 #: A link's record type, by the object it names.
-RECORD_TYPES: Final = {"companies": "company", "people": "person", "opportunities": "opportunity"}
+RECORD_TYPES: Final = {
+    "companies": "company",
+    "people": "person",
+    "opportunities": "opportunity",
+    "campaigns": "campaign",
+}
 NOUNS: Final = {
     "companies": "company",
     "people": "person",
+    "campaigns": "campaign",
     "opportunities": "deal",
+    "campaign_members": "campaign member",
     "tasks": "task",
     "notes": "note",
     "attachments": "attachment",
@@ -121,6 +146,43 @@ FIELDS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
         "owner_email": ("owneremail", "owner.email"),
         "lost_reason": ("lostreason",),
         "created_at": ("createdat",),
+        # 1b: the campaign it came from, when the file says so.
+        "campaign_id": ("campaignid", "sourcecampaignid", "campaign.id", "sourcecampaign.id"),
+    },
+    "campaigns": {
+        "id": ("id",),
+        "name": ("name",),
+        "type": ("type", "campaigntype"),
+        "status": ("status",),
+        "channel": ("channel",),
+        "entity": ("entity",),
+        "owner_email": ("owneremail", "owner.email"),
+        "starts_on": ("startdate", "startson", "startat", "start"),
+        "ends_on": ("enddate", "endson", "endat", "end"),
+        "goal": ("goal", "objective", "description"),
+        "budget": ("budget", "budget.amount", "budget.value", "budgetamount"),
+        "budget_currency": (
+            "budgetcurrency",
+            "budget.currency",
+            "budget.currencycode",
+            "currency",
+        ),
+        "created_at": ("createdat",),
+    },
+    "campaign_members": {
+        "id": ("id",),
+        "campaign_id": ("campaignid", "campaign.id"),
+        "company_id": ("companyid", "company.id"),
+        "person_id": ("personid", "person.id"),
+        "status": ("status",),
+        "last_touch_on": ("lasttouchon", "lasttouchat", "lasttouch", "lasttouchdate"),
+        "notes": ("notes", "note"),
+        "converted_opportunity_id": (
+            "convertedopportunityid",
+            "opportunityid",
+            "convertedopportunity.id",
+            "opportunity.id",
+        ),
     },
     "tasks": {
         "id": ("id",),
@@ -164,6 +226,9 @@ OBJECT_KEYS: Final = {
     "tasks": "tasks",
     "notes": "notes",
     "attachments": "attachments",
+    "campaigns": "campaigns",
+    "campaignmembers": "campaign_members",
+    "members": "campaign_members",
 }
 
 #: FR-CRM-MIG-02. The CRM's own keys are accepted too.
@@ -462,6 +527,11 @@ class Facts:
     links: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     #: existing company id → its live deals [{twenty_id, stage}].
     company_deals: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: 1b: whether the workspace has Entity (FR-CRM-WS-06).
+    has_entity: bool = False
+    #: 1b: the existing campaigns' members, (campaign id, company id, person
+    #: id) → twenty_id (None for one made in the CRM).
+    member_pairs: dict[tuple[str, str | None, str | None], str | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -510,6 +580,8 @@ def _type_object(text: Any) -> str | None:
         "opportunities": "opportunities",
         "deal": "opportunities",
         "deals": "opportunities",
+        "campaign": "campaigns",
+        "campaigns": "campaigns",
     }.get(kind)
 
 
@@ -905,6 +977,11 @@ class _Planner:
                 "expected_close_on": _iso(_day(row["close_on"])),
                 **self.amount(i, name, row),
             }
+            # 1b: the deal's source campaign, as the file names it or as a
+            # member converted to it says (attribution, FR-CRM-CAMP-04).
+            source = self.ref("campaigns", row["campaign_id"] or self.sources.get(tid))
+            if source is not None:
+                values["source_campaign_id"] = source
             self.below_qualified(i, name, row["company_id"], company, current)
 
             step, _ = _text(row["next_step"], 500)
@@ -967,10 +1044,12 @@ class _Planner:
             return found
         return default_probability(stage, self.facts.probabilities)
 
-    def amount(self, i: int, name: str, row: dict[str, Any]) -> dict[str, Any]:
+    def amount(
+        self, i: int, name: str, row: dict[str, Any], obj: str = "opportunities"
+    ) -> dict[str, Any]:
         """FR-CRM-FX-03 — the amount with its INR value at the rate for the
-        month the deal was created; with no rate the import waits for one
-        (data-model §3.9)."""
+        month the deal (or campaign) was created; with no rate the import
+        waits for one (data-model §3.9)."""
         if _blank(row["amount"]):
             return dict(fx.CLEARED)
         try:
@@ -979,7 +1058,7 @@ class _Planner:
             amount = Decimal(-1)
         if not amount.is_finite() or amount < 0 or amount >= Decimal("1e12"):
             self.conflict(
-                "opportunities",
+                obj,
                 i,
                 "invalid",
                 f"{name}'s amount “{str(row['amount'])[:40]}” is not an amount; it is left out.",
@@ -987,13 +1066,11 @@ class _Planner:
             return dict(fx.CLEARED)
         currency = str(row["currency"] or "").strip().upper()
         if not currency:
-            self.conflict(
-                "opportunities", i, "no_currency", f"{name} has no currency; it is imported as INR."
-            )
+            self.conflict(obj, i, "no_currency", f"{name} has no currency; it is imported as INR.")
             currency = "INR"
         if currency not in fx.CURRENCIES:
             self.conflict(
-                "opportunities",
+                obj,
                 i,
                 "unknown_currency",
                 f"{currency} is not a CRM currency (INR, AUD, USD); {name}'s amount is left out.",
@@ -1003,7 +1080,7 @@ class _Planner:
         found = fx.converted(self.facts.rates, amount, currency, on, self.facts.workspace)
         if isinstance(found, str):
             self.conflict(
-                "opportunities",
+                obj,
                 i,
                 "missing_fx_rate",
                 missing_rate(currency, on, self.facts.workspace),
@@ -1311,13 +1388,270 @@ class _Planner:
                     }
                 )
 
+    # -- campaigns and their members (1b) --------------------------------------
+
+    def claim_campaigns(self) -> None:
+        """First pass: which campaigns this file writes, so a deal can name
+        one as its source."""
+        for i, row in enumerate(self.rows["campaigns"], start=1):
+            name, cut = _text(row["name"], 200)
+            tid = self.claim("campaigns", i, row, name or f"Campaign {i}")
+            if tid is None:
+                continue
+            if name is None:
+                self.skip(
+                    "campaigns", i, "invalid", f"Campaign {i} has no name, so it is not imported."
+                )
+                continue
+            if cut:
+                self.conflict(
+                    "campaigns", i, "truncated", f"{name}'s name is cut to 200 characters."
+                )
+            self.names[("campaigns", tid)] = name
+            self.written["campaigns"].add(tid)
+
+    def member_sources(self) -> dict[str, str]:
+        """Deal Twenty id → the campaign a member converted to it from: the
+        first such member wins."""
+        out: dict[str, str] = {}
+        for row in self.rows["campaign_members"]:
+            deal, campaign = _tid(row["converted_opportunity_id"]), _tid(row["campaign_id"])
+            if deal and campaign:
+                out.setdefault(deal, campaign)
+        return out
+
+    def campaigns(self) -> None:
+        """Spec §6.6: the campaign's fields; its budget converted to INR at
+        the rate for the month it was created (FR-CRM-FX-03), the import
+        waiting for a missing rate as a deal's does."""
+        default_status = next(
+            (
+                o
+                for o in self.facts.options
+                if o["list_key"] == "campaign.status" and o.get("is_default")
+            ),
+            None,
+        )
+        for i, row in enumerate(self.rows["campaigns"], start=1):
+            tid = _tid(row["id"])
+            name = self.names.get(("campaigns", tid or ""))
+            if tid is None or name is None:
+                continue
+            existing = self.facts.existing["campaigns"].get(tid)
+            values: dict[str, Any] = {"twenty_id": tid, "name": name}
+            for column, list_key, text in (
+                ("type_id", "campaign.type", row["type"]),
+                ("status_id", "campaign.status", row["status"]),
+                ("channel_id", "channel", row["channel"]),
+            ):
+                found = self.option(list_key, text)
+                if text and found is None:
+                    self.conflict(
+                        "campaigns",
+                        i,
+                        "unknown_option",
+                        f"{name}'s {list_key.split('.')[-1]} “{str(text)[:60]}” is not in this "
+                        "workspace's list; it is left empty.",
+                    )
+                values[column] = found["id"] if found else None
+            if values["status_id"] is None and existing is None and default_status:
+                values["status_id"] = default_status["id"]
+            entity = {"nunnarilabs": "nunnari_labs", "deepweaver": "deepweaver"}.get(
+                _key(str(row["entity"] or ""))
+            )
+            if row["entity"] and (entity is None or not self.facts.has_entity):
+                self.conflict(
+                    "campaigns",
+                    i,
+                    "invalid",
+                    f"{name}'s entity “{str(row['entity'])[:40]}” is not used here; it is left out.",
+                )
+                entity = None
+            values["entity"] = entity
+            owner, unknown = self.owner(row["owner_email"], existing)
+            if unknown:
+                self.conflict(
+                    "campaigns",
+                    i,
+                    "unknown_owner",
+                    f"{name}'s owner {row['owner_email']} is not a member; "
+                    + ("it keeps its owner." if existing else "you own it instead."),
+                )
+            values["owner_id"] = owner
+            starts, ends = _day(row["starts_on"]), _day(row["ends_on"])
+            if starts and ends and ends < starts:
+                self.conflict(
+                    "campaigns",
+                    i,
+                    "invalid",
+                    f"{name} ends before it starts; its end date is left out.",
+                )
+                ends = None
+            values.update(
+                starts_on=_iso(starts),
+                ends_on=_iso(ends),
+                goal=_text(row["goal"], 20_000)[0],
+                **self.budget(i, name, row),
+            )
+            self.outcome(Write("campaigns", tid, "upsert", values, existing))
+
+    def budget(self, i: int, name: str, row: dict[str, Any]) -> dict[str, Any]:
+        """A campaign's budget, as a deal's amount (`amount`)."""
+        found = self.amount(
+            i,
+            name,
+            {
+                "amount": row["budget"],
+                "currency": row["budget_currency"],
+                "created_at": row["created_at"],
+            },
+            obj="campaigns",
+        )
+        if not found:
+            return {}
+        return {
+            "budget": found["amount"],
+            "budget_currency": found["currency"],
+            "budget_in_inr": found["amount_in_inr"],
+            "budget_fx_rate": found["fx_rate_used"],
+        }
+
+    def campaign_members(self) -> None:
+        statuses = {s.replace("_", ""): s for s in MEMBER_STATUSES}
+        seen = dict(self.facts.member_pairs)
+        people = self.facts.existing["people"]
+        for i, row in enumerate(self.rows["campaign_members"], start=1):
+            label = f"Member {i}"
+            tid = self.claim("campaign_members", i, row, label)
+            if tid is None:
+                continue
+            campaign = self.ref("campaigns", row["campaign_id"])
+            if campaign is None:
+                self.skip(
+                    "campaign_members",
+                    i,
+                    "missing_campaign",
+                    f"{label}'s campaign is neither in the file nor in the CRM, so it is not "
+                    "imported.",
+                )
+                continue
+            company = self.ref("companies", row["company_id"])
+            person = self.ref("people", row["person_id"])
+            for obj, raw, found in (
+                ("companies", row["company_id"], company),
+                ("people", row["person_id"], person),
+            ):
+                if raw and found is None:
+                    self.conflict(
+                        "campaign_members",
+                        i,
+                        "missing_target",
+                        f"{label} names a {NOUNS[obj]} that is neither in the file nor in "
+                        "the CRM; that part is left out.",
+                    )
+            if company is None and person is None:
+                self.skip(
+                    "campaign_members",
+                    i,
+                    "no_link",
+                    f"{label} names no company or person, so it is not imported.",
+                )
+                continue
+            existing = self.facts.existing["campaign_members"].get(tid)
+            who = " ".join(
+                part
+                for part in (
+                    self.name_of("people", person) if person else None,
+                    self.name_of("companies", company) if company else None,
+                )
+                if part
+            )
+            label = f"{who} on {self.name_of('campaigns', campaign)}"
+            person_row = next((p for p in people.values() if person and p["id"] == person), None)
+            if existing is None and person_row and person_row.get("do_not_contact"):
+                # FR-CRM-PER-02: never added; earlier memberships keep their
+                # history.
+                self.skip(
+                    "campaign_members",
+                    i,
+                    "do_not_contact",
+                    f"{label}: they are marked Do not contact, so they are not added.",
+                )
+                continue
+            pair = (self._key_of(campaign), self._key_of(company), self._key_of(person))
+            if pair in seen and seen[pair] != tid:
+                self.skip(
+                    "campaign_members",
+                    i,
+                    "duplicate",
+                    f"{label} is already a member of that campaign; this row is not imported.",
+                )
+                continue
+            seen[pair] = tid
+            self.written["campaign_members"].add(tid)
+            status = statuses.get(_key(str(row["status"] or "")), None)
+            if row["status"] and status is None:
+                self.conflict(
+                    "campaign_members",
+                    i,
+                    "unknown_status",
+                    f"{label}'s status “{str(row['status'])[:40]}” is not known; it is "
+                    "imported as Targeted.",
+                )
+            deal = self.ref("opportunities", row["converted_opportunity_id"])
+            if row["converted_opportunity_id"] and deal is None:
+                self.conflict(
+                    "campaign_members",
+                    i,
+                    "missing_target",
+                    f"{label}'s converted deal is neither in the file nor in the CRM.",
+                )
+            if deal is not None:
+                status = "converted"
+            elif status == "converted":
+                self.conflict(
+                    "campaign_members",
+                    i,
+                    "no_deal",
+                    f"{label} is Converted with no deal in the file; it is imported as Engaged.",
+                )
+                status = "engaged"
+            values: dict[str, Any] = {
+                "twenty_id": tid,
+                "campaign_id": campaign,
+                "company_id": company,
+                "person_id": person,
+                "last_touch_on": _iso(_day(row["last_touch_on"])),
+                "notes": _text(row["notes"], 20_000)[0],
+                "converted_opportunity_id": deal,
+                "position": i,
+            }
+            # Like a deal's stage, a member's status moves in the CRM: a
+            # re-run sets it on a new member, or converts one the file says
+            # converted.
+            if existing is None or deal is not None:
+                values["status"] = status or "targeted"
+            self.outcome(Write("campaign_members", tid, "upsert", values, existing))
+
+    @staticmethod
+    def _key_of(value: str | Ref | None) -> str | None:
+        """A record as a key: its CRM id, or `obj:twenty_id` for one this
+        import creates."""
+        if isinstance(value, Ref):
+            return f"{value.object}:{value.twenty_id}"
+        return value
+
     def run(self) -> ImportPlan:
         self._companies: set[str] = set()
         self.claim_companies()
         self.people()
+        self.claim_campaigns()
+        self.sources = self.member_sources()
         self.deals()
         self.companies()
         self.deal_companies()
+        self.campaigns()
+        self.campaign_members()
         self.tasks()
         self.notes()
         self.attachment_list()
@@ -1359,6 +1693,12 @@ def twenty_ids(bundle: dict[str, list[dict[str, Any]]]) -> dict[str, set[str]]:
                 add(obj, row["id"])
             add("companies", row.get("company_id"))
             add("people", row.get("contact_id"))
+            # 1b: a member's person, campaign and deal; a deal's campaign.
+            if obj in ("campaign_members", "opportunities"):
+                add("campaigns", row.get("campaign_id"))
+            if obj == "campaign_members":
+                add("people", row.get("person_id"))
+                add("opportunities", row.get("converted_opportunity_id"))
             for target_obj, tid in (
                 _targets(row) if obj in ("tasks", "notes", "attachments") else []
             ):

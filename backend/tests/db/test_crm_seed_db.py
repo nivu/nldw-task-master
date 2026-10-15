@@ -1,5 +1,6 @@
 """The seeded workspaces and lists — spec 007 FR-CRM-WS-01, FR-CRM-LIST-02 to
--05, -09, FR-CRM-PIPE-11, FR-CRM-ACC-06; data-model §7.1–§7.3; Q-25, Q-40.
+-05, -09, FR-CRM-PIPE-11, FR-CRM-ACC-06, (041) FR-CRM-CAMP-01; data-model
+§7.1–§7.3; Q-25, Q-40.
 
 The values migration 026 seeds into each workspace are database state, so
 they are read back from the real database after `supabase db reset`, label by
@@ -136,6 +137,28 @@ COMMON = {
         "Procurement",
         "User",
         "Other",
+    ],
+    # 041 (1b): spec §6.6.
+    "campaign.type": [
+        "Webinar",
+        "Email sequence",
+        "Event or roundtable",
+        "LinkedIn or content",
+        "Partner co-sell",
+        "College outreach",
+        "Newsletter",
+    ],
+    "campaign.status": ["Planned", "Live", "Completed", "Cancelled"],
+    "campaign_member.status": [
+        "Targeted",
+        "Invited",
+        "Registered",
+        "Attended",
+        "Engaged",
+        "Meeting booked",
+        "Converted",
+        "Not interested",
+        "Unsubscribed",
     ],
 }
 

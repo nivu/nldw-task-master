@@ -31,7 +31,7 @@ order of §1. Existing migrations are not edited.
 | `038_crm_flags.sql` | S9 | Flag columns and indexes on companies, people, opportunities, tasks; `crm_object_fields` rows for them |
 | `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `crm_store_emails()`, `crm_remove_emails()` (the email log's one writer); `CREATE OR REPLACE crm_audit_row()` skipping a mailbox's cursor columns; `crm_flag_facts()` replaced by a four-argument form with people and email facts; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
 | `040_crm_mailbox_owner_left.sql` | S10 | `CREATE OR REPLACE crm_remove_membership()` also pausing the removed person's mailboxes in the workspace (`is_active = false`, audited `mailbox.updated`) |
-| `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists, field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns |
+| `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists (the `list_key` CHECK widened), field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns; (as built) `CREATE OR REPLACE crm_query()`, `crm_query_rank()` for the two lists and `crm_purge()` for campaigns and their members |
 | `042_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
 
 A function that touches a table always arrives in, or is replaced in, the
@@ -596,6 +596,25 @@ IS NOT NULL)`), `status text NOT NULL DEFAULT 'targeted' CHECK (status IN
 company_id, person_id)` with nulls not distinct (PG15+ `NULLS NOT DISTINCT`).
 Index `(workspace_id, campaign_id, status, position)`.
 
+As built (041): the company and person FKs are `ON DELETE CASCADE` and
+`converted_opportunity_id` is `ON DELETE SET NULL (converted_opportunity_id)`,
+so the converted CHECK is one-directional, `converted_opportunity_id IS NULL
+OR status = 'converted'`: purging a converted deal leaves its member
+Converted, the conversion kept in its history. That Converted is reached only
+with a deal is the service's rule (Converted only through the conversion).
+`crm_purge` (041) first keeps a membership that names both the purged record
+and the other one (the person, or the company) on the other one, unless that
+one already has its own in the campaign. `crm_merge_companies` (041) keeps
+the survivor's membership when both companies are in the same campaign with
+the same person (or none). `crm_query()` and `crm_query_rank()` are replaced
+in 041 for the `campaign` and `campaign_member` lists: a member's `status`
+ranks after the task statuses in one array (the two share the column name
+and no key), and its campaign, person and deal relations sort by name.
+`crm_opportunities.source_campaign_id` is `ON DELETE SET NULL
+(source_campaign_id)`. Campaign members are listed and changed through their
+own routes (contracts §2.10), never the bulk bar, and a campaign's timeline
+shows the campaign's own changes, tasks, notes and links, not its members'.
+
 The record-type CHECKs of `crm_task_links`, `crm_note_links` and
 `crm_drive_links` already allow `campaign` (030/029), so 041 adds no ALTER
 there.
@@ -877,7 +896,7 @@ as a D8 change "*Name* (via CRM deal)"). Returns `{deactivated: bool}`. The serv
 `deps.forget_personal_tokens()` so cached tokens stop working on the next
 request.
 
-### 5.4 `crm_purge(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DEL-01, -02 (029; replaced in 030, 033, 034, 039)
+### 5.4 `crm_purge(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DEL-01, -02 (029; replaced in 030, 033, 034, 039, 041)
 
 `p_plan = {"items": [{"table", "id"}]}`. Each item must already be
 soft-deleted in the actor's workspace. It deletes the row (audited `.purged`)

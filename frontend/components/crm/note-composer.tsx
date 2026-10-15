@@ -40,7 +40,7 @@ export function NoteComposer({
   onCreated,
 }: {
   workspace: string;
-  link: { record_type: "company" | "person" | "opportunity"; record_id: string };
+  link: { record_type: "company" | "person" | "opportunity" | "campaign"; record_id: string };
   members: CrmMember[];
   timeZone: CrmTimezone;
   onCreated: (note: CrmNote) => void;
@@ -260,7 +260,7 @@ export function NotesTab({
   canEdit: boolean;
   members: CrmMember[];
   notes: CrmNote[];
-  link: { record_type: "company" | "person" | "opportunity"; record_id: string };
+  link: { record_type: "company" | "person" | "opportunity" | "campaign"; record_id: string };
   timeZone: CrmTimezone;
   onChange: () => void;
 }) {

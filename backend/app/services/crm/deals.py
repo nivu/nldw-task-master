@@ -107,11 +107,21 @@ def _labelled(ws: base.Workspace, company: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def create(ctx: Any, payload: Any) -> dict[str, Any]:
+def create(
+    ctx: Any,
+    payload: Any,
+    *,
+    source_campaign_id: str | None = None,
+    then: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """FR-CRM-PIPE-04 — a deal opens on a company at Qualified or later, and a
     Qualified company moves to Deal open in the same call. The deal starts at
     Discovery with its next step and date (FR-CRM-PIPE-07, -10) and the
-    stage's default probability unless one is given (FR-CRM-PIPE-11)."""
+    stage's default probability unless one is given (FR-CRM-PIPE-11).
+
+    1b (FR-CRM-CAMP-04): a campaign conversion passes the deal's source
+    campaign, and `then`, the member's ops, which may name the new deal as
+    `$ref:deal`: all of it is one transaction."""
     if isinstance(payload, dict) and {"stage", "lost_reason_id"} & set(payload):
         raise CrmRefused(422, MOVE_ONLY)
     ws = base.load(ctx)
@@ -141,6 +151,8 @@ def create(ctx: Any, payload: Any) -> dict[str, Any]:
         values["probability"] = pipeline.default_probability("discovery", _probabilities(ws.id))
     _money(ws, values, None)
 
+    if source_campaign_id:
+        values["source_campaign_id"] = source_campaign_id
     ops: list[dict[str, Any]] = [
         {
             "op": "insert",
@@ -171,7 +183,7 @@ def create(ctx: Any, payload: Any) -> dict[str, Any]:
                 "values": company_changes,
             }
         )
-    done = store.apply(actor(ctx), ops)
+    done = store.apply(actor(ctx), [*ops, *(then or [])])
     deal = done[0]["row"]
     base.reflag(ws.id, "opportunity", [deal])
     notifications.quietly(

@@ -1,5 +1,6 @@
 """Records — spec 007 contracts §2.5 (S3: companies, people, Drive links,
-Trash, duplicates, timeline; S4: opportunities, tasks, notes); FR-CRM-CO,
+Trash, duplicates, timeline; S4: opportunities, tasks, notes; S11a:
+campaigns); FR-CRM-CO, -CAMP-01,
 -PER, -OPP, -TASK, -NOTE, -LINK, -DUP-01, -02, -DEL-01, -02, -04, -REC-01 to
 -04, -AUD-05.
 
@@ -31,10 +32,10 @@ from app.services.crm import records as service
 router = APIRouter(prefix="/crm", tags=["crm"])
 
 #: Contracts §2.5 "Objects in paths", the ones that exist so far.
-OBJECTS = ("companies", "people", "opportunities", "tasks", "notes")
+OBJECTS = ("companies", "people", "opportunities", "tasks", "notes", "campaigns")
 #: FR-CRM-DUP-02 — the objects checked for names alike.
 DEDUPED = ("companies", "people")
-TrashObject = Literal["companies", "people", "opportunities", "tasks", "notes"]
+TrashObject = Literal["companies", "people", "opportunities", "tasks", "notes", "campaigns"]
 TaskStatus = Literal["todo", "in_progress", "done", "open"]
 
 

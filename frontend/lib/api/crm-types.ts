@@ -251,8 +251,8 @@ export type LeadStage =
 /** FR-CRM-WS-06 — Nunnari Labs only. */
 export type CrmEntity = "nunnari_labs" | "deepweaver";
 
-/** The objects with routes so far (contracts §2.5 "Objects in paths"). */
-export type CrmObject = "companies" | "people" | "opportunities" | "tasks" | "notes";
+/** The objects with routes (contracts §2.5 "Objects in paths"); campaigns 1b. */
+export type CrmObject = "companies" | "people" | "opportunities" | "tasks" | "notes" | "campaigns";
 
 export interface LinkValue {
   url: string;
@@ -436,6 +436,9 @@ export interface CrmOpportunity extends RecordStamps, RecordFlags {
   lost_on: string | null;
   /** The Labs deal's TVA project (FR-CRM-TVA-02): every role sees it. */
   project: CrmProjectBlock | null;
+  /** 1b: the campaign it was converted from (FR-CRM-CAMP-04). */
+  source_campaign_id: string | null;
+  source_campaign_name: string | null;
 }
 
 /** A task's or note's link, with the linked record's name. */
@@ -491,7 +494,101 @@ export interface CrmContact {
   role_label: string | null;
 }
 
-export type CrmRecord = CrmCompany | CrmPerson | CrmOpportunity | CrmTask | CrmNote;
+/** Spec §6.6 — a campaign member's fixed statuses, in board order. */
+export type MemberStatus =
+  | "targeted"
+  | "invited"
+  | "registered"
+  | "attended"
+  | "engaged"
+  | "meeting_booked"
+  | "converted"
+  | "not_interested"
+  | "unsubscribed";
+
+/**
+ * Spec §6.6 campaign (1b) with its figures (FR-CRM-CAMP-05). For a Viewer
+ * the budget, its INR value and rate, pipeline created, won value and cost
+ * per converted member are absent (FR-CRM-ACC-11).
+ */
+export interface CrmCampaign extends RecordStamps {
+  id: string;
+  record_type: "campaign";
+  name: string;
+  type_id: string | null;
+  type_label: string | null;
+  status_id: string | null;
+  status_label: string | null;
+  channel_id: string | null;
+  channel_label: string | null;
+  entity: CrmEntity | null;
+  entity_label: string | null;
+  owner_id: string;
+  owner_name: string | null;
+  starts_on: string | null;
+  ends_on: string | null;
+  goal: string | null;
+  budget?: string | null;
+  budget_currency: CrmCurrency | null;
+  budget_in_inr?: string | null;
+  budget_fx_rate?: string | null;
+  member_count: number;
+  member_counts: Record<MemberStatus, number>;
+  converted_members: number;
+  /** Converted members over all, a percentage with one decimal. */
+  conversion_rate: string | null;
+  converted_deals: number;
+  pipeline_created?: string;
+  won_value?: string;
+  cost_per_converted?: string | null;
+}
+
+/** Spec §6.6 campaign member — a company, a person or both. */
+export interface CrmCampaignMember {
+  id: string;
+  record_type: "campaign_member";
+  campaign_id: string;
+  campaign_name: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  person_id: string | null;
+  person_name: string | null;
+  person_company_name: string | null;
+  do_not_contact: boolean;
+  /** The company, the person, or "Person (Company)". */
+  name: string | null;
+  status: MemberStatus;
+  status_label: string | null;
+  last_touch_on: string | null;
+  notes: string | null;
+  converted_opportunity_id: string | null;
+  converted_opportunity_name: string | null;
+  position: number;
+  updated_at: string;
+}
+
+/** GET /crm/campaigns/{id}/members — the board. */
+export interface CampaignMembers {
+  campaign_id: string;
+  member_counts: Record<MemberStatus, number>;
+  rows: CrmCampaignMember[];
+}
+
+/** POST /crm/campaigns/{id}/members (FR-CRM-CAMP-03, FR-CRM-PER-02). */
+export interface MembersAdded {
+  added: number;
+  skipped_do_not_contact: number;
+  skipped_existing: number;
+  skipped: { id: string; name: string; reason: string }[];
+}
+
+/** POST /crm/campaign-members/{id}/convert (FR-CRM-CAMP-04). */
+export interface Converted {
+  member: CrmCampaignMember;
+  opportunity: CrmOpportunity;
+}
+
+export type CrmRecord = CrmCompany | CrmPerson | CrmOpportunity | CrmTask | CrmNote | CrmCampaign;
 
 /** The fields a stage move may set in the same save (contracts §2.6). */
 export interface StageChanges {
@@ -674,6 +771,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
     project?: CrmProjectBlock | null;
     /** A Labs company's TVA projects (FR-CRM-CO-02). */
     projects?: CrmProjectBlock[];
+    /** 1b: a company's or person's campaign memberships (FR-CRM-CO-02). */
+    campaign_members?: CrmCampaignMember[];
   };
   timeline_head: CrmTimelineEntry[];
   links: CrmDriveLink[];
@@ -714,7 +813,7 @@ export interface NotCreated {
 /** GET /crm/trash — FR-CRM-DEL-01. */
 export interface CrmTrashRow {
   id: string;
-  record_type: "company" | "person" | "opportunity" | "task" | "note";
+  record_type: "company" | "person" | "opportunity" | "task" | "note" | "campaign";
   name: string;
   deleted_at: string;
   deleted_by: string | null;
@@ -726,8 +825,13 @@ export interface CrmTrashRow {
 // Views — §2.7 (S6a server, S6b screens; FR-CRM-VIEW)
 // ---------------------------------------------------------------------------
 
-/** A list's object by record type, as saved views and `/crm/query` name it. */
-export type ViewObjectKind = "company" | "person" | "opportunity" | "task" | "note";
+/** A list's object by record type, as saved views and `/crm/query` name it.
+ *  Campaign members are listed on their campaign's board instead. */
+export type ViewObjectKind = "company" | "person" | "opportunity" | "task" | "note" | "campaign";
+
+/** Every object the view registry knows, campaign members included (their
+ *  board is the campaign page's kanban). */
+export type ListKind = ViewObjectKind | "campaign_member";
 
 /** `crm_object_fields.type` — how a field is filtered, sorted and grouped. */
 export type ViewFieldType =
@@ -815,7 +919,8 @@ export interface ViewConfig {
  *  `notice` says when something was dropped (Q-67). */
 export interface CrmSavedView {
   id: string;
-  object: ViewObjectKind;
+  /** Members by status (041) is a campaign member view, opened on a campaign. */
+  object: ListKind;
   name: string;
   icon: string | null;
   kind: "table" | "kanban";
@@ -896,7 +1001,7 @@ export interface CrmFavourite {
   position: number;
 }
 
-export type BulkAction = "set" | "assign_owner" | "add_task" | "delete";
+export type BulkAction = "set" | "assign_owner" | "add_task" | "delete" | "add_to_campaign";
 
 /** POST /crm/bulk — each record held to its own rules (FR-CRM-VIEW-07). */
 export interface BulkResult {
@@ -990,7 +1095,16 @@ export interface MergePreview {
   a: CrmCompany;
   b: CrmCompany;
   differing_fields: MergeField[];
-  moves: { people: number; deals: number; tasks: number; notes: number; links: number; projects: number };
+  moves: {
+    people: number;
+    deals: number;
+    tasks: number;
+    notes: number;
+    links: number;
+    projects: number;
+    /** 1b (041). */
+    campaign_members: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

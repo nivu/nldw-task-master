@@ -189,6 +189,18 @@ def _facts(ctx: Any, bundle: dict[str, list[dict[str, Any]]]) -> rules.Facts:
         if p["id"] in member_ids and p.get("is_active", True) and p.get("email")
     }
     settings = {s["key"]: s["value"] for s in store.list_settings(ws_id)}
+
+    # 1b: who is already on the campaigns the file names, so a member under
+    # another id is reported rather than doubled.
+    campaign_ids = [r["id"] for r in existing["campaigns"].values()]
+    member_pairs = {
+        (m["campaign_id"], m.get("company_id"), m.get("person_id")): m.get("twenty_id")
+        for m in (
+            store.campaign_members(ws_id, column="campaign_id", ids=campaign_ids, deleted=None)
+            if campaign_ids
+            else []
+        )
+    }
     return rules.Facts(
         workspace=ctx.workspace["name"],
         importer=ctx.user.id,
@@ -207,6 +219,8 @@ def _facts(ctx: Any, bundle: dict[str, list[dict[str, Any]]]) -> rules.Facts:
         emails=emails,
         links=links,
         company_deals=company_deals,
+        has_entity=bool(ctx.workspace.get("has_entity")),
+        member_pairs=member_pairs,
     )
 
 

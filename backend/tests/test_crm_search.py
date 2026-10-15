@@ -1,7 +1,7 @@
 """Search — spec 007 FR-CRM-SRCH-01 to -03, FR-CRM-WS-02, FR-CRM-ACC-11,
 FR-CRM-DUP-03; contracts §2.8 `GET /crm/search`.
 
-One search across companies, people, deals, tasks and notes of the current
+One search across companies, people, deals, tasks, notes and (1b) campaigns of the current
 workspace only, with the saved views the person can see, so the command
 menu can jump to either. The Trash and merged companies never appear, and a
 Viewer's deal hits carry no amount. Ranking and literal `%` and `_` are
@@ -210,3 +210,41 @@ class TestTheQuery:
         http, *_ = crm
         assert _search(http, "a%25").json()["companies"] == []
         assert _search(http, "a_").json()["companies"] == []
+
+
+class TestCampaigns:
+    """S11a — FR-CRM-SRCH-01 (1b): a campaign by its name, never its budget,
+    in this workspace only, and not from the Trash."""
+
+    @pytest.fixture
+    def campaign(self, crm):
+        http, fake, made = crm
+        me = as_(OWNER["id"])
+        found = http.post(
+            f"/api/v1/crm/campaigns{LABS}",
+            json={"name": "Acme roundtable", "budget": "5000", "budget_currency": "INR"},
+            headers=me,
+        ).json()
+        http.post(f"/api/v1/crm/campaigns{ACADEMY}", json={"name": "Acme webinars"}, headers=me)
+        return http, found
+
+    def test_search_finds_a_campaign_by_name(self, campaign):
+        http, found = campaign
+        hits = _search(http, "roundtable").json()["campaigns"]
+        assert [(h["id"], h["record_type"], h["name"]) for h in hits] == [
+            (found["id"], "campaign", "Acme roundtable")
+        ]
+
+    def test_only_this_workspace(self, campaign):
+        http, _ = campaign
+        assert [h["name"] for h in _search(http, "acme").json()["campaigns"]] == ["Acme roundtable"]
+
+    def test_no_budget_for_anyone(self, campaign):
+        http, _ = campaign
+        hit = _search(http, "roundtable").json()["campaigns"][0]
+        assert not {"budget", "budget_in_inr", "budget_fx_rate"} & set(hit)
+
+    def test_a_trashed_campaign_is_not_found(self, campaign):
+        http, found = campaign
+        http.delete(f"/api/v1/crm/campaigns/{found['id']}{LABS}", headers=as_(OWNER["id"]))
+        assert _search(http, "roundtable").json()["campaigns"] == []

@@ -62,11 +62,17 @@ _FIXED_LABELS = {
 _RELATIONS = {
     "company_id": ("crm_companies", "company"),
     "point_of_contact_id": ("crm_people", "person"),
+    # 041: a campaign member's.
+    "person_id": ("crm_people", "person"),
+    "campaign_id": ("crm_campaigns", "campaign"),
+    "converted_opportunity_id": ("crm_opportunities", "opportunity"),
 }
 
 
 def kind_of(name: str) -> str:
     """`companies` or `company` → `company`."""
+    if name == "campaign_members":
+        return "campaign_member"
     return base.PLURALS.get(name, name)
 
 
@@ -435,6 +441,8 @@ def _groups(
             return names.get(key)
         if kind_of_field == "boolean":
             return "Yes" if key else "No"
+        if kind == "campaign_member" and field == "status":
+            return show.member_status_label(ws.facts, key)
         if field in _FIXED_LISTS:
             return ws.facts.fixed_label(_FIXED_LISTS[field], key)
         return _FIXED_LABELS.get(field, {}).get(key, str(key))
@@ -542,6 +550,8 @@ def bulk(ctx: Any, body: BulkIn) -> dict[str, Any]:
     transaction, so each obeys every rule (permissions, pipeline, TVA) and
     one refusal does not undo the others."""
     kind = kind_of(body.object)
+    if kind == "campaign_member":
+        raise CrmRefused(422, "Change campaign members on the campaign's board.")
     one = _bulk_action(ctx, kind, body)
     ok: list[str] = []
     failed: list[dict[str, str]] = []
@@ -560,7 +570,17 @@ def _bulk_action(ctx: Any, kind: str, body: BulkIn) -> Any:
     not apply to any of them."""
     values = dict(body.values)
     if body.action == "add_to_campaign":
-        raise CrmRefused(422, "Campaigns are not available yet.")
+        # FR-CRM-CAMP-03, -VIEW-07 (1b): Do not contact and existing members
+        # are refused one by one, with the reason.
+        from app.services.crm import campaigns
+
+        if kind not in ("company", "person"):
+            raise CrmRefused(422, "Companies and people are added to campaigns.")
+        campaign_id = values.get("campaign_id")
+        if set(values) != {"campaign_id"} or not isinstance(campaign_id, str):
+            raise CrmRefused(422, "Name the campaign: campaign_id.")
+        campaigns.live_campaign(ctx, campaign_id)
+        return lambda record_id: campaigns.add_one(ctx, campaign_id, kind, record_id)
 
     if body.action == "set":
         if not values:
@@ -590,7 +610,7 @@ def _bulk_action(ctx: Any, kind: str, body: BulkIn) -> Any:
 
     if body.action == "add_task":
         if kind not in objects.TASK_NOTE_TARGETS:
-            raise CrmRefused(422, "Tasks are added to companies, people and deals.")
+            raise CrmRefused(422, "Tasks are added to companies, people, deals and campaigns.")
         if "links" in values:
             raise CrmRefused(422, "Each task is linked to its record; send no links.")
 

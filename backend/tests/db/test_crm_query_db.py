@@ -424,7 +424,7 @@ class TestNothingGetsIn:
     def test_not_a_list(self, stack, world):
         ws, _ = world
         _refused(stack, ws, "crm_companies; --", {})
-        _refused(stack, ws, "campaign", {})
+        _refused(stack, ws, "drive_link", {})
 
 
 class TestRedaction:
@@ -582,6 +582,8 @@ class TestRegistryAndSeeds:
             "my_week",
             # 038 (1b).
             "follow_ups_owed",
+            # 041 (1b).
+            "members_by_status",
         }
         assert by["labs"] == by["academy"]
         for key, (kind, *_, config) in by["labs"].items():

@@ -1,15 +1,16 @@
 """Records — spec 007 FR-CRM-CO-01 to -03, FR-CRM-PER-01, FR-CRM-TASK-01,
 -02, FR-CRM-NOTE-01 to -03, FR-CRM-LINK-01 to -03, FR-CRM-DUP-01, -02,
-FR-CRM-DEL-01, -02, -04, FR-CRM-PIPE-01, FR-CRM-REC-01 to -04; Q-57, Q-63;
-contracts §2.5; plan §5.3.
+FR-CRM-DEL-01, -02, -04, FR-CRM-PIPE-01, FR-CRM-REC-01 to -04; (1b)
+FR-CRM-CAMP-01, -05, FR-CRM-CO-02; Q-57, Q-63; contracts §2.5; plan §5.3.
 
 Generic create, update, soft delete (with a `deleted_group`), restore,
 permanent delete and list, each validated from the field registry
 (`domain/crm/objects.py`) and written in one `crm_apply` or `crm_purge` call,
 so the change and its audit rows land together (FR-CRM-AUD-06). Companies,
-people, tasks and notes are created and edited here; deals in `deals.py`,
-whose stage moves have rules of their own, and read, deleted and restored
-here like every other record.
+people, tasks, notes and (1b) campaigns are created and edited here; deals
+in `deals.py`, whose stage moves have rules of their own, and read, deleted
+and restored here like every other record. A campaign's members are
+`campaigns.py`'s; a campaign page here carries its figures.
 
 Every read is of the caller's workspace, and a record of another workspace,
 or one in the Trash, is "No such company." (404), never "forbidden"
@@ -25,8 +26,12 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from app.domain.calendar import today_in_company_tz
+from app.domain.crm import campaigns as campaign_rules
 from app.domain.crm import dedupe, objects, pipeline
 from app.schemas.crm import (
+    CampaignFields,
+    CampaignUpdate,
     CompanyFields,
     CompanyUpdate,
     DriveLinkIn,
@@ -70,6 +75,7 @@ KINDS = {
     ),
     "task": Kind("task", "crm_tasks", "task", TaskFields, TaskUpdate),
     "note": Kind("note", "crm_notes", "note", NoteFields, NoteUpdate),
+    "campaign": Kind("campaign", "crm_campaigns", "campaign", CampaignFields, CampaignUpdate),
 }
 #: URL segment → kind (contracts §2.5 "Objects in paths").
 PLURALS = {
@@ -78,6 +84,7 @@ PLURALS = {
     "opportunities": "opportunity",
     "tasks": "task",
     "notes": "note",
+    "campaigns": "campaign",
 }
 #: The record tables a soft delete, restore or purge may touch, in purge
 #: order: what points at a record goes before it (a deal before its company).
@@ -85,6 +92,7 @@ TRASH_TABLES = (
     "crm_drive_links",
     "crm_notes",
     "crm_tasks",
+    "crm_campaigns",
     "crm_opportunities",
     "crm_people",
     "crm_companies",
@@ -359,6 +367,28 @@ def _emails(ws: Workspace, values: dict[str, Any], person_id: str | None) -> Non
         )
 
 
+def _campaign_values(ws: Workspace, values: dict[str, Any], existing: dict | None) -> None:
+    """Spec §6.6 — the dates in order, and a budget sent stored with its INR
+    value at the rate for this month or the latest earlier one
+    (FR-CRM-FX-03); a rate edited later never recomputes it."""
+    after = {**(existing or {}), **values}
+    why = campaign_rules.dates_refusal(after.get("starts_on"), after.get("ends_on"))
+    if why:
+        raise CrmRefused(422, why)
+    if "budget" not in values and "budget_currency" not in values:
+        return
+    found = campaign_rules.budget_values(
+        store.list_fx_rates(ws.id),
+        after.get("budget"),
+        after.get("budget_currency"),
+        today_in_company_tz(),
+        ws.ctx.workspace["name"],
+    )
+    if isinstance(found, str):
+        raise CrmRefused(422, found)
+    values.update(found)
+
+
 def _company_ref(ws: Workspace, values: dict[str, Any]) -> None:
     """A person's company is a live company of this workspace."""
     company_id = values.get("company_id")
@@ -404,6 +434,7 @@ def link_names(ws_id: str, links: list[dict[str, Any]]) -> dict[tuple[str, str],
         ("company", "crm_companies"),
         ("person", "crm_people"),
         ("opportunity", "crm_opportunities"),
+        ("campaign", "crm_campaigns"),
     ):
         ids = {link["record_id"] for link in links if link["record_type"] == record_type}
         for rid, row in by_id(ws_id, table, ids).items():
@@ -430,7 +461,13 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
                 else []
             )
         }
-        return [show.opportunity(r, ws.facts, companies, people, projects) for r in rows]
+        sources = by_id(ws.id, "crm_campaigns", {r.get("source_campaign_id") or "" for r in rows})
+        return [show.opportunity(r, ws.facts, companies, people, projects, sources) for r in rows]
+    if kind == "campaign":
+        found = campaign_figures(ws.id, rows)
+        return [show.campaign(r, ws.facts, found.get(r["id"])) for r in rows]
+    if kind == "campaign_member":
+        return present_members(ws, rows)
     if kind in LINKS_OF:
         links = store.list_links(ws.id, LINKS_OF[kind], owner_ids=[r["id"] for r in rows])
         names = link_names(ws.id, links)
@@ -453,6 +490,56 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
         ]
     companies = by_id(ws.id, "crm_companies", {r.get("company_id") or "" for r in rows})
     return [show.person(r, ws.facts, companies) for r in rows]
+
+
+def campaign_figures(ws_id: str, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """FR-CRM-CAMP-05 — each campaign's figures from its live members and
+    the deals they converted to."""
+    if not rows:
+        return {}
+    members = store.campaign_members(ws_id, column="campaign_id", ids=[r["id"] for r in rows])
+    deals = by_id(
+        ws_id,
+        "crm_opportunities",
+        {m["converted_opportunity_id"] for m in members if m.get("converted_opportunity_id")},
+    )
+    return {
+        r["id"]: campaign_rules.figures(
+            [m for m in members if m["campaign_id"] == r["id"]], deals, r.get("budget_in_inr")
+        )
+        for r in rows
+    }
+
+
+def present_members(ws: Workspace, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Campaign members with their campaign, company, person and deal named
+    (Trash included, so a name stays readable)."""
+    people = by_id(ws.id, "crm_people", {r.get("person_id") or "" for r in rows})
+    companies = by_id(
+        ws.id,
+        "crm_companies",
+        {r.get("company_id") or "" for r in rows}
+        | {p.get("company_id") or "" for p in people.values()},
+    )
+    campaigns = by_id(ws.id, "crm_campaigns", {r["campaign_id"] for r in rows})
+    deals = by_id(
+        ws.id, "crm_opportunities", {r.get("converted_opportunity_id") or "" for r in rows}
+    )
+    return [
+        show.campaign_member(
+            r, ws.facts, campaigns=campaigns, companies=companies, people=people, deals=deals
+        )
+        for r in rows
+    ]
+
+
+def _memberships(ws: Workspace, column: str, record_id: str) -> list[dict[str, Any]]:
+    """FR-CRM-CO-02, REC-03 Related — a company's or person's campaign
+    memberships, live campaigns only."""
+    members = store.campaign_members(ws.id, column=column, ids=[record_id])
+    campaigns = by_id(ws.id, "crm_campaigns", {m["campaign_id"] for m in members})
+    live = [m for m in members if not (campaigns.get(m["campaign_id"]) or {}).get("deleted_at")]
+    return present_members(ws, live)
 
 
 def _project(found: dict[str, Any]) -> dict[str, Any]:
@@ -573,6 +660,8 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
         out: dict[str, Any] = {
             "people": [show.person(p, ws.facts) for p in people],
             "opportunities": _deals_of(ws, company_id=row["id"]),
+            # 1b (FR-CRM-CO-02): its campaign memberships.
+            "campaign_members": _memberships(ws, "company_id", row["id"]),
         }
         if ws.ctx.workspace.get("tva_linked"):
             # FR-CRM-CO-02: a Labs company's TVA projects, with status and
@@ -594,6 +683,7 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
                 else None
             ),
             "opportunities": sorted(deals.values(), key=lambda d: d["updated_at"], reverse=True),
+            "campaign_members": _memberships(ws, "person_id", row["id"]),
         }
     if kind == "opportunity":
         contacts = store.list_contacts(ws.id, opportunity_ids=[row["id"]])
@@ -609,6 +699,17 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
             # FR-CRM-REC-03: a Labs deal's TVA project, as on the record.
             "project": record.get("project"),
         }
+    if kind == "campaign":
+        # FR-CRM-CAMP-05: the deals its members converted to. The board
+        # reads the members themselves (`GET /crm/campaigns/{id}/members`).
+        members = store.campaign_members(ws.id, column="campaign_id", ids=[row["id"]])
+        ids = sorted(
+            {m["converted_opportunity_id"] for m in members if m.get("converted_opportunity_id")}
+        )
+        deals = [
+            d for d in by_id(ws.id, "crm_opportunities", ids).values() if not d.get("deleted_at")
+        ]
+        return {"opportunities": present_rows(ws, "opportunity", deals)}
     return {}
 
 
@@ -733,18 +834,20 @@ def create(ctx: Any, kind: str, payload: Any, *, check_duplicates: bool) -> dict
     values = parse(kind, payload, creating=True)
     # An owner defaults to the person creating the record, always a member:
     # Viewers cannot create.
-    if kind == "company" and not values.get("owner_id"):
+    if kind in ("company", "campaign") and not values.get("owner_id"):
         values["owner_id"] = ctx.user.id
     check_fields(ws, kind, values, None)
     domains: list[tuple[str, bool]] = []
     if kind == "company":
         values.setdefault("lead_stage", "new")
         domains = _domains(ws, values, None) or []
+    elif kind == "campaign":
+        _campaign_values(ws, values, None)
     else:
         _company_ref(ws, values)
         _emails(ws, values, None)
 
-    if check_duplicates:
+    if check_duplicates and kind in ("company", "person"):
         name = values.get("name") or dedupe.full_name(
             values.get("first_name"), values.get("last_name")
         )
@@ -804,6 +907,8 @@ def update(ctx: Any, kind: str, record_id: str, payload: Any) -> dict[str, Any]:
                 for d, p in wanted
                 if (d, p) not in keep
             ]
+    elif kind == "campaign":
+        _campaign_values(ws, values, row)
     else:
         _company_ref(ws, values)
         _emails(ws, values, record_id)

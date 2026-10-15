@@ -111,7 +111,15 @@ class TestPreview:
     def test_the_counts_that_move(self, crm):
         http, _, made = crm
         moves = _preview(http, made["acme"]["id"], made["dup"]["id"]).json()["moves"]
-        assert moves == {"people": 1, "deals": 0, "tasks": 1, "notes": 1, "links": 1, "projects": 0}
+        assert moves == {
+            "people": 1,
+            "deals": 0,
+            "tasks": 1,
+            "notes": 1,
+            "links": 1,
+            "projects": 0,
+            "campaign_members": 0,
+        }
 
     def test_equal_fields_are_not_a_choice(self, crm):
         http, _, made = crm

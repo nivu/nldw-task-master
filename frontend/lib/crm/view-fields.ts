@@ -17,6 +17,7 @@ import type {
   CrmLists,
   CrmMember,
   FilterOperator,
+  ListKind,
   ViewFieldType,
   ViewObjectKind,
 } from "@/lib/api/crm-types";
@@ -93,7 +94,7 @@ const STAMPS = [
 const POSITION = v("position", "Position", "number", { filterable: false, aggregatable: false });
 const E = { editable: true };
 
-export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
+export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
   company: [
     v("name", "Name", "text", E),
     v("domain", "Domain", "text", E),
@@ -207,6 +208,36 @@ export const VIEW_FIELDS: Record<ViewObjectKind, ViewFieldMeta[]> = {
     v("created_by", "Written by", "person"),
     ...STAMPS,
   ],
+  // 041 (1b): spec §6.6.
+  campaign: [
+    v("name", "Name", "text", E),
+    v("type_id", "Type", "select", { listKey: "campaign.type", ...E }),
+    v("status_id", "Status", "select", { listKey: "campaign.status", ...E }),
+    v("channel_id", "Channel", "select", { listKey: "channel", ...E }),
+    v("entity", "Entity", "fixed_select", { scope: "tva_linked", fixed: ENTITIES, ...E }),
+    v("owner_id", "Owner", "person", E),
+    v("starts_on", "Start date", "date", E),
+    v("ends_on", "End date", "date", E),
+    v("goal", "Goal", "long_text", { sortable: false, ...E }),
+    v("budget", "Budget", "currency", { amount: true }),
+    v("budget_currency", "Budget currency", "fixed_select", { fixed: CURRENCIES }),
+    v("budget_in_inr", "Budget in INR", "currency", { amount: true }),
+    v("budget_fx_rate", "Budget FX rate", "number", { amount: true, aggregatable: false }),
+    ...STAMPS,
+    POSITION,
+  ],
+  campaign_member: [
+    v("name", "Name", "text", { filterable: false, sortable: false }),
+    v("campaign_id", "Campaign", "relation"),
+    v("company_id", "Company", "relation"),
+    v("person_id", "Person", "relation"),
+    v("status", "Status", "fixed_select", { listKey: "campaign_member.status", ...E }),
+    v("last_touch_on", "Last touch", "date", E),
+    v("notes", "Notes", "long_text", { sortable: false, ...E }),
+    v("converted_opportunity_id", "Converted deal", "relation"),
+    ...STAMPS,
+    POSITION,
+  ],
 };
 
 /** Each object's page under /crm/[ws]. */
@@ -216,15 +247,18 @@ export const OBJECT_PATH: Record<ViewObjectKind, string> = {
   opportunity: "opportunities",
   task: "tasks",
   note: "notes",
+  campaign: "campaigns",
 };
 
 /** The field a row is named by in a list. */
-export const TITLE_FIELD: Record<ViewObjectKind, string> = {
+export const TITLE_FIELD: Record<ListKind, string> = {
   company: "name",
   person: "name",
   opportunity: "name",
   task: "title",
   note: "body",
+  campaign: "name",
+  campaign_member: "name",
 };
 
 /** A kanban groups by a select field (FR-CRM-VIEW-01). */
@@ -236,7 +270,7 @@ export const KANBAN_TYPES: ViewFieldType[] = ["select", "fixed_select", "flag"];
  * not (FR-CRM-WS-06), and for a Viewer nothing about amounts.
  */
 export function fieldsFor(
-  kind: ViewObjectKind,
+  kind: ListKind,
   { tvaLinked, viewer }: { tvaLinked: boolean; viewer: boolean }
 ): ViewFieldMeta[] {
   return VIEW_FIELDS[kind].filter(
@@ -245,11 +279,11 @@ export function fieldsFor(
   );
 }
 
-export function fieldMeta(kind: ViewObjectKind, field: string): ViewFieldMeta | undefined {
+export function fieldMeta(kind: ListKind, field: string): ViewFieldMeta | undefined {
   return VIEW_FIELDS[kind].find((f) => f.field === field);
 }
 
-export function fieldLabel(kind: ViewObjectKind, field: string): string {
+export function fieldLabel(kind: ListKind, field: string): string {
   return fieldMeta(kind, field)?.label ?? field.replace(/_/g, " ");
 }
 
@@ -349,7 +383,11 @@ function labelKey(field: string): string {
   if (field === "owner_id" || field === "assignee_id" || field === "created_by") {
     return field.replace(/_id$|_by$/, (m) => (m === "_by" ? "_by_name" : "_name"));
   }
-  if (field === "company_id" || field === "point_of_contact_id") return field.replace(/_id$/, "_name");
+  if (
+    ["company_id", "point_of_contact_id", "person_id", "campaign_id", "converted_opportunity_id"].includes(field)
+  ) {
+    return field.replace(/_id$/, "_name");
+  }
   if (field === "channel_ids") return "channel_labels";
   if (field === "entities") return "entity_labels";
   if (field.endsWith("_id")) return field.replace(/_id$/, "_label");
@@ -359,7 +397,7 @@ function labelKey(field: string): string {
 /** How a row's field reads in a cell or on a card. Display only. A select
  *  value the row sends no label for (Lost from stage) is named from `lists`. */
 export function cellText(
-  kind: ViewObjectKind,
+  kind: ListKind,
   field: string,
   row: Row,
   {
@@ -372,7 +410,12 @@ export function cellText(
   const value = row[field];
   if (meta?.type === "currency") {
     if (value === undefined || value === null || value === "") return "—";
-    const currency = (field === "amount" ? (row.currency as Currency | null) : "INR") ?? "INR";
+    const currency =
+      (field === "amount"
+        ? (row.currency as Currency | null)
+        : field === "budget"
+          ? (row.budget_currency as Currency | null)
+          : "INR") ?? "INR";
     return formatAmount(String(value), currency, numberFormat);
   }
   if (value === undefined || value === null || value === "") return "—";
@@ -416,12 +459,14 @@ export function groupKeyOf(row: Row, field: string): string {
 }
 
 /** Spec §5.6–§5.10: a cell of these cannot be emptied. */
-const REQUIRED: Record<ViewObjectKind, string[]> = {
+const REQUIRED: Record<ListKind, string[]> = {
   company: ["name", "owner_id"],
   person: ["first_name"],
   opportunity: ["name", "company_id", "owner_id"],
   task: ["title", "assignee_id"],
   note: ["body"],
+  campaign: ["name", "owner_id"],
+  campaign_member: ["campaign_id", "status"],
 };
 
 const EDITOR_TYPE: Partial<Record<ViewFieldType, FieldType>> = {

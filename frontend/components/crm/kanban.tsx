@@ -23,7 +23,7 @@ import { GripVertical } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import type { CrmLists, CrmQueryGroup, ViewObjectKind } from "@/lib/api/crm-types";
+import type { CrmLists, CrmQueryGroup, ListKind } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { formatAmount, type CrmTimezone, type NumberFormat } from "@/lib/crm/format";
 import { cellText, fieldLabel, groupKeyOf, TITLE_FIELD } from "@/lib/crm/view-fields";
@@ -102,7 +102,7 @@ export function Kanban({
   timeZone,
   numberFormat,
 }: {
-  kind: ViewObjectKind;
+  kind: ListKind;
   rows: Row[];
   /** The kanban field. */
   field: string;
@@ -339,7 +339,7 @@ function KanbanCard({
   timeZone,
   numberFormat,
 }: {
-  kind: ViewObjectKind;
+  kind: ListKind;
   row: Row;
   cardFields: string[];
   disabled: boolean;
@@ -393,7 +393,7 @@ function CardBody({
   lifted,
   movable,
 }: {
-  kind: ViewObjectKind;
+  kind: ListKind;
   row: Row;
   cardFields: string[];
   href?: string;

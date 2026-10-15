@@ -478,6 +478,81 @@ class NoteUpdate(NoteFields):
 
 
 # ---------------------------------------------------------------------------
+# Campaigns — spec §6.6, contracts §2.10 (S11a)
+# ---------------------------------------------------------------------------
+
+MemberStatus = Literal[
+    "targeted",
+    "invited",
+    "registered",
+    "attended",
+    "engaged",
+    "meeting_booked",
+    "converted",
+    "not_interested",
+    "unsubscribed",
+]
+
+
+class CampaignFields(BaseModel):
+    """Spec §6.6 campaign, every field optional (the PATCH shape). The budget
+    is stored with its INR value at the month's rate (FR-CRM-FX-03)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, max_length=200)
+    type_id: str | None = None
+    status_id: str | None = None
+    channel_id: str | None = None
+    entity: Entity | None = None
+    owner_id: str | None = None
+    starts_on: date | None = None
+    ends_on: date | None = None
+    goal: str | None = Field(default=None, max_length=20_000)
+    budget: Decimal | None = Money
+    budget_currency: Currency | None = None
+
+
+class CampaignUpdate(CampaignFields):
+    expect_updated_at: datetime | None = None
+
+
+class CampaignMembersIn(BaseModel):
+    """Contracts §2.10 `POST /crm/campaigns/{id}/members` — companies and
+    people by id, or everyone a saved view of companies or people lists
+    (FR-CRM-CAMP-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_ids: list[str] = Field(default_factory=list, max_length=500)
+    person_ids: list[str] = Field(default_factory=list, max_length=500)
+    view_id: str | None = Field(default=None, max_length=64)
+
+
+class CampaignMemberUpdate(BaseModel):
+    """Contracts §2.10 `PATCH /crm/campaign-members/{id}`; Converted goes
+    through the conversion."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    status: MemberStatus | None = None
+    last_touch_on: date | None = None
+    notes: str | None = Field(default=None, max_length=20_000)
+    position: float | None = None
+    expect_updated_at: datetime | None = None
+
+
+class ConvertIn(BaseModel):
+    """Contracts §2.10 `POST /crm/campaign-members/{id}/convert` — an
+    existing deal, or a new one (the fields of `POST /crm/opportunities`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    opportunity_id: str | None = Field(default=None, max_length=64)
+    new: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
 # Views — contracts §2.7 (S6a)
 # ---------------------------------------------------------------------------
 
@@ -488,11 +563,15 @@ ViewObject = Literal[
     "opportunity",
     "task",
     "note",
+    "campaign",
+    "campaign_member",
     "companies",
     "people",
     "opportunities",
     "tasks",
     "notes",
+    "campaigns",
+    "campaign_members",
 ]
 
 
@@ -555,7 +634,9 @@ class FavouriteIn(BaseModel):
 
     target_type: Literal["view", "record"]
     target_id: str = Field(min_length=1, max_length=64)
-    record_type: Literal["company", "person", "opportunity", "task", "note"] | None = None
+    record_type: Literal["company", "person", "opportunity", "task", "note", "campaign"] | None = (
+        None
+    )
 
 
 class BulkIn(BaseModel):

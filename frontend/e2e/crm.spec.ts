@@ -720,3 +720,61 @@ test.describe("the importer and the proxy (S8)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Journey 4.9 — a campaign (spec 007 FR-CRM-CAMP-02 to -05; tasks S11a,
+// quickstart §3 S11). Sanjeev's Saturday webinars, in Academy: a college
+// is dragged through the board and converted to a deal, and the deal carries
+// the campaign as its source. Made through the API with a tag, so rows other
+// runs left behind do not matter.
+// ---------------------------------------------------------------------------
+
+test.describe("campaigns (S11a)", () => {
+  test("journey 4.9: drag a member along, convert it, and the deal shows its source campaign", async ({
+    page,
+    request,
+  }) => {
+    const token = await tokenFor(request, PEOPLE.manager);
+    const tag = `E2E webinar ${Date.now().toString(36)}`;
+    const campaign = await crmApi(request, token, "POST", "/campaigns?workspace=academy", {
+      name: `${tag} series`,
+    });
+    const college = await crmApi(request, token, "POST", "/companies?workspace=academy", {
+      name: `${tag} College`,
+    });
+    await crmApi(request, token, "PATCH", `/companies/${college.id}?workspace=academy`, { lead_stage: "qualified" });
+    const added = await crmApi(request, token, "POST", `/campaigns/${campaign.id}/members?workspace=academy`, {
+      company_ids: [college.id],
+    });
+    expect(added.added).toBe(1);
+    const board = await crmApi(request, token, "GET", `/campaigns/${campaign.id}/members?workspace=academy`);
+    const member = board.rows[0];
+
+    await signIn(page, PEOPLE.manager);
+    await page.goto(`/crm/academy/campaigns/${campaign.id}`);
+    await expect(page.getByRole("heading", { name: `${tag} series` })).toBeVisible();
+    await expect(column(page, "targeted").locator(card(page, member.id))).toBeVisible();
+
+    // Targeted → Invited, through the keyboard, and saved.
+    await keyboardMove(page, card(page, member.id), "ArrowRight", "Invited");
+    await expect(column(page, "invited").locator(card(page, member.id))).toBeVisible();
+
+    // Convert it to a new deal.
+    await card(page, member.id).getByRole("button", { name: "Convert" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Deal name").fill(`${tag} AI course`);
+    await dialog.getByLabel("Next step", { exact: true }).fill("Send the proposal");
+    await dialog.getByLabel("Next step date").fill("2026-12-01");
+    await dialog.getByRole("button", { name: "Convert" }).click();
+    await expect(column(page, "converted").locator(card(page, member.id))).toBeVisible();
+    await expect(page.getByTestId("campaign-figures")).toContainText("100.0%");
+
+    // The deal carries the campaign as its source.
+    await expect(card(page, member.id)).toContainText(`${tag} AI course`);
+    const after = await crmApi(request, token, "GET", `/campaigns/${campaign.id}/members?workspace=academy`);
+    await page.goto(`/crm/academy/opportunities/${after.rows[0].converted_opportunity_id}`);
+    await expect(page.getByRole("heading", { name: `${tag} AI course` })).toBeVisible();
+    await expect(page.getByText("Source campaign")).toBeVisible();
+    await expect(page.getByRole("link", { name: `${tag} series` })).toBeVisible();
+  });
+});

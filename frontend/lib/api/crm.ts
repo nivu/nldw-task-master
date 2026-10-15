@@ -13,6 +13,10 @@ import type {
   AccountTypeResult,
   BulkAction,
   BulkResult,
+  CampaignMembers,
+  Converted,
+  CrmCampaign,
+  CrmCampaignMember,
   CrmAuditEntry,
   CrmAuditFilters,
   CrmBootstrap,
@@ -62,6 +66,8 @@ import type {
   InvitationIn,
   InvitationResult,
   LinkableProject,
+  MemberStatus,
+  MembersAdded,
   MergePreview,
   NotCreated,
   OptionUpdate,
@@ -298,6 +304,12 @@ export const searchPersonChoices = (workspace: string, q: string, after: string 
 export const searchDealChoices = (workspace: string, q: string, after: string | null) =>
   listCrmRecords<CrmOpportunity>(workspace, "opportunities", { q: q || undefined, limit: 50, after }).then(
     (page) => ({ choices: page.rows.map((d) => ({ value: d.id, label: d.name })), next: page.next })
+  );
+
+/** Campaigns as choices (the bulk bar's Add to campaign). */
+export const searchCampaignChoices = (workspace: string, q: string, after: string | null) =>
+  listCrmRecords<CrmCampaign>(workspace, "campaigns", { q: q || undefined, limit: 50, after }).then(
+    (page) => ({ choices: page.rows.map((c) => ({ value: c.id, label: c.name })), next: page.next })
   );
 
 export const getCrmRecord = <T extends CrmRecord>(workspace: string, object: CrmObject, id: string) =>
@@ -646,3 +658,44 @@ export const getCrmEmails = (
   id: string,
   before?: string
 ) => call<CrmEmailThreads>(`/${object}/${encodeURIComponent(id)}/emails${query(workspace, { before })}`);
+
+// ---------------------------------------------------------------------------
+// Campaign members — §2.10 (S11a, FR-CRM-CAMP-02 to -05)
+// ---------------------------------------------------------------------------
+
+export const listCampaignMembers = (workspace: string, campaignId: string) =>
+  call<CampaignMembers>(`/campaigns/${campaignId}/members${query(workspace)}`);
+
+/** Do not contact and existing members are skipped and named (FR-CRM-PER-02). */
+export const addCampaignMembers = (
+  workspace: string,
+  campaignId: string,
+  members: { company_ids?: string[]; person_ids?: string[]; view_id?: string }
+) =>
+  call<MembersAdded>(`/campaigns/${campaignId}/members${query(workspace)}`, {
+    method: "POST",
+    ...body(members),
+  });
+
+/** Status (never Converted: convert it), last touch, notes, board position. */
+export const updateCampaignMember = (
+  workspace: string,
+  memberId: string,
+  changes: { status?: MemberStatus; last_touch_on?: string | null; notes?: string | null; position?: number },
+  expectUpdatedAt?: string
+) =>
+  call<CrmCampaignMember>(`/campaign-members/${memberId}${query(workspace)}`, {
+    method: "PATCH",
+    ...body({ ...changes, ...(expectUpdatedAt ? { expect_updated_at: expectUpdatedAt } : {}) }),
+  });
+
+/** To an existing deal, or a new one with the fields a deal is created with. */
+export const convertCampaignMember = (
+  workspace: string,
+  memberId: string,
+  to: { opportunity_id: string } | { new: Record<string, unknown> }
+) =>
+  call<Converted>(`/campaign-members/${memberId}/convert${query(workspace)}`, {
+    method: "POST",
+    ...body(to),
+  });

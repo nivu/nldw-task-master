@@ -60,7 +60,7 @@ class ListSpec:
     scope: Scope = "all"
 
 
-#: Data-model §3.4.1. Campaign lists arrive with campaigns (1b).
+#: Data-model §3.4.1; the campaign lists with campaigns (1b, 041).
 LISTS: Final[dict[str, ListSpec]] = {
     "company.lead_stage": ListSpec("Lead stage", fixed=True),
     "opportunity.stage": ListSpec("Stage", fixed=True),
@@ -80,6 +80,9 @@ LISTS: Final[dict[str, ListSpec]] = {
     "opportunity.lost_reason": ListSpec("Lost reason"),
     "opportunity.contact_role": ListSpec("Role in deal"),
     "task.category": ListSpec("Task category"),
+    "campaign.type": ListSpec("Campaign type"),
+    "campaign.status": ListSpec("Campaign status"),
+    "campaign_member.status": ListSpec("Member status", fixed=True),
 }
 
 

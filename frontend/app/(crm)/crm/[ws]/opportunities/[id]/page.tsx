@@ -293,6 +293,20 @@ export default function OpportunityPage() {
               ]
             : []),
           ...(deal.entity_label ? [<Chip key="entity" label="Entity" value={deal.entity_label} />] : []),
+          // 1b (FR-CRM-CAMP-04): the campaign it was converted from.
+          ...(deal.source_campaign_id
+            ? [
+                <Chip
+                  key="source-campaign"
+                  label="Source campaign"
+                  value={
+                    <Link href={`/crm/${ws}/campaigns/${deal.source_campaign_id}`} className="hover:underline">
+                      {deal.source_campaign_name ?? "Campaign"}
+                    </Link>
+                  }
+                />,
+              ]
+            : []),
         ]}
         actions={
           <>

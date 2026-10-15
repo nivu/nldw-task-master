@@ -2,7 +2,8 @@
 plan §5.5; spec §11 AC "Viewers receive no amount field" (so far: every deal
 read route, `crm_get`, and lists through `POST /crm/query` and `crm_list`
 with their group and footer totals; from S9 the bell and the digests; from
-S10 the Emails tab and `crm_get`'s emails).
+S10 the Emails tab and `crm_get`'s emails; from S11a a campaign's budget
+and figures, its list, timeline, search hits and member board).
 
 A recursive walk over each answer a Viewer gets, looking for any amount key,
 and for any timeline change naming an amount field. The denylist is written
@@ -334,3 +335,85 @@ class TestEmails:
         )
         assert [t["thread_id"] for t in got["emails"]] == ["t1"]
         assert _walk(got) == []
+
+
+class TestCampaigns:
+    """S11a — a campaign's budget, its INR value and rate, and the figures
+    derived from its members' deals (pipeline created, won value, cost per
+    converted member) are absent for a Viewer everywhere (FR-CRM-ACC-11)."""
+
+    @pytest.fixture
+    def campaign(self, crm):
+        http, made = crm
+        me = as_(OWNER["id"])
+        made_campaign = http.post(
+            f"/api/v1/crm/campaigns{ACADEMY}",
+            json={"name": "Webinars", "budget": "100", "budget_currency": "USD"},
+            headers=me,
+        ).json()
+        cid = made_campaign["id"]
+        http.patch(f"/api/v1/crm/campaigns/{cid}{ACADEMY}", json={"budget": "120"}, headers=me)
+        http.post(
+            f"/api/v1/crm/campaigns/{cid}/members{ACADEMY}",
+            json={"person_ids": [made["person"]["id"]]},
+            headers=me,
+        )
+        member = http.get(f"/api/v1/crm/campaigns/{cid}/members{ACADEMY}", headers=me).json()
+        r = http.post(
+            f"/api/v1/crm/campaign-members/{member['rows'][0]['id']}/convert{ACADEMY}",
+            json={"opportunity_id": made["deal"]["id"]},
+            headers=me,
+        )
+        assert r.status_code == 200, r.text
+        return http, cid
+
+    def _reads(self, cid):
+        return [
+            ("GET", f"/api/v1/crm/campaigns/{cid}{ACADEMY}", None),
+            ("GET", f"/api/v1/crm/campaigns{ACADEMY}", None),
+            ("GET", f"/api/v1/crm/campaigns/{cid}/timeline{ACADEMY}", None),
+            ("GET", f"/api/v1/crm/campaigns/{cid}/members{ACADEMY}", None),
+            ("GET", f"/api/v1/crm/search{ACADEMY}&q=webinars", None),
+            ("POST", f"/api/v1/crm/query{ACADEMY}", {"object": "campaign", "spec": {}}),
+        ]
+
+    def test_an_admin_sees_them(self, campaign):
+        http, cid = campaign
+        record = http.get(f"/api/v1/crm/campaigns/{cid}{ACADEMY}", headers=as_(OWNER["id"])).json()[
+            "record"
+        ]
+        assert record["budget_in_inr"] == "10080.00"
+        assert record["pipeline_created"] is not None
+        assert {"budget", "budget_fx_rate", "won_value", "cost_per_converted"} <= set(record)
+
+    @pytest.mark.parametrize("index", range(6))
+    def test_a_viewer_gets_none(self, campaign, index):
+        http, cid = campaign
+        method, url, body = self._reads(cid)[index]
+        r = http.request(method, url, json=body, headers=as_(VIEWER["id"]))
+        assert r.status_code == 200, r.text
+        assert _walk(r.json()) == []
+
+    def test_the_currency_and_counts_stay(self, campaign):
+        http, cid = campaign
+        record = http.get(
+            f"/api/v1/crm/campaigns/{cid}{ACADEMY}", headers=as_(VIEWER["id"])
+        ).json()["record"]
+        assert record["budget_currency"] == "USD"
+        assert record["member_counts"]["converted"] == 1
+        assert record["conversion_rate"] == "100.0"
+
+    def test_a_viewer_cannot_sort_by_budget(self, campaign):
+        http, _ = campaign
+        r = http.post(
+            f"/api/v1/crm/query{ACADEMY}",
+            json={"object": "campaign", "spec": {"sorts": [{"field": "budget", "dir": "desc"}]}},
+            headers=as_(VIEWER["id"]),
+        )
+        assert r.status_code == 422
+
+    def test_crm_get(self, campaign):
+        _, cid = campaign
+        answer = asyncio.run(tools.crm_get(Ctx(VIEWER["id"]), "campaign", cid, "academy"))
+        assert answer["record"]["name"] == "Webinars"
+        assert _walk(answer) == []

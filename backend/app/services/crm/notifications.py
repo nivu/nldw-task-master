@@ -51,6 +51,7 @@ NOUNS = {
     "opportunity": "deal",
     "task": "task",
     "note": "note",
+    "campaign": "campaign",
 }
 
 

@@ -3,7 +3,18 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import { Briefcase, Building2, CheckSquare, Link2, NotebookPen, Plus, Search, User, Zap } from "lucide-react";
+import {
+  Briefcase,
+  Building2,
+  CheckSquare,
+  Link2,
+  Megaphone,
+  NotebookPen,
+  Plus,
+  Search,
+  User,
+  Zap,
+} from "lucide-react";
 
 import { useCrm } from "@/components/crm/shell";
 import { ViewIcon } from "@/components/crm/view-switcher";
@@ -24,7 +35,8 @@ import { OBJECT_PATH } from "@/lib/crm/view-fields";
  * The command menu — spec 007 FR-CRM-SRCH-01 to -03; plan §5.8.
  *
  * Cmd/Ctrl+K anywhere inside the CRM opens one search across the current
- * workspace's companies, people, deals, tasks and notes, with its saved views
+ * workspace's companies, people, deals, tasks, notes and (1b) campaigns, with
+ * its saved views
  * by name. From it the person jumps to a record or a view, creates a record
  * named after what they typed, or runs a quick action of the record page they
  * are on. A record page names itself and offers its quick actions with
@@ -41,7 +53,7 @@ export interface QuickAction {
 
 /** The record page that is open: a new task from the menu links to it. */
 export interface OpenRecord {
-  record_type: "company" | "person" | "opportunity";
+  record_type: "company" | "person" | "opportunity" | "campaign";
   record_id: string;
 }
 
@@ -73,6 +85,7 @@ const GROUPS: { key: keyof Omit<CrmSearchResult, "views">; heading: string; icon
   { key: "opportunities", heading: "Opportunities", icon: Briefcase },
   { key: "tasks", heading: "Tasks", icon: CheckSquare },
   { key: "notes", heading: "Notes", icon: NotebookPen },
+  { key: "campaigns", heading: "Campaigns", icon: Megaphone },
 ];
 
 function hitHref(ws: string, hit: SearchHit): string {
@@ -337,7 +350,9 @@ export function CommandMenu({ children }: { children: React.ReactNode }) {
                         go(
                           v.system_key === "pipeline"
                             ? `/crm/${ws}/pipeline`
-                            : `/crm/${ws}/${OBJECT_PATH[v.object]}?view=${v.id}`
+                            : v.object === "campaign_member"
+                              ? `/crm/${ws}/campaigns`
+                              : `/crm/${ws}/${OBJECT_PATH[v.object]}?view=${v.id}`
                         )
                       }
                       className={itemClass}

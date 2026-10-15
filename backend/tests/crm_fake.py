@@ -119,6 +119,9 @@ TABLES = (
     "crm_mailboxes",
     "crm_email_messages",
     "crm_email_links",
+    # Campaigns (041), both audited.
+    "crm_campaigns",
+    "crm_campaign_members",
     # TVA tables the deal lifecycle writes (033), kept here so a failed
     # transition rolls them back with the rest.
     "projects",
@@ -147,6 +150,8 @@ RECORDS = (
     "crm_opportunities",
     "crm_tasks",
     "crm_notes",
+    "crm_campaigns",
+    "crm_campaign_members",
 )
 #: The audit trigger's noun per table (026 `crm_audit_row`).
 NOUNS = {
@@ -164,6 +169,7 @@ TARGETS = {
     "opportunity": "crm_opportunities",
     "task": "crm_tasks",
     "note": "crm_notes",
+    "campaign": "crm_campaigns",
 }
 OPEN_STAGES = ("discovery", "qualification", "proposal", "negotiation")
 
@@ -241,10 +247,38 @@ DEFAULTS = {
         "lost_on": None,
         "twenty_id": None,
         "position": 0,
+        "source_campaign_id": None,
         **_FLAGS,
         **_TRASH,
     },
     "crm_opportunity_contacts": {"role_id": None},
+    "crm_campaigns": {
+        "type_id": None,
+        "status_id": None,
+        "channel_id": None,
+        "entity": None,
+        "starts_on": None,
+        "ends_on": None,
+        "goal": None,
+        "budget": None,
+        "budget_currency": None,
+        "budget_in_inr": None,
+        "budget_fx_rate": None,
+        "twenty_id": None,
+        "position": 0,
+        **_TRASH,
+    },
+    "crm_campaign_members": {
+        "company_id": None,
+        "person_id": None,
+        "status": "targeted",
+        "last_touch_on": None,
+        "notes": None,
+        "converted_opportunity_id": None,
+        "twenty_id": None,
+        "position": 0,
+        **_TRASH,
+    },
     "crm_tasks": {
         "body": None,
         "status": "todo",
@@ -286,11 +320,12 @@ DEFAULTS = {
 MIGRATIONS = Path(__file__).resolve().parents[2] / "supabase/migrations"
 MIGRATION_034 = MIGRATIONS / "034_crm_views.sql"
 MIGRATION_038 = MIGRATIONS / "038_crm_flags.sql"
+MIGRATION_041 = MIGRATIONS / "041_crm_campaigns.sql"
 _BOOL = {"true": True, "false": False}
 
 
 def _read_034() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    text = MIGRATION_034.read_text() + MIGRATION_038.read_text()
+    text = MIGRATION_034.read_text() + MIGRATION_038.read_text() + MIGRATION_041.read_text()
     field_rows = re.findall(
         r"\('(\w+)', '(\w+)', '(\w+)', '(\w+)', (true|false), (true|false), (true|false), "
         r"(true|false), (true|false), '(\w+)'\)",
@@ -496,6 +531,50 @@ class FakeCrmStore:
                     color=None,
                     position=pos,
                     is_default=False,
+                    is_active=True,
+                    is_fixed=fixed,
+                )
+
+    def add_campaign_lists(self, workspace: dict[str, Any]) -> None:
+        """041's campaign lists: types, statuses (Planned the default) and the
+        fixed member statuses."""
+        lists = [
+            ("campaign.type", False, None, [(None, "Webinar"), (None, "College outreach")]),
+            (
+                "campaign.status",
+                False,
+                "planned",
+                [("planned", "Planned"), ("live", "Live"), ("completed", "Completed")],
+            ),
+            (
+                "campaign_member.status",
+                True,
+                "targeted",
+                [
+                    ("targeted", "Targeted"),
+                    ("invited", "Invited"),
+                    ("registered", "Registered"),
+                    ("attended", "Attended"),
+                    ("engaged", "Engaged"),
+                    ("meeting_booked", "Meeting booked"),
+                    ("converted", "Converted"),
+                    ("not_interested", "Not interested"),
+                    ("unsubscribed", "Unsubscribed"),
+                ],
+            ),
+        ]
+        start = len(self.rows["crm_select_options"])
+        for list_key, fixed, default, items in lists:
+            for pos, (key_, label) in enumerate(items, start=start + 1):
+                self.add(
+                    "crm_select_options",
+                    workspace_id=workspace["id"],
+                    list_key=list_key,
+                    system_key=key_,
+                    label=label,
+                    color=None,
+                    position=pos,
+                    is_default=key_ is not None and key_ == default,
                     is_active=True,
                     is_fixed=fixed,
                 )
@@ -926,6 +1005,8 @@ class FakeCrmStore:
                 "crm_opportunities": ("name",),
                 "crm_tasks": ("title",),
                 "crm_notes": ("body",),
+                "crm_campaigns": ("name",),
+                "crm_campaign_members": ("notes",),
             }[table]
             rows = [r for r in rows if any(q.lower() in (r.get(c) or "").lower() for c in columns)]
         key = "deleted_at" if deleted is True else "updated_at"
@@ -979,6 +1060,7 @@ class FakeCrmStore:
             "crm_opportunities": "opportunity",
             "crm_tasks": "task",
             "crm_notes": "note",
+            "crm_campaigns": "campaign",
             "crm_drive_links": None,
         }
         snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
@@ -1039,8 +1121,48 @@ class FakeCrmStore:
         return {"purged": len(items)}
 
     def _cascade(self, actor, table: str, target: str) -> None:
-        """The foreign-key actions a purge sets off (029, 030), and a
+        """The foreign-key actions a purge sets off (029, 030, 041), and a
         mailbox's delete (039: its messages and their links)."""
+        members = self.rows["crm_campaign_members"]
+        if table in ("crm_companies", "crm_people"):
+            # 041: a membership naming the other one stays with it, unless
+            # that one has its own already; the rest go (CASCADE).
+            mine, other = (
+                ("company_id", "person_id")
+                if table == "crm_companies"
+                else ("person_id", "company_id")
+            )
+            for m in list(members.values()):
+                if m.get(mine) != target:
+                    continue
+                kept = m.get(other) and not any(
+                    o["campaign_id"] == m["campaign_id"]
+                    and o.get(mine) is None
+                    and o.get(other) == m[other]
+                    for o in members.values()
+                )
+                if kept:
+                    self._update(actor, {"table": "crm_campaign_members"}, m, {mine: None})
+                else:
+                    self._delete(actor, "crm_campaign_members", m)
+        if table == "crm_campaigns":
+            for m in list(members.values()):
+                if m["campaign_id"] == target:
+                    self._delete(actor, "crm_campaign_members", m)
+            for d in self.rows["crm_opportunities"].values():
+                if d.get("source_campaign_id") == target:
+                    self._update(
+                        actor, {"table": "crm_opportunities"}, d, {"source_campaign_id": None}
+                    )
+        if table == "crm_opportunities":
+            for m in members.values():
+                if m.get("converted_opportunity_id") == target:
+                    self._update(
+                        actor,
+                        {"table": "crm_campaign_members"},
+                        m,
+                        {"converted_opportunity_id": None},
+                    )
         if table == "crm_mailboxes":
             for msg in list(self.rows["crm_email_messages"].values()):
                 if msg["mailbox_id"] == target:
@@ -2024,6 +2146,24 @@ class FakeCrmStore:
                 for n in live("crm_notes")
             ]
         )
+        # 041: campaigns by name, never a budget.
+        found["campaigns"] = ranked(
+            [
+                (
+                    score(c["name"]),
+                    {
+                        "id": c["id"],
+                        "name": c["name"],
+                        "status_id": c.get("status_id"),
+                        "starts_on": c.get("starts_on"),
+                        "ends_on": c.get("ends_on"),
+                        "owner_id": c.get("owner_id"),
+                        "updated_at": c["updated_at"],
+                    },
+                )
+                for c in live("crm_campaigns")
+            ]
+        )
         return found
 
     def merge_companies(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
@@ -2057,7 +2197,8 @@ class FakeCrmStore:
         snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
         audit_len = len(self.audit)
         moved = dict.fromkeys(
-            ("people", "deals", "tasks", "notes", "links", "domains", "emails"), 0
+            ("people", "deals", "tasks", "notes", "links", "domains", "emails", "campaign_members"),
+            0,
         )
         try:
             changes = plan.get("survivor_changes") or {}
@@ -2121,6 +2262,23 @@ class FakeCrmStore:
                 else:
                     link["record_id"] = keep_id
                 moved["emails"] += 1
+            # 041: campaign members; one the survivor has already keeps it.
+            members = self.rows["crm_campaign_members"]
+            for m in sorted(list(members.values()), key=lambda r: r["id"]):
+                if m["workspace_id"] != ws or m.get("company_id") != gone_id:
+                    continue
+                if any(
+                    o["campaign_id"] == m["campaign_id"]
+                    and o.get("company_id") == keep_id
+                    and o.get("person_id") == m.get("person_id")
+                    for o in members.values()
+                ):
+                    self._delete(actor, "crm_campaign_members", m)
+                else:
+                    self._update(
+                        actor, {"table": "crm_campaign_members"}, m, {"company_id": keep_id}
+                    )
+                moved["campaign_members"] += 1
             for link in list(self.rows["crm_drive_links"].values()):
                 if (
                     link["workspace_id"] == ws
@@ -2794,6 +2952,23 @@ class FakeCrmStore:
 
     # -- store: writes ------------------------------------------------------
 
+    # -- store: campaigns (S11a) ----------------------------------------------
+
+    def campaign_members(
+        self, workspace_id: str, *, column: str, ids: list[str], deleted: bool | None = False
+    ) -> list[dict[str, Any]]:
+        if column not in store.MEMBER_KEYS:
+            raise ValueError(f"members are not read by {column}")
+        wanted = set(ids)
+        rows = [
+            r
+            for r in self._of("crm_campaign_members", workspace_id)
+            if r.get(column) in wanted and (deleted is not False or not r.get("deleted_at"))
+        ]
+        return sorted(
+            rows, key=lambda r: (r["campaign_id"], float(r["position"]), r["created_at"], r["id"])
+        )
+
     def rpc(self, fn: str, params: dict[str, Any]) -> Any:
         raise AssertionError(f"FakeCrmStore has no fake for {fn}; call a named store function.")
 
@@ -3008,7 +3183,23 @@ class FakeCrmStore:
             "crm_task_links": (("task_id", "crm_tasks"),),
             "crm_note_links": (("note_id", "crm_notes"),),
             "crm_note_mentions": (("note_id", "crm_notes"),),
+            # 041.
+            "crm_campaign_members": (
+                ("campaign_id", "crm_campaigns"),
+                ("company_id", "crm_companies"),
+                ("person_id", "crm_people"),
+                ("converted_opportunity_id", "crm_opportunities"),
+            ),
         }
+        if table == "crm_opportunities" and row.get("source_campaign_id"):
+            found = self.rows["crm_campaigns"].get(row["source_campaign_id"])
+            if found is None or found["workspace_id"] != ws:
+                raise store.refusal_for("23503", "violates foreign key constraint")
+        if table == "crm_campaigns":
+            for column in ("type_id", "status_id", "channel_id"):
+                option = self.rows["crm_select_options"].get(row.get(column) or "")
+                if row.get(column) and (option is None or option["workspace_id"] != ws):
+                    raise store.refusal_for("23503", "violates foreign key constraint")
         for column, parent in composite.get(table, ()):
             if row.get(column):
                 found = self.rows[parent].get(row[column])
@@ -3071,6 +3262,30 @@ class FakeCrmStore:
             row.get("completed_at") is not None
         ):
             broken("crm_tasks_completed")
+        if table == "crm_campaigns":
+            budget = row.get("budget")
+            for column in ("budget_currency", "budget_in_inr", "budget_fx_rate"):
+                if (budget is None) != (row.get(column) is None):
+                    broken(f"crm_campaigns_{column}")
+            if budget is not None:
+                exact = (Decimal(str(budget)) * Decimal(str(row["budget_fx_rate"]))).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if Decimal(str(row["budget_in_inr"])) != exact:
+                    broken("crm_campaigns_budget_fx_inr")
+                if (row["budget_currency"] == "INR") != (Decimal(str(row["budget_fx_rate"])) == 1):
+                    broken("crm_campaigns_budget_inr_at_one")
+            if (
+                row.get("starts_on")
+                and row.get("ends_on")
+                and str(row["ends_on"]) < str(row["starts_on"])
+            ):
+                broken("crm_campaigns_dates")
+        if table == "crm_campaign_members":
+            if not (row.get("company_id") or row.get("person_id")):
+                broken("crm_campaign_members_someone")
+            if row.get("converted_opportunity_id") and row["status"] != "converted":
+                broken("crm_campaign_members_converted")
         if (
             table == "crm_notes"
             and row.get("kind", "note") != "note"
@@ -3129,6 +3344,17 @@ class FakeCrmStore:
                 for other in self.rows[table].values()
             ):
                 clash("crm_favourites_target")
+            return
+        if table == "crm_campaign_members":
+            # 041: NULLS NOT DISTINCT.
+            if any(
+                other["id"] != row["id"]
+                and all(
+                    other.get(c) == row.get(c) for c in ("campaign_id", "company_id", "person_id")
+                )
+                for other in self.rows[table].values()
+            ):
+                clash("crm_campaign_members_once")
             return
         if table in pairs:
             columns, name = pairs[table]
@@ -3223,6 +3449,8 @@ _QUERY_TABLES = {
     "opportunity": "crm_opportunities",
     "task": "crm_tasks",
     "note": "crm_notes",
+    "campaign": "crm_campaigns",
+    "campaign_member": "crm_campaign_members",
 }
 _AMOUNT = "Viewers cannot filter, sort or total by amount."
 _IDS = ("select", "person", "relation", "fixed_select", "flag")
@@ -3273,7 +3501,21 @@ _FIXED_ORDER = {
     ),
     "stage": _STAGES,
     "lost_from_stage": _STAGES,
-    "status": ("todo", "in_progress", "done"),
+    # 041: a task's statuses, then a campaign member's (one array).
+    "status": (
+        "todo",
+        "in_progress",
+        "done",
+        "targeted",
+        "invited",
+        "registered",
+        "attended",
+        "engaged",
+        "meeting_booked",
+        "converted",
+        "not_interested",
+        "unsubscribed",
+    ),
     "bucket": ("today", "this_week", "this_month", "later"),
 }
 
@@ -3347,14 +3589,20 @@ class FakeQuery:
         if typ == "person":
             person = self.fake.profiles.get(v) or PEOPLE.get(v)
             return person["display_name"].lower() if person else None
-        if typ == "relation" and col in ("company_id", "point_of_contact_id"):
-            table = "crm_companies" if col == "company_id" else "crm_people"
-            other = self.fake.rows[table].get(v)
+        relations = {
+            "company_id": "crm_companies",
+            "point_of_contact_id": "crm_people",
+            "person_id": "crm_people",
+            "campaign_id": "crm_campaigns",
+            "converted_opportunity_id": "crm_opportunities",
+        }
+        if typ == "relation" and col in relations:
+            other = self.fake.rows[relations[col]].get(v)
             if other is None or other["workspace_id"] != self.ws:
                 return None
-            if col == "company_id":
-                return other["name"].lower()
-            return f"{other['first_name']} {other.get('last_name') or ''}".strip().lower()
+            if "first_name" in other:
+                return f"{other['first_name']} {other.get('last_name') or ''}".strip().lower()
+            return other["name"].lower()
         if typ in ("text", "long_text"):
             return v.lower()
         return v
@@ -3531,6 +3779,8 @@ class FakeQuery:
                 "opportunity": ("name",),
                 "task": ("title",),
                 "note": ("body",),
+                "campaign": ("name",),
+                "campaign_member": (),
             }[self.kind]
             domains = self.fake.rows["crm_company_domains"].values()
 
@@ -3540,6 +3790,16 @@ class FakeQuery:
                     texts[0] = f"{r['first_name']} {r.get('last_name') or ''}"
                 if self.kind == "company":
                     texts += [d["domain"] for d in domains if d["company_id"] == r["id"]]
+                if self.kind == "campaign_member":
+                    # 041: by its company's or person's name.
+                    company = self.fake.rows["crm_companies"].get(r.get("company_id") or "")
+                    person = self.fake.rows["crm_people"].get(r.get("person_id") or "")
+                    texts += [company["name"]] if company else []
+                    texts += (
+                        [f"{person['first_name']} {person.get('last_name') or ''}"]
+                        if person
+                        else []
+                    )
                 return any(_like(t.lower(), pattern) for t in texts)
 
             base_keep = keep

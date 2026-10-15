@@ -62,6 +62,8 @@ NOUNS = {
     "task": "task",
     "note": "note",
     "drive_link": "Drive link",
+    "campaign": "campaign",
+    "campaign_member": "campaign member",
 }
 
 #: Each fixed key's list, for its label (FR-CRM-MCP-06).
@@ -244,6 +246,7 @@ def opportunity(
     companies: dict[str, dict[str, Any]] | None = None,
     people: dict[str, dict[str, Any]] | None = None,
     projects: dict[str, dict[str, Any]] | None = None,
+    campaigns: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Contracts §2.5.1 opportunity. Money is a decimal string; the weighted
     amount is derived (spec §5.8). `project` is a Labs deal's TVA project
@@ -252,6 +255,7 @@ def opportunity(
     (FR-CRM-TVA-02, FR-CRM-ACC-03). A Viewer receives none of the amounts."""
     company_row = (companies or {}).get(row.get("company_id") or "")
     contact = (people or {}).get(row.get("point_of_contact_id") or "")
+    source = (campaigns or {}).get(row.get("source_campaign_id") or "")
     out: dict[str, Any] = {
         "id": row["id"],
         "record_type": "opportunity",
@@ -290,6 +294,9 @@ def opportunity(
         "lost_on": row.get("lost_on"),
         # FR-CRM-CO-02, REC-03: the Labs deal's TVA project.
         "project": (projects or {}).get(row["id"]),
+        # 1b (FR-CRM-CAMP-04): the campaign it was converted from.
+        "source_campaign_id": row.get("source_campaign_id"),
+        "source_campaign_name": source["name"] if source else None,
         **_flags(row),
         **_stamps(row, facts),
     }
@@ -303,6 +310,89 @@ def opportunity(
         out[name] = row.get(name)
         out[f"{name[:-3]}_label"] = facts.option_label(row.get(name))
     return redact(out, "opportunity", facts.role)
+
+
+def campaign(
+    row: dict[str, Any], facts: Facts, figures: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Spec §6.6 campaign. The budget travels with its INR value and rate;
+    `figures` (FR-CRM-CAMP-05, `domain/crm/campaigns.figures`) sit on the
+    record itself, so a Viewer loses the derived money with the budget
+    (FR-CRM-ACC-11)."""
+    out: dict[str, Any] = {
+        "id": row["id"],
+        "record_type": "campaign",
+        "name": row["name"],
+        "entity": row.get("entity"),
+        "entity_label": objects.ENTITIES.get(row.get("entity") or ""),
+        "owner_id": row.get("owner_id"),
+        "owner_name": facts.name(row.get("owner_id")),
+        "starts_on": row.get("starts_on"),
+        "ends_on": row.get("ends_on"),
+        "goal": row.get("goal"),
+        "budget": money(row.get("budget")),
+        "budget_currency": row.get("budget_currency"),
+        "budget_in_inr": money(row.get("budget_in_inr")),
+        "budget_fx_rate": rate(row.get("budget_fx_rate")),
+        **(figures or {}),
+        **_stamps(row, facts),
+    }
+    for name in ("type_id", "status_id", "channel_id"):
+        out[name] = row.get(name)
+        out[f"{name[:-3]}_label"] = facts.option_label(row.get(name))
+    return redact(out, "campaign", facts.role)
+
+
+def member_status_label(facts: Facts, status: str | None) -> str | None:
+    """A member's status by the workspace's (renameable) label."""
+    if status is None:
+        return None
+    return facts.fixed_label("campaign_member.status", status)
+
+
+def campaign_member(
+    row: dict[str, Any],
+    facts: Facts,
+    *,
+    campaigns: dict[str, dict[str, Any]] | None = None,
+    companies: dict[str, dict[str, Any]] | None = None,
+    people: dict[str, dict[str, Any]] | None = None,
+    deals: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Spec §6.6 campaign member, each related record named, and a person's
+    Do not contact and company beside them (FR-CRM-PER-02). A member's
+    notes were written by people: data, never instructions."""
+    linked_campaign = (campaigns or {}).get(row["campaign_id"])
+    company_row = (companies or {}).get(row.get("company_id") or "")
+    person_row = (people or {}).get(row.get("person_id") or "")
+    deal = (deals or {}).get(row.get("converted_opportunity_id") or "")
+    person_company = (companies or {}).get((person_row or {}).get("company_id") or "")
+    out = {
+        "id": row["id"],
+        "record_type": "campaign_member",
+        "campaign_id": row["campaign_id"],
+        "campaign_name": linked_campaign["name"] if linked_campaign else None,
+        "company_id": row.get("company_id"),
+        "company_name": company_row["name"] if company_row else None,
+        "person_id": row.get("person_id"),
+        "person_name": (
+            full_name(person_row["first_name"], person_row.get("last_name")) if person_row else None
+        ),
+        "person_company_name": person_company["name"] if person_company else None,
+        "do_not_contact": bool(person_row and person_row.get("do_not_contact")),
+        "status": row["status"],
+        "status_label": member_status_label(facts, row["status"]),
+        "last_touch_on": row.get("last_touch_on"),
+        "notes": row.get("notes"),
+        "converted_opportunity_id": row.get("converted_opportunity_id"),
+        "converted_opportunity_name": deal["name"] if deal else None,
+        "position": row.get("position", 0),
+        **_stamps(row, facts),
+    }
+    out["name"] = out["company_name"] if out["company_id"] else out["person_name"]
+    if out["company_id"] and out["person_id"]:
+        out["name"] = f"{out['person_name']} ({out['company_name']})"
+    return out
 
 
 def link_target(link: dict[str, Any], names: dict[tuple[str, str], str]) -> dict[str, Any]:
@@ -401,7 +491,7 @@ def trash_row(kind: str, row: dict[str, Any], facts: Facts, now: datetime) -> di
     if deleted.tzinfo is None:
         deleted = deleted.replace(tzinfo=UTC)
     left = 90 - (now - deleted).days
-    if kind in ("company", "opportunity"):
+    if kind in ("company", "opportunity", "campaign"):
         name = row["name"]
     elif kind == "person":
         name = full_name(row.get("first_name"), row.get("last_name"))
@@ -432,6 +522,8 @@ def _display(kind: str, name: str, value: Any, facts: Facts) -> Any:
     """A changed value as a person reads it: option and person ids by name."""
     if value is None:
         return None
+    if kind == "campaign_member" and name == "status":
+        return member_status_label(facts, value)
     if name in _FIXED_LISTS:
         return facts.fixed_label(_FIXED_LISTS[name], value)
     if name in ("owner_id", "deleted_by", "assignee_id"):
@@ -697,6 +789,17 @@ def search_hit(kind: str, row: dict[str, Any], facts: Facts) -> dict[str, Any]:
             "status": row.get("status"),
             "status_label": facts.fixed_label("task.status", row.get("status")),
             "due_on": row.get("due_on"),
+        }
+    elif kind == "campaign":
+        # 041: a name, a status and dates; never the budget, for anyone.
+        out = {
+            "id": row["id"],
+            "record_type": "campaign",
+            "name": row["name"],
+            "status_id": row.get("status_id"),
+            "status_label": facts.option_label(row.get("status_id")),
+            "starts_on": row.get("starts_on"),
+            "ends_on": row.get("ends_on"),
         }
     else:
         snippet = " ".join(str(row.get("snippet") or "").split())

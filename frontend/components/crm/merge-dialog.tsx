@@ -34,6 +34,7 @@ const MOVES: [keyof MergePreview["moves"], string, string][] = [
   ["notes", "note", "notes"],
   ["links", "Drive link", "Drive links"],
   ["projects", "TVA project link", "TVA project links"],
+  ["campaign_members", "campaign membership", "campaign memberships"],
 ];
 
 function shown(value: unknown): string {

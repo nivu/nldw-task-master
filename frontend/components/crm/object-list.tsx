@@ -92,6 +92,7 @@ const DEFAULT_COLUMNS: Record<ViewObjectKind, string[]> = {
   opportunity: ["name", "company_id", "stage", "amount", "next_step", "next_step_on", "owner_id"],
   task: ["title", "status", "due_on", "bucket", "assignee_id"],
   note: ["body", "kind", "occurred_on", "created_by"],
+  campaign: ["name", "type_id", "status_id", "starts_on", "ends_on", "owner_id"],
 };
 
 /** A deal kanban's headers: the count, the INR sum and the weighted sum. */
@@ -424,12 +425,11 @@ function ObjectListView({
     if (present.has("")) out.push({ key: "", label: "None" });
     return out;
   }, [kanbanMeta, rows, page, bootstrap]);
-  // A task or a note opens the first record it is linked to (campaigns have
-  // no page yet).
+  // A task or a note opens the first record it is linked to.
   const linked = kind === "task" || kind === "note";
   const hrefFor = (row: Row): string | null => {
     if (!linked) return `/crm/${ws}/${OBJECT_PATH[kind]}/${row.id}`;
-    const link = ((row.links as CrmLinkRef[] | undefined) ?? []).find((l) => l.record_type !== "campaign");
+    const link = ((row.links as CrmLinkRef[] | undefined) ?? [])[0];
     return link ? `/crm/${ws}/${OBJECT_PATH[link.record_type as ViewObjectKind]}/${link.record_id}` : null;
   };
   const detailFor = linked

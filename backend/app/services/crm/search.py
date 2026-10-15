@@ -1,10 +1,10 @@
 """Search — spec 007 FR-CRM-SRCH-01 to -03, FR-CRM-WS-02, FR-CRM-ACC-11;
 contracts §2.8 `GET /crm/search`; plan §5.8.
 
-The Cmd/Ctrl+K search: one `crm_search()` call (035) across companies,
-people, deals, tasks and notes of the caller's workspace, and the saved views
-they can see by name, so the command menu can jump to either. Campaigns
-arrive with their table in 1b; until then the key is there and empty.
+The Cmd/Ctrl+K search: one `crm_search()` call (035, 041) across
+companies, people, deals, tasks, notes and (1b) campaigns of the caller's
+workspace, and the saved views they can see by name, so the command menu
+can jump to either.
 
 Every hit is presented here, so a Viewer's deal hits carry no amount: the
 database read none (`p_redact`), and the presenter drops the keys anyway.
@@ -32,6 +32,7 @@ _GROUPS = (
     ("opportunities", "opportunity"),
     ("tasks", "task"),
     ("notes", "note"),
+    ("campaigns", "campaign"),
 )
 
 
@@ -61,7 +62,6 @@ def search(ctx: Any, q: str, limit: int = MAX_PER_OBJECT) -> dict[str, list[dict
             )
         for hit in out[key]:
             hit["opens"] = first.get(hit["id"])
-    out["campaigns"] = []
     wanted = text.lower()
     out["views"] = [
         {

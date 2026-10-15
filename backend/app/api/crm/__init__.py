@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from app.api.crm import (
     audit,
+    campaigns,
     capacity,
     deals,
     email,
@@ -40,6 +41,7 @@ ROUTERS = [
     search.router,
     # Before the record routes: /companies/merge-preview is not a company id.
     merge.router,
+    campaigns.router,
     records.router,
     deals.router,
     deals.projects_router,

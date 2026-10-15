@@ -12,6 +12,7 @@ import {
   CircleHelp,
   Kanban,
   LogOut,
+  Megaphone,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -44,10 +45,10 @@ import { cn } from "@/lib/utils";
  * no TVA link anywhere; a staff member gets Back to TVA (FR-CRM-UI-03).
  *
  * The sidebar holds what exists so far: Today, Pipeline, Companies, People,
- * Opportunities, Tasks, the person's favourites (pinned views and records,
- * FR-CRM-UI-02) and, for admins, Settings. Each later slice adds its own
- * entry. On a phone the bottom bar has room for four; the rest, favourites
- * included, are under More.
+ * Opportunities, Tasks, (1b) Campaigns, the person's favourites (pinned
+ * views and records, FR-CRM-UI-02) and, for admins, Settings. Each later
+ * slice adds its own entry. On a phone the bottom bar has room for four; the
+ * rest, favourites included, are under More.
  *
  * From 1b the tools hold the bell (FR-CRM-NOTIF-01), and an Admin sees a
  * banner above every page while a background job is late (FR-CRM-JOB-03).
@@ -87,6 +88,8 @@ function favouriteHref(ws: string, fav: CrmFavourite, views: CrmSavedView[]): st
   const view = views.find((v) => v.id === fav.target_id);
   if (!view) return null;
   if (view.system_key === "pipeline") return `/crm/${ws}/pipeline`;
+  // Members by status opens on a campaign's page.
+  if (view.object === "campaign_member") return `/crm/${ws}/campaigns`;
   return `/crm/${ws}/${OBJECT_PATH[view.object]}?view=${view.id}`;
 }
 
@@ -143,6 +146,8 @@ export function CrmShell({
     { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
     { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, show: true },
     { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, show: true },
+    // 1b (FR-CRM-UI-02, FR-CRM-CAMP).
+    { href: `/crm/${ws}/campaigns`, label: "Campaigns", icon: Megaphone, show: true },
     {
       href: `/crm/${ws}/settings`,
       label: "Settings",

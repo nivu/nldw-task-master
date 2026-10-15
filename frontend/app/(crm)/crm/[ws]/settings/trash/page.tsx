@@ -73,6 +73,7 @@ export default function TrashPage() {
           <TabsTrigger value="opportunities">Deals</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="notes">Notes</TabsTrigger>
+          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
         </TabsList>
       </Tabs>
       {message && (

@@ -7,9 +7,10 @@ Viewer), used in one workspace only, sortable, and which select list its
 options come from. The services validate writes from it and the presenter
 redacts from it, so a field's rules live in one place. Pure.
 
-Opportunities, tasks and notes joined in S4, campaigns join in 1b; the
-campaign's amount fields are listed already, because redaction must never
-depend on a slice remembering to add them (plan §5.5).
+Opportunities, tasks and notes joined in S4, campaigns and their members
+in 1b (S11a); the campaign's amount fields were listed before its table
+existed, because redaction must never depend on a slice remembering to add
+them (plan §5.5).
 """
 
 from __future__ import annotations
@@ -167,6 +168,8 @@ OPPORTUNITY: Final = (
     _system("won_on", "Won on", "date"),
     _system("lost_on", "Lost on", "date"),
     _system("lost_from_stage", "Lost from stage", "select"),
+    # 1b (S11a): written by a campaign conversion (FR-CRM-CAMP-04).
+    _system("source_campaign_id", "Source campaign", "relation"),
     _system("flag_level", "Deal health flag", "select"),
     _system("flags", "Deal health flags", "array"),
     _system("flags_computed_at", "Deal health computed"),
@@ -196,6 +199,39 @@ NOTE: Final = (
     Field("occurred_on", "Date", "date"),
 )
 
+#: Spec §6.6 (1b). The budget is an amount: it is stored with its INR value
+#: at the month's rate (FR-CRM-FX-03) and omitted for a Viewer. Converted
+#: deals, pipeline created and won value are derived on read.
+CAMPAIGN: Final = (
+    Field("name", "Name", "text", required=True, max_length=200),
+    Field("type_id", "Type", "select", list_key="campaign.type"),
+    Field("status_id", "Status", "select", list_key="campaign.status"),
+    Field("channel_id", "Channel", "select", list_key="channel"),
+    Field("entity", "Entity", "select", scope="labs"),
+    Field("owner_id", "Owner", "relation", required=True),
+    Field("starts_on", "Start date", "date"),
+    Field("ends_on", "End date", "date"),
+    Field("goal", "Goal", "long_text", sortable=False, max_length=20_000),
+    Field("budget", "Budget", "currency", amount=True),
+    Field("budget_currency", "Budget currency", "select"),
+    Field("budget_in_inr", "Budget in INR", "currency", system=True, amount=True),
+    Field("budget_fx_rate", "Budget FX rate", "number", system=True, amount=True),
+    _system("twenty_id", "Twenty id", "text"),
+)
+
+#: Spec §6.6 (1b). A member is a company, a person or both (FR-CRM-CAMP-01);
+#: Converted is reached only by a conversion, which sets the deal.
+CAMPAIGN_MEMBER: Final = (
+    Field("campaign_id", "Campaign", "relation", required=True),
+    Field("company_id", "Company", "relation"),
+    Field("person_id", "Person", "relation"),
+    Field("status", "Status", "select", list_key="campaign_member.status"),
+    Field("last_touch_on", "Last touch", "date"),
+    Field("notes", "Notes", "long_text", sortable=False, max_length=20_000),
+    Field("converted_opportunity_id", "Converted opportunity", "relation", system=True),
+    _system("twenty_id", "Twenty id", "text"),
+)
+
 #: FR-CRM-LINK-01, D4.
 DRIVE_LINK: Final = (
     Field("record_type", "Record type", "select", required=True),
@@ -211,6 +247,8 @@ FIELDS: Final[dict[str, tuple[Field, ...]]] = {
     "task": TASK,
     "note": NOTE,
     "drive_link": DRIVE_LINK,
+    "campaign": CAMPAIGN,
+    "campaign_member": CAMPAIGN_MEMBER,
 }
 
 #: Plan §5.5, FR-CRM-ACC-11 — omitted for a Viewer wherever they would
@@ -222,6 +260,7 @@ AMOUNT_FIELDS: Final[dict[str, frozenset[str]]] = {
     "task": frozenset(),
     "note": frozenset(),
     "drive_link": frozenset(),
+    "campaign_member": frozenset(),
     "opportunity": frozenset(
         {"amount", "amount_in_inr", "fx_rate_used", "won_fx_rate", "weighted_amount"}
     ),
@@ -236,6 +275,11 @@ AMOUNT_FIELDS: Final[dict[str, frozenset[str]]] = {
         }
     ),
 }
+#: The campaign's amounts derived on read from its members' deals (spec
+#: §6.6): redacted like the stored ones, but no column of the registry.
+DERIVED_AMOUNTS: Final[dict[str, frozenset[str]]] = {
+    "campaign": frozenset({"pipeline_created", "won_value", "cost_per_converted"}),
+}
 #: TVA figures a CRM answer can carry (the handoff preview, S5).
 TVA_AMOUNT_KEYS: Final = frozenset({"revenue", "suggested_inr", "existing_tva_revenue"})
 
@@ -247,13 +291,14 @@ TABLES: Final = {
     "task": "crm_tasks",
     "note": "crm_notes",
     "drive_link": "crm_drive_links",
+    "campaign": "crm_campaigns",
+    "campaign_member": "crm_campaign_members",
 }
-#: The records a Drive link may hang on (FR-CRM-LINK-01). Campaigns arrive
-#: in 1b; a link to one is refused until its table exists.
-LINKABLE: Final = ("company", "person", "opportunity", "task", "note")
+#: The records a Drive link may hang on (FR-CRM-LINK-01); campaigns from 1b.
+LINKABLE: Final = ("company", "person", "opportunity", "task", "note", "campaign")
 #: The records a task or a note links to (FR-CRM-TASK-01, FR-CRM-NOTE-01);
-#: campaigns join in 1b.
-TASK_NOTE_TARGETS: Final = ("company", "person", "opportunity")
+#: campaigns from 1b.
+TASK_NOTE_TARGETS: Final = ("company", "person", "opportunity", "campaign")
 
 #: FR-CRM-OPP-01 and the fixed task and note lists.
 CURRENCIES: Final = ("INR", "AUD", "USD")
@@ -283,6 +328,19 @@ MANUAL_LEAD_STAGES: Final = ("new", "contacted", "nurturing", "qualified", "disq
 
 #: FR-CRM-WS-06.
 ENTITIES: Final = {"nunnari_labs": "Nunnari Labs", "deepweaver": "DeepWeaver"}
+
+#: Spec §6.6 — a campaign member's fixed statuses, in board order (041).
+MEMBER_STATUSES: Final = (
+    "targeted",
+    "invited",
+    "registered",
+    "attended",
+    "engaged",
+    "meeting_booked",
+    "converted",
+    "not_interested",
+    "unsubscribed",
+)
 
 
 def field(kind: str, name: str) -> Field | None:
@@ -340,6 +398,8 @@ def required_refusal(kind: str, values: dict) -> str | None:
         "task": "A task",
         "note": "A note",
         "drive_link": "A Drive link",
+        "campaign": "A campaign",
+        "campaign_member": "A campaign member",
     }
     return f"{article.get(kind, 'A record')} needs {_and([m.lower() for m in missing])}."
 
@@ -531,6 +591,35 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("occurred_on", "date"),
         _v("created_by", "person"),
         *_STAMPS,
+    ),
+    # 041 (1b): campaigns and their members.
+    "campaign": (
+        _v("name", "text"),
+        _v("type_id", "select"),
+        _v("status_id", "select"),
+        _v("channel_id", "select"),
+        _v("entity", "fixed_select", workspace_scope="tva_linked"),
+        _v("owner_id", "person"),
+        _v("starts_on", "date"),
+        _v("ends_on", "date"),
+        _v("goal", "long_text", sortable=False),
+        _v("budget", "currency", is_amount=True),
+        _v("budget_currency", "fixed_select"),
+        _v("budget_in_inr", "currency", is_amount=True),
+        _v("budget_fx_rate", "number", is_amount=True, aggregatable=False),
+        *_STAMPS,
+        _POSITION,
+    ),
+    "campaign_member": (
+        _v("campaign_id", "relation"),
+        _v("company_id", "relation"),
+        _v("person_id", "relation"),
+        _v("status", "fixed_select"),
+        _v("last_touch_on", "date"),
+        _v("notes", "long_text", sortable=False),
+        _v("converted_opportunity_id", "relation"),
+        *_STAMPS,
+        _POSITION,
     ),
 }
 

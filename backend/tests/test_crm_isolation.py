@@ -7,7 +7,8 @@ Labs's lists contain nothing of Academy. A record id is answered 404 whether
 it is absent or belongs to another workspace, so its existence is never
 disclosed. Later slices add their objects' routes here; S4 added deals,
 tasks, notes, deal contacts and stage moves, S5 the handoff and project
-links, S10 the Emails tab and `crm_get`'s emails (FR-CRM-SYNC-10).
+links, S10 the Emails tab and `crm_get`'s emails (FR-CRM-SYNC-10), S11a
+campaigns and their member routes.
 """
 
 from __future__ import annotations
@@ -380,3 +381,99 @@ class TestEmails:
             )
         assert refused.value.status == 404
         assert fake.rows["crm_email_messages"] == {}
+
+
+class TestCampaigns:
+    """S11a — a campaign and its members of Academy are not found from Labs,
+    and a Labs campaign cannot take an Academy company or deal (041's
+    composite foreign keys hold it again in the database)."""
+
+    @pytest.fixture
+    def made(self, crm):
+        http, made = crm
+        me = as_(OWNER["id"])
+        campaign = http.post(
+            f"/api/v1/crm/campaigns{ACADEMY}", json={"name": "Webinars"}, headers=me
+        ).json()
+        http.post(
+            f"/api/v1/crm/campaigns/{campaign['id']}/members{ACADEMY}",
+            json={"company_ids": [made["companies"]["id"]]},
+            headers=me,
+        )
+        member = http.get(
+            f"/api/v1/crm/campaigns/{campaign['id']}/members{ACADEMY}", headers=me
+        ).json()["rows"][0]
+        mine = http.post(
+            f"/api/v1/crm/campaigns{LABS}", json={"name": "Labs roundtable"}, headers=me
+        ).json()
+        return http, {**made, "campaign": campaign, "member": member, "mine": mine}
+
+    def test_every_campaign_route(self, made):
+        http, m = made
+        for method, url, body in _routes("campaigns", m["campaign"]["id"]):
+            r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
+            assert r.status_code == 404, (method, url, r.text)
+
+    def test_every_member_route(self, made):
+        http, m = made
+        cid, mid = m["campaign"]["id"], m["member"]["id"]
+        for method, url, body in [
+            ("GET", f"/api/v1/crm/campaigns/{cid}/members{LABS}", None),
+            ("POST", f"/api/v1/crm/campaigns/{cid}/members{LABS}", {"company_ids": []}),
+            ("PATCH", f"/api/v1/crm/campaign-members/{mid}{LABS}", {"status": "invited"}),
+            (
+                "POST",
+                f"/api/v1/crm/campaign-members/{mid}/convert{LABS}",
+                {"opportunity_id": m["opportunities"]["id"]},
+            ),
+        ]:
+            r = http.request(method, url, json=body, headers=as_(OWNER["id"]))
+            assert r.status_code == 404, (method, url, r.text)
+
+    def test_a_labs_campaign_cannot_take_an_academy_record(self, made):
+        http, m = made
+        r = http.post(
+            f"/api/v1/crm/campaigns/{m['mine']['id']}/members{LABS}",
+            json={"company_ids": [m["companies"]["id"]]},
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (404, "No such company.")
+        r = http.post(
+            f"/api/v1/crm/bulk{LABS}",
+            json={
+                "object": "people",
+                "ids": [m["people"]["id"]],
+                "action": "add_to_campaign",
+                "values": {"campaign_id": m["mine"]["id"]},
+            },
+            headers=as_(OWNER["id"]),
+        )
+        assert r.json()["failed"] == [{"id": m["people"]["id"], "reason": "No such person."}]
+
+    def test_bulk_naming_another_workspaces_campaign(self, made):
+        http, m = made
+        mine = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Labs Co"}, headers=as_(OWNER["id"])
+        ).json()
+        r = http.post(
+            f"/api/v1/crm/bulk{LABS}",
+            json={
+                "object": "companies",
+                "ids": [mine["id"]],
+                "action": "add_to_campaign",
+                "values": {"campaign_id": m["campaign"]["id"]},
+            },
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (404, "No such campaign.")
+
+    def test_lists_hold_nothing_of_it(self, made):
+        http, m = made
+        listed = http.get(f"/api/v1/crm/campaigns{LABS}", headers=as_(OWNER["id"])).json()
+        assert [c["name"] for c in listed["rows"]] == ["Labs roundtable"]
+        r = http.post(
+            f"/api/v1/crm/query{LABS}",
+            json={"object": "campaign_member", "spec": {}},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.json()["rows"] == []

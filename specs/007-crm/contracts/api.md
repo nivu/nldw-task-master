@@ -174,6 +174,15 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
   `assignee_id`, `links[{record_type, record_id}]` (≥ 1).
 - **note**: `body`, `kind` (`note`\|`call`\|`meeting`\|`whatsapp`\|`other`),
   `occurred_on` (required unless `note`), `links[]`, `mention_ids[]`.
+- **campaign** (1b; `owner_id` defaults to the caller): `name`, `type_id`,
+  `status_id`, `channel_id`, `entity` (Labs), `owner_id`, `starts_on`,
+  `ends_on`, `goal`, `budget`, `budget_currency`. Read-only:
+  `budget_in_inr`, `budget_fx_rate` (FR-CRM-FX-03 at the month of the
+  save), and the figures `member_count`, `member_counts` (per status),
+  `converted_members`, `conversion_rate` (percent, one decimal),
+  `converted_deals`, `pipeline_created`, `won_value`, `cost_per_converted`
+  (INR; the last three and the budget absent for a Viewer). A task's or
+  note's `links` and a Drive link may name a campaign.
 
 ### 2.6 Deals — S4, S5 (FR-CRM-PIPE, -TVA, -FX)
 
@@ -221,7 +230,15 @@ fixtures follow it, and aliases cover column-name variants). JSON:
 "notes":[…], "attachments":[…], "campaigns":[…] (1b), "campaignMembers":[…] (1b)}`.
 Each item carries an `id`. Relations are by `companyId`, `personId`,
 `opportunityId`, and task and note targets by `targets: [{type, id}]`. CSV:
-one file per object, with the same field names as headers.
+one file per object, with the same field names as headers. (S11a, as built)
+A campaign has `name`, `type`, `status`, `channel`, `entity`, `ownerEmail`,
+`startDate`, `endDate`, `goal`, `budget` (`{amount, currency}` or
+`budget` with `budgetCurrency`) and `createdAt`; a campaign member has
+`campaignId`, `companyId` and/or `personId`, `status`, `lastTouchAt`,
+`notes` and `convertedOpportunityId`. A deal may name its `campaignId`; else
+a member converted to it gives the deal its source campaign. A member of a
+person marked Do not contact is not imported, and Converted with no deal is
+imported as Engaged.
 
 ### 2.10 1b — notifications, jobs, email, campaigns, dashboard, export
 
@@ -234,9 +251,10 @@ one file per object, with the same field names as headers.
 | GET, POST, PATCH, DELETE | `/crm/mailboxes` (`/{id}`) | Admin | `{email, owner_id, labels[], is_active}` | `GET`: `{mailboxes: [{id, email, owner_id, owner_name, labels, is_active, backfilled_at, last_synced_at}], sync: {enabled, configured, live}, gmail_domains}` (`configured` is `CRM_GMAIL_CONFIGURED`, never the key). A changed address or label set resets the cursor, so the labels are read afresh. 422 owner not a member; 422 `email` is not the owner's own profile email (only a TVA admin may register a delegate address); 422 domain not one the service account covers (`nunnarilabs.com`, `deepweaver.ai`, `nunnari.academy`); 422 a Gmail system label (`INBOX`, `SENT`, `CATEGORY_*` …); 409 the address is already registered in a workspace (FR-CRM-SYNC-01, amended) |
 | POST | `/crm/email-sync/run` | Admin | — | `{run_id, outcome, mailboxes: n, fetched, stored, removed, skipped_internal, matched_people, created_companies, created_people}` or `{skipped: "Email sync is off" \| "A sync is already running"}`. The run's pages go to the `crm_sync` worker; the route waits about 20 s for them and otherwise answers `outcome: "running"` (the job log has the rest) |
 | GET | `/crm/{object}/{id}/emails` | Read | `before?` (a `last_at`), `limit?` ≤ 100 | `{threads: [{thread_id, subject, last_at, direction, participants, mailbox, messages}], next}` for companies, people and opportunities (company: all its people's; opportunity: company's and contacts'). `GET /crm/{object}/{id}` carries the latest five as `emails` (`crm_get`) |
-| POST | `/crm/campaigns/{id}/members` | Write | `{company_ids?, person_ids?, view_id?}` | `{added, skipped_do_not_contact, skipped_existing}` |
-| PATCH | `/crm/campaign-members/{id}` | Write | `{status?, last_touch_on?, notes?, position?}` | the member; `status=converted` is refused here: use convert |
-| POST | `/crm/campaign-members/{id}/convert` | Write | `{opportunity_id?} \| {new: {name, company_id, owner_id, next_step, next_step_on, …}}` | `{member, opportunity}` (FR-CRM-CAMP-04) |
+| GET | `/crm/campaigns/{id}/members` | Read | `status?` | `{campaign_id, member_counts, rows: [member]}`, in board order; each member names its campaign, company, person (with Do not contact and the person's company) and converted deal (S11a, as built) |
+| POST | `/crm/campaigns/{id}/members` | Write | `{company_ids?, person_ids?, view_id?}` (a saved view of companies or people; at most 2,000 in all) | `{added, skipped_do_not_contact, skipped_existing, skipped: [{id, name, reason}]}`; an id of another workspace is 404 "No such company." |
+| PATCH | `/crm/campaign-members/{id}` | Write | `{status?, last_touch_on?, notes?, position?, expect_updated_at?}` | the member; `status=converted` is refused here: use convert. A converted member stays Converted (422) |
+| POST | `/crm/campaign-members/{id}/convert` | Write | `{opportunity_id?} \| {new: {name, company_id, owner_id, next_step, next_step_on, …}}` | `{member, opportunity}` (FR-CRM-CAMP-04). A new deal's company and point of contact default to the member's; with automation 8 off the deal's source campaign is not written. One transaction |
 | GET | `/crm/dashboard` | Admin; Member (own numbers only) | `entity?, owner_id?, channel_id?, from?, to?` | the panels of FR-CRM-DASH-02/03 with `{value, colour?: green\|amber\|red}`; Labs adds `capacity` for admins and staff members |
 | GET, PUT | `/crm/targets` | Admin | `[{entity?, period_kind, period_start, amount_inr}]` | bookings targets |
 | POST | `/crm/export/view` | Write | `{object, spec, columns}` | `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="<object>-<date>.csv"`; audited `export.view`. A cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'`. 413 "This export is larger than 5 MB; export one object, or a narrower view." past 5 MB |

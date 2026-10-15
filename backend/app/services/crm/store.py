@@ -120,6 +120,8 @@ UNIQUE_MESSAGES = {
     "crm_saved_views_name": "There is already a view with that name here.",
     "crm_saved_views_one_default": "This list's default view changed meanwhile; reload.",
     "crm_favourites_target": "That is already a favourite.",
+    # FR-CRM-CAMP-03 (041); the service skips them first.
+    "crm_campaign_members_once": "That company or person is already in this campaign.",
     # FR-CRM-SYNC-01 (039); the route names it first.
     "crm_mailboxes_email": "That address is already registered as a mailbox in a workspace.",
 }
@@ -437,6 +439,9 @@ RECORD_TABLES = frozenset(
         "crm_opportunities",
         "crm_tasks",
         "crm_notes",
+        # 041 (1b).
+        "crm_campaigns",
+        "crm_campaign_members",
     }
 )
 #: The plain list's `q` (contracts §2.5): a literal substring of these.
@@ -447,6 +452,8 @@ _SEARCH = {
     "crm_opportunities": ("name",),
     "crm_tasks": ("title",),
     "crm_notes": ("body",),
+    "crm_campaigns": ("name",),
+    "crm_campaign_members": ("notes",),
 }
 #: The polymorphic link tables of tasks and notes, by their owner column.
 LINK_TABLES = {"crm_task_links": "task_id", "crm_note_links": "note_id"}
@@ -923,9 +930,17 @@ def merge_companies(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, An
 # The Twenty importer — S8 (data-model §3.17; FR-CRM-MIG)
 # ---------------------------------------------------------------------------
 
-#: The record tables an import matches on `twenty_id` (029, 030, 036).
+#: The record tables an import matches on `twenty_id` (029, 030, 036, 041).
 TWENTY_TABLES = frozenset(
-    {"crm_companies", "crm_people", "crm_opportunities", "crm_tasks", "crm_notes"}
+    {
+        "crm_companies",
+        "crm_people",
+        "crm_opportunities",
+        "crm_tasks",
+        "crm_notes",
+        "crm_campaigns",
+        "crm_campaign_members",
+    }
 )
 
 
@@ -1688,4 +1703,44 @@ def email_messages(workspace_id: str, message_ids: list[str]) -> list[dict[str, 
         ),
         "id",
         message_ids,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Campaigns — S11a (data-model §3.23)
+# ---------------------------------------------------------------------------
+
+#: The columns a member is read by.
+MEMBER_KEYS = frozenset({"campaign_id", "company_id", "person_id", "converted_opportunity_id"})
+
+
+def campaign_members(
+    workspace_id: str, *, column: str, ids: list[str], deleted: bool | None = False
+) -> list[dict[str, Any]]:
+    """Every member of some campaigns (or of some companies, people or
+    deals), in board order. A batch of ids can have more members than one
+    response holds (`max_rows`), so each batch is read page by page.
+    `deleted`: False the live members, None all."""
+    if column not in MEMBER_KEYS:
+        raise ValueError(f"members are not read by {column}")
+    rows: list[dict[str, Any]] = []
+    wanted = sorted({i for i in ids if i})
+    for i in range(0, len(wanted), _ID_BATCH):
+        offset = 0
+        while True:
+            query_ = (
+                supabase.table("crm_campaign_members")
+                .select("*")
+                .eq("workspace_id", workspace_id)
+                .in_(column, wanted[i : i + _ID_BATCH])
+            )
+            if deleted is False:
+                query_ = query_.is_("deleted_at", "null")
+            page = query_.order("id").range(offset, offset + _PAGE - 1).execute().data or []
+            rows += page
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    return sorted(
+        rows, key=lambda r: (r["campaign_id"], float(r["position"]), r["created_at"], r["id"])
     )

@@ -108,6 +108,8 @@ class TestSeededViews:
         "my_week": ("task", "My week", "kanban"),
         # 038 (1b).
         "follow_ups_owed": ("company", "Follow-ups owed", "table"),
+        # 041 (1b).
+        "members_by_status": ("campaign_member", "Members by status", "kanban"),
     }
 
     @pytest.mark.parametrize("query", [LABS, ACADEMY])
@@ -153,6 +155,7 @@ class TestSeededViews:
             "company": "companies_all",
             "opportunity": "pipeline",
             "task": "open_tasks_by_owner",
+            "campaign_member": "members_by_status",
         }
 
     def test_company_views_return_the_right_rows(self, crm):

@@ -86,6 +86,10 @@ def moves(ctx: Any, company_id: str) -> dict[str, int]:
         "projects": (
             len(db.list_crm_projects(company_ids=[company_id])) if _tva_linked(ctx) else 0
         ),
+        # 1b (041): its campaign memberships.
+        "campaign_members": len(
+            store.campaign_members(ws_id, column="company_id", ids=[company_id], deleted=None)
+        ),
     }
 
 

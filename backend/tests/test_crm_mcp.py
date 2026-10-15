@@ -46,6 +46,7 @@ CALLER_LINES = {
         "WORKSPACE ADMINS ONLY. CONFIRM FIRST, after showing the dry run's counts\nand conflicts."
     ),
     "crm_run_email_sync": "WORKSPACE ADMINS ONLY. CONFIRM FIRST.",
+    "crm_campaign_members": "WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST.",
 }
 READS = {"crm_workspaces", "crm_get", "crm_list", "crm_today", "crm_search"}
 DESTRUCTIVE = {"crm_move_stage", "crm_handoff", "crm_merge"}
@@ -786,3 +787,160 @@ class TestTodaySearchMergeTools:
         assert admin["opportunities"][0]["amount"] == "1000.00"
         mine = asyncio.run(crm.crm_today(Ctx(VIEWER["id"]), workspace="labs"))
         assert "amount" not in str(mine)
+
+
+#: Campaign and member ids in the campaign tool tests below.
+K1 = "00000000-0000-4000-8000-0000000000f1"
+M1 = "00000000-0000-4000-8000-0000000000f2"
+
+
+class TestCampaignMembers:
+    """S11a — `crm_campaign_members` (contracts §3 tool 17), and campaigns
+    through `crm_create`, `crm_update` and `crm_get` (FR-CRM-MCP-10)."""
+
+    @pytest.mark.parametrize(
+        ("call", "expected"),
+        [
+            (
+                lambda: crm.crm_campaign_members(
+                    Ctx("u"), K1, "add", company_ids=[C1], person_ids=[P1], workspace="academy"
+                ),
+                (
+                    "POST",
+                    f"/crm/campaigns/{K1}/members",
+                    {"workspace": "academy"},
+                    {"company_ids": [C1], "person_ids": [P1]},
+                ),
+            ),
+            (
+                lambda: crm.crm_campaign_members(
+                    Ctx("u"),
+                    K1,
+                    "status",
+                    member_id=M1,
+                    status="registered",
+                    last_touch_on="2026-10-10",
+                    workspace="academy",
+                ),
+                (
+                    "PATCH",
+                    f"/crm/campaign-members/{M1}",
+                    {"workspace": "academy"},
+                    {"status": "registered", "last_touch_on": "2026-10-10"},
+                ),
+            ),
+            (
+                lambda: crm.crm_campaign_members(
+                    Ctx("u"), K1, "convert", member_id=M1, opportunity_id=D1, workspace="academy"
+                ),
+                (
+                    "POST",
+                    f"/crm/campaign-members/{M1}/convert",
+                    {"workspace": "academy"},
+                    {"opportunity_id": D1},
+                ),
+            ),
+            (
+                lambda: crm.crm_campaign_members(
+                    Ctx("u"),
+                    K1,
+                    "convert",
+                    member_id=M1,
+                    new_opportunity={"name": "Deal"},
+                    workspace="academy",
+                ),
+                (
+                    "POST",
+                    f"/crm/campaign-members/{M1}/convert",
+                    {"workspace": "academy"},
+                    {"new": {"name": "Deal"}},
+                ),
+            ),
+            (
+                lambda: crm.crm_get(Ctx("u"), "campaign", K1, workspace="academy"),
+                ("GET", f"/crm/campaigns/{K1}", {"workspace": "academy"}, None),
+            ),
+        ],
+    )
+    def test_each_makes_exactly_one_api_call(self, monkeypatch, call, expected):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        asyncio.run(call())
+        assert recorder.calls == [expected]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: crm.crm_campaign_members(Ctx("u"), K1, "add"),
+            lambda: crm.crm_campaign_members(Ctx("u"), "../members", "add", company_ids=[C1]),
+            lambda: crm.crm_campaign_members(Ctx("u"), K1, "status", status="invited"),
+            lambda: crm.crm_campaign_members(Ctx("u"), K1, "status", member_id="../x"),
+            lambda: crm.crm_campaign_members(Ctx("u"), K1, "status", member_id=M1),
+            lambda: crm.crm_campaign_members(Ctx("u"), K1, "convert", member_id=M1),
+        ],
+    )
+    def test_an_incomplete_call_reaches_no_route(self, monkeypatch, call):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        with pytest.raises(server.ToolError):
+            asyncio.run(call())
+        assert recorder.calls == []
+
+    def test_through_the_bridge(self, crm_store):
+        """Create a campaign, add a company, move it and read the board."""
+        academy = next(
+            w for w in crm_store.rows["crm_workspaces"].values() if w["key"] == "academy"
+        )
+        crm_store.add_campaign_lists(academy)
+        me = Ctx(OWNER["id"])
+        made = asyncio.run(
+            crm.crm_create(me, "campaign", {"name": "Webinars"}, workspace="academy")
+        )
+        company = asyncio.run(
+            crm.crm_create(me, "company", {"name": "PSG Tech"}, workspace="academy")
+        )
+        added = asyncio.run(
+            crm.crm_campaign_members(
+                me, made["id"], "add", company_ids=[company["id"]], workspace="academy"
+            )
+        )
+        assert added["added"] == 1
+        page = asyncio.run(crm.crm_get(me, "campaign", made["id"], workspace="academy"))
+        assert page["record"]["member_counts"]["targeted"] == 1
+        board = asyncio.run(
+            crm.crm_list(
+                me,
+                "campaign_member",
+                view="members_by_status",
+                filters=[{"field": "campaign_id", "operator": "is", "value": made["id"]}],
+                workspace="academy",
+            )
+        )
+        [member] = board["rows"]
+        moved = asyncio.run(
+            crm.crm_campaign_members(
+                me,
+                made["id"],
+                "status",
+                member_id=member["id"],
+                status="invited",
+                workspace="academy",
+            )
+        )
+        assert moved["status_label"] == "Invited"
+        assert crm_store.applied[-1][0]["channel"] == "mcp"
+
+    def test_a_viewer_may_not_add_members(self, crm_store):
+        academy = next(
+            w for w in crm_store.rows["crm_workspaces"].values() if w["key"] == "academy"
+        )
+        crm_store.add_member(academy, VIEWER["id"], "viewer")
+        made = asyncio.run(
+            crm.crm_create(Ctx(OWNER["id"]), "campaign", {"name": "W"}, workspace="academy")
+        )
+        with pytest.raises(server.ToolError):
+            asyncio.run(
+                crm.crm_campaign_members(
+                    Ctx(VIEWER["id"]), made["id"], "add", company_ids=[C1], workspace="academy"
+                )
+            )
