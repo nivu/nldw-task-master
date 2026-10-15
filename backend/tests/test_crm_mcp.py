@@ -825,7 +825,7 @@ class TestCampaignMembers:
                 (
                     "PATCH",
                     f"/crm/campaign-members/{M1}",
-                    {"workspace": "academy"},
+                    {"workspace": "academy", "campaign_id": K1},
                     {"status": "registered", "last_touch_on": "2026-10-10"},
                 ),
             ),
@@ -836,7 +836,7 @@ class TestCampaignMembers:
                 (
                     "POST",
                     f"/crm/campaign-members/{M1}/convert",
-                    {"workspace": "academy"},
+                    {"workspace": "academy", "campaign_id": K1},
                     {"opportunity_id": D1},
                 ),
             ),
@@ -852,7 +852,7 @@ class TestCampaignMembers:
                 (
                     "POST",
                     f"/crm/campaign-members/{M1}/convert",
-                    {"workspace": "academy"},
+                    {"workspace": "academy", "campaign_id": K1},
                     {"new": {"name": "Deal"}},
                 ),
             ),
@@ -929,6 +929,25 @@ class TestCampaignMembers:
         )
         assert moved["status_label"] == "Invited"
         assert crm_store.applied[-1][0]["channel"] == "mcp"
+        # A member named under another campaign than its own is refused.
+        other = asyncio.run(
+            crm.crm_create(me, "campaign", {"name": "Open days"}, workspace="academy")
+        )
+        for action, extra in (
+            ("status", {"status": "engaged"}),
+            ("convert", {"new_opportunity": {"name": "Deal"}}),
+        ):
+            with pytest.raises(server.ToolError, match="No such campaign member."):
+                asyncio.run(
+                    crm.crm_campaign_members(
+                        me,
+                        other["id"],
+                        action,
+                        member_id=member["id"],
+                        workspace="academy",
+                        **extra,
+                    )
+                )
 
     def test_a_viewer_may_not_add_members(self, crm_store):
         academy = next(

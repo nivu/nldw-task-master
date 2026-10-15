@@ -377,10 +377,15 @@ def _campaign_values(ws: Workspace, values: dict[str, Any], existing: dict | Non
         raise CrmRefused(422, why)
     if "budget" not in values and "budget_currency" not in values:
         return
+    currency = after.get("budget_currency")
+    if "budget" in values and values["budget"] is None:
+        # Clearing the budget clears its stored currency with it, as a
+        # deal's amount does; only a currency sent with it is refused.
+        currency = values.get("budget_currency")
     found = campaign_rules.budget_values(
         store.list_fx_rates(ws.id),
         after.get("budget"),
-        after.get("budget_currency"),
+        currency,
         today_in_company_tz(),
         ws.ctx.workspace["name"],
     )
@@ -492,12 +497,31 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
     return [show.person(r, ws.facts, companies) for r in rows]
 
 
+def shown_members(ws_id: str, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The members whose company and person are out of the Trash: a record
+    in the Trash leaves its campaigns' boards and figures, as it leaves
+    every list, and is back with its restore (adding it is refused too)."""
+    companies = by_id(ws_id, "crm_companies", {m.get("company_id") or "" for m in members})
+    people = by_id(ws_id, "crm_people", {m.get("person_id") or "" for m in members})
+
+    def trashed(found: dict[str, dict[str, Any]], record_id: str | None) -> bool:
+        return bool(record_id) and bool((found.get(record_id) or {}).get("deleted_at"))
+
+    return [
+        m
+        for m in members
+        if not trashed(companies, m.get("company_id")) and not trashed(people, m.get("person_id"))
+    ]
+
+
 def campaign_figures(ws_id: str, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """FR-CRM-CAMP-05 — each campaign's figures from its live members and
     the deals they converted to."""
     if not rows:
         return {}
-    members = store.campaign_members(ws_id, column="campaign_id", ids=[r["id"] for r in rows])
+    members = shown_members(
+        ws_id, store.campaign_members(ws_id, column="campaign_id", ids=[r["id"] for r in rows])
+    )
     deals = by_id(
         ws_id,
         "crm_opportunities",
@@ -702,7 +726,9 @@ def _related(ws: Workspace, kind: str, row: dict[str, Any], record: dict[str, An
     if kind == "campaign":
         # FR-CRM-CAMP-05: the deals its members converted to. The board
         # reads the members themselves (`GET /crm/campaigns/{id}/members`).
-        members = store.campaign_members(ws.id, column="campaign_id", ids=[row["id"]])
+        members = shown_members(
+            ws.id, store.campaign_members(ws.id, column="campaign_id", ids=[row["id"]])
+        )
         ids = sorted(
             {m["converted_opportunity_id"] for m in members if m.get("converted_opportunity_id")}
         )

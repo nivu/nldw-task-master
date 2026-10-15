@@ -22,7 +22,7 @@ from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 
 from app.domain.crm import campaigns as rules
-from app.services.crm import deals, importer, records
+from app.services.crm import campaigns, deals, importer, records
 
 ACADEMY = "?workspace=academy"
 LABS = "?workspace=labs"
@@ -134,6 +134,19 @@ class TestFields:
         assert (made["budget_in_inr"], made["budget_fx_rate"]) == ("42000.00", "84")
         assert made["member_counts"]["targeted"] == 0
         assert made["conversion_rate"] is None
+
+    def test_clearing_the_budget_alone_clears_its_currency_and_conversion(self, crm):
+        http, cid = crm["http"], crm["campaign"]["id"]
+        _patch(http, "campaigns", cid, {"budget": "500", "budget_currency": "USD"})
+        r = http.patch(
+            f"{API}/campaigns/{cid}{ACADEMY}",
+            json={"budget": None, "budget_currency": "USD"},
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (422, "A budget currency needs a budget.")
+        cleared = _patch(http, "campaigns", cid, {"budget": None})
+        assert [cleared[k] for k in ("budget", "budget_currency")] == [None, None]
+        assert [cleared[k] for k in ("budget_in_inr", "budget_fx_rate")] == [None, None]
 
     def test_entity_is_labs_only(self, crm):
         http = crm["http"]
@@ -253,6 +266,54 @@ class TestMembers:
         body = _add(crm, company_ids=[crm["other"]["id"]]).json()
         assert (body["added"], body["skipped_existing"]) == (0, 1)
         assert len(_members(crm)["rows"]) == 1
+
+    def test_a_large_add_is_one_write(self, crm, monkeypatch):
+        """Past 500 members an add is still one `crm_apply` call, so it lands
+        whole or not at all."""
+        fake, ws = crm["fake"], crm["academy"]["id"]
+        company_ids = [
+            fake.add("crm_companies", workspace_id=ws, name=f"College {n}", owner_id=OWNER["id"])[
+                "id"
+            ]
+            for n in range(500)
+        ]
+        person_ids = [
+            fake.add(
+                "crm_people",
+                workspace_id=ws,
+                first_name=f"Person {n}",
+                owner_id=OWNER["id"],
+                do_not_contact=False,
+            )["id"]
+            for n in range(100)
+        ]
+        calls = []
+        real = campaigns.store.apply
+        monkeypatch.setattr(
+            campaigns.store, "apply", lambda who, ops: calls.append(len(ops)) or real(who, ops)
+        )
+        r = _add(crm, company_ids=company_ids, person_ids=person_ids)
+        assert r.status_code == 200, r.text
+        assert r.json()["added"] == 600
+        assert calls == [600]
+
+    def test_a_member_whose_record_is_in_the_trash_leaves_the_board(self, crm):
+        http = crm["http"]
+        _add(crm, company_ids=[crm["other"]["id"]], person_ids=[crm["priya"]["id"]])
+        r = http.delete(f"{API}/companies/{crm['other']['id']}{ACADEMY}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        board = _members(crm)
+        assert [m["name"] for m in board["rows"]] == ["Priya"]
+        assert board["member_counts"]["targeted"] == 1
+        page = http.get(
+            f"{API}/campaigns/{crm['campaign']['id']}{ACADEMY}", headers=as_(OWNER["id"])
+        ).json()
+        assert page["record"]["member_count"] == 1
+        r = http.post(
+            f"{API}/companies/{crm['other']['id']}/restore{ACADEMY}", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200, r.text
+        assert len(_members(crm)["rows"]) == 2
 
     def test_a_record_of_another_workspace_is_no_such(self, crm):
         stranger = _post(crm["http"], "companies", {"name": "Elsewhere"}, query=LABS)
@@ -386,6 +447,33 @@ class TestStatuses:
             headers=as_(OWNER["id"]),
         )
         assert (r.status_code, r.json()["detail"]) == (422, rules.USE_CONVERT)
+
+    def test_a_member_named_under_another_campaign_is_no_such(self, crm):
+        _add(crm, person_ids=[crm["priya"]["id"]])
+        member = _member_of(crm, person_id=crm["priya"]["id"])
+        other = _post(crm["http"], "campaigns", {"name": "Open days"})
+        for method, path, body in (
+            ("PATCH", "", {"status": "invited"}),
+            (
+                "POST",
+                "/convert",
+                {"new": {"name": "Deal", "next_step": "Call", "next_step_on": "2026-10-20"}},
+            ),
+        ):
+            r = crm["http"].request(
+                method,
+                f"{API}/campaign-members/{member['id']}{path}{ACADEMY}&campaign_id={other['id']}",
+                json=body,
+                headers=as_(OWNER["id"]),
+            )
+            assert (r.status_code, r.json()["detail"]) == (404, "No such campaign member.")
+        assert _member_of(crm, person_id=crm["priya"]["id"])["status"] == "targeted"
+        r = crm["http"].patch(
+            f"{API}/campaign-members/{member['id']}{ACADEMY}&campaign_id={crm['campaign']['id']}",
+            json={"status": "invited"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
 
     def test_a_viewer_cannot_move_a_member(self, crm):
         _add(crm, person_ids=[crm["priya"]["id"]])

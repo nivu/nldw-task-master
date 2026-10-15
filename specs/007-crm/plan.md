@@ -120,7 +120,7 @@ configuration. No `app_settings` key is added.
 |---|---|---|
 | 1 | Does this serve one of the journeys? | Yes: **The Seller's Journey** (v1.2.0). The Today list, deal moves, the Proposal-to-project and won/lost lifecycle, and Sanjeev's invitations each map to a sentence in it. The TVA-side changes (released allocations, archived projects not counting, one capacity service) serve the Lead's and Admin's planning journeys that the Seller's Journey names ("whoever plans staffing sees the work coming"). Phase 1b items trace through FR-CRM-* to the same journey. |
 | 2 | Security-First and Clear Boundaries? | Yes, with the exceptions in §4. CRM-only refusal is deny-by-default in `deps.current_user` (§5.1). Workspace isolation is enforced in the CRM guard, again in every store query (`workspace_id = $ws`), and again inside `crm_apply` (§5.3). New tables: RLS on, no browser grants. CRM functions: `EXECUTE` revoked from `public`, `anon` and `authenticated`. The browser makes no Supabase data call; the bell polls through the proxy (FR-CRM-NOTIF-01). Because a CRM-only seller holds a valid session JWT and the public anon key, the TVA tables' old browser grants (`projects_all_select`, `holidays_all_select`, `app_settings_select`, the `*_self_select` policies, the column grants of 009 and 012) would let them read TVA data through PostgREST. 025 therefore revokes every table privilege in `public` from `anon` and `authenticated` (the frontend makes no table read; a grep of `frontend/` finds no `.from(` or `.rpc(` call). RLS stays enabled. A db test proves a `crm_only` JWT reads nothing (data-model §4.0). The proxy stays the only path and is widened, not bypassed (FR-CRM-CHG-08). Drive links only, no files (D4). |
-| 3 | Data Integrity: no schema changes outside migrations, no cross-tenant exposure? | Yes. Eighteen numbered migrations, `025`–`042` (data-model §1). Multi-table transitions are single plpgsql transactions (§III, NFR-CRM-03). Cross-workspace exposure is tested at route level (FakeDb) and database level (real functions) in S1b, S3 and S12. Point-in-time values (`amount_in_inr`, rate used) are stored like `cost_rate_snapshot`. Balances are untouched. |
+| 3 | Data Integrity: no schema changes outside migrations, no cross-tenant exposure? | Yes. Nineteen numbered migrations, `025`–`043` (data-model §1). Multi-table transitions are single plpgsql transactions (§III, NFR-CRM-03). Cross-workspace exposure is tested at route level (FakeDb) and database level (real functions) in S1b, S3 and S12. Point-in-time values (`amount_in_inr`, rate used) are stored like `cost_rate_snapshot`. Balances are untouched. |
 
 **Re-check after design:** done. The design adds no principle exception
 beyond §4.
@@ -576,7 +576,7 @@ specs/007-crm/
 ### Source code
 
 ```text
-supabase/migrations/025_…042_*.sql
+supabase/migrations/025_…043_*.sql
 backend/app/
 ├── api/deps.py                      (split: _authenticate / current_user / any_account)
 ├── api/crm/…                        (new)

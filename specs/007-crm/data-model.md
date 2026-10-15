@@ -32,7 +32,8 @@ order of §1. Existing migrations are not edited.
 | `039_crm_email.sql` | S10 | `crm_mailboxes`, `crm_email_messages`, `crm_email_links`; `email_sync` setting seed; `crm_store_emails()`, `crm_remove_emails()` (the email log's one writer); `CREATE OR REPLACE crm_audit_row()` skipping a mailbox's cursor columns; `crm_flag_facts()` replaced by a four-argument form with people and email facts; `CREATE OR REPLACE crm_purge()` adding email links; `CREATE OR REPLACE crm_merge_companies()` moving email links |
 | `040_crm_mailbox_owner_left.sql` | S10 | `CREATE OR REPLACE crm_remove_membership()` also pausing the removed person's mailboxes in the workspace (`is_active = false`, audited `mailbox.updated`) |
 | `041_crm_campaigns.sql` | S11a | `crm_campaigns`, `crm_campaign_members`; `crm_opportunities.source_campaign_id` FK; campaign select lists (the `list_key` CHECK widened), field registry rows and seeded member view; `CREATE OR REPLACE crm_merge_companies()` moving campaign members; `CREATE OR REPLACE crm_search()` adding campaigns; (as built) `CREATE OR REPLACE crm_query()`, `crm_query_rank()` for the two lists and `crm_purge()` for campaigns and their members |
-| `042_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
+| `042_crm_campaign_conversions_kept.sql` | S11a | `CREATE OR REPLACE crm_merge_companies()` and `crm_purge()` keeping a Converted campaign membership when two memberships of one campaign collide (§3.23) |
+| `043_crm_dashboards_io.sql` | S11b | `crm_bookings_targets`, `crm_csv_mappings` |
 
 A function that touches a table always arrives in, or is replaced in, the
 migration that creates that table or a later one. PL/pgSQL resolves table
@@ -606,7 +607,14 @@ with a deal is the service's rule (Converted only through the conversion).
 and the other one (the person, or the company) on the other one, unless that
 one already has its own in the campaign. `crm_merge_companies` (041) keeps
 the survivor's membership when both companies are in the same campaign with
-the same person (or none). `crm_query()` and `crm_query_rank()` are replaced
+the same person (or none). In both, a Converted membership is never the one
+dropped for one that is not (042): the merge then moves the merged company's
+Converted membership to the survivor and drops the survivor's, and the purge
+keeps the shared Converted membership on the other record and drops that
+record's own, so the campaign's figures (FR-CRM-CAMP-05) keep the
+conversion. A member whose company or person is in the Trash is left off the
+board and out of the figures (Python) until that record is restored; its row
+is unchanged. `crm_query()` and `crm_query_rank()` are replaced
 in 041 for the `campaign` and `campaign_member` lists: a member's `status`
 ranks after the task statuses in one array (the two share the column name
 and no key), and its campaign, person and deal relations sort by name.
@@ -619,7 +627,7 @@ The record-type CHECKs of `crm_task_links`, `crm_note_links` and
 `crm_drive_links` already allow `campaign` (030/029), so 041 adds no ALTER
 there.
 
-### 3.24 `crm_bookings_targets`, `crm_csv_mappings` (042)
+### 3.24 `crm_bookings_targets`, `crm_csv_mappings` (043)
 
 `crm_bookings_targets` (audited): `id`, `workspace_id`, `entity` (NULL =
 whole workspace), `period_kind CHECK IN ('month','quarter','fy')`,
@@ -896,7 +904,7 @@ as a D8 change "*Name* (via CRM deal)"). Returns `{deactivated: bool}`. The serv
 `deps.forget_personal_tokens()` so cached tokens stop working on the next
 request.
 
-### 5.4 `crm_purge(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DEL-01, -02 (029; replaced in 030, 033, 034, 039, 041)
+### 5.4 `crm_purge(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DEL-01, -02 (029; replaced in 030, 033, 034, 039, 041, 042)
 
 `p_plan = {"items": [{"table", "id"}]}`. Each item must already be
 soft-deleted in the actor's workspace. It deletes the row (audited `.purged`)
@@ -910,6 +918,8 @@ tables that exist when it is created:
 | 033 | + purging a company sets `projects.crm_company_id = NULL` (TVA audit row `project.updated`, system actor); purging an opportunity linked to a project is refused `CRM22` (unreachable in practice: FR-CRM-DEL-03 blocks the soft delete) |
 | 034 | + `crm_favourites` (`target_type = 'record'`) |
 | 039 | + `crm_email_links` |
+| 041 | + campaigns (their links and favourites; members by FK CASCADE); a company's or person's membership that also names the other record stays on it unless that one has its own |
+| 042 | + a shared Converted membership stays on the other record and that record's own (not Converted) goes instead |
 
 ### 5.5 `crm_deal_transition(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-PIPE, FR-CRM-TVA (031; replaced in 033)
 
@@ -987,7 +997,7 @@ confirmed, and only `source_opportunity_id`, `crm_company_id` and `client`
 are set; status, revenue, phases and milestones are untouched. Audited on both
 sides (`opportunity.project_linked`; TVA `project.updated` system).
 
-### 5.7 `crm_merge_companies(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DUP-03, -04 (035; replaced in 039, 041)
+### 5.7 `crm_merge_companies(p_actor jsonb, p_plan jsonb) RETURNS jsonb` — FR-CRM-DUP-03, -04 (035; replaced in 039, 041, 042)
 
 `p_plan = {survivor_id, merged_id, expect: {survivor_updated_at,
 merged_updated_at}, survivor_changes: {…}}`. One transaction. First, lock
@@ -999,7 +1009,8 @@ merged_id` (`CRM04` / `CRM22`); check both `expect` stamps (`CRM09`). Then:
 2. Move every person, deal, task link, note link and Drive link from
    `merged_id` to `survivor_id`; the 039 version also moves email links, and
    the 041 version also moves campaign members (each version names only
-   tables that exist when it is created).
+   tables that exist when it is created); the 042 version keeps a Converted
+   membership over the survivor's one that is not (§3.23).
 3. Move the domains; a duplicate pair keeps one row.
 4. Set `projects.crm_company_id = survivor` where it was the merged company
    (TVA audit row; projects otherwise unchanged).
@@ -1123,7 +1134,7 @@ is then seen by the re-check) or waits and is refused.
 | Flags filter | `(workspace_id, flag_level)` partial |
 
 S12 confirms these at 10,000 rows with `EXPLAIN (ANALYZE)` on the seeded
-local database and adds an index (as `042_*.sql`) only where a measured query
+local database and adds an index (as `044_*.sql`) only where a measured query
 misses 1 s.
 
 ---
@@ -1191,4 +1202,4 @@ views with `system_key`: `companies_all`, `lead_funnel`,
 |---|---|
 | 025, 028, 032 (ALTERs) | Drop the added constraints, indexes, triggers and columns. Data in them is lost; TVA behaviour returns to before. 025's privilege revoke is reversed by re-granting what 004, 008, 009 and 012 granted. |
 | 026 audit_log changes | Columns can be dropped only after deleting CRM rows, which the append-only rules forbid. **Not reversible in practice**, and the file says so: rows written by the CRM are history. |
-| 026–042 new tables and functions | `DROP FUNCTION …; DROP TABLE … CASCADE` in reverse order. Each file's header gives the drop list. |
+| 026–043 new tables and functions | `DROP FUNCTION …; DROP TABLE … CASCADE` in reverse order. Each file's header gives the drop list. |

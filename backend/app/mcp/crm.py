@@ -544,6 +544,8 @@ async def crm_campaign_members(
         member = str(uuid.UUID(member_id))
     except ValueError:
         raise ToolError("No such campaign member.") from None
+    # The portal refuses a member of another campaign than the one confirmed.
+    params["campaign_id"] = campaign
     if action == "status":
         body: dict[str, Any] = {}
         for name, value in (

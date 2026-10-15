@@ -381,6 +381,49 @@ class TestMerge:
         )
         assert rows == [{"id": moved, "campaign_id": second, "company_id": r["company"]}]
 
+    def test_a_converted_membership_of_the_merged_company_is_kept(self, stack, two, owner):
+        """042: the survivor's Targeted membership goes and the merged
+        company's Converted one moves, deal and all (FR-CRM-CAMP-05)."""
+        ws, r = two["a"], two["ra"]
+        actor = _actor(ws, owner)
+        gone = _apply(
+            stack,
+            actor,
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": f"College dup {r['tag']}", "owner_id": owner},
+                }
+            ],
+        )[0]["id"]
+        targeted = _member(stack, ws, owner, campaign_id=r["campaign"], company_id=r["company"])[0][
+            "id"
+        ]
+        converted = _member(
+            stack,
+            ws,
+            owner,
+            campaign_id=r["campaign"],
+            company_id=gone,
+            status="converted",
+            converted_opportunity_id=r["deal"],
+        )[0]["id"]
+        plan = {"survivor_id": r["company"], "merged_id": gone, "survivor_changes": {}}
+        stack.sql(f"SELECT crm_merge_companies({_j(stack, actor)}, {_j(stack, plan)}) AS r")
+        rows = stack.sql(
+            "SELECT id, company_id, status, converted_opportunity_id FROM crm_campaign_members "
+            f"WHERE id IN ({stack.q(targeted)}, {stack.q(converted)})"
+        )
+        assert rows == [
+            {
+                "id": converted,
+                "company_id": r["company"],
+                "status": "converted",
+                "converted_opportunity_id": r["deal"],
+            }
+        ]
+
 
 class TestPurge:
     """FR-CRM-DEL-01 — 041's crm_purge and the members' foreign keys."""
@@ -418,6 +461,104 @@ class TestPurge:
             f"WHERE id IN ({stack.q(both)}, {stack.q(alone)})"
         )
         assert rows == [{"id": both, "company_id": r["company"], "person_id": None}]
+
+    def test_a_purged_company_keeps_a_converted_shared_membership(self, stack, two, owner):
+        """042: the person's own Targeted membership goes and the Converted
+        one naming both stays with the person (FR-CRM-CAMP-05)."""
+        ws, r = two["a"], two["ra"]
+        actor = _actor(ws, owner)
+        # A company with no deal of its own, so nothing holds its purge back.
+        gone = _apply(
+            stack,
+            actor,
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": f"Partner {r['tag']}", "owner_id": owner},
+                }
+            ],
+        )[0]["id"]
+        both = _member(
+            stack,
+            ws,
+            owner,
+            campaign_id=r["campaign"],
+            company_id=gone,
+            person_id=r["person"],
+            status="converted",
+            converted_opportunity_id=r["deal"],
+        )[0]["id"]
+        alone = _member(stack, ws, owner, campaign_id=r["campaign"], person_id=r["person"])[0]["id"]
+        _apply(
+            stack,
+            actor,
+            [
+                {
+                    "op": "soft_delete",
+                    "table": "crm_companies",
+                    "id": gone,
+                    "deleted_group": str(uuid.uuid4()),
+                }
+            ],
+        )
+        stack.sql(
+            f"SELECT crm_purge({_j(stack, actor)}, "
+            f"{_j(stack, {'items': [{'table': 'crm_companies', 'id': gone}]})})"
+        )
+        rows = stack.sql(
+            "SELECT id, company_id, person_id, status FROM crm_campaign_members "
+            f"WHERE id IN ({stack.q(both)}, {stack.q(alone)})"
+        )
+        assert rows == [
+            {"id": both, "company_id": None, "person_id": r["person"], "status": "converted"}
+        ]
+
+    def test_a_purged_person_keeps_a_converted_shared_membership(self, stack, two, owner):
+        ws, r = two["a"], two["ra"]
+        actor = _actor(ws, owner)
+        both = _member(
+            stack,
+            ws,
+            owner,
+            campaign_id=r["campaign"],
+            company_id=r["company"],
+            person_id=r["person"],
+            status="converted",
+            converted_opportunity_id=r["deal"],
+        )[0]["id"]
+        alone = _member(stack, ws, owner, campaign_id=r["campaign"], company_id=r["company"])[0][
+            "id"
+        ]
+        _apply(
+            stack,
+            actor,
+            [
+                {
+                    "op": "soft_delete",
+                    "table": "crm_people",
+                    "id": r["person"],
+                    "deleted_group": str(uuid.uuid4()),
+                }
+            ],
+        )
+        stack.sql(
+            f"SELECT crm_purge({_j(stack, actor)}, "
+            f"{_j(stack, {'items': [{'table': 'crm_people', 'id': r['person']}]})})"
+        )
+        rows = stack.sql(
+            "SELECT id, company_id, person_id, status, converted_opportunity_id "
+            f"FROM crm_campaign_members WHERE id IN ({stack.q(both)}, {stack.q(alone)})"
+        )
+        assert rows == [
+            {
+                "id": both,
+                "company_id": r["company"],
+                "person_id": None,
+                "status": "converted",
+                "converted_opportunity_id": r["deal"],
+            }
+        ]
 
     def test_a_purged_campaign_takes_its_members_and_clears_the_source(self, stack, two, owner):
         ws, r = two["a"], two["ra"]

@@ -20,7 +20,7 @@ CRM steps there.
 ```bash
 # Database: local Supabase, all migrations, seed (fake people, local only)
 npx supabase start
-npx supabase db reset                 # applies 001…042 and supabase/seed.sql
+npx supabase db reset                 # applies 001…043 and supabase/seed.sql
 
 # Optional, for e2e and for signing in as seeded people without Google
 backend/scripts/ops/local_password_auth.sh on && npx supabase stop && npx supabase start

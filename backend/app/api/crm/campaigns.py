@@ -46,12 +46,21 @@ def add_members(campaign_id: str, payload: CampaignMembersIn, ctx: CrmWriteDep) 
 
 
 @router.patch("/campaign-members/{member_id}")
-def update_member(member_id: str, payload: CampaignMemberUpdate, ctx: CrmWriteDep) -> dict:
-    """The member. `status=converted` is refused here: convert it."""
-    return service.update_member(ctx, member_id, payload)
+def update_member(
+    member_id: str,
+    payload: CampaignMemberUpdate,
+    ctx: CrmWriteDep,
+    campaign_id: str | None = None,
+) -> dict:
+    """The member. `status=converted` is refused here: convert it. With
+    `campaign_id`, a member of another campaign is "No such campaign
+    member."."""
+    return service.update_member(ctx, member_id, payload, campaign_id=campaign_id)
 
 
 @router.post("/campaign-members/{member_id}/convert")
-def convert_member(member_id: str, payload: ConvertIn, ctx: CrmWriteDep) -> dict:
-    """`{member, opportunity}`."""
-    return service.convert(ctx, member_id, payload)
+def convert_member(
+    member_id: str, payload: ConvertIn, ctx: CrmWriteDep, campaign_id: str | None = None
+) -> dict:
+    """`{member, opportunity}`. With `campaign_id`, as the PATCH."""
+    return service.convert(ctx, member_id, payload, campaign_id=campaign_id)

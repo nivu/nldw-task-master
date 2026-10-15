@@ -31,8 +31,6 @@ from app.services.crm import records as base
 from app.services.crm.context import actor
 
 NO_SUCH_MEMBER = "No such campaign member."
-#: Members inserted per `crm_apply` call.
-CHUNK = 500
 #: Contracts §2.10 — the people a view of companies or people lists.
 VIEW_OBJECTS = ("company", "person")
 
@@ -43,14 +41,19 @@ def live_campaign(ctx: Any, campaign_id: str) -> dict[str, Any]:
     return base.live(ctx.workspace_id, "campaign", campaign_id)
 
 
-def _member(ctx: Any, member_id: str) -> dict[str, Any]:
-    """A live member of a live campaign of this workspace."""
+def _member(ctx: Any, member_id: str, campaign_id: str | None = None) -> dict[str, Any]:
+    """A live member of a live campaign of this workspace, and of
+    `campaign_id` when the caller names one (the MCP tool confirms a
+    campaign with the person; a member of another is "No such campaign
+    member.")."""
     row = (
         store.get_record(ctx.workspace_id, "crm_campaign_members", member_id)
         if base._uuid(member_id)
         else None
     )
     if row is None or row.get("deleted_at"):
+        raise CrmRefused(404, NO_SUCH_MEMBER)
+    if campaign_id is not None and str(row["campaign_id"]).lower() != campaign_id.lower():
         raise CrmRefused(404, NO_SUCH_MEMBER)
     campaign = store.get_record(ctx.workspace_id, "crm_campaigns", row["campaign_id"])
     if campaign is None or campaign.get("deleted_at"):
@@ -69,10 +72,14 @@ def _present(ctx: Any, row: dict[str, Any]) -> dict[str, Any]:
 
 def members(ctx: Any, campaign_id: str, *, status: str | None = None) -> dict[str, Any]:
     """Contracts §2.10 — the campaign's members in board order, each named,
-    with the campaign's counts by status (FR-CRM-CAMP-05)."""
+    with the campaign's counts by status (FR-CRM-CAMP-05). A member whose
+    company or person is in the Trash is left out until it is restored."""
     campaign = live_campaign(ctx, campaign_id)
     ws = base.load(ctx)
-    rows = store.campaign_members(ctx.workspace_id, column="campaign_id", ids=[campaign["id"]])
+    rows = base.shown_members(
+        ctx.workspace_id,
+        store.campaign_members(ctx.workspace_id, column="campaign_id", ids=[campaign["id"]]),
+    )
     shown = [r for r in rows if status is None or r["status"] == status]
     found = base.campaign_figures(ctx.workspace_id, [campaign]).get(campaign["id"], {})
     return {
@@ -133,7 +140,9 @@ def _plan(
 
 
 def _insert(ctx: Any, campaign: dict[str, Any], pairs: list[tuple[str | None, str | None]]) -> None:
-    """New members at the end of the Targeted column, a chunk per call."""
+    """New members at the end of the Targeted column, in one `crm_apply`
+    call (at most `MAX_ADD`; the ops go in the request body, not the URL),
+    so an add lands whole or not at all."""
     if not pairs:
         return
     current = store.campaign_members(ctx.workspace_id, column="campaign_id", ids=[campaign["id"]])
@@ -152,8 +161,7 @@ def _insert(ctx: Any, campaign: dict[str, Any], pairs: list[tuple[str | None, st
         }
         for n, (company_id, person_id) in enumerate(pairs)
     ]
-    for i in range(0, len(ops), CHUNK):
-        store.apply(actor(ctx), ops[i : i + CHUNK])
+    store.apply(actor(ctx), ops)
 
 
 def add_members(ctx: Any, campaign_id: str, body: CampaignMembersIn) -> dict[str, Any]:
@@ -224,11 +232,13 @@ def add_one(ctx: Any, campaign_id: str, kind: str, record_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def update_member(ctx: Any, member_id: str, body: CampaignMemberUpdate) -> dict[str, Any]:
+def update_member(
+    ctx: Any, member_id: str, body: CampaignMemberUpdate, *, campaign_id: str | None = None
+) -> dict[str, Any]:
     """Contracts §2.10 `PATCH /crm/campaign-members/{id}` — status, last
     touch, notes and board position. Converted is refused here: a
     conversion names the deal."""
-    row = _member(ctx, member_id)
+    row = _member(ctx, member_id, campaign_id)
     values = body.model_dump(mode="json", exclude_unset=True)
     expect = values.pop("expect_updated_at", None)
     if "status" in values:
@@ -273,13 +283,15 @@ def _new_deal_fields(ctx: Any, row: dict[str, Any], new: dict[str, Any]) -> dict
     return fields
 
 
-def convert(ctx: Any, member_id: str, body: ConvertIn) -> dict[str, Any]:
+def convert(
+    ctx: Any, member_id: str, body: ConvertIn, *, campaign_id: str | None = None
+) -> dict[str, Any]:
     """Contracts §2.10 `POST /crm/campaign-members/{id}/convert` — the member
     is Converted with its deal, an existing one or a new one opened by the
     deal rules (FR-CRM-PIPE-04, -07, -10), and with automation 8 on the
     deal records the campaign as its source (FR-CRM-CAMP-04, AUTO-01). One
     transaction. `{member, opportunity}`."""
-    row = _member(ctx, member_id)
+    row = _member(ctx, member_id, campaign_id)
     if row["status"] == "converted":
         raise CrmRefused(422, rules.ALREADY_CONVERTED)
     if body.opportunity_id and body.new is not None:
