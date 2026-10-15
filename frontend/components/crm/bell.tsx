@@ -28,11 +28,16 @@ import { cn } from "@/lib/utils";
 
 const POLL_MS = 60_000;
 
-/** Where a notification opens. A task has no page: its list does. */
+/** Records with a page of their own. */
+const RECORD_PAGES = new Set(["company", "person", "opportunity"]);
+
+/** Where a notification opens. Companies, people and deals have pages; a
+ *  task opens its list, and anything else (an unlinked note) the workspace. */
 function hrefOf(n: CrmNotification): string {
   const ws = `/crm/${n.workspace_key}`;
   if (!n.record_type || !n.record_id) return ws;
   if (n.record_type === "task") return `${ws}/tasks`;
+  if (!RECORD_PAGES.has(n.record_type)) return ws;
   return `${ws}/${OBJECT_PATH[n.record_type]}/${n.record_id}`;
 }
 

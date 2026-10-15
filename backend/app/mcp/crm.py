@@ -362,8 +362,10 @@ async def crm_today(
     overdue, tasks for today, clients gone silent, loose ends. Sections that
     need email sync say so while it is off. Five sections in that order, each
     line naming the record it opens (record_type, record_id); level is
-    overdue or today. Today is the person's own day in their time zone
-    (as_of)."""
+    overdue or today for deal next steps and tasks, amber or red for replies
+    owed and clients gone silent, none for loose ends. For a workspace Admin the answer also has
+    stale_jobs: background jobs more than twice their interval late. Today
+    is the person's own day in their time zone (as_of)."""
     return await _api(
         ctx, "GET", "/crm/today", params={"person": person_id, "workspace": workspace}
     )

@@ -1361,11 +1361,16 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
 
 
 def _about(ws_id: str, links: list[dict[str, Any]]) -> dict[str, str] | None:
-    """The first record a note is linked to, which its notification opens."""
+    """The first record a note is linked to, which its notification opens.
+    Read after the write: a failure leaves the name out, never fails it."""
     if not links:
         return None
     first = links[0]
-    name = link_names(ws_id, [first]).get((first["record_type"], first["record_id"]))
+    try:
+        name = link_names(ws_id, [first]).get((first["record_type"], first["record_id"]))
+    except Exception:
+        flags.logger.exception('{"event": "crm_notify_about_failed"}')
+        name = None
     return {**first, "name": name or ""}
 
 
@@ -1444,7 +1449,13 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
         main["expect_updated_at"] = expect
     done = store.apply(actor(ctx), [main, *ops])
     after = done[0]["row"]
-    now_links = store.list_links(ctx.workspace_id, LINKS_OF[kind], owner_ids=[record_id])
+    # Read after the write: a failure falls back to the links read before it
+    # and never fails the write.
+    try:
+        now_links = store.list_links(ctx.workspace_id, LINKS_OF[kind], owner_ids=[record_id])
+    except Exception:
+        flags.logger.exception('{"event": "crm_links_reread_failed", "kind": "%s"}', kind)
+        now_links = current_links or []
     reflag(ws.id, kind, [after], links=[*now_links, *(current_links or [])])
     if kind == "task" and "assignee_id" in changes:
         notifications.quietly(

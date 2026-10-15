@@ -4,11 +4,15 @@ Q-73; data-model §3.20; plan §5.11.
 
 Run by the digest tick every 15 minutes (`crm.digest_tick`). Each tick:
 
-- finds the people whose local time is in their 09:00 window, from the
-  memberships that exist at that moment, so a workspace someone was removed
-  from is never in their digest;
+- finds the people whose local time is 09:00 or later, from the memberships
+  that exist at that moment, so a workspace someone was removed from is
+  never in their digest;
 - claims the digest's sent marker first (`crm_digest_claim`) and sends only
-  when the claim is new: two ticks in one window send once;
+  when the claim is new: every later tick that day sends nothing, and a
+  missed tick only delays the digest;
+- one person's failure is logged and counted `failed` and the tick carries
+  on; a digest that could not be built has its marker released, so the next
+  tick tries again;
 - builds the daily digest's section for each workspace with the person's
   role there (a Viewer's carries no amount), and on Mondays a weekly digest
   per workspace for its Admins;
@@ -24,6 +28,7 @@ recorded `skipped`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -46,11 +51,42 @@ def _can_receive(person: dict[str, Any]) -> bool:
     return person.get("account_type") != "crm_only" or settings.email_enabled
 
 
-def _send(person: dict[str, Any], subject: str, body: str, send_id: str) -> list[str]:
+def _send_once(
+    person: dict[str, Any],
+    kind: str,
+    day: date,
+    workspace_id: str | None,
+    build: Callable[[], tuple[str, str]],
+) -> str | None:
+    """Claims the digest, builds `(subject, body)` and sends it. Returns the
+    count it goes in: `daily`/`weekly`, `undeliverable`, `failed`, or None
+    when it was sent already. Never raises."""
+    try:
+        send_id = store.claim_digest(person["id"], kind, day.isoformat(), workspace_id)
+    except Exception:
+        logger.exception('{"event": "crm_digest_failed", "kind": "%s", "step": "claim"}', kind)
+        return "failed"
+    if not send_id:
+        return None
+    try:
+        subject, body = build()
+    except Exception:
+        logger.exception('{"event": "crm_digest_failed", "kind": "%s", "step": "build"}', kind)
+        try:
+            store.release_digest(send_id)
+        except Exception:
+            logger.exception('{"event": "crm_digest_release_failed", "kind": "%s"}', kind)
+        return "failed"
+    # Sent from here on: a failure to record the channels must not release
+    # the marker, or the next tick would send it twice.
     channels = notifications.message(person, subject, body)
-    if channels:
+    if not channels:
+        return "undeliverable"
+    try:
         store.set_digest_channels(send_id, channels)
-    return channels
+    except Exception:
+        logger.exception('{"event": "crm_digest_channels_failed", "kind": "%s"}', kind)
+    return kind
 
 
 def daily_parts(
@@ -102,42 +138,43 @@ def tick(_: Any, now: datetime) -> dict[str, int]:
         if m["workspace_id"] in on and m["user_id"] in people:
             by_person.setdefault(m["user_id"], []).append(m)
 
-    counts = {"daily": 0, "weekly": 0, "undeliverable": 0}
+    counts = {"daily": 0, "weekly": 0, "undeliverable": 0, "failed": 0}
     for user_id, memberships in sorted(by_person.items()):
         person = people[user_id]
-        day = rules.local_day_in_window(now, person.get("timezone"))
+        day = rules.local_day_due(now, person.get("timezone"))
         if day is None:
             continue
         if not _can_receive(person):
             counts["undeliverable"] += 1
             continue
-        send_id = store.claim_digest(user_id, "daily", day.isoformat(), None)
-        if send_id:
+
+        def daily(person=person, memberships=memberships, day=day) -> tuple[str, str]:
             parts = daily_parts(person, memberships, workspaces, now)
             body = rules.daily_body(person.get("display_name") or "", day, parts, _link())
-            if _send(person, rules.daily_subject(day), body, send_id):
-                counts["daily"] += 1
-            else:
-                counts["undeliverable"] += 1
+            return rules.daily_subject(day), body
+
+        outcome = _send_once(person, "daily", day, None, daily)
+        if outcome:
+            counts[outcome] += 1
         if not rules.is_weekly_day(day):
             continue
         for m in memberships:
             if m["role"] != "admin":
                 continue
             ws = workspaces[m["workspace_id"]]
-            send_id = store.claim_digest(user_id, "weekly", day.isoformat(), ws["id"])
-            if not send_id:
-                continue
-            content = weekly(ws, day, now)
-            body = rules.weekly_body(content, _link(ws["key"]))
-            if _send(person, rules.weekly_subject(content), body, send_id):
-                counts["weekly"] += 1
-            else:
-                counts["undeliverable"] += 1
+
+            def week(ws=ws, day=day) -> tuple[str, str]:
+                content = weekly(ws, day, now)
+                return rules.weekly_subject(content), rules.weekly_body(content, _link(ws["key"]))
+
+            outcome = _send_once(person, "weekly", day, ws["id"], week)
+            if outcome:
+                counts[outcome] += 1
     logger.info(
-        '{"event": "crm_digests", "daily": %d, "weekly": %d, "undeliverable": %d}',
+        '{"event": "crm_digests", "daily": %d, "weekly": %d, "undeliverable": %d, "failed": %d}',
         counts["daily"],
         counts["weekly"],
         counts["undeliverable"],
+        counts["failed"],
     )
     return counts

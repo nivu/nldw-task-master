@@ -19,16 +19,16 @@ Pure: the service gathers the rows and decides who receives what.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-#: FR-CRM-NOTIF-03, -04: the hour digests go out, local time.
+#: FR-CRM-NOTIF-03, -04: the hour digests go out, local time. The digest
+#: tick runs every 15 minutes (plan §5.11); a person is due in every tick
+#: from 09:00 their time to the end of their day, and the sent marker makes
+#: it once, so a missed or late tick delays a digest rather than losing it.
 SEND_AT: Final = time(9, 0)
-#: The digest tick runs every 15 minutes (plan §5.11); a person is due in
-#: the tick that falls in [09:00, 09:15) their time.
-WINDOW_MINUTES: Final = 15
 DEFAULT_ZONE: Final = "Asia/Kolkata"
 
 #: Today's section keys and the headings a digest gives them.
@@ -55,11 +55,10 @@ FLAG_OBJECTS: Final = {
 }
 
 
-def local_day_in_window(now: datetime, zone: str | None) -> date | None:
-    """The person's date when `now` falls in their 09:00 window, else None."""
+def local_day_due(now: datetime, zone: str | None) -> date | None:
+    """The person's date once it is 09:00 or later their time, else None."""
     local = now.astimezone(ZoneInfo(zone or DEFAULT_ZONE))
-    start = datetime.combine(local.date(), SEND_AT, tzinfo=local.tzinfo)
-    if start <= local < start + timedelta(minutes=WINDOW_MINUTES):
+    if local.time() >= SEND_AT:
         return local.date()
     return None
 

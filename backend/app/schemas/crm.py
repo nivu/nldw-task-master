@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -614,5 +615,5 @@ class NotificationsRead(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ids: list[str] | None = Field(default=None, max_length=500)
+    ids: list[UUID] | None = Field(default=None, max_length=500)
     all: bool = False

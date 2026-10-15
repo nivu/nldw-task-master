@@ -214,6 +214,12 @@ class TestDigestClaim:
         assert real.claim_digest(owner, "weekly", "2026-10-12", ws)
         assert real.claim_digest(owner, "weekly", "2026-10-12", ws) is None
 
+    def test_a_released_claim_can_be_claimed_again(self, stack, owner, real):
+        first = real.claim_digest(owner, "daily", "2026-10-15", None)
+        real.release_digest(first)
+        again = real.claim_digest(owner, "daily", "2026-10-15", None)
+        assert again and again != first
+
 
 class TestNotify:
     def test_members_only_once_and_removed_with_the_membership(
@@ -270,6 +276,8 @@ class TestJobLog:
         latest = [r for r in real.latest_job_runs() if r["workspace_id"] == ws]
         assert [(r["job"], r["outcome"]) for r in latest] == [("flags", "failed")]
         assert "error" not in latest[0]
+        assert datetime.fromisoformat(real.last_ok_job_run("flags", ws)) == t0
+        assert real.last_ok_job_run("trash_purge", ws) is None
         streak = real.job_streak("flags", ws)
         assert [r["outcome"] for r in streak] == ["failed", "ok"]
 

@@ -245,22 +245,35 @@ def stale_for(ctx: Any) -> list[dict[str, Any]]:
 
 
 def health(now: datetime | None = None) -> dict[str, Any]:
-    """`/health/jobs` — every job's last run and whether it is late, by
-    workspace key, with no counts and no error (FR-CRM-JOB-03)."""
+    """`/health/jobs` — contracts §1: each job's workspace key, when it last
+    finished `ok` or `skipped` (`last_ok_at`, so a job that keeps failing
+    shows) and whether it is more than twice its interval late, with no
+    counts and no error (FR-CRM-JOB-03)."""
     now = now or _now()
     keys = {w["id"]: w["key"] for w in store.list_workspaces()}
     late = {(s["job"], s["workspace_id"]) for s in stale(now)}
-    jobs = [
-        {
-            "job": row["job"],
-            "workspace": keys.get(row.get("workspace_id") or "", None),
-            "last_started_at": row["started_at"],
-            "last_outcome": row["outcome"],
-            "stale": (row["job"], row.get("workspace_id")) in late,
-        }
-        for row in store.latest_job_runs()
-        if row["job"] in JOBS
-    ]
+    jobs = []
+    for row in store.latest_job_runs():
+        if row["job"] not in JOBS:
+            continue
+        ws_id = row.get("workspace_id")
+        # The latest run answers when it succeeded; only a pair whose latest
+        # run failed or is running needs the log read further back.
+        last_ok = (
+            row.get("finished_at")
+            if row["outcome"] in ("ok", "skipped")
+            else store.last_ok_job_run(row["job"], ws_id)
+        )
+        jobs.append(
+            {
+                "job": row["job"],
+                "workspace_key": keys.get(ws_id or "", None),
+                "last_ok_at": last_ok,
+                "overdue": (row["job"], ws_id) in late,
+                "last_started_at": row["started_at"],
+                "last_outcome": row["outcome"],
+            }
+        )
     return {"status": "stale" if late else "ok", "jobs": jobs}
 
 

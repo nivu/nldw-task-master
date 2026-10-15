@@ -202,12 +202,25 @@ class TestHealthJobs:
         assert r.json()["jobs"] == [
             {
                 "job": "flags",
-                "workspace": "labs",
+                "workspace_key": "labs",
+                "last_ok_at": None,
+                "overdue": False,
                 "last_started_at": (NOW - timedelta(minutes=5)).isoformat(),
                 "last_outcome": "failed",
-                "stale": False,
             }
         ]
+
+    def test_last_ok_at_is_the_last_success(self, crm):
+        """Contracts §1: a job that keeps failing still shows when it last
+        worked."""
+        http, fake, labs, _, _ = crm
+        _run(fake, "flags", labs["id"], timedelta(minutes=50))
+        _run(fake, "flags", labs["id"], timedelta(minutes=20), "failed", error="x")
+        _run(fake, "trash_purge", labs["id"], timedelta(hours=1), "skipped")
+        got = {j["job"]: j for j in http.get("/health/jobs").json()["jobs"]}
+        assert got["flags"]["last_ok_at"] == (NOW - timedelta(minutes=50)).isoformat()
+        assert got["flags"]["last_outcome"] == "failed"
+        assert got["trash_purge"]["last_ok_at"] == (NOW - timedelta(hours=1)).isoformat()
 
     def test_late_is_503(self, crm):
         http, fake, labs, _, _ = crm
@@ -215,7 +228,8 @@ class TestHealthJobs:
         r = http.get("/health/jobs")
         assert r.status_code == 503
         assert r.json()["status"] == "stale"
-        assert r.json()["jobs"][0]["workspace"] is None
+        [job] = r.json()["jobs"]
+        assert (job["workspace_key"], job["overdue"]) == (None, True)
 
 
 class TestWhoSeesTheError:

@@ -2282,6 +2282,16 @@ class FakeCrmStore:
             if r["job"] == job and r["workspace_id"] == workspace_id and r["outcome"] != "running"
         ][:limit]
 
+    def last_ok_job_run(self, job: str, workspace_id: str | None) -> str | None:
+        for r in self._runs():
+            if (
+                r["job"] == job
+                and r["workspace_id"] == workspace_id
+                and r["outcome"] in ("ok", "skipped")
+            ):
+                return r["finished_at"]
+        return None
+
     def mark_job_alerted(self, run_id: str) -> None:
         self.rows["crm_job_runs"][run_id]["alerted"] = True
 
@@ -2402,6 +2412,9 @@ class FakeCrmStore:
             channels=[],
             sent_at=_now(),
         )["id"]
+
+    def release_digest(self, send_id: str) -> None:
+        self.rows["crm_digest_sends"].pop(send_id, None)
 
     def set_digest_channels(self, send_id: str, channels: list[str]) -> None:
         self.rows["crm_digest_sends"][send_id]["channels"] = list(channels)

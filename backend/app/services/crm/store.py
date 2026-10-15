@@ -75,6 +75,7 @@ ACCOUNT_LEVEL = frozenset(
         "mark_job_alerted",
         "list_all_job_runs",
         "latest_job_runs",
+        "last_ok_job_run",
         # The bell (037): a person's own notifications, in the workspaces
         # they are a member of now; crm_notify adds only to members.
         "notify",
@@ -83,6 +84,7 @@ ACCOUNT_LEVEL = frozenset(
         "mark_read",
         # Digests span a person's workspaces (FR-CRM-NOTIF-03).
         "claim_digest",
+        "release_digest",
         "set_digest_channels",
         "list_all_memberships",
     }
@@ -1087,6 +1089,24 @@ def job_streak(job: str, workspace_id: str | None, limit: int = 200) -> list[dic
     return query.order("started_at", desc=True).limit(limit).execute().data or []
 
 
+def last_ok_job_run(job: str, workspace_id: str | None) -> str | None:
+    """When the job last finished `ok` or `skipped` in one workspace (or the
+    digest tick's), for `/health/jobs` `last_ok_at` (FR-CRM-JOB-03)."""
+    query = (
+        supabase.table("crm_job_runs")
+        .select("finished_at")
+        .eq("job", job)
+        .in_("outcome", ["ok", "skipped"])
+    )
+    query = (
+        query.is_("workspace_id", "null")
+        if workspace_id is None
+        else query.eq("workspace_id", workspace_id)
+    )
+    rows = query.order("started_at", desc=True).limit(1).execute().data or []
+    return rows[0]["finished_at"] if rows else None
+
+
 def mark_job_alerted(run_id: str) -> None:
     supabase.table("crm_job_runs").update({"alerted": True}).eq("id", run_id).execute()
 
@@ -1213,6 +1233,12 @@ def claim_digest(user_id: str, kind: str, local_date: str, workspace_id: str | N
         },
     )
     return found or None
+
+
+def release_digest(send_id: str) -> None:
+    """Deletes a sent marker whose digest could not be built, so the next
+    tick claims it again."""
+    supabase.table("crm_digest_sends").delete().eq("id", send_id).execute()
 
 
 def set_digest_channels(send_id: str, channels: list[str]) -> None:

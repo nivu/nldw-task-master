@@ -732,7 +732,7 @@ dot).
 
 **Backend — create.**
 - `app/domain/crm/flags.py`: one function per row of spec §6.2, taking `now` and thresholds; `worst()`; internal and auto emails ignored
-- `app/domain/crm/digests.py`: daily content (one section per current membership, each built and redacted with the person's role in that workspace), weekly admin content per workspace (pipeline movement, won and lost, flag counts), the local 09:00 window
+- `app/domain/crm/digests.py`: daily content (one section per current membership, each built and redacted with the person's role in that workspace), weekly admin content per workspace (pipeline movement, won and lost, flag counts), due from 09:00 local time
 - `app/services/crm/flags.py`: recompute for records (called after relevant writes) and for a workspace (the job)
 - `app/services/crm/jobs.py`: `@crm_job(name)`; one run row per workspace for every job but the digest tick; streak alert to workspace admins and TVA admins (in-app and `notify.deliver`); staleness (twice the interval); `error_public`; a NULL-workspace row is shown with `error_public` only and never in `/crm/jobs` or `stale_jobs`
 - `app/services/crm/notifications.py`: create (dedupe key), deliver out of app through `notify.deliver`, count undeliverable; never to non-members; titles never carry amounts; list and unread count joined to current memberships

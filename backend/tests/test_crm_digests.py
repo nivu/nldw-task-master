@@ -72,14 +72,15 @@ class TestWindow:
         [
             (KOLKATA_9, "Asia/Kolkata", date(2026, 10, 14)),
             (datetime(2026, 10, 14, 3, 44, tzinfo=UTC), "Asia/Kolkata", date(2026, 10, 14)),
-            (datetime(2026, 10, 14, 3, 45, tzinfo=UTC), "Asia/Kolkata", None),
+            (datetime(2026, 10, 14, 18, 29, tzinfo=UTC), "Asia/Kolkata", date(2026, 10, 14)),
             (datetime(2026, 10, 14, 3, 29, tzinfo=UTC), "Asia/Kolkata", None),
+            (datetime(2026, 10, 14, 18, 30, tzinfo=UTC), "Asia/Kolkata", None),
             (SYDNEY_9, "Australia/Sydney", date(2026, 10, 14)),
-            (KOLKATA_9, "Australia/Sydney", None),
+            (datetime(2026, 10, 13, 21, 59, tzinfo=UTC), "Australia/Sydney", None),
         ],
     )
-    def test_the_0900_window(self, now, zone, day):
-        assert rules.local_day_in_window(now, zone) == day
+    def test_due_from_0900_to_the_end_of_the_day(self, now, zone, day):
+        assert rules.local_day_due(now, zone) == day
 
     def test_indian_grouping(self):
         assert rules.inr("12345678.40") == "₹1,23,45,678"
@@ -104,10 +105,19 @@ class TestExactlyOnce:
             ("slack",)
         }
 
-    def test_outside_0900_nobody(self, crm):
+    def test_before_0900_nobody(self, crm):
         _, _, _, _, sent = crm
-        tasks._digests(datetime(2026, 10, 14, 6, 0, tzinfo=UTC))
+        tasks._digests(datetime(2026, 10, 14, 3, 29, tzinfo=UTC))
         assert sent == []
+
+    def test_a_missed_0900_tick_still_sends_once(self, crm):
+        """A tick at 09:20 local (the 09:00 one never ran) sends; the next
+        sends nothing."""
+        _, _, _, _, sent = crm
+        tasks._digests(datetime(2026, 10, 14, 3, 50, tzinfo=UTC))
+        assert len(_to(sent, OWNER)) == 1
+        tasks._digests(datetime(2026, 10, 14, 4, 5, tzinfo=UTC))
+        assert len(_to(sent, OWNER)) == 1
 
     def test_each_in_their_own_window(self, crm, monkeypatch):
         _, _, _, _, sent = crm
@@ -126,6 +136,30 @@ class TestExactlyOnce:
         assert result["runs"]["all"]["counts"]["daily"] == 3
         [run] = fake.rows["crm_job_runs"].values()
         assert (run["job"], run["workspace_id"]) == ("digests", None)
+
+
+class TestOneFailureDoesNotStopTheTick:
+    def test_the_others_still_get_theirs_and_it_retries(self, crm, monkeypatch):
+        _, fake, _, _, sent = crm
+        real_parts = digests.daily_parts
+
+        def parts(person, *args, **kwargs):
+            if person["id"] == MEMBER["id"]:
+                raise RuntimeError("Today broke")
+            return real_parts(person, *args, **kwargs)
+
+        monkeypatch.setattr(digests, "daily_parts", parts)
+        result = tasks._digests(KOLKATA_9)
+        assert result["runs"]["all"]["outcome"] == "ok"
+        assert result["runs"]["all"]["counts"]["failed"] == 1
+        assert result["runs"]["all"]["counts"]["daily"] == 2
+        assert _to(sent, MEMBER) == []
+        assert len(_to(sent, OWNER)) == 1 and len(_to(sent, VIEWER)) == 1
+        # The failed one's marker was released: the next tick sends it.
+        monkeypatch.setattr(digests, "daily_parts", real_parts)
+        tasks._digests(datetime(2026, 10, 14, 3, 45, tzinfo=UTC))
+        assert len(_to(sent, MEMBER)) == 1
+        assert len(_to(sent, OWNER)) == 1
 
 
 class TestCrmOnlyWaitsForSmtp:

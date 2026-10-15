@@ -71,7 +71,7 @@ without acting; `/api/v1/feed/{key}.ics` never resolves a `crm_only` profile
 | `GET /analytics/forecast` | Gains `weeks: [{week_start, supply_hours, confirmed_hours, tentative_hours}]` from the capacity service, present even when there are no counting allocations; released and archived allocations no longer count | CHG-03, -17 |
 | `GET /analytics/people` | Staff only | CHG-02 |
 | Every people and allocation reader | See tasks S1a and S2 for the list | CHG-02/03/04 |
-| `GET /health/jobs` (1b) | Unauthenticated: `{jobs: [{job, workspace_key, last_ok_at, overdue: bool}]}`, no record content | JOB-03 |
+| `GET /health/jobs` (1b) | Unauthenticated: `{status, jobs: [{job, workspace_key, last_ok_at, overdue: bool, last_started_at, last_outcome}]}`, no record content; `last_ok_at` is when the job last finished `ok` or `skipped`; 503 with `status: "stale"` while any job is overdue | JOB-03 |
 
 ---
 

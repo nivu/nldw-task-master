@@ -10,6 +10,8 @@ browser grant (FR-CRM-ACC-10).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Query
 
 from app.api.deps import AnyAccountDep
@@ -24,12 +26,20 @@ router = APIRouter(prefix="/crm/notifications", tags=["crm"])
 def list_notifications(
     user: AnyAccountDep,
     unread_only: bool = False,
-    before: str | None = Query(default=None, max_length=64),
+    before: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict]:
     """`[{id, workspace_key, kind, title, record_type, record_id, created_at,
-    read_at}]`, newest first; `before` is the last one's `created_at`."""
-    return service.list_for(user.id, unread_only=unread_only, before=before, limit=limit)
+    read_at}]`, newest first; `before` is the last one's `created_at` (a
+    time with no zone is UTC)."""
+    if before is not None and before.tzinfo is None:
+        before = before.replace(tzinfo=UTC)
+    return service.list_for(
+        user.id,
+        unread_only=unread_only,
+        before=before.isoformat() if before else None,
+        limit=limit,
+    )
 
 
 @router.get("/unread-count")
@@ -41,4 +51,5 @@ def unread_count(user: AnyAccountDep) -> dict:
 def mark_read(payload: NotificationsRead, user: AnyAccountDep) -> dict:
     if payload.all == (payload.ids is not None):
         raise ProblemDetail(422, "Give the notifications to mark read, or all.")
-    return {"updated": service.mark_read(user.id, None if payload.all else payload.ids)}
+    ids = None if payload.all else [str(i) for i in payload.ids or []]
+    return {"updated": service.mark_read(user.id, ids)}

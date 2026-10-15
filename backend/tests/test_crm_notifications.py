@@ -144,6 +144,60 @@ class TestEvents:
             [MEMBER["id"], SELLER["id"]]
         )
 
+    def test_a_read_after_the_write_never_fails_it(self, crm, monkeypatch):
+        """The links and names read after a note's write are only for flags
+        and the bell: their failure leaves the write saved and answered."""
+        from app.services.crm import records, store
+
+        http, fake, _, _ = crm
+        acme = _company(http)
+        real_names, names_failed = records.link_names, []
+
+        def link_names(*a, **k):
+            # The first read is the bell's; the response's own comes after.
+            if not names_failed:
+                names_failed.append(True)
+                raise RuntimeError("down")
+            return real_names(*a, **k)
+
+        monkeypatch.setattr(records, "link_names", link_names)
+        r = http.post(
+            f"/api/v1/crm/notes{LABS}",
+            json={
+                "body": "@Deepika over to you",
+                "links": [{"record_type": "company", "record_id": acme["id"]}],
+                "mention_ids": [MEMBER["id"]],
+            },
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 201, r.text
+        [n] = _bell(fake, "mentioned")
+        assert n["title"] == "Owner mentioned you in a note"
+
+        applied = {"done": False, "failed": False}
+        real_apply, real_links = store.apply, store.list_links
+
+        def apply(*a, **k):
+            applied["done"] = True
+            return real_apply(*a, **k)
+
+        def list_links(*a, **k):
+            if applied["done"] and not applied["failed"]:
+                applied["failed"] = True
+                raise RuntimeError("down")
+            return real_links(*a, **k)
+
+        monkeypatch.setattr(store, "apply", apply)
+        monkeypatch.setattr(store, "list_links", list_links)
+        r = http.patch(
+            f"/api/v1/crm/notes/{r.json()['id']}{LABS}",
+            json={"mention_ids": [MEMBER["id"], SELLER["id"]]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert applied["failed"]
+        assert SELLER["id"] in {n["user_id"] for n in _bell(fake, "mentioned")}
+
     def test_a_deal_moved_by_someone_else(self, crm):
         http, fake, _, _ = crm
         deal = _deal(http, who=SELLER["id"])
@@ -291,6 +345,27 @@ class TestTheBell:
         http, *_ = crm
         r = http.post("/api/v1/crm/notifications/read", json={}, headers=as_(MEMBER["id"]))
         assert r.status_code == 422
+
+    def test_a_bad_id_or_time_is_422(self, crm):
+        http, *_ = crm
+        r = http.post(
+            "/api/v1/crm/notifications/read", json={"ids": ["nope"]}, headers=as_(MEMBER["id"])
+        )
+        assert r.status_code == 422
+        r = http.get("/api/v1/crm/notifications?before=yesterday", headers=as_(MEMBER["id"]))
+        assert r.status_code == 422
+
+    def test_paging_by_created_at(self, crm):
+        http, fake, labs, academy = crm
+        self._seed(fake, labs, academy)
+        first = http.get("/api/v1/crm/notifications", headers=as_(MEMBER["id"])).json()
+        r = http.get(
+            "/api/v1/crm/notifications",
+            params={"before": first[0]["created_at"]},
+            headers=as_(MEMBER["id"]),
+        )
+        assert r.status_code == 200
+        assert first[0]["id"] not in {n["id"] for n in r.json()}
 
     def test_someone_with_no_workspace(self, crm):
         http, *_ = crm
