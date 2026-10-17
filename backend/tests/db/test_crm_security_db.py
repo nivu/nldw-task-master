@@ -38,6 +38,12 @@ NOT_AUDITED = {
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}
+#: 008 (047): the CRM's task tables, renamed and shared; every sweep below
+#: covers them as CRM tables.
+TASK_TABLES = "('tasks', 'task_links')"
+#: 008 (047, FR-TASK-DATA-09, -15): the two plain references among them, by
+#: design — a link's task and a subtask's parent, which may have no workspace.
+PLAIN_TASK_KEYS = {"task_links_task_id", "tasks_parent_id_fkey"}
 
 
 def _tables(stack, like: str = "%") -> list[str]:
@@ -112,7 +118,8 @@ class TestTheAuditTrigger:
     def test_every_record_and_config_table_has_it(self, stack):
         rows = stack.sql(
             "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'crm\\_%' "
+            "WHERE n.nspname = 'public' AND c.relkind = 'r' "
+            f"AND (c.relname LIKE 'crm\\_%' OR c.relname IN {TASK_TABLES}) "
             "AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid "
             "AND t.tgfoid = 'public.crm_audit_row'::regproc AND NOT t.tgisinternal)"
         )
@@ -141,8 +148,10 @@ class TestReferencesStayInTheWorkspace:
             "ON a.attrelid = con.confrelid AND a.attnum = k.n) AS refs, "
             "con.confrelid::regclass::text AS target "
             "FROM pg_constraint con WHERE con.contype = 'f' "
-            "AND con.conrelid::regclass::text LIKE 'crm\\_%' "
-            "AND con.confrelid::regclass::text LIKE 'crm\\_%'"
+            "AND (con.conrelid::regclass::text LIKE 'crm\\_%' "
+            f"OR con.conrelid::regclass::text IN {TASK_TABLES}) "
+            "AND (con.confrelid::regclass::text LIKE 'crm\\_%' "
+            f"OR con.confrelid::regclass::text IN {TASK_TABLES})"
         )
         assert len(rows) > 30
         loose = []
@@ -153,14 +162,16 @@ class TestReferencesStayInTheWorkspace:
                 continue
             if row["cols"][0] != "workspace_id" or row["refs"][0] != "workspace_id":
                 loose.append(row["conname"])
-        assert loose == []
+        assert set(loose) == PLAIN_TASK_KEYS
+        assert "task_links_task" in {r["conname"] for r in rows}
 
     def test_every_other_reference_carries_crm_check_refs(self, stack):
         """A uuid `*_id` column of a CRM table with no foreign key is a
         polymorphic reference; its table must carry the trigger."""
         rows = stack.sql(
             "SELECT c.table_name, c.column_name FROM information_schema.columns c "
-            "WHERE c.table_schema = 'public' AND c.table_name LIKE 'crm\\_%' "
+            "WHERE c.table_schema = 'public' "
+            f"AND (c.table_name LIKE 'crm\\_%' OR c.table_name IN {TASK_TABLES}) "
             "AND c.udt_name = 'uuid' AND c.column_name LIKE '%\\_id' "
             "AND c.column_name NOT IN ('id', 'workspace_id') "
             "AND NOT EXISTS (SELECT 1 FROM pg_constraint con JOIN pg_attribute a "

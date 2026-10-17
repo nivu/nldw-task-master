@@ -89,9 +89,10 @@ async def crm_create(
     duplicates first: if any come back, show them and ask before calling
     again with check_duplicates=false. A deal needs its company at qualified
     or later, a next step and its date; it starts at discovery. A company's
-    owner defaults to you; a new company starts at lead stage new. The portal
-    refuses missing required fields with one sentence naming them; relay
-    it."""
+    owner defaults to you; a new company starts at lead stage new. A task's
+    status is open, waiting (with waiting_on_text), done or cancelled; it
+    starts open. The portal refuses missing required fields with one
+    sentence naming them; relay it."""
     if record_type == "drive_link":
         return await _api(ctx, "POST", "/crm/links", params={"workspace": workspace}, body=fields)
     return await _api(
@@ -118,7 +119,7 @@ async def crm_update(
     rather than overwritten. A deal's stage is not changed here: use
     crm_move_stage. System-written fields (last inbound, won on…) are
     refused. Lead stages by key: new, contacted, nurturing, qualified,
-    disqualified."""
+    disqualified. Task statuses by key: open, waiting, done, cancelled."""
     body = dict(changes)
     if expect_updated_at is not None:
         body["expect_updated_at"] = expect_updated_at
@@ -172,7 +173,8 @@ async def crm_add_task(
     next step, not a task. links are [{record_type:
     company|person|opportunity|campaign, record_id}]; the assignee defaults
     to you and must be a member; category is a task category's name; due_on
-    is YYYY-MM-DD."""
+    is YYYY-MM-DD. The task starts open; its statuses are open, waiting, done
+    and cancelled."""
     fields: dict[str, Any] = {"title": title, "links": links}
     for name, value in (
         ("assignee_id", assignee_id),
@@ -189,7 +191,7 @@ async def crm_add_task(
 @mcp.tool(annotations=WRITE)
 async def crm_complete_task(ctx: Context, task_id: str, workspace: str | None = None) -> dict:
     """ADMINS AND MEMBERS, OR A VIEWER ON A TASK ASSIGNED TO THEM. CONFIRM FIRST.
-    Marks a task done."""
+    Marks a task done (its statuses are open, waiting, done and cancelled)."""
     return await _api(
         ctx,
         "POST",
@@ -352,8 +354,9 @@ async def crm_list(
     contains, not_contains, is_empty, is_not_empty, any_of, none_of (a list),
     is_me, on, before, after (YYYY-MM-DD), within_last_days,
     within_next_days (a number), this_month, this_quarter, gt, gte, lt, lte.
-    sort is [{field, dir: asc|desc}]. Pass the answer's next as after for the
-    following page; total is "10000+" past ten thousand."""
+    sort is [{field, dir: asc|desc}]. A task's status is open, waiting, done
+    or cancelled; status open means open or waiting. Pass the answer's next
+    as after for the following page; total is "10000+" past ten thousand."""
     spec: dict[str, Any] = {"limit": limit}
     if filters:
         spec["filters"] = {"op": "and", "items": filters}

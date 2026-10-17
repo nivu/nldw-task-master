@@ -175,7 +175,7 @@ def _facts(ctx: Any, bundle: dict[str, list[dict[str, Any]]]) -> rules.Facts:
     }
 
     links: dict[str, set[tuple[str, str]]] = {}
-    for obj, table in (("tasks", "crm_task_links"), ("notes", "crm_note_links")):
+    for obj, table in (("tasks", "task_links"), ("notes", "crm_note_links")):
         owner = store.LINK_TABLES[table]
         ids = [r["id"] for r in existing[obj].values()]
         for link in _batched(lambda b, t=table: store.list_links(ws_id, t, owner_ids=b), ids):
@@ -344,7 +344,7 @@ def _run(ctx: Any, run_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 #: A task's or note's link table and its owner column.
-_LINKS = {"tasks": ("crm_task_links", "task_id"), "notes": ("crm_note_links", "note_id")}
+_LINKS = {"tasks": ("task_links", "task_id"), "notes": ("crm_note_links", "note_id")}
 
 
 def _write(ctx: Any, plan: rules.ImportPlan) -> None:

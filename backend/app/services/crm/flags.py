@@ -37,7 +37,7 @@ TABLES = {
     "company": "crm_companies",
     "person": "crm_people",
     "opportunity": "crm_opportunities",
-    "task": "crm_tasks",
+    "task": "tasks",
 }
 
 
@@ -124,7 +124,7 @@ def _compute(
         computed["crm_companies"].append({"id": company["id"], **out})
     for task in tasks:
         out = rules.for_task(task, today=today(task.get("assignee_id")))
-        computed["crm_tasks"].append({"id": task["id"], **out})
+        computed["tasks"].append({"id": task["id"], **out})
     for person in people:
         computed["crm_people"].append(
             {
@@ -156,7 +156,7 @@ def recompute_workspace(workspace_id: str, now: datetime | None = None) -> dict[
     now = now or _now()
     deals = store.flag_rows(workspace_id, "crm_opportunities", open_or_flagged=True)
     companies = store.flag_rows(workspace_id, "crm_companies")
-    tasks = store.flag_rows(workspace_id, "crm_tasks", open_or_flagged=True)
+    tasks = store.flag_rows(workspace_id, "tasks", open_or_flagged=True)
     facts = store.flag_facts(workspace_id, None, None, None)
     people = {p["id"]: p for p in store.flag_rows(workspace_id, "crm_people", flagged_only=True)}
     with_mail = sorted(set((facts.get("emails") or {}).get("person") or {}) - set(people))
@@ -199,7 +199,7 @@ def recompute(
             )
             if d["id"] not in known
         ]
-    task_rows = store.flag_rows(workspace_id, "crm_tasks", ids=sorted(tasks or ()))
+    task_rows = store.flag_rows(workspace_id, "tasks", ids=sorted(tasks or ()))
     people_rows = store.flag_rows(workspace_id, "crm_people", ids=sorted(people or ()))
     if not (deal_rows or company_rows or task_rows or people_rows):
         return {"changed": 0}

@@ -214,7 +214,7 @@ class TestEverythingMoves:
         assert _merge(http, made["acme"]["id"], made["dup"]["id"]).status_code == 200
         keep, gone = made["acme"]["id"], made["dup"]["id"]
         assert fake.rows["crm_people"][made["person"]["id"]]["company_id"] == keep
-        for table in ("crm_task_links", "crm_note_links"):
+        for table in ("task_links", "crm_note_links"):
             ids = {
                 link["record_id"]
                 for link in fake.rows[table].values()

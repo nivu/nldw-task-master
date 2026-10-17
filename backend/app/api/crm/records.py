@@ -36,7 +36,8 @@ OBJECTS = ("companies", "people", "opportunities", "tasks", "notes", "campaigns"
 #: FR-CRM-DUP-02 — the objects checked for names alike.
 DEDUPED = ("companies", "people")
 TrashObject = Literal["companies", "people", "opportunities", "tasks", "notes", "campaigns"]
-TaskStatus = Literal["todo", "in_progress", "done", "open"]
+#: 008 FR-TASK-CHG-10: `open` is Open or Waiting; the old keys read as Open (TP-05).
+TaskStatus = Literal["open", "waiting", "done", "cancelled", "todo", "in_progress"]
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,9 @@ def list_tasks(
     after: str | None = Query(default=None, max_length=20),
 ) -> dict:
     """The Tasks page: newest first, narrowed to an assignee and a status
-    (`open` is anything not Done)."""
+    (`open` is Open or Waiting; `todo` and `in_progress` are read as `open`)."""
+    if status in ("todo", "in_progress"):
+        status = "open"
     filters = {"assignee_id": assignee_id} if assignee_id else {}
     if status and status != "open":
         filters["status"] = status

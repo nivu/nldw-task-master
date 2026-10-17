@@ -76,11 +76,11 @@ def _deal(fake, labs, company, name, next_step_on, owner=SELLER["id"], **values)
 
 
 def _task(fake, labs, title, *, assignee=SELLER["id"], links=(), **values):
-    task = _row(fake, "crm_tasks", labs, title=title, assignee_id=assignee, **values)
+    task = _row(fake, "tasks", labs, title=title, assignee_id=assignee, **values)
     for record_type, record in links:
         _row(
             fake,
-            "crm_task_links",
+            "task_links",
             labs,
             task_id=task["id"],
             record_type=record_type,

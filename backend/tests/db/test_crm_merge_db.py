@@ -173,19 +173,19 @@ def pair(stack, labs, owner):
             },
             {
                 "op": "insert",
-                "table": "crm_tasks",
+                "table": "tasks",
                 "ref": "t",
-                "values": {"title": f"Call {t}", "assignee_id": owner},
+                "values": {"title": f"Call {t}", "assignee_id": owner, "bucket": "later"},
             },
             {
                 "op": "insert",
-                "table": "crm_task_links",
+                "table": "task_links",
                 "values": {"task_id": "$ref:t", "record_type": "company", "record_id": gone},
             },
             # Linked to both: keeps one link, the survivor's.
             {
                 "op": "insert",
-                "table": "crm_task_links",
+                "table": "task_links",
                 "values": {"task_id": "$ref:t", "record_type": "company", "record_id": keep},
             },
             {
@@ -260,8 +260,7 @@ def _snapshot(stack, keep: str, gone: str) -> dict:
             f"SELECT id, company_id FROM crm_opportunities WHERE company_id IN {ids}"
         ),
         "task_links": stack.sql(
-            f"SELECT task_id, record_id FROM crm_task_links WHERE record_id IN {ids} "
-            "ORDER BY record_id"
+            f"SELECT task_id, record_id FROM task_links WHERE record_id IN {ids} ORDER BY record_id"
         ),
         "projects": stack.sql(
             f"SELECT id, crm_company_id FROM projects WHERE crm_company_id IN {ids}"
@@ -292,7 +291,7 @@ class TestTheMerge:
         assert _row(stack, "crm_opportunities", pair["deal"])["company_id"] == keep
         assert _row(stack, "crm_drive_links", pair["link"])["record_id"] == keep
         links = stack.sql(
-            f"SELECT record_id FROM crm_task_links WHERE task_id = {stack.q(pair['task'])}"
+            f"SELECT record_id FROM task_links WHERE task_id = {stack.q(pair['task'])}"
         )
         assert links == [{"record_id": keep}]
         notes = stack.sql(

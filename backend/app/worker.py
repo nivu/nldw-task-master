@@ -135,3 +135,18 @@ celery_app.conf.beat_schedule = {
     # sync is off or unconfigured it records a skip and does nothing else.
     "crm-email-sync-tick": {"task": "crm.email_sync_tick", "schedule": crontab(minute="*/15")},
 }
+
+# ---------------------------------------------------------------------------
+# Spec 008 — tasks
+#
+# 008's own block, after 007's and before 009's (plan §5.8, §9 rule 3).
+# ---------------------------------------------------------------------------
+celery_app.conf.beat_schedule.update(
+    {
+        # FR-TASK-DATA-11, TP-12: tasks with no workspace deleted > 90 days ago.
+        "tasks-purge-deleted": {
+            "task": "tasks.purge_deleted",
+            "schedule": crontab(hour=1, minute=20),
+        },
+    }
+)

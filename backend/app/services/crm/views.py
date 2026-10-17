@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from app.domain.crm import dedupe, objects
 from app.domain.crm import views as rules
+from app.domain.tasks import labels as task_labels
 from app.schemas.crm import BulkIn, CompanyDeleteIn, FavouriteIn, QueryIn, StageMoveIn, ViewIn
 from app.schemas.crm import ViewUpdate as ViewChange
 from app.services.crm import CrmRefused, deals, store
@@ -57,6 +58,10 @@ _FIXED_LABELS = {
     "kind": objects.NOTE_KINDS,
     # 038 (FR-CRM-FLAG-05): never colour alone, so a group says it in words.
     "flag_level": {"none": "No flag", "amber": "Amber", "red": "Red"},
+    # 008 (047): a task's priority and source have no option list; their
+    # labels are fixed (data-model §3.3).
+    "priority": task_labels.PRIORITY,
+    "source": task_labels.SOURCE,
 }
 #: The record a `relation` field names, by field.
 _RELATIONS = {
@@ -217,7 +222,8 @@ def create_view(ctx: Any, body: ViewIn) -> dict[str, Any]:
     kind = kind_of(body.object)
     if body.visibility == "shared" and not ctx.may("manage_shared_views"):
         raise CrmRefused(403, "Viewers can save private views only.")
-    _check_config(ctx, kind, body.kind, body.config)
+    config = _task_config(kind, body.config)
+    _check_config(ctx, kind, body.kind, config)
     mine = store.list_views(ctx.workspace_id, object=kind)
     values = {
         "object": kind,
@@ -226,7 +232,7 @@ def create_view(ctx: Any, body: ViewIn) -> dict[str, Any]:
         "kind": body.kind,
         "visibility": body.visibility,
         "owner_id": ctx.user.id if body.visibility == "private" else None,
-        "config": body.config,
+        "config": config,
         "position": max((v.get("position", 0) for v in mine), default=0) + 1,
     }
     done = store.apply(actor(ctx), [{"op": "insert", "table": "crm_saved_views", "values": values}])
@@ -241,6 +247,8 @@ def update_view(ctx: Any, view_id: str, body: ViewChange) -> dict[str, Any]:
     if not _may_edit(ctx, row):
         raise CrmRefused(403, "Only Admins and Members can change a shared view.")
     sent = body.model_dump(exclude_unset=True)
+    if sent.get("config") is not None:
+        sent["config"] = _task_config(row["object"], sent["config"])
     for key in ("name", "kind", "visibility", "is_default", "hidden", "position"):
         if key in sent and sent[key] is None:
             raise CrmRefused(422, f"A view's {key.replace('_', ' ')} cannot be empty.")
@@ -348,6 +356,7 @@ def query(ctx: Any, body: QueryIn) -> dict[str, Any]:
     viewer = _viewer(ctx)
     linked = _tva_linked(ctx)
     spec = body.spec.model_dump(exclude_unset=True)
+    spec = _task_config(kind, spec)
     _refuse(rules.validate_spec(kind, spec, role=ctx.role, tva_linked=linked))
 
     view = None
@@ -361,6 +370,7 @@ def query(ctx: Any, body: QueryIn) -> dict[str, Any]:
         if viewer:
             config, dropped = rules.clean_shared_view(kind, config, tva_linked=linked)
             notice = rules.AMOUNT_NOTICE if dropped else None
+        config = _task_config(kind, config)
         _refuse(rules.validate_spec(kind, config, role=ctx.role, tva_linked=linked))
 
     merged = rules.merge(config, spec, set(spec) - {"q", "limit", "after"})
@@ -392,6 +402,48 @@ def query(ctx: Any, body: QueryIn) -> dict[str, Any]:
     if notice:
         answer["notice"] = notice
     return answer
+
+
+def _task_config(kind: str, config: dict[str, Any]) -> dict[str, Any]:
+    """A task view's or request's filters read as `_task_status_filter` says,
+    whether sent now or saved in a view."""
+    if kind != "task" or not config.get("filters"):
+        return config
+    return {**config, "filters": _task_status_filter(config["filters"])}
+
+
+def _task_status_filter(node: Any) -> Any:
+    """008 FR-TASK-CHG-10, TP-05 — a task status condition as asked: `todo`
+    and `in_progress` read as `open`, `open` means Open or Waiting, and
+    "not Done" means neither Done nor Cancelled (as 047 rewrote saved views)."""
+    if not isinstance(node, dict):
+        return node
+    if isinstance(node.get("items"), list):
+        return {**node, "items": [_task_status_filter(i) for i in node["items"]]}
+    if node.get("field") != "status":
+        return node
+
+    def key(v: Any) -> Any:
+        return "open" if v in ("todo", "in_progress") else v
+
+    value = node.get("value")
+    op = node.get("operator")
+    if isinstance(value, list):
+        keys = list(dict.fromkeys(key(v) for v in value))
+        if "open" in keys and "waiting" not in keys:
+            keys.append("waiting")
+        if op == "none_of" and keys == ["done"]:
+            keys.append("cancelled")
+        return {**node, "value": keys}
+    if value == "done" and op == "is_not":
+        return {**node, "operator": "none_of", "value": ["done", "cancelled"]}
+    if key(value) == "open" and op in ("is", "is_not"):
+        return {
+            **node,
+            "operator": "any_of" if op == "is" else "none_of",
+            "value": ["open", "waiting"],
+        }
+    return {**node, "value": key(value)} if "value" in node else node
 
 
 def _totals(kind: str, raw: dict[str, Any], viewer: bool) -> dict[str, Any]:

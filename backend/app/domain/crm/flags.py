@@ -256,9 +256,10 @@ def loose_end(company: dict[str, Any], has_open_task: bool) -> dict[str, Any] | 
 
 
 def task_overdue(task: dict[str, Any], today: date) -> dict[str, Any] | None:
-    """Open task: due date past (red) or today (amber)."""
+    """Open or waiting task (008 FR-TASK-DATA-04): due date past (red) or
+    today (amber). A done or cancelled task is closed."""
     due = _day(task.get("due_on"))
-    if task.get("status") == "done" or task.get("deleted_at") or due is None:
+    if task.get("status") not in ("open", "waiting") or task.get("deleted_at") or due is None:
         return None
     if due < today:
         return _flag("task_overdue", "red", due, f"Was due {due.isoformat()}.")

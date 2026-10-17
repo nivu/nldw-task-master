@@ -58,6 +58,23 @@ const FLAG_LEVELS: Choice[] = [
   { value: "amber", label: "Amber" },
   { value: "red", label: "Red" },
 ];
+/** 008 (047): a task's priority and where it came from; fixed labels
+ *  (data-model §3.3). */
+const PRIORITIES: Choice[] = [
+  { value: "urgent", label: "Urgent" },
+  { value: "high", label: "High" },
+  { value: "normal", label: "Normal" },
+  { value: "low", label: "Low" },
+];
+const SOURCES: Choice[] = [
+  { value: "manual", label: "Manual" },
+  { value: "nldw", label: "NLDW" },
+  { value: "voice", label: "Voice" },
+  { value: "email_commitment", label: "Email commitment" },
+  { value: "meeting_action", label: "Meeting action" },
+  { value: "rule", label: "Rule" },
+  { value: "import", label: "Import" },
+];
 const NOTE_KINDS: Choice[] = [
   { value: "note", label: "Note" },
   { value: "call", label: "Call" },
@@ -190,14 +207,16 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
   ],
   task: [
     v("title", "Title", "text", E),
-    v("body", "Body", "long_text", { sortable: false, ...E }),
+    v("body", "Notes", "long_text", { sortable: false, ...E }),
     v("status", "Status", "fixed_select", { listKey: "task.status", ...E }),
     v("due_on", "Due date", "date", E),
-    v("bucket", "Priority bucket", "fixed_select", { listKey: "task.bucket", ...E }),
+    v("bucket", "Bucket", "fixed_select", { listKey: "task.bucket", ...E }),
     v("category_id", "Category", "select", { listKey: "task.category", ...E }),
     v("assignee_id", "Assignee", "person", E),
     v("completed_at", "Completed", "datetime"),
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
+    v("priority", "Priority", "fixed_select", { fixed: PRIORITIES, ...E }),
+    v("source", "Source", "fixed_select", { fixed: SOURCES }),
     ...STAMPS,
     POSITION,
   ],

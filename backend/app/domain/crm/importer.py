@@ -50,6 +50,7 @@ from app.domain.crm import dedupe, fx
 from app.domain.crm.objects import LEAD_STAGES, MEMBER_STATUSES
 from app.domain.crm.pipeline import OPEN, default_probability
 from app.domain.crm.settings import STAGE_LABELS
+from app.domain.tasks import rules as task_rules
 
 #: Contracts §2.9 and FR-CRM-MCP-08: an upload, or `crm_import` content.
 MAX_BYTES: Final = 4 * 1024 * 1024
@@ -79,7 +80,7 @@ TABLES: Final = {
     "campaigns": "crm_campaigns",
     "opportunities": "crm_opportunities",
     "campaign_members": "crm_campaign_members",
-    "tasks": "crm_tasks",
+    "tasks": "tasks",
     "notes": "crm_notes",
 }
 #: A link's record type, by the object it names.
@@ -258,7 +259,8 @@ LEAD_STAGE_LABELS: Final = {
 PARTNER_TYPES: Final = ("technology_partner", "channel_partner", "training_partner")
 #: Lead stages a deal may sit on (FR-CRM-PIPE-04).
 OPENABLE: Final = ("qualified", "deal_open", "customer", "partner")
-TASK_STATUS: Final = {"todo": "todo", "inprogress": "in_progress", "done": "done"}
+#: 008 FR-TASK-CHG-09: Twenty's To do and In progress are both Open.
+TASK_STATUS: Final = {"todo": "open", "inprogress": "open", "done": "done"}
 
 _TWENTY_ID = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _EMAIL = re.compile(r"^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
@@ -1303,7 +1305,7 @@ class _Planner:
                 continue
             self.written["tasks"].add(tid)
             existing = self.facts.existing["tasks"].get(tid)
-            status = TASK_STATUS.get(_key(str(row["status"] or "todo")), "todo")
+            status = TASK_STATUS.get(_key(str(row["status"] or "todo")), "open")
             assignee, unknown = self.owner(row["assignee_email"], existing)
             if unknown:
                 self.conflict(
@@ -1323,7 +1325,11 @@ class _Planner:
             # Like a deal's stage, a task's status moves in the CRM: a re-run
             # sets it on a new task only, never reopens or closes one.
             if existing is None:
-                values.update(status=status, completed_at=None)
+                # 008 FR-TASK-DATA-12: as 047 marks every Twenty task.
+                values.update(status=status, completed_at=None, source="import")
+                # 008 FR-TASK-DATA-08: an open task has a bucket.
+                if status in task_rules.OPEN:
+                    values["bucket"] = task_rules.default_bucket(values["due_on"], self.today)
                 if status == "done":
                     done = _timestamp(row["completed_at"]) or _timestamp(row["updated_at"])
                     values["completed_at"] = done or f"{self.today.isoformat()}T00:00:00+00:00"

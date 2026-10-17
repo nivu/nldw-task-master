@@ -15,7 +15,8 @@ import { OBJECT_PATH } from "@/lib/crm/view-fields";
  * One line per item, each opening its record, in the server's order. A task
  * has no page of its own, so its line opens the record it is linked to (or
  * the Tasks list). The two email sections say "Email sync is off" while it
- * is, instead of looking empty.
+ * is, instead of looking empty. Tasks for today are the open and waiting ones
+ * (008 FR-TASK-CHG-05); a cancelled task is closed.
  */
 
 const TITLES: Record<TodaySectionKey, string> = {

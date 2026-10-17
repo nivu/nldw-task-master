@@ -113,7 +113,7 @@ UNIQUE_MESSAGES = {
     "crm_company_domains_one_primary": "This company's domains changed meanwhile; reload.",
     "crm_people_workspace_email": "That email was just given to another person in this workspace.",
     "crm_opportunity_contacts_pair": "That person is already a contact on this deal.",
-    "crm_task_links_target": "The task is already linked to that record.",
+    "task_links_target": "The task is already linked to that record.",
     "crm_note_links_target": "The note is already linked to that record.",
     "crm_note_mentions_pair": "That member is already mentioned.",
     # FR-CRM-TVA-01 — one project per deal (032); 033 checks it first.
@@ -166,9 +166,11 @@ def rpc(fn: str, params: dict[str, Any]) -> Any:
 def apply(actor: dict[str, Any], ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Data-model §5.2 — every ordinary CRM write, in one transaction.
 
-    Returns one `{ref, id, row}` per op, in order.
+    Returns one `{ref, id, row}` per op, in order. A task the CRM creates
+    must link a record of the workspace (008 FR-TASK-CHG-01): the writer's
+    `p_task_needs_link`, always on here.
     """
-    return rpc("crm_apply", {"p_actor": actor, "p_ops": ops}) or []
+    return rpc("crm_apply", {"p_actor": actor, "p_ops": ops, "p_task_needs_link": True}) or []
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +444,8 @@ RECORD_TABLES = frozenset(
         "crm_people",
         "crm_drive_links",
         "crm_opportunities",
-        "crm_tasks",
+        # 008: the shared task table (FR-TASK-DATA-01).
+        "tasks",
         "crm_notes",
         # 041 (1b).
         "crm_campaigns",
@@ -455,13 +458,16 @@ _SEARCH = {
     "crm_people": ("first_name", "last_name", "primary_email"),
     "crm_drive_links": ("label",),
     "crm_opportunities": ("name",),
-    "crm_tasks": ("title",),
+    "tasks": ("title",),
     "crm_notes": ("body",),
     "crm_campaigns": ("name",),
     "crm_campaign_members": ("notes",),
 }
 #: The polymorphic link tables of tasks and notes, by their owner column.
-LINK_TABLES = {"crm_task_links": "task_id", "crm_note_links": "note_id"}
+LINK_TABLES = {"task_links": "task_id", "crm_note_links": "note_id"}
+#: 008 FR-TASK-CHG-07: audit rows written before the rename keep the old
+#: table names (append-only), so a timeline reads both.
+OLD_NAMES = {"tasks": "crm_tasks", "task_links": "crm_task_links"}
 
 
 def _table(table: str) -> str:
@@ -747,6 +753,10 @@ def link_project(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
     return rpc("crm_link_project", {"p_actor": actor, "p_plan": plan}) or {}
 
 
+def _with_old_name(table: str) -> tuple[str, ...]:
+    return (table, OLD_NAMES[table]) if table in OLD_NAMES else (table,)
+
+
 def list_timeline(
     workspace_id: str,
     table: str,
@@ -761,9 +771,13 @@ def list_timeline(
     its own; its Drive, task and note links' (by the record they name, so a
     purged link still shows); the rows of the Drive links, tasks and notes in
     `related` (table → ids); for a company, its domains'; and for a deal, its
-    contacts'."""
-    parts = [f"and(target_table.eq.{_table(table)},target_id.eq.{record_id})"]
-    for link_table in ("crm_drive_links", "crm_task_links", "crm_note_links"):
+    contacts'. Task history is read under the old and new table names
+    (008 FR-TASK-CHG-07)."""
+    parts = [
+        f"and(target_table.eq.{name},target_id.eq.{record_id})"
+        for name in _with_old_name(_table(table))
+    ]
+    for link_table in ("crm_drive_links", "crm_task_links", "task_links", "crm_note_links"):
         parts.append(
             f"and(target_table.eq.{link_table},"
             f"or(after->>record_id.eq.{record_id},before->>record_id.eq.{record_id}),"
@@ -771,7 +785,10 @@ def list_timeline(
         )
     for other, ids in (related or {}).items():
         if ids:
-            parts.append(f"and(target_table.eq.{_table(other)},target_id.in.({','.join(ids)}))")
+            parts += [
+                f"and(target_table.eq.{name},target_id.in.({','.join(ids)}))"
+                for name in _with_old_name(_table(other))
+            ]
     if table == "crm_companies":
         parts.append(
             "and(target_table.eq.crm_company_domains,"
@@ -895,14 +912,14 @@ def due_next_steps(workspace_id: str, owner_id: str, by: str) -> list[dict[str, 
 
 
 def tasks_for_today(workspace_id: str, assignee_id: str, by: str) -> list[dict[str, Any]]:
-    """Today §3 — a person's open tasks in the Today bucket or due on or
-    before `by`."""
+    """Today §3 — a person's open or waiting tasks in the Today bucket or due
+    on or before `by` (008 FR-TASK-CHG-05)."""
     return (
-        supabase.table("crm_tasks")
+        supabase.table("tasks")
         .select("id, title, status, due_on, bucket, assignee_id")
         .eq("workspace_id", workspace_id)
         .eq("assignee_id", assignee_id)
-        .neq("status", "done")
+        .in_("status", ["open", "waiting"])
         .is_("deleted_at", "null")
         .or_(f"bucket.eq.today,due_on.lte.{by}")
         .order("due_on", nullsfirst=False)
@@ -961,7 +978,7 @@ TWENTY_TABLES = frozenset(
         "crm_companies",
         "crm_people",
         "crm_opportunities",
-        "crm_tasks",
+        "tasks",
         "crm_notes",
         "crm_campaigns",
         "crm_campaign_members",
@@ -1314,7 +1331,7 @@ FLAG_COLUMNS = {
         "id, name, stage, company_id, owner_id, next_step_on, expected_close_on, "
         "stage_entered_at, created_at, deleted_at, flag_level, flags"
     ),
-    "crm_tasks": "id, title, status, due_on, assignee_id, deleted_at, flag_level, flags",
+    "tasks": "id, title, status, due_on, assignee_id, deleted_at, flag_level, flags",
 }
 #: Rows per page when a whole workspace is read.
 _PAGE = 1000
@@ -1331,7 +1348,8 @@ def flag_rows(
 ) -> list[dict[str, Any]]:
     """Live rows of a flagged table with what their flags read: some `ids`,
     a deal table's rows of some companies, or the whole workspace page by
-    page. `open_or_flagged` keeps deals in an open stage and open tasks, and
+    page. `open_or_flagged` keeps deals in an open stage and open or waiting
+    tasks, and
     any row that carries a flag still (so a closed one is cleared);
     `flagged_only` keeps flagged rows."""
     if table not in FLAG_COLUMNS:
@@ -1348,8 +1366,8 @@ def flag_rows(
             query = query.neq("flag_level", "none")
         if open_or_flagged and table == "crm_opportunities":
             query = query.or_(f"stage.in.({','.join(_OPEN_STAGES)}),flag_level.neq.none")
-        if open_or_flagged and table == "crm_tasks":
-            query = query.or_("status.neq.done,flag_level.neq.none")
+        if open_or_flagged and table == "tasks":
+            query = query.or_("status.in.(open,waiting),flag_level.neq.none")
         return query
 
     rows: list[dict[str, Any]] = []
@@ -1500,15 +1518,16 @@ def deal_amounts(workspace_id: str, ids: list[str]) -> dict[str, Any]:
 
 
 def tasks_due_by(workspace_id: str, by: str) -> list[dict[str, Any]]:
-    """Automation 7 — live open tasks due on or before `by`, page by page."""
+    """Automation 7 — live open or waiting tasks due on or before `by`, page
+    by page."""
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
         page = (
-            supabase.table("crm_tasks")
+            supabase.table("tasks")
             .select("id, title, status, due_on, assignee_id")
             .eq("workspace_id", workspace_id)
-            .neq("status", "done")
+            .in_("status", ["open", "waiting"])
             .is_("deleted_at", "null")
             .lte("due_on", by)
             .order("id")
@@ -1849,10 +1868,11 @@ def notes_between(workspace_id: str, since: str, until: str) -> list[dict[str, A
 
 
 def tasks_completed_between(workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
-    """Live tasks completed in [since, until), by assignee."""
+    """Live tasks completed in [since, until), by assignee. Only a Done task
+    has a completed time, so a cancelled one never counts (008 FR-TASK-CHG-04)."""
     return _every_page(
         lambda: (
-            supabase.table("crm_tasks")
+            supabase.table("tasks")
             .select("id, assignee_id, completed_at")
             .eq("workspace_id", workspace_id)
             .is_("deleted_at", "null")

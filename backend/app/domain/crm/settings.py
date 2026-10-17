@@ -65,7 +65,7 @@ LISTS: Final[dict[str, ListSpec]] = {
     "company.lead_stage": ListSpec("Lead stage", fixed=True),
     "opportunity.stage": ListSpec("Stage", fixed=True),
     "task.status": ListSpec("Task status", fixed=True),
-    "task.bucket": ListSpec("Priority bucket", fixed=True),
+    "task.bucket": ListSpec("Bucket", fixed=True),
     "company.account_type": ListSpec("Account type"),
     "company.relationship_status": ListSpec("Relationship status"),
     "channel": ListSpec("Channel"),

@@ -506,8 +506,9 @@ class TestLost:
         )
         assert r.status_code == 200, r.text
         assert r.json()["tasks_closed"] == 1
-        task = fake.rows["crm_tasks"][open_one["id"]]
-        assert task["status"] == "done" and task["completed_at"]
+        task = fake.rows["tasks"][open_one["id"]]
+        # 008 FR-TASK-CHG-04 (TP-07): Cancelled, not Done.
+        assert task["status"] == "cancelled" and task["completed_at"] is None
         page = _get(http, deal["id"])
         assert [n["body"] for n in page["notes"]] == ["Closed: deal lost (Price)."]
         record = page["record"]

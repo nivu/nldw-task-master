@@ -301,7 +301,7 @@ class TestApply:
         hooli["owner_id"] = MEMBER["id"]
         owners = {
             t: {k: (r.get("owner_id"), r.get("assignee_id")) for k, r in rows.items()}
-            for t in ("crm_companies", "crm_people", "crm_opportunities", "crm_tasks")
+            for t in ("crm_companies", "crm_people", "crm_opportunities", "tasks")
             for rows in [_by_twenty(fake, t, labs)]
         }
         dry = _dry(http, who=OUTSIDER["id"]).json()
@@ -318,14 +318,22 @@ class TestApply:
     def test_a_rerun_does_not_reopen_a_task_completed_in_the_crm(self, crm):
         http, fake, labs, _ = crm
         _imported(http, fake, labs)
-        task = _by_twenty(fake, "crm_tasks", labs)["t-call-asha"]
+        task = _by_twenty(fake, "tasks", labs)["t-call-asha"]
         task.update(status="done", completed_at="2026-10-14T10:00:00+00:00")
         run_id = _dry(http).json()["run_id"]
         again = _apply(http, run_id)
         assert again.status_code == 200, again.text
         assert again.json()["counts"]["tasks"]["update"] == 0
-        task = _by_twenty(fake, "crm_tasks", labs)["t-call-asha"]
+        task = _by_twenty(fake, "tasks", labs)["t-call-asha"]
         assert (task["status"], task["completed_at"]) == ("done", "2026-10-14T10:00:00+00:00")
+
+    def test_an_imported_task_is_import_sourced(self, crm):
+        """008 FR-TASK-DATA-12 — as 047 marks the Twenty tasks it found."""
+        http, fake, labs, _ = crm
+        _imported(http, fake, labs)
+        tasks = _by_twenty(fake, "tasks", labs)
+        assert tasks
+        assert {t["source"] for t in tasks.values()} == {"import"}
 
     def test_the_links_are_reproduced_with_the_twenty_ids(self, crm):
         """Journey 4.6 — every company, person, deal, task and note with its
@@ -335,7 +343,7 @@ class TestApply:
         companies = _by_twenty(fake, "crm_companies", labs)
         people = _by_twenty(fake, "crm_people", labs)
         deals = _by_twenty(fake, "crm_opportunities", labs)
-        tasks = _by_twenty(fake, "crm_tasks", labs)
+        tasks = _by_twenty(fake, "tasks", labs)
         notes = _by_twenty(fake, "crm_notes", labs)
         assert set(companies) == {
             "c-acme",
@@ -351,7 +359,7 @@ class TestApply:
         assert deals["o-acme-pilot"]["point_of_contact_id"] == people["p-asha"]["id"]
         task_links = {
             (link["record_type"], link["record_id"])
-            for link in fake.rows["crm_task_links"].values()
+            for link in fake.rows["task_links"].values()
             if link["task_id"] == tasks["t-call-asha"]["id"]
         }
         assert task_links == {
@@ -377,7 +385,7 @@ class TestApply:
         companies = _by_twenty(fake, "crm_companies", labs)
         people = _by_twenty(fake, "crm_people", labs)
         deals = _by_twenty(fake, "crm_opportunities", labs)
-        tasks = _by_twenty(fake, "crm_tasks", labs)
+        tasks = _by_twenty(fake, "tasks", labs)
         acme = companies["c-acme"]
         assert (acme["lead_stage"], acme["city"], acme["owner_id"]) == (
             "deal_open",
@@ -506,10 +514,10 @@ class TestUploads:
             "c-pixel": "customer",
         }
         assert companies["c-pixel"]["name"] == "Pixel, Paint & Co"
-        orbit_task = _by_twenty(fake, "crm_tasks", labs)["t-orbit"]
+        orbit_task = _by_twenty(fake, "tasks", labs)["t-orbit"]
         links = {
             link["record_type"]
-            for link in fake.rows["crm_task_links"].values()
+            for link in fake.rows["task_links"].values()
             if link["task_id"] == orbit_task["id"]
         }
         assert links == {"person", "company"}

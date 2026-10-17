@@ -125,6 +125,8 @@ class TestMe:
             "display_name": "Seller",
             "account_type": "crm_only",
             "crm": {"workspaces": []},
+            # Spec 008 FR-TASK-ROLL-01: everyone's tasks level, 0 by default.
+            "tasks": {"level": 0},
             "preferences": {"timezone": "Australia/Sydney", "number_format": "full"},
         }
 

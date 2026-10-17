@@ -79,9 +79,9 @@ def _stale_deal(fake, ws, owner=MEMBER, days=15):
 
 def _task(fake, ws, title, due_on, assignee=MEMBER):
     return fake.add(
-        "crm_tasks",
+        "tasks",
         **{
-            **DEFAULTS["crm_tasks"],
+            **DEFAULTS["tasks"],
             "workspace_id": ws["id"],
             "title": title,
             "assignee_id": assignee["id"],

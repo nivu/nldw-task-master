@@ -239,7 +239,8 @@ class TestSeededViews:
         ]
         week = _query(http, "my_week", "tasks")
         assert _names(week) == ["Done already", "Mine today"]
-        assert [g["label"] for g in week["groups"]] == ["Today", None]
+        # 008 FR-TASK-DATA-08: a task created with no bucket gets Later.
+        assert [g["label"] for g in week["groups"]] == ["Today", "Later"]
 
     def test_the_other_workspaces_rows_never_appear(self, crm):
         http, *_ = crm
@@ -757,7 +758,7 @@ class TestBulk:
             },
         )
         assert r.json() == {"ok": [a["id"], b["id"]], "failed": []}
-        linked = sorted(link["record_id"] for link in fake.rows["crm_task_links"].values())
+        linked = sorted(link["record_id"] for link in fake.rows["task_links"].values())
         assert linked == sorted([a["id"], b["id"]])
 
     def test_delete_holds_each_record_to_who_may_delete_it(self, crm):

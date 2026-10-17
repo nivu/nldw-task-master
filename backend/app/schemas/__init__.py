@@ -181,6 +181,9 @@ class UserUpdate(BaseModel):
     # included. `is_owner` is deliberately absent: extra="forbid" refuses it,
     # so no request can make anybody the owner (FR-DASH-01).
     dashboard_access: bool | None = None
+    # Spec 008 FR-TASK-ROLL-01, -02 — the person's own tasks phase level, or
+    # "default" to follow the global default.
+    tasks_level: Annotated[int, Field(ge=0, le=4)] | Literal["default"] | None = None
 
 
 class AllowanceIn(BaseModel):

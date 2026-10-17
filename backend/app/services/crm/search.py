@@ -51,7 +51,7 @@ def search(ctx: Any, q: str, limit: int = MAX_PER_OBJECT) -> dict[str, list[dict
         for key, kind in _GROUPS
     }
     for key, table, owner in (
-        ("tasks", "crm_task_links", "task_id"),
+        ("tasks", "task_links", "task_id"),
         ("notes", "crm_note_links", "note_id"),
     ):
         links = store.list_links(ctx.workspace_id, table, owner_ids=[h["id"] for h in out[key]])

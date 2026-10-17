@@ -170,7 +170,7 @@ class TestTaskOverdue:
         ("on", "level"), [("2026-10-13", "red"), ("2026-10-14", "amber"), ("2026-10-15", "none")]
     )
     def test_the_edges(self, on, level):
-        assert _level(rules.task_overdue({"status": "todo", "due_on": on}, TODAY)) == level
+        assert _level(rules.task_overdue({"status": "open", "due_on": on}, TODAY)) == level
 
     def test_done_is_none(self):
         assert rules.task_overdue({"status": "done", "due_on": "2026-01-01"}, TODAY) is None
@@ -310,14 +310,14 @@ class TestStored:
         deal = _deal(fake, labs, acme, next_step_on="2026-10-10")
         quiet = _row(fake, "crm_companies", labs, name="Quiet", lead_stage="nurturing")
         task = _row(
-            fake, "crm_tasks", labs, title="Call", assignee_id=SELLER["id"], due_on="2026-10-14"
+            fake, "tasks", labs, title="Call", assignee_id=SELLER["id"], due_on="2026-10-14"
         )
         service.recompute_workspace(labs["id"], NOW)
         rows = fake.rows
         assert rows["crm_opportunities"][deal["id"]]["flag_level"] == "red"
         assert rows["crm_companies"][acme["id"]]["flag_level"] == "red"
         assert rows["crm_companies"][quiet["id"]]["flags"][0]["kind"] == "loose_end"
-        assert rows["crm_tasks"][task["id"]]["flag_level"] == "amber"
+        assert rows["tasks"][task["id"]]["flag_level"] == "amber"
         assert rows["crm_opportunities"][deal["id"]]["flags_computed_at"] == NOW.isoformat()
 
     def test_thresholds_come_from_settings(self, crm):
@@ -395,7 +395,7 @@ class TestAfterWrites:
             headers=as_(OWNER["id"]),
         )
         assert r.status_code == 201, r.text
-        assert fake.rows["crm_tasks"][r.json()["id"]]["flag_level"] == "red"
+        assert fake.rows["tasks"][r.json()["id"]]["flag_level"] == "red"
         page = http.get(f"/api/v1/crm/tasks/{r.json()['id']}{LABS}", headers=as_(OWNER["id"]))
         assert page.json()["record"]["flag_level"] == "red"
 
@@ -414,7 +414,7 @@ class TestAfterWrites:
             headers=as_(OWNER["id"]),
         ).json()
         http.post(f"/api/v1/crm/tasks/{task['id']}/complete{LABS}", headers=as_(OWNER["id"]))
-        assert fake.rows["crm_tasks"][task["id"]]["flag_level"] == "none"
+        assert fake.rows["tasks"][task["id"]]["flag_level"] == "none"
 
     def test_a_company_moved_to_nurturing_becomes_a_loose_end(self, crm):
         http, fake, labs = crm

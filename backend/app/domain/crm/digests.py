@@ -51,7 +51,7 @@ FLAG_OBJECTS: Final = {
     "crm_companies": "Companies",
     "crm_people": "People",
     "crm_opportunities": "Deals",
-    "crm_tasks": "Tasks",
+    "tasks": "Tasks",
 }
 
 

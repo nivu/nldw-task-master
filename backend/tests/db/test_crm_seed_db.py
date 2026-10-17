@@ -97,7 +97,9 @@ ACADEMY = {
 COMMON = {
     "opportunity.stage": STAGES,
     "company.lead_stage": LEAD_STAGES,
-    "task.status": ["To do", "In progress", "Done"],
+    # 008 FR-TASK-CHG-11 (047): the active options; To do and In progress
+    # are kept, deactivated.
+    "task.status": ["Open", "Waiting", "Done", "Cancelled"],
     "task.bucket": ["Today", "This week", "This month", "Later"],
     "company.relationship_status": ["Active", "Warm", "Cold", "Dormant", "Churned"],
     "company.size": ["1-10", "11-50", "51-200", "201-1000", "1000+"],
@@ -165,10 +167,11 @@ COMMON = {
 
 def _lists(stack, key: str) -> dict[str, list[dict]]:
     rows = stack.sql(
-        "SELECT o.list_key, o.label, o.system_key, o.is_fixed, o.is_default, o.position "
+        "SELECT o.list_key, o.label, o.system_key, o.is_fixed, o.is_default, o.position, "
+        "o.is_active "
         "FROM crm_select_options o JOIN crm_workspaces w ON w.id = o.workspace_id "
         f"WHERE w.key = {stack.q(key)} AND o.created_by IS NULL "
-        "ORDER BY o.list_key, o.position"
+        "ORDER BY o.list_key, o.position, o.is_active DESC"
     )
     lists: dict[str, list[dict]] = {}
     for row in rows:
@@ -221,7 +224,18 @@ class TestSeededLists:
     def test_exactly_the_specs_values_in_order(self, stack, key, own):
         lists = _lists(stack, key)
         expected = {**COMMON, **own}
-        assert {k: [o["label"] for o in v] for k, v in lists.items()} == expected
+        assert {k: [o["label"] for o in v if o["is_active"]] for k, v in lists.items()} == expected
+
+    @pytest.mark.parametrize("key", ["labs", "academy"])
+    def test_task_statuses_after_008(self, stack, key):
+        """FR-TASK-CHG-11 — open, waiting, done, cancelled active, Open the
+        default; todo and in_progress deactivated and kept for history."""
+        statuses = _lists(stack, key)["task.status"]
+        active = [(o["system_key"], o["is_default"]) for o in statuses if o["is_active"]]
+        assert active == [("open", True), ("waiting", False), ("done", False), ("cancelled", False)]
+        kept = sorted(o["system_key"] for o in statuses if not o["is_active"])
+        assert kept == ["in_progress", "todo"]
+        assert sum(o["is_default"] for o in statuses) == 1
 
     def test_institution_type_and_programme_are_academy_only(self, stack):
         assert "company.institution_type" not in _lists(stack, "labs")
@@ -253,6 +267,12 @@ class TestSeededLists:
         ]
         for list_key in ("opportunity.stage", "company.lead_stage", "task.status", "task.bucket"):
             assert all(o["is_fixed"] for o in lists[list_key]), list_key
+        assert [o["system_key"] for o in lists["task.status"] if o["is_active"]] == [
+            "open",
+            "waiting",
+            "done",
+            "cancelled",
+        ]
 
     @pytest.mark.parametrize("key", ["labs", "academy"])
     def test_rule_bearing_options_are_keyed(self, stack, key):

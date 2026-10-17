@@ -164,13 +164,13 @@ def _task(stack, workspace, owner, deal: str, title="Call back") -> str:
         [
             {
                 "op": "insert",
-                "table": "crm_tasks",
+                "table": "tasks",
                 "ref": "t",
-                "values": {"title": title, "assignee_id": owner},
+                "values": {"title": title, "assignee_id": owner, "bucket": "later"},
             },
             {
                 "op": "insert",
-                "table": "crm_task_links",
+                "table": "task_links",
                 "values": {"task_id": "$ref:t", "record_type": "opportunity", "record_id": deal},
             },
         ],
@@ -337,8 +337,8 @@ class TestApplyAndDeals:
                 [
                     {
                         "op": "insert",
-                        "table": "crm_tasks",
-                        "values": {"title": "Orphan", "assignee_id": owner},
+                        "table": "tasks",
+                        "values": {"title": "Orphan", "assignee_id": owner, "bucket": "later"},
                     }
                 ],
             ),
@@ -353,13 +353,13 @@ class TestApplyAndDeals:
                 [
                     {
                         "op": "insert",
-                        "table": "crm_tasks",
+                        "table": "tasks",
                         "ref": "t",
-                        "values": {"title": "X", "assignee_id": owner},
+                        "values": {"title": "X", "assignee_id": owner, "bucket": "later"},
                     },
                     {
                         "op": "insert",
-                        "table": "crm_task_links",
+                        "table": "task_links",
                         "values": {
                             "task_id": "$ref:t",
                             "record_type": "opportunity",
@@ -390,7 +390,7 @@ class TestApplyAndDeals:
             _apply_sql(
                 stack,
                 _actor(workspace, owner),
-                [{"op": "update", "table": "crm_tasks", "id": task, "values": {"status": "done"}}],
+                [{"op": "update", "table": "tasks", "id": task, "values": {"status": "done"}}],
             ),
             "23514",
         )
@@ -469,8 +469,7 @@ class TestTransition:
             == "deal_open"
         )
         assert (
-            _one(stack, f"SELECT status FROM crm_tasks WHERE id = {stack.q(task)}")["status"]
-            == "todo"
+            _one(stack, f"SELECT status FROM tasks WHERE id = {stack.q(task)}")["status"] == "open"
         )
         assert stack.sql(f"SELECT 1 FROM crm_notes WHERE workspace_id = {stack.q(workspace)}") == []
         assert len(_history(stack, deal)) == 1
@@ -494,8 +493,9 @@ class TestTransition:
             ),
         )
         assert done["tasks_closed"] == 1 and done["company"]["lead_stage"] == "nurturing"
-        row = _one(stack, f"SELECT status, completed_at FROM crm_tasks WHERE id = {stack.q(task)}")
-        assert row["status"] == "done" and row["completed_at"]
+        row = _one(stack, f"SELECT status, completed_at FROM tasks WHERE id = {stack.q(task)}")
+        # 008 FR-TASK-CHG-04 (TP-07): Cancelled, not Done.
+        assert row["status"] == "cancelled" and row["completed_at"] is None
         note = _one(
             stack,
             "SELECT n.body, l.record_id FROM crm_notes n JOIN crm_note_links l ON l.note_id = n.id "
@@ -608,8 +608,8 @@ class TestTheTransitionTrustsNoId:
             plan = _plan(stack, deal, "discovery", close_tasks=[task])
             _refused(stack, _move_sql(stack, _actor(workspace, owner), plan), "CRM04")
         assert (
-            _one(stack, f"SELECT status FROM crm_tasks WHERE id = {stack.q(elsewhere)}")["status"]
-            == "todo"
+            _one(stack, f"SELECT status FROM tasks WHERE id = {stack.q(elsewhere)}")["status"]
+            == "open"
         )
 
     def test_a_non_member_assignee_or_foreign_link(
@@ -632,7 +632,7 @@ class TestTheTransitionTrustsNoId:
         ):
             plan = _plan(stack, deal, "discovery", create_tasks=[task])
             _refused(stack, _move_sql(stack, _actor(workspace, owner), plan), "CRM04")
-        assert stack.sql(f"SELECT 1 FROM crm_tasks WHERE workspace_id = {stack.q(workspace)}") == []
+        assert stack.sql(f"SELECT 1 FROM tasks WHERE workspace_id = {stack.q(workspace)}") == []
 
     def test_create_tasks_with_their_links(self, stack, workspace, owner):
         deal = _deal(stack, workspace, owner)
@@ -657,7 +657,7 @@ class TestTheTransitionTrustsNoId:
         assert len(done["tasks_created"]) == 1
         row = _one(
             stack,
-            "SELECT t.bucket, o.system_key FROM crm_tasks t "
+            "SELECT t.bucket, o.system_key FROM tasks t "
             "JOIN crm_select_options o ON o.id = t.category_id "
             f"WHERE t.id = {stack.q(done['tasks_created'][0])}",
         )
@@ -678,7 +678,7 @@ class TestPurge:
             [
                 {
                     "op": "insert",
-                    "table": "crm_task_links",
+                    "table": "task_links",
                     "values": {"task_id": task, "record_type": "company", "record_id": company},
                 },
                 {"op": "insert", "table": "crm_notes", "ref": "n", "values": {"body": "x"}},
@@ -700,7 +700,7 @@ class TestPurge:
         )[0]["r"]
         assert purged == {"purged": 1}
         assert stack.sql(f"SELECT 1 FROM crm_note_links WHERE record_id = {stack.q(deal)}") == []
-        links = stack.sql(f"SELECT record_type FROM crm_task_links WHERE task_id = {stack.q(task)}")
+        links = stack.sql(f"SELECT record_type FROM task_links WHERE task_id = {stack.q(task)}")
         assert links == [{"record_type": "company"}]
         assert _history(stack, deal) == []
 
@@ -726,14 +726,14 @@ class TestStoreQueries:
         )[0]["id"]
         monkeypatch.setattr(store, "supabase", create_client(stack.url, stack.service_key))
         links = store.list_links(
-            workspace, "crm_task_links", record_type="opportunity", record_ids=[deal]
+            workspace, "task_links", record_type="opportunity", record_ids=[deal]
         )
         assert [lk["task_id"] for lk in links] == [task]
         assert [c["person_id"] for c in store.list_contacts(workspace, opportunity_ids=[deal])] == [
             person
         ]
         open_tasks = store.list_records(
-            workspace, "crm_tasks", any_of={"id": [task]}, not_equal={"status": "done"}
+            workspace, "tasks", any_of={"id": [task], "status": ["open", "waiting"]}
         )
         assert [t["id"] for t in open_tasks] == [task]
         reason = _option(stack, workspace, "opportunity.lost_reason", "Price", "price")
@@ -757,7 +757,7 @@ class TestStoreQueries:
             "crm_opportunities",
             deal,
             record_type="opportunity",
-            related={"crm_tasks": [task]},
+            related={"tasks": [task]},
         )
         assert [r["action"] for r in rows] == [
             "task.updated",

@@ -10,4 +10,5 @@ from app.tasks import (
     lock_sweep,  # noqa: F401
     notifications,  # noqa: F401
     ops,  # noqa: F401
+    task_jobs,  # noqa: F401
 )

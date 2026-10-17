@@ -22,6 +22,7 @@ from typing import Any
 from app.domain.audit import actor_name
 from app.domain.crm import objects
 from app.domain.crm.dedupe import full_name
+from app.domain.tasks import labels as task_labels
 
 #: The audit's bookkeeping columns: never shown as a change. A deal's
 #: `stage_entered_at` is the entry's own time.
@@ -409,8 +410,14 @@ def task(
     facts: Facts,
     links: list[dict[str, Any]] | None = None,
     names: dict[tuple[str, str], str] | None = None,
+    project: dict[str, Any] | None = None,
+    parent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Contracts §2.5.1 task, with the records it links to."""
+    """Contracts §2.5.1 task, with the records it links to. 008: its
+    priority, tags, source and Waiting on, and its TVA project only when the reader
+    may see it (FR-TASK-VIS-07: the caller passes it, through
+    `visibility.project_field`). Its parent likewise, or "a private task"
+    with no id or title (FR-TASK-DATA-09, through `visibility.parent_field`)."""
     return {
         "id": row["id"],
         "record_type": "task",
@@ -426,6 +433,18 @@ def task(
         "assignee_id": row.get("assignee_id"),
         "assignee_name": facts.name(row.get("assignee_id")),
         "completed_at": row.get("completed_at"),
+        "priority": row.get("priority") or "normal",
+        "priority_label": task_labels.PRIORITY.get(row.get("priority") or "normal"),
+        "tags": row.get("tags") or [],
+        "source": row.get("source") or "manual",
+        "source_label": task_labels.SOURCE.get(row.get("source") or "manual"),
+        "parent": parent,
+        "waiting_on": (
+            {"id": row.get("waiting_on_id"), "label": row.get("waiting_on_text")}
+            if row.get("waiting_on_id") or row.get("waiting_on_text")
+            else None
+        ),
+        "project": project,
         "links": [link_target(link, names or {}) for link in links or []],
         **_flags(row),
         **_stamps(row, facts),
@@ -605,7 +624,7 @@ _ACTIVITY = {
 
 def _task_entry(row, verb, before, after, near: Around) -> dict[str, Any] | None:
     """FR-CRM-REC-03 "task" — a task linked to the record, by its title."""
-    if row["target_table"] == "crm_task_links":
+    if row["target_table"] in ("crm_task_links", "task_links"):
         task_id = (after or before).get("task_id")
         title = (near.tasks.get(task_id) or {}).get("title") or "a task"
         said = f"Added task “{title}”" if verb == "created" else f"Unlinked task “{title}”"
@@ -654,7 +673,7 @@ def _entry(row, kind, facts, hidden, near: Around) -> dict[str, Any] | None:
     verb = action.rsplit(".", 1)[-1]
     before, after = row.get("before") or {}, row.get("after") or {}
 
-    if table in ("crm_task_links", "crm_tasks") and kind != "task":
+    if table in ("crm_task_links", "task_links", "crm_tasks", "tasks") and kind != "task":
         return _task_entry(row, verb, before, after, near)
     if table in ("crm_note_links", "crm_notes") and kind != "note":
         return _note_entry(row, verb, before, after, near)

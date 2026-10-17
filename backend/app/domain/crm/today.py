@@ -96,13 +96,14 @@ def tasks(
     names: dict[str, list[str]] | None = None,
     opens: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Section 3 — open tasks in the Today bucket or due today or before.
+    """Section 3 — open or waiting tasks in the Today bucket or due today or
+    before (008 FR-TASK-CHG-05).
     Overdue first, then due today, then the Today bucket without a date
     (`names`: task id → the records it links to; `opens`: task id → the
     first of them, which a task line opens, having no page of its own)."""
     items = []
     for task in rows:
-        if task.get("status") == "done":
+        if task.get("status") not in ("open", "waiting"):
             continue
         due_on = task.get("due_on")
         overdue_or_today = due_on and date.fromisoformat(str(due_on)[:10]) <= today

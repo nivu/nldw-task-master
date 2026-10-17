@@ -17,7 +17,9 @@ import { useAsync } from "@/lib/use-async";
  * assignee) and My week (a kanban by bucket), or any the person saves. Each
  * shows the records it is linked to; a task has no page of its own, so
  * opening one opens the first of them. A Viewer sees the tasks and may
- * change the status of the ones assigned to them; nothing else.
+ * change the status of the ones assigned to them; nothing else. Statuses are
+ * Open, Waiting, Done and Cancelled; "open" means Open or Waiting (008
+ * FR-TASK-CHG-01, -10).
  */
 export default function TasksPage() {
   const { bootstrap } = useCrm();

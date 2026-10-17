@@ -447,13 +447,20 @@ class TaskFields(BaseModel):
 
     title: str | None = Field(default=None, max_length=200)
     body: str | None = Field(default=None, max_length=20_000)
-    status: Literal["todo", "in_progress", "done"] | None = None
+    # 008 FR-TASK-CHG-10: the new statuses; the old keys still read as Open (TP-05).
+    status: Literal["open", "waiting", "done", "cancelled", "todo", "in_progress"] | None = None
     due_on: date | None = None
     bucket: Literal["today", "this_week", "this_month", "later"] | None = None
     category_id: str | None = None
     category: str | None = Field(default=None, max_length=60)
     assignee_id: str | None = None
     links: list[TaskLinkIn] | None = Field(default=None, max_length=20)
+    # 008 FR-TASK-CHG-01.
+    priority: Literal["urgent", "high", "normal", "low"] | None = None
+    tags: list[str] | None = Field(default=None, max_length=10)
+    parent_id: str | None = None
+    waiting_on_id: str | None = None
+    waiting_on_text: str | None = Field(default=None, max_length=200)
 
 
 class TaskUpdate(TaskFields):

@@ -182,13 +182,13 @@ class TestFlagFacts:
                 },
                 {
                     "op": "insert",
-                    "table": "crm_tasks",
+                    "table": "tasks",
                     "ref": "t",
-                    "values": {"title": "Call", "assignee_id": owner},
+                    "values": {"title": "Call", "assignee_id": owner, "bucket": "later"},
                 },
                 {
                     "op": "insert",
-                    "table": "crm_task_links",
+                    "table": "task_links",
                     "values": {
                         "task_id": "$ref:t",
                         "record_type": "company",
@@ -202,6 +202,81 @@ class TestFlagFacts:
         assert set(facts["activity"]) == {deal["id"]}
         assert facts["open_task_companies"] == [company["id"]]
         assert old < facts["activity"][deal["id"]]
+
+
+class TestTaskQueries:
+    """008 FR-TASK-DATA-04, FR-TASK-CHG-04, -05, FR-TASK-VIS-04 — the real
+    store's task reads for Today, the due-task reminders (automation 7) and
+    Dashboard Activity: open means Open or Waiting, a Cancelled task is
+    closed and never counts as completed, and a task with no workspace never
+    reaches them."""
+
+    def _tasks(self, stack, ws, owner, company) -> dict[str, str]:
+        ops: list[dict] = []
+        for status, extra in (
+            ("open", {"bucket": "today"}),
+            ("waiting", {"bucket": "today", "waiting_on_text": "Client"}),
+            ("cancelled", {"bucket": "today"}),
+            ("done", {"bucket": "today", "completed_at": "2026-10-13T10:00:00+00:00"}),
+        ):
+            ops += [
+                {
+                    "op": "insert",
+                    "table": "tasks",
+                    "ref": status,
+                    "values": {
+                        "title": status,
+                        "status": status,
+                        "assignee_id": owner,
+                        "due_on": "2026-10-13",
+                        **extra,
+                    },
+                },
+                {
+                    "op": "insert",
+                    "table": "task_links",
+                    "values": {
+                        "task_id": f"$ref:{status}",
+                        "record_type": "company",
+                        "record_id": company["id"],
+                    },
+                },
+            ]
+        done = _apply(stack, _actor(ws, owner), ops)
+        return {r["row"]["title"]: r["row"]["id"] for r in done if r["row"].get("title")}
+
+    def _personal(self, stack, owner) -> str:
+        actor = {"user_id": owner, "kind": "user", "channel": "web"}
+        row = {
+            "title": "Book dentist",
+            "assignee_id": owner,
+            "bucket": "today",
+            "due_on": "2026-10-13",
+        }
+        ops = [{"op": "insert", "table": "tasks", "values": row}]
+        return stack.sql(f"SELECT task_apply({_j(stack, actor)}, {_j(stack, ops)}) AS r")[0]["r"][
+            0
+        ]["id"]
+
+    def test_today_reads_open_and_waiting_only(self, stack, ws, owner, real):
+        company = _company(stack, ws, owner)
+        self._tasks(stack, ws, owner, company)
+        self._personal(stack, owner)
+        found = real.tasks_for_today(ws, owner, "2026-10-14")
+        assert sorted(t["title"] for t in found) == ["open", "waiting"]
+
+    def test_reminders_read_open_and_waiting_only(self, stack, ws, owner, real):
+        company = _company(stack, ws, owner)
+        self._tasks(stack, ws, owner, company)
+        self._personal(stack, owner)
+        found = real.tasks_due_by(ws, "2026-10-14")
+        assert sorted(t["title"] for t in found) == ["open", "waiting"]
+
+    def test_activity_counts_done_tasks_only(self, stack, ws, owner, real):
+        company = _company(stack, ws, owner)
+        ids = self._tasks(stack, ws, owner, company)
+        found = real.tasks_completed_between(ws, "2000-01-01", "2100-01-01")
+        assert [t["id"] for t in found] == [ids["done"]]
 
 
 class TestDigestClaim:

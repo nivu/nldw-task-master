@@ -448,8 +448,10 @@ export interface CrmLinkRef {
   name: string | null;
 }
 
-export type TaskStatus = "todo" | "in_progress" | "done";
+/** 008 FR-TASK-CHG-01, -10: open and waiting are open; done and cancelled closed. */
+export type TaskStatus = "open" | "waiting" | "done" | "cancelled";
 export type TaskBucket = "today" | "this_week" | "this_month" | "later";
+export type TaskPriority = "urgent" | "high" | "normal" | "low";
 
 /** Contracts §2.5.1 task — linked to at least one record (FR-CRM-TASK-01). */
 export interface CrmTask extends RecordStamps, RecordFlags {
@@ -467,6 +469,17 @@ export interface CrmTask extends RecordStamps, RecordFlags {
   assignee_id: string;
   assignee_name: string | null;
   completed_at: string | null;
+  /** 008 FR-TASK-CHG-01. */
+  priority: TaskPriority;
+  priority_label: string;
+  tags: string[];
+  source: string;
+  source_label: string;
+  /** FR-TASK-DATA-09: a parent the reader cannot see is `{private: true}`. */
+  parent: { id: string; title: string | null } | { private: true } | null;
+  waiting_on: { id: string | null; label: string | null } | null;
+  /** 008 FR-TASK-VIS-07: only when the reader can see the TVA project. */
+  project: { id: string; name: string } | null;
   links: CrmLinkRef[];
 }
 

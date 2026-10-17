@@ -19,8 +19,12 @@ import json
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 from supabase import create_client
 
+from app.api import deps
+from app.main import app
+from app.services import supabase as db
 from app.services.crm import store
 
 pytestmark = pytest.mark.db
@@ -418,6 +422,117 @@ class TestPurge:
             stack,
             f"SELECT crm_purge({_j(stack, _actor(workspace, owner))}, {_j(stack, plan)})",
             "CRM22",
+        )
+
+
+class TestPurgeLeavesNoLinklessTask:
+    """008 FR-TASK-DATA-14 (048): purging a record purges, in the same call,
+    every task of the workspace it leaves with no CRM link, live or in the
+    Trash; a task still linked to something else stays."""
+
+    def _task(self, stack, workspace, owner, *companies) -> str:
+        ops = [
+            {
+                "op": "insert",
+                "table": "tasks",
+                "ref": "t",
+                "values": {"title": "Call", "assignee_id": owner, "bucket": "later"},
+            }
+        ]
+        ops += [
+            {
+                "op": "insert",
+                "table": "task_links",
+                "values": {"task_id": "$ref:t", "record_type": "company", "record_id": c},
+            }
+            for c in companies
+        ]
+        return _apply(stack, _actor(workspace, owner), ops)[0]["id"]
+
+    def test_tasks_left_with_no_crm_link_go_with_the_record(self, stack, workspace, owner):
+        gone = _company(stack, workspace, owner, "Gone")
+        kept = _company(stack, workspace, owner, "Kept")
+        alone = self._task(stack, workspace, owner, gone)
+        trashed = self._task(stack, workspace, owner, gone)
+        shared = self._task(stack, workspace, owner, gone, kept)
+        group = str(uuid.uuid4())
+        _apply(
+            stack,
+            _actor(workspace, owner),
+            [
+                {"op": "soft_delete", "table": "tasks", "id": trashed, "deleted_group": group},
+                {"op": "soft_delete", "table": "crm_companies", "id": gone, "deleted_group": group},
+            ],
+        )
+        _purge(stack, _actor(workspace, owner), [{"table": "crm_companies", "id": gone}])
+        left = {
+            r["id"]
+            for r in stack.sql(
+                f"SELECT id FROM tasks WHERE id IN ({stack.q(alone)}, {stack.q(trashed)}, "
+                f"{stack.q(shared)})"
+            )
+        }
+        assert left == {shared}
+        actions = {
+            r["target_id"]: r["action"]
+            for r in stack.sql(
+                "SELECT target_id, action FROM audit_log WHERE target_table = 'tasks' "
+                f"AND target_id IN ({stack.q(alone)}, {stack.q(trashed)}) "
+                "AND action = 'task.purged'"
+            )
+        }
+        assert actions == {alone: "task.purged", trashed: "task.purged"}
+
+
+class TestTheCrmFillsTheBucket:
+    """008 FR-TASK-DATA-08: a task created or reopened through the CRM routes
+    with no bucket gets the default one, in the person's own day."""
+
+    @pytest.fixture
+    def http(self, stack, monkeypatch, owner):
+        local = create_client(stack.url, stack.service_key)
+        monkeypatch.setattr(db, "supabase", local)
+        monkeypatch.setattr(store, "supabase", local)
+        monkeypatch.setattr(deps, "_verify", lambda token: token)
+        _as_system(
+            stack,
+            "INSERT INTO crm_memberships (workspace_id, user_id, role) "
+            f"SELECT id, {stack.q(owner)}, 'admin' FROM crm_workspaces WHERE key = 'labs' "
+            "ON CONFLICT DO NOTHING",
+        )
+        labs = stack.sql("SELECT id FROM crm_workspaces WHERE key = 'labs'")[0]["id"]
+        return TestClient(app), labs
+
+    def test_created_and_reopened(self, stack, http, owner):
+        client, labs = http
+        me = {"Authorization": f"Bearer {owner}"}
+        company = _company(stack, labs, owner, f"Bucket {uuid.uuid4().hex[:6]}")
+        links = [{"record_type": "company", "record_id": company}]
+        r = client.post(
+            "/api/v1/crm/tasks?workspace=labs", json={"title": "Call", "links": links}, headers=me
+        )
+        assert r.status_code == 201, r.text
+        task = r.json()
+        assert (task["status"], task["bucket"]) == ("open", "later")
+        r = client.post(
+            "/api/v1/crm/tasks?workspace=labs",
+            json={"title": "Overdue", "links": links, "due_on": "2026-01-01"},
+            headers=me,
+        )
+        assert r.json()["bucket"] == "today"
+
+        client.patch(
+            f"/api/v1/crm/tasks/{task['id']}?workspace=labs", json={"status": "done"}, headers=me
+        )
+        _as_system(stack, f"UPDATE tasks SET bucket = NULL WHERE id = {stack.q(task['id'])}")
+        r = client.patch(
+            f"/api/v1/crm/tasks/{task['id']}?workspace=labs", json={"status": "todo"}, headers=me
+        )
+        assert r.status_code == 200, r.text
+        assert (r.json()["status"], r.json()["bucket"], r.json()["completed_at"]) == (
+            "open",
+            "later",
+            None,
         )
 
 
