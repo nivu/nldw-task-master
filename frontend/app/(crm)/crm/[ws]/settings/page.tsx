@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
+import { AiBudgetBanner } from "@/components/crm/ai-budget-banner";
+import { AiSettings } from "@/components/crm/ai-settings";
 import { AuditTable } from "@/components/crm/audit-table";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
 import { InviteDialog } from "@/components/crm/invite-dialog";
@@ -19,6 +21,7 @@ import {
   getCrmAudit,
   getCrmFxRates,
   addCrmMailbox,
+  getCrmAi,
   getCrmJobs,
   getCrmLists,
   getCrmMailboxes,
@@ -69,6 +72,7 @@ const TABS = [
   "targets",
   "mailboxes",
   "jobs",
+  "ai",
   "audit",
 ];
 
@@ -77,7 +81,8 @@ const TABS = [
  * FR-CRM-AUD-03; from 1b the flag thresholds (FR-CRM-FLAG-01), the
  * automation switches (FR-CRM-AUTO-02), the Gmail mailboxes and the sync
  * switch (FR-CRM-SYNC-01, -03), the job log (FR-CRM-JOB-01) and the
- * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02).
+ * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02); from 009
+ * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -118,6 +123,7 @@ export default function SettingsPage() {
           <TabsTrigger value="targets">Targets</TabsTrigger>
           <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
+          <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
         <TabsContent value="members" className="pt-4">
@@ -148,7 +154,10 @@ export default function SettingsPage() {
           <MailboxesTab workspace={ws} />
         </TabsContent>
         <TabsContent value="jobs" className="pt-4">
-          <JobsTab workspace={ws} />
+          <JobsTab workspace={ws} onShowAi={() => setTab("ai")} />
+        </TabsContent>
+        <TabsContent value="ai" className="pt-4">
+          <AiTab workspace={ws} />
         </TabsContent>
         <TabsContent value="audit" className="pt-4">
           <AuditTab workspace={ws} />
@@ -685,7 +694,7 @@ function AutomationsTab({ workspace }: { workspace: string }) {
   );
 }
 
-function JobsTab({ workspace }: { workspace: string }) {
+function JobsTab({ workspace, onShowAi }: { workspace: string; onShowAi: () => void }) {
   const { bootstrap } = useCrm();
   const [job, setJob] = useState<CrmJobName | "">("");
   const { data, error } = useAsync(
@@ -704,6 +713,8 @@ function JobsTab({ workspace }: { workspace: string }) {
       <CardContent className="space-y-3 p-0 pb-4">
         <div className="space-y-3 px-4">
           <Problem message={error} />
+          {/* FR-CRMAI-LLM-08: AI runs are skipped while the budget is reached. */}
+          <AiBudgetBanner reached={bootstrap.ai_budget_reached ?? false} onShowSettings={onShowAi} />
           {data && data.stale_jobs.length > 0 && (
             <p role="status" className="text-sm font-medium">
               Late: {data.stale_jobs.map((s) => s.label).join(", ")}.
@@ -726,6 +737,38 @@ function JobsTab({ workspace }: { workspace: string }) {
           </label>
         </div>
         <JobsTable runs={data?.runs ?? []} timeZone={bootstrap.me.timezone} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 009 FR-CRMAI-LLM-09 — the budget, month-to-date spend and phase switches. */
+function AiTab({ workspace }: { workspace: string }) {
+  const { reload: reloadShell } = useCrm();
+  const { data, error, reload } = useAsync(() => getCrmAi(workspace), [workspace]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">AI</CardTitle>
+        <CardDescription>
+          The monthly AI budget, this month&apos;s estimated spend and the switch for each phase.
+          Every phase starts off and the budget at zero, so nothing runs until you set both.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        {data && <AiBudgetBanner reached={data.budget_reached} />}
+        {data && (
+          <AiSettings
+            workspace={workspace}
+            overview={data}
+            onChanged={() => {
+              reload();
+              // The phases and the budget banner travel in bootstrap.
+              reloadShell();
+            }}
+          />
+        )}
       </CardContent>
     </Card>
   );

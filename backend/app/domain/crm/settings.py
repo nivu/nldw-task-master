@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final, Literal
 
-from app.domain.crm import flags
+from app.domain.crm import ai_rules, flags
 
 Scope = Literal["all", "tva_linked", "not_tva_linked"]
 
@@ -221,6 +221,8 @@ VALIDATORS: Final = {
     "automations": automations_refusal,
     "email_sync": email_sync_refusal,
 }
+#: Spec 009 FR-CRMAI-FLAG-01: the phase switches and the AI budget.
+VALIDATORS["ai"] = ai_rules.ai_refusal
 
 
 def setting_refusal(key: str, value: Any) -> str | None:

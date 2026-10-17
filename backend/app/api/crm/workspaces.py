@@ -11,6 +11,8 @@ are late.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter
 
@@ -18,6 +20,7 @@ from app.api.crm.deps import NO_SUCH_WORKSPACE, CrmReadDep
 from app.api.crm.settings import present_lists
 from app.api.deps import AnyAccountDep, CurrentUser
 from app.api.errors import ProblemDetail
+from app.domain.crm import ai_rules
 from app.schemas.crm import PreferencesUpdate
 from app.services import supabase as db
 from app.services.crm import email_sync, jobs, notifications, store
@@ -53,7 +56,7 @@ def use_workspace(key: str, user: AnyAccountDep) -> dict:
 def bootstrap(ctx: CrmReadDep) -> dict:
     """Everything a CRM page needs before its own data, in one call."""
     settings = {row["key"]: row["value"] for row in store.list_settings(ctx.workspace_id)}
-    return {
+    out = {
         "workspace": {k: ctx.workspace[k] for k in _PUBLIC_WORKSPACE},
         "role": ctx.role,
         "me": {
@@ -71,7 +74,29 @@ def bootstrap(ctx: CrmReadDep) -> dict:
         # (FR-CRM-NOTIF-01, FR-CRM-JOB-03): staleness is checked on read.
         "unread": notifications.unread_for(ctx.user.id),
         "stale_jobs": jobs.stale_for(ctx),
+        # Spec 009 FR-CRMAI-FLAG-03, -04, -LLM-08: the phase switches for
+        # every role (the Review Queue arrives in S1b), and for an Admin
+        # whether this month's AI budget is reached; never the figure.
+        "ai": {
+            "phases": ai_rules.phases_of(settings.get("ai")),
+            "review_visible": False,
+            "open_review_count": 0,
+        },
     }
+    if ctx.may("administer"):
+        out["ai_budget_reached"] = _budget_reached(ctx.workspace_id, settings.get("ai"))
+    return out
+
+
+def _now() -> datetime:
+    """The clock; tests fix it."""
+    return datetime.now(UTC)
+
+
+def _budget_reached(workspace_id: str, value: Any) -> bool:
+    """This Asia/Kolkata month's estimated spend is at or over the budget."""
+    spend = store.ai_spend(workspace_id, ai_rules.ist_month_start(_now()))
+    return Decimal(str(spend.get("total_usd") or "0")) >= ai_rules.budget_of(value)
 
 
 @router.get("/me/preferences")

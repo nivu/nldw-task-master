@@ -9,3 +9,6 @@ beat: celery -A app.worker beat --loglevel=info
 # backfill never takes the shared worker's slots. The only process given the
 # Gmail key; run it once sync is switched on.
 worker_crm_sync: celery -A app.worker worker -Q crm_sync --concurrency=1 --loglevel=info
+# Spec 009 AI jobs (FR-CRMAI-JOB-04): their own queue, one task at a time. The
+# only process given the Claude and Fireflies keys.
+worker_crm_ai: celery -A app.worker worker -Q crm-ai --concurrency=1 --loglevel=info

@@ -11,6 +11,7 @@
 import { backendFetch, download, upload } from "@/lib/api/backend";
 import type {
   AccountTypeResult,
+  AiSettingsValue,
   BulkAction,
   BulkResult,
   CampaignMembers,
@@ -24,6 +25,7 @@ import type {
   CrmCampaignMember,
   CrmAuditEntry,
   CrmAuditFilters,
+  CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
   CrmColor,
@@ -798,3 +800,14 @@ export function saveFile({ blob, filename }: { blob: Blob; filename: string }) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ---------------------------------------------------------------------------
+// 009 S1a — Settings, AI (009 contracts §2.1; FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01)
+// ---------------------------------------------------------------------------
+
+/** Month-to-date estimated spend, the budget and the phase switches; Admins only. */
+export const getCrmAi = (workspace: string) => call<CrmAiOverview>(`/ai${query(workspace)}`);
+
+/** Saves the budget and the phase switches together: the validator wants both keys. */
+export const setCrmAiSetting = (workspace: string, value: AiSettingsValue) =>
+  updateCrmSetting(workspace, "ai", value);

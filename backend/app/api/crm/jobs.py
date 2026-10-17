@@ -17,7 +17,19 @@ from app.services.crm import jobs, store
 
 router = APIRouter(prefix="/crm", tags=["crm"])
 
-JobName = Literal["email_sync", "flags", "digests", "reminders", "trash_purge", "automations"]
+JobName = Literal[
+    "email_sync",
+    "flags",
+    "digests",
+    "reminders",
+    "trash_purge",
+    "automations",
+    "summaries",
+    "meetings",
+    "enrichment",
+    "ai_fields",
+    "review_expiry",
+]
 
 
 @router.get("/jobs")

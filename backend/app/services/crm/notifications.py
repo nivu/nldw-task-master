@@ -439,3 +439,28 @@ def reply_owed_notices(workspace: dict[str, Any], now: datetime) -> int:
             )
             rows.append(notice)
     return send(rows, out_of_app=True, profiles=_profiles())["added"] if rows else 0
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI budget reached (FR-CRMAI-LLM-08, FR-CRMAI-CHG-08)
+# ---------------------------------------------------------------------------
+
+
+def budget_reached_notice(workspace: dict[str, Any], month: str) -> dict[str, int]:
+    """The workspace's Admins, once per month (`month` is "YYYY-MM", the
+    Asia/Kolkata month): one bell notice each, and with it one message
+    through the portal's channel. No amount: the figure is on Settings, AI."""
+    ws_id = workspace["id"]
+    admins = [m["user_id"] for m in store.list_members(ws_id) if m["role"] == "admin"]
+    label = date.fromisoformat(f"{month}-01").strftime("%B %Y")
+    title = f"AI budget reached in {workspace['name']}"
+    rows = []
+    for user_id in sorted(admins):
+        row = _row(ws_id, user_id, "ai_budget_reached", title, f"ai_budget:{ws_id}:{month}")
+        row["body"] = (
+            f"The AI budget for {label} is used up in {workspace['name']}. AI work waits "
+            "until the month turns or an Admin raises the budget in Settings, AI."
+        )
+        rows.append(row)
+    counts = send(rows, out_of_app=True, profiles=_profiles())
+    return {"added": counts["added"], "undeliverable": counts["undeliverable"]}

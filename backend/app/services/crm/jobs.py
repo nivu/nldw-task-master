@@ -57,6 +57,12 @@ JOBS: Final = {
     "digests": Job("Digests", timedelta(minutes=15)),
     "reminders": Job("Task reminders", timedelta(minutes=15)),
     "trash_purge": Job("Trash purge", timedelta(days=1)),
+    # Spec 009 FR-CRMAI-JOB-01: the AI jobs, on the crm-ai queue.
+    "summaries": Job("Email summaries", timedelta(minutes=15)),
+    "meetings": Job("Meeting capture", timedelta(minutes=15)),
+    "enrichment": Job("Company enrichment", timedelta(minutes=15)),
+    "ai_fields": Job("AI fields", timedelta(minutes=15)),
+    "review_expiry": Job("Review expiry", timedelta(days=1)),
 }
 #: FR-CRM-JOB-02.
 STREAK: Final = 3
@@ -99,24 +105,47 @@ def run(
     except Skipped as skipped:
         values = {"outcome": "skipped", "counts": {"skipped": skipped.reason}}
     except Exception as exc:
-        logger.exception(
-            '{"event": "crm_job_failed", "job": "%s", "workspace": "%s"}',
-            job,
-            (workspace or {}).get("key", "-"),
-        )
+        if _safe(exc):
+            # Spec 009 FR-CRMAI-JOB-03: an AI job's fixed sentence, and no
+            # traceback, which may carry request content.
+            logger.warning(
+                '{"event": "crm_job_failed", "job": "%s", "workspace": "%s", "error": "%s"}',
+                job,
+                (workspace or {}).get("key", "-"),
+                exc,
+            )
+        else:
+            logger.exception(
+                '{"event": "crm_job_failed", "job": "%s", "workspace": "%s"}',
+                job,
+                (workspace or {}).get("key", "-"),
+            )
         values = failure(job, exc)
     finish(job, workspace, started["id"], values, now)
     return {"outcome": values["outcome"], "counts": values["counts"]}
 
 
 def failure(job: str, exc: BaseException) -> dict[str, Any]:
-    """A failed run's values: `error` for members, `error_public` for anyone."""
+    """A failed run's values: `error` for members, `error_public` for anyone.
+    An AI job's `SafeError` is already a fixed sentence naming the step and
+    the exception type, and is both (spec 009 FR-CRMAI-JOB-03)."""
+    if _safe(exc):
+        sentence = str(exc)[:500]
+        return {"outcome": "failed", "counts": {}, "error": sentence, "error_public": sentence}
     return {
         "outcome": "failed",
         "counts": {},
         "error": f"{type(exc).__name__}: {exc}"[:2000],
         "error_public": public_error(job, exc),
     }
+
+
+def _safe(exc: BaseException) -> bool:
+    # ai.py imports this module (for Skipped), so its error type is looked
+    # up when a run fails rather than at import.
+    from app.services.crm.ai import SafeError
+
+    return isinstance(exc, SafeError)
 
 
 def finish(

@@ -35,6 +35,7 @@ NOT_AUDITED = {
     "crm_email_messages",  # the email log (FR-CRM-SYNC-04)
     "crm_email_links",  # the email log's links
     "crm_object_fields",  # the field registry, written by migrations only
+    "crm_ai_usage",  # the AI usage log, cost per call, no text (009 FR-CRMAI-LLM-06)
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}

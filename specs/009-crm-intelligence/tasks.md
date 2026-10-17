@@ -86,7 +86,7 @@ Admins see Settings → AI. Nothing calls a model yet.
 - [ ] T008 [P] Append `AiSettingsValue`, `AiOverviewOut` — `backend/app/schemas/crm.py`
 - [ ] T009 Register `VALIDATORS["ai"] = ai_rules.ai_refusal` — `backend/app/domain/crm/settings.py`
 - [ ] T010 Append store functions: `insert_ai_usage()`, `ai_spend()` (RPC), `ai_setting()` — `backend/app/services/crm/store.py`
-- [ ] T011 Raw-HTTP Messages client on `httpx` (headers, forced tool call with the job's `input_schema`, timeouts 5 s / 60 s, usage parsing, structured log line without content, refuses without a key) — `backend/app/services/crm/claude.py`
+- [ ] T011 Raw-HTTP Messages client on `httpx` (headers, structured output through `output_config.format` with the job's schema (a forced tool call is refused by `claude-sonnet-5-5`; amended in S1a), timeouts 5 s / 60 s, usage parsing, structured log line without content, refuses without a key) — `backend/app/services/crm/claude.py`
 - [ ] T012 The one call wrapper `ai.call(ws, job, phase, output_model, instruction, parts, now)` per plan §5.3, with `SafeError`, `AiFailed`, retry once on invalid output (Q-36), usage row per attempt, masking over every string — `backend/app/services/crm/ai.py`
 - [ ] T013 `JOBS` gains `summaries`, `meetings`, `enrichment`, `ai_fields` (15 min) and `review_expiry` (1 day); `run()` and `failure()` take the `SafeError` path (fixed sentence for `error` and `error_public`, no `logger.exception`) — `backend/app/services/crm/jobs.py`
 - [ ] T014 `budget_reached_notice(workspace, month)`: one bell notice per Admin (dedupe `ai_budget:<ws>:<YYYY-MM>`) and one message through `notify.deliver` — `backend/app/services/crm/notifications.py`

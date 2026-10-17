@@ -84,6 +84,10 @@ export interface CrmBootstrap {
   unread: number;
   /** Late background jobs; Admins only, empty for everyone else (FR-CRM-JOB-03). */
   stale_jobs: StaleJob[];
+  /** 009: the phase switches and the Review Queue (FR-CRMAI-FLAG-03, -04). */
+  ai: CrmBootstrapAi;
+  /** 009: Admins only, whether this month's AI budget is reached (FR-CRMAI-LLM-08). */
+  ai_budget_reached?: boolean;
 }
 
 /** GET /crm/settings — Admin only. The allow-list is read-only here. */
@@ -1516,4 +1520,45 @@ export interface CsvImportIn {
   mode?: CsvMode;
   actions?: Record<string, CsvMode>;
   fixup_next_step?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1a — the AI settings, spend and phase switches (009 contracts §1, §2.1)
+// ---------------------------------------------------------------------------
+
+/** The four phases: 1 summaries; 2 meetings and enrichment; 3 AI fields and
+ *  follow-up rules; 4 contact recency (FR-CRMAI-FLAG-01). */
+export type CrmAiPhase = "1" | "2" | "3" | "4";
+
+export type CrmAiPhases = Record<CrmAiPhase, boolean>;
+
+/** The `ai` setting, PATCH /crm/settings/ai (FR-CRMAI-FLAG-01, -LLM-07).
+ *  Budget in US dollars, 0 to 10000, at most two decimals. */
+export interface AiSettingsValue {
+  budget_usd: number;
+  phases: CrmAiPhases;
+}
+
+/** The AI jobs whose estimated spend Settings, AI shows. */
+export type CrmAiSpendJob = "summaries" | "meetings" | "enrichment" | "ai_fields" | "followup_drafts";
+
+/** GET /crm/ai — Admin only; the one route that returns spend (FR-CRMAI-LLM-09, -10).
+ *  Amounts are decimal strings in USD. */
+export interface CrmAiOverview {
+  /** YYYY-MM, an Asia/Kolkata calendar month. */
+  month: string;
+  budget_usd: string;
+  spend: { total_usd: string; by_job: Partial<Record<CrmAiSpendJob, string>> };
+  budget_reached: boolean;
+  phases: CrmAiPhases;
+  estimate_note: string;
+  /** False while either rate of the rate table is unset: every AI job is skipped (D-1). */
+  rates_configured: boolean;
+}
+
+/** Bootstrap `ai`, for every role; never the budget (FR-CRMAI-FLAG-03, -04). */
+export interface CrmBootstrapAi {
+  phases: CrmAiPhases;
+  review_visible: boolean;
+  open_review_count: number;
 }

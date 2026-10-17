@@ -1958,3 +1958,41 @@ def record_export(actor: dict[str, Any], detail: dict[str, Any]) -> None:
     """043 `crm_record_export` — an export's audit row (FR-CRM-IO-04): what
     was exported, never a value of it. Scoped by the actor's workspace."""
     rpc("crm_record_export", {"p_actor": actor, "p_detail": detail})
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI settings and the usage log (009 data-model §3.1, §3.7)
+#
+# The usage log is a log with no audit trigger and no record content
+# (tokens, estimated cost, outcome), so it is written directly, as the job
+# log is.
+# ---------------------------------------------------------------------------
+
+
+def ai_setting(workspace_id: str) -> dict[str, Any] | None:
+    """The workspace's `ai` setting value, or None for a workspace without
+    the row (which reads every phase off, FR-CRMAI-FLAG-02)."""
+    rows = (
+        supabase.table("crm_workspace_settings")
+        .select("value")
+        .eq("workspace_id", workspace_id)
+        .eq("key", "ai")
+        .execute()
+        .data
+    )
+    return rows[0]["value"] if rows else None
+
+
+def insert_ai_usage(workspace_id: str, row: dict[str, Any]) -> None:
+    """One model call in the AI usage log (FR-CRMAI-LLM-06): `{job, model,
+    input_tokens, output_tokens, cost_usd, outcome, at}`. No text."""
+    supabase.table("crm_ai_usage").insert({**row, "workspace_id": workspace_id}).execute()
+
+
+def ai_spend(workspace_id: str, since: datetime) -> dict[str, Any]:
+    """060 `crm_ai_spend` — estimated spend since `since` (the start of the
+    Asia/Kolkata month): `{total_usd, by_job: {job: usd}}`, decimal strings."""
+    return rpc("crm_ai_spend", {"p_workspace": workspace_id, "p_from": since.isoformat()}) or {
+        "total_usd": "0",
+        "by_job": {},
+    }

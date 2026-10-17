@@ -134,7 +134,9 @@ class TestApply:
         assert (row["lead_stage"], row["created_by"]) == ("new", owner)
         actions = stack.sql(
             "SELECT action FROM audit_log WHERE workspace_id = "
-            f"{stack.q(workspace)} AND target_table <> 'crm_workspaces' ORDER BY id"
+            f"{stack.q(workspace)} AND target_table <> 'crm_workspaces' "
+            # 009's 060 seeds a new workspace's `ai` setting, audited as the system.
+            "AND target_table <> 'crm_workspace_settings' ORDER BY id"
         )
         assert [a["action"] for a in actions] == [
             "company.created",

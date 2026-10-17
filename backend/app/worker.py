@@ -155,3 +155,20 @@ celery_app.conf.beat_schedule.update(
         },
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the CRM intelligence layer, FR-CRMAI-JOB-04, Q-05, plan §5.1
+#
+# Every AI task (`crm_ai.*`) goes to its own queue, served only by the
+# `worker-crm-ai` service (`celery -A app.worker worker -Q crm-ai
+# --concurrency=1`), the one process that holds the Claude and Fireflies
+# keys. One task at a time, so budget overshoot is one call (FR-CRMAI-LLM-07)
+# and the Gmail sync lock is never held while a model call runs. The shared
+# worker runs no AI task. Beat entries are added with the jobs themselves.
+# ---------------------------------------------------------------------------
+CRM_AI_QUEUE = "crm-ai"
+celery_app.conf.task_routes = {
+    **celery_app.conf.task_routes,
+    "crm_ai.*": {"queue": CRM_AI_QUEUE},
+}

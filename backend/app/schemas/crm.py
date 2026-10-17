@@ -788,3 +788,42 @@ class ExportViewIn(BaseModel):
     view_id: str | None = Field(default=None, max_length=64)
     view: str | None = Field(default=None, min_length=1, max_length=80)
     ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the CRM intelligence layer (contracts §1, §2)
+# ---------------------------------------------------------------------------
+
+PhaseKey = Literal["1", "2", "3", "4"]
+
+
+class AiSettingsValue(BaseModel):
+    """FR-CRMAI-FLAG-01, -LLM-07 — the `ai` setting's value: the monthly budget
+    in US dollars and the four phase switches. `PATCH /crm/settings/ai`
+    checks it with `domain/crm/ai_rules.ai_refusal`, as every setting is
+    checked by its validator."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    budget_usd: Decimal = Field(ge=0, le=10000, decimal_places=2)
+    phases: dict[PhaseKey, bool]
+
+
+class AiSpendOut(BaseModel):
+    """Month-to-date estimated spend, in total and per job (FR-CRMAI-LLM-09)."""
+
+    total_usd: Decimal
+    by_job: dict[str, Decimal]
+
+
+class AiOverviewOut(BaseModel):
+    """`GET /crm/ai` — Settings, AI, for the workspace's Admins only
+    (FR-CRMAI-LLM-09, -10; D-1)."""
+
+    month: str
+    budget_usd: Decimal
+    spend: AiSpendOut
+    budget_reached: bool
+    phases: dict[PhaseKey, bool]
+    estimate_note: str
+    rates_configured: bool

@@ -136,6 +136,8 @@ TABLES = (
     # claims still pending a decision.
     "bookings",
     "compoff_credits",
+    # Spec 009: the AI usage log (060), a log with no audit trigger.
+    "crm_ai_usage",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -3711,6 +3713,81 @@ class FakeCrmStore:
                 "after": after,
             }
         )
+
+    # -- spec 009: AI settings and the usage log (060) ----------------------
+
+    def set_ai(
+        self,
+        workspace: dict[str, Any],
+        *,
+        budget_usd: Any = 0,
+        phases: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
+        """The `ai` row 060 seeds (every phase off, budget 0), or one with the
+        given budget and phases. Not a store name: a set-up helper."""
+        value = {
+            "budget_usd": budget_usd,
+            "phases": {"1": False, "2": False, "3": False, "4": False, **(phases or {})},
+        }
+        found = next(
+            (
+                r
+                for r in self.rows["crm_workspace_settings"].values()
+                if r["workspace_id"] == workspace["id"] and r["key"] == "ai"
+            ),
+            None,
+        )
+        if found is not None:
+            found["value"] = value
+            return found
+        return self.add(
+            "crm_workspace_settings", workspace_id=workspace["id"], key="ai", value=value
+        )
+
+    def ai_setting(self, workspace_id: str) -> dict[str, Any] | None:
+        row = next(
+            (
+                r
+                for r in self.rows["crm_workspace_settings"].values()
+                if r["workspace_id"] == workspace_id and r["key"] == "ai"
+            ),
+            None,
+        )
+        return json.loads(json.dumps(row["value"])) if row else None
+
+    def insert_ai_usage(self, workspace_id: str, row: dict[str, Any]) -> None:
+        """crm_ai_usage's CHECKs, as 060 has them."""
+        assert row["job"] in (
+            "summaries",
+            "meetings",
+            "enrichment",
+            "ai_fields",
+            "followup_drafts",
+        ), row["job"]
+        assert row["outcome"] in ("ok", "invalid_output", "failed", "timed_out"), row["outcome"]
+        assert row["input_tokens"] >= 0 and row["output_tokens"] >= 0
+        assert Decimal(str(row["cost_usd"])) >= 0
+        assert set(row) <= {
+            "job",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cost_usd",
+            "outcome",
+            "at",
+        }, sorted(row)
+        self.add("crm_ai_usage", workspace_id=workspace_id, **json.loads(json.dumps(row)))
+
+    def ai_spend(self, workspace_id: str, since: datetime) -> dict[str, Any]:
+        """crm_ai_spend: the sums since `since`, as decimal strings."""
+        by_job: dict[str, Decimal] = {}
+        for r in self.rows["crm_ai_usage"].values():
+            if r["workspace_id"] == workspace_id and _at(r["at"]) >= since:
+                by_job[r["job"]] = by_job.get(r["job"], Decimal(0)) + Decimal(str(r["cost_usd"]))
+        return {
+            "total_usd": str(sum(by_job.values(), Decimal(0))),
+            "by_job": {job: str(usd) for job, usd in by_job.items()},
+        }
 
 
 def _at(value: str | datetime) -> datetime:
