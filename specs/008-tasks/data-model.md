@@ -26,8 +26,9 @@ only (`009` owns `060`–`079`; plan §9).
 | `053_task_recurrence.sql` | S3b | `tasks.recurrence`, `series_id`, `recurrence_spawned`; unique `(series_id, due_on)` (§2.8) |
 | `054_task_voice.sql` | S4a | `voice_uploads`; Storage bucket `task-voice` (private) (§2.9) |
 | `055_task_inbox_review.sql` | S4b | `inbox_items`; `profiles.tasks_review_dismissed_week` (§2.10) |
+| `056_task_link_removal_lock.sql` | S1b | `tasks_workspace_check` locks the task row when a link is removed, so two concurrent removals cannot leave a CRM task with no CRM link (§5.1) |
 
-`056`–`059` are spare, for a fix found in a later slice (a new file, never an
+`057`–`059` are spare, for a fix found in a later slice (a new file, never an
 edit). **Functions 009 also replaces.** `009`'s migrations (`060`–`067`)
 replace seven existing functions: `crm_audit_row`, `crm_purge`,
 `crm_merge_companies` and (067, only if needed) `crm_query_rank`, which 048

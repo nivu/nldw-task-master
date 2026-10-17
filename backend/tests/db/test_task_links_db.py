@@ -1,6 +1,6 @@
 """Tasks, their links and the workspace invariant in the real database —
 spec 008 FR-TASK-DATA-05, -06, -15, FR-TASK-VIS-03; T3, T4; TP-13;
-data-model §2.1, §2.2, §5.1; migrations 047, 048, 049.
+data-model §2.1, §2.2, §5.1; migrations 047, 048, 049, 056.
 
 What only Postgres can prove: the deferred `tasks_workspace_check` judges a
 task at commit, after its links (both ways: a first CRM link written with the
@@ -25,6 +25,8 @@ Acceptance criteria (spec §12, phase 1 — migration and CRM):
 from __future__ import annotations
 
 import json
+import threading
+import time
 import uuid
 
 import pytest
@@ -219,6 +221,63 @@ class TestTheDeferredCheck:
             _sql(stack, _actor(user), [{"op": "delete", "table": "task_links", "id": link}]),
             "CRM22",
         )
+
+    def test_two_removals_at_once_cannot_take_the_last_link(self, stack, user, labs):
+        """056: a removal locks its task, so the second waits for the first
+        and then counts what it left."""
+        companies = [_company(stack, labs, user) for _ in range(2)]
+        made = _crm_apply(
+            stack,
+            _crm_actor(labs, user),
+            [
+                {
+                    "op": "insert",
+                    "table": "tasks",
+                    "ref": "t",
+                    "values": {"title": "Call", "assignee_id": user, "bucket": "later"},
+                },
+                *(
+                    {
+                        "op": "insert",
+                        "table": "task_links",
+                        "values": {
+                            "task_id": "$ref:t",
+                            "record_type": "company",
+                            "record_id": company,
+                        },
+                    }
+                    for company in companies
+                ),
+            ],
+        )
+        task, first, second = made[0]["id"], made[1]["id"], made[2]["id"]
+        remove = [{"op": "delete", "table": "task_links", "id": first}]
+        failed: list[Exception] = []
+
+        def first_removal() -> None:
+            # Checked at once, then its transaction is held open.
+            try:
+                stack.sql(
+                    f"BEGIN; {_sql(stack, _actor(user), remove)}; SET CONSTRAINTS ALL IMMEDIATE; "
+                    "SELECT pg_sleep(2); COMMIT;"
+                )
+            except Exception as exc:
+                failed.append(exc)
+
+        slow = threading.Thread(target=first_removal)
+        slow.start()
+        time.sleep(0.5)
+        try:
+            _refused(
+                stack,
+                _sql(stack, _actor(user), [{"op": "delete", "table": "task_links", "id": second}]),
+                "CRM22",
+            )
+        finally:
+            slow.join()
+        assert failed == []
+        left = stack.sql(f"SELECT id FROM task_links WHERE task_id = {stack.q(task)}")
+        assert [r["id"] for r in left] == [second]
 
     def test_the_workspace_changes_only_from_empty_to_a_value(self, stack, user, labs, academy):
         company = _company(stack, labs, user)

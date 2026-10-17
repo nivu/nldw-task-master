@@ -55,10 +55,20 @@ class TestCoverage:
         Spec 007 FR-CRM-CHG-07 amends FR-MCP-01: CRM routes are covered by the
         `crm_*` tools (tests/test_crm_mcp.py), not one tool per route. Both
         sides are filtered, so TVA tools still equal TVA operations while
-        `crm_*` tools exist."""
-        tva_tools = [t for t in _tools() if not t.name.startswith("crm_")]
+        `crm_*` tools exist.
+
+        Spec 008 FR-TASK-CHG-03 amends it again: task routes are covered by
+        the `task_*` and `inbox_add` tools (tests/test_task_mcp.py), so both
+        are left out too, `/api/v1/tasks` operations by prefix."""
+        tva_tools = [
+            t
+            for t in _tools()
+            if not t.name.startswith(("crm_", "task_")) and t.name != "inbox_add"
+        ]
         tva_operations = {
-            op for op in _operations() - EXCLUDED if not op[1].startswith("/api/v1/crm/")
+            op
+            for op in _operations() - EXCLUDED
+            if not op[1].startswith(("/api/v1/crm/", "/api/v1/tasks"))
         }
         assert len(tva_tools) == len(tva_operations)
 

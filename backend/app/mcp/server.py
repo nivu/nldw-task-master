@@ -97,6 +97,23 @@ proposal creates a tentative project, closed_won is done with crm_handoff
 (which confirms the project), and closed_lost archives it and frees its
 people; preview first and say so. Every crm_* tool that changes something needs the same CONFIRM FIRST: say
 exactly what will change and get the person's yes before calling it.
+
+Tasks (the task_* tools) are one list for the whole portal, for anyone with
+My Tasks switched on, CRM-only people included. A task's kind follows from
+its links: a private task (no links, assigned to its creator) is seen by its
+creator only, admins included; a shared personal task (no links, assigned to
+someone else) by its creator and assignee; a CRM task (linked to records of
+one workspace) by every member of that workspace and nobody else, and it
+follows the workspace's CRM roles (a viewer may change only the status of a
+task assigned to them); a project task (linked to a TVA project, no CRM
+link) also by leads, managers, admins and people allocated to the project,
+who may read but not change it. Naming someone in Waiting on gives them no
+sight of the task. Statuses are open, waiting (needs who or what it waits
+on), done and cancelled; buckets are today, this_week, this_month and later,
+and a task due today or earlier shows in today whatever its bucket.
+Priorities are urgent, high, normal (the default) and low. Tasks never carry
+hours, cost or day-log data. Every task_* tool that changes something needs
+the same CONFIRM FIRST.
 """
 
 mcp = MCPServer(
@@ -1299,3 +1316,4 @@ async def _guard(scope: dict, receive: Any, send: Any) -> None:
 # Spec 007 — the CRM's tools register on the same server. Last, because they
 # import `mcp`, `_api` and the annotations from this module.
 from app.mcp import crm as _crm  # noqa: E402, F401
+from app.mcp import tasks as _tasks  # noqa: E402, F401

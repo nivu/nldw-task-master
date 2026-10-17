@@ -91,7 +91,16 @@ def present(viewer: Viewer, rows: list[dict[str, Any]], *, today: date) -> list[
             )
         )
     }
-    subtasks = store.subtask_counts(ids)
+    # FR-TASK-VIS-04: a count holds only the subtasks this viewer may see,
+    # each checked on its own (FR-TASK-DATA-09).
+    children = store.subtasks(ids)
+    child_links: dict[str, list[dict[str, Any]]] = {}
+    for link in store.list_links([c["id"] for c in children]):
+        child_links.setdefault(link["task_id"], []).append(link)
+    subtasks: dict[str, int] = {}
+    for child in children:
+        if visibility.sight(viewer, facts(child, child_links.get(child["id"], []))) != "none":
+            subtasks[child["parent_id"]] = subtasks.get(child["parent_id"], 0) + 1
 
     out = []
     for row in rows:

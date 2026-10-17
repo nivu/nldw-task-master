@@ -9,12 +9,19 @@ functions are covered by `tests/db/`.
 
 `FakeCrmStore.install` installs one beside itself, so a CRM route that
 presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
+
+`TaskWorld` (S1b) is the cast and records the task route, tool and privacy
+tests share: the TVA roles and account kinds of spec §3 and FR-TASK-VIS-06
+with My Tasks switched on (uuid ids, keyed by `ID`), a Labs deal and
+an Academy company made through the CRM routes, and TVA projects, at a fixed
+clock (Tuesday 20 October 2026, noon IST).
 """
 
 from __future__ import annotations
 
 import inspect
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from crm_fake import (
@@ -23,9 +30,12 @@ from crm_fake import (
     FakeCrmStore,
     _at,
     _now,
+    as_,
+    client,
     touched_tasks,
 )
 
+from app.domain.tasks import service
 from app.services.tasks import store
 
 #: 049: the tables `task_apply` writes; the later ones arrive in 051-055.
@@ -119,6 +129,104 @@ class FakeTaskStore:
             if row.get("parent_id") in task_ids and not row.get("deleted_at"):
                 counts[row["parent_id"]] = counts.get(row["parent_id"], 0) + 1
         return counts
+
+    def assigned_tasks(
+        self,
+        user_id: str,
+        statuses: tuple[str, ...],
+        *,
+        tag: str | None = None,
+        priority: str | None = None,
+        ids: list[str] | None = None,
+        q: str | None = None,
+        before: tuple[str, str] | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        term = (q or "").strip().lower()
+        rows = [
+            dict(t)
+            for t in self.rows["tasks"].values()
+            if t.get("assignee_id") == user_id
+            and t["status"] in statuses
+            and not t.get("deleted_at")
+            and (not tag or tag in (t.get("tags") or []))
+            and (not priority or t.get("priority") == priority)
+            and (ids is None or t["id"] in ids)
+            and (
+                not term
+                or term in (t.get("title") or "").lower()
+                or term in (t.get("body") or "").lower()
+            )
+            and (
+                not before
+                or _at(t["updated_at"]) < _at(before[0])
+                or (_at(t["updated_at"]) == _at(before[0]) and t["id"] > before[1])
+            )
+        ]
+        if limit is None:
+            return sorted(rows, key=lambda r: r["id"])
+        rows.sort(key=lambda r: r["id"])
+        rows.sort(key=lambda r: _at(r["updated_at"]), reverse=True)
+        return rows[:limit]
+
+    def linked_task_ids(self, record_type: str, record_id: str) -> list[str]:
+        return sorted(
+            {
+                lk["task_id"]
+                for lk in self.rows["task_links"].values()
+                if lk["record_type"] == record_type and lk["record_id"] == record_id
+            }
+        )
+
+    def subtasks(self, parent_ids: list[str]) -> list[dict[str, Any]]:
+        rows = [
+            dict(t)
+            for t in self.rows["tasks"].values()
+            if t.get("parent_id") in parent_ids and not t.get("deleted_at")
+        ]
+        return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
+
+    def task_history(self, task_id: str) -> list[dict[str, Any]]:
+        def about(r: dict[str, Any]) -> bool:
+            if r["target_table"] in ("tasks", "crm_tasks"):
+                return r["target_id"] == task_id
+            if r["target_table"] in ("task_links", "crm_task_links"):
+                return any((x or {}).get("task_id") == task_id for x in (r["after"], r["before"]))
+            return False
+
+        return [dict(r) for r in sorted(self.crm.audit, key=lambda r: r["id"]) if about(r)]
+
+    def deleted_personal_tasks(self, user_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(t)
+            for t in self.rows["tasks"].values()
+            if t.get("created_by") == user_id
+            and t.get("workspace_id") is None
+            and t.get("deleted_at")
+        ]
+        return sorted(rows, key=lambda r: (r["deleted_at"], r["id"]), reverse=True)
+
+    def active_profiles(self) -> list[dict[str, Any]]:
+        ids = list(self.crm.profiles) or list(PEOPLE)
+        return [p for p in self.get_profiles(ids) if p["is_active"]]
+
+    def project_people(self, project_id: str) -> set[str]:
+        return {
+            a["user_id"] for a in self.rows["allocations"].values() if a["project_id"] == project_id
+        }
+
+    def projects_named(self, q: str) -> list[dict[str, Any]]:
+        term = q.strip().lower()
+        if not term:
+            return []
+        return sorted(
+            (
+                {k: p.get(k) for k in ("id", "name", "status", "is_archived")}
+                for p in self.rows["projects"].values()
+                if not p.get("is_archived") and term in p["name"].lower()
+            ),
+            key=lambda p: p["name"],
+        )
 
     def _profile(self, user_id: str) -> dict[str, Any] | None:
         return self.crm.profiles.get(user_id) or PEOPLE.get(user_id)
@@ -329,3 +437,127 @@ class FakeTaskStore:
             self.crm._cascade(actor, "tasks", task["id"])
             self.crm._delete(actor, "tasks", task)
         return len(gone)
+
+
+# ---------------------------------------------------------------------------
+# The shared world of the S1b route, tool and privacy tests
+# ---------------------------------------------------------------------------
+
+#: Tuesday 20 October 2026, noon IST (spec §12's fixed clock).
+NOW = datetime(2026, 10, 20, 6, 30, tzinfo=UTC)
+
+
+def _person(key: str, n: int, name: str, role: str = "user", **values: Any) -> dict[str, Any]:
+    return {
+        "id": f"00000000-0000-4000-8000-{n:012d}",
+        "key": key,
+        "email": f"{name.split()[0].lower()}@nunnarilabs.com",
+        "display_name": name,
+        "role": role,
+        "lead_id": None,
+        "is_active": True,
+        "account_type": "staff",
+        "timezone": "Asia/Kolkata",
+        "tasks_level": 1,
+        "is_owner": False,
+        **values,
+    }
+
+
+#: Spec §3 and FR-TASK-VIS-06's account kinds, by a short key, with uuid ids
+#: (the task routes take uuids). Phase 1 is on for all but Omar.
+_CAST = (
+    _person("owner", 1, "Navaneeth", "admin", is_owner=True),
+    _person("member", 2, "Deepika"),
+    _person("viewer", 3, "Devansh", "lead"),
+    _person(
+        "seller", 4, "Tamil", account_type="crm_only", logs_time=False, timezone="Australia/Sydney"
+    ),
+    _person("outsider", 5, "Vinita", "admin"),
+    _person("manager", 6, "Mona Manager", "manager"),
+    _person("lead", 7, "Lakshmi Lead", "lead"),
+    _person("creator", 8, "Chitra Creator", lead_id="00000000-0000-4000-8000-000000000007"),
+    _person("assignee", 9, "Arun Assignee"),
+    _person("former", 10, "Farah Former"),
+    _person("waiting", 11, "Wasim Waiting"),
+    _person("removed", 12, "Ravi Removed"),
+    _person("labsadmin", 13, "Leela Labsadmin"),
+    _person("user", 14, "Uma User"),
+    _person("off", 15, "Omar Off", tasks_level=None),
+    _person("gone", 16, "Gita Gone", is_active=False),
+)
+#: Short key → id.
+ID: dict[str, str] = {p["key"]: p["id"] for p in _CAST}
+TASK_PEOPLE: dict[str, dict[str, Any]] = {p["id"]: p for p in _CAST}
+
+
+class TaskWorld:
+    """Labs (Navaneeth and Leela Admins; Deepika, Tamil, Chitra and Ravi
+    Members; Devansh a Viewer) and Academy (Navaneeth); Acme, Deepa and the
+    Acme deal in Labs and College in Academy, made through the CRM routes;
+    Lumen (confirmed, Deepika allocated), Orbit (tentative) and Old
+    (archived) TVA projects."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.fake = FakeCrmStore().install(monkeypatch)
+        self.labs = self.fake.add_workspace("labs", "Nunnari Labs", tva_linked=True)
+        self.academy = self.fake.add_workspace("academy", "Nunnari Academy B2B")
+        self.fake.add_deal_lists(self.labs)
+        self.fake.add_member(self.labs, ID["owner"], "admin", last_used_at=_now())
+        self.fake.add_member(self.academy, ID["owner"], "admin")
+        self.fake.add_member(self.labs, ID["labsadmin"], "admin")
+        for key in ("member", "seller", "creator"):
+            self.fake.add_member(self.labs, ID[key], "member")
+        # Ravi is removed from Labs by the tests that need it (FR-TASK-VIS-06).
+        self.removed = self.fake.add_member(self.labs, ID["removed"], "member")
+        self.fake.add_member(self.labs, ID["viewer"], "viewer")
+        self.http = client(monkeypatch, TASK_PEOPLE, fake=self.fake)
+        monkeypatch.setattr(service, "_now", lambda: NOW)
+        labs, me = "?workspace=labs", as_(ID["owner"])
+        self.acme = self._made(f"/api/v1/crm/companies{labs}", {"name": "Acme"})
+        self.deepa = self._made(f"/api/v1/crm/people{labs}", {"first_name": "Deepa"})
+        self.http.patch(
+            f"/api/v1/crm/companies/{self.acme['id']}{labs}",
+            json={"lead_stage": "qualified"},
+            headers=me,
+        )
+        self.deal = self._made(
+            f"/api/v1/crm/opportunities{labs}",
+            {
+                "name": "Acme RDX",
+                "company_id": self.acme["id"],
+                "next_step": "Call",
+                "next_step_on": "2026-10-20",
+            },
+        )
+        self.college = self._made("/api/v1/crm/companies?workspace=academy", {"name": "College"})
+        self.lumen = self.fake.add_project("Lumen", status="confirmed")
+        self.orbit = self.fake.add_project("Orbit", status="tentative")
+        self.old = self.fake.add_project("Old", status="confirmed", is_archived=True)
+        self.fake.add_allocation(self.lumen, ID["member"])
+
+    def _made(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        r = self.http.post(path, json=body, headers=as_(ID["owner"]))
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    @property
+    def tasks(self) -> dict[str, dict[str, Any]]:
+        return self.fake.rows["tasks"]
+
+    def call(self, who: str, method: str, path: str, **kwargs: Any):
+        """`/api/v1/tasks…` as `who`, a key of `ID`."""
+        return self.http.request(method, f"/api/v1/tasks{path}", headers=as_(ID[who]), **kwargs)
+
+    def add(self, who: str, **body: Any) -> dict[str, Any]:
+        """`POST /tasks` as `who`; the task as returned. An `assignee_id` or
+        `waiting_on_id` may be given by its key."""
+        for name in ("assignee_id", "waiting_on_id"):
+            if body.get(name) in ID:
+                body[name] = ID[body[name]]
+        r = self.call(who, "POST", "", json={"title": "Call Deepak", **body})
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def link(self, record: dict[str, Any], record_type: str) -> dict[str, str]:
+        return {"record_type": record_type, "record_id": record["id"]}

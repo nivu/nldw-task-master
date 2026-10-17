@@ -1,5 +1,7 @@
 """A CRM-only account sees only the CRM — spec 007 FR-CRM-CHG-01; AC "A
-CRM-only account sees only the CRM"; contracts §1.
+CRM-only account sees only the CRM"; contracts §1. Amended by spec 008
+FR-TASK-CHG-02: the task routes join the shared allow-list by prefix
+(`SHARED_PREFIXES`), and each depends on a phase guard (`TasksDep*`).
 
 Walks `app.routes` — every `APIRoute` and Starlette `Route`, the
 `include_in_schema=False` ones and the routes `main._mount_mcp` appends to
@@ -27,6 +29,7 @@ from fastapi.testclient import TestClient
 from starlette.routing import Route
 
 from app.api import deps
+from app.api.tasks.deps import tasks_dep
 from app.main import app
 from app.services import supabase as db
 
@@ -43,6 +46,12 @@ SHARED_ALLOW_LIST = {
 #: Contracts §1 — no session at all. The two that act as a person refuse a
 #: CRM-only profile themselves (tests/test_crm_accounts.py,
 #: tests/test_crm_only_excluded.py::TestFeed). `/health/jobs` arrives in 1b.
+#: Spec 008 FR-TASK-CHG-02 — every route under these prefixes is reachable by
+#: a CRM-only account, behind a task phase guard.
+SHARED_PREFIXES = ("/api/v1/tasks",)
+#: The task phase guards, levels 1 to 4 (`TasksDep` … `TasksDep4`).
+TASK_GUARDS = {tasks_dep(level) for level in (1, 2, 3, 4)}
+
 UNAUTHENTICATED = {
     "/health",
     "/health/jobs",
@@ -102,6 +111,8 @@ def _api_routes() -> list[tuple[str, str, APIRoute]]:
 def _classify(path: str, route) -> str:
     if path.startswith(CRM_PREFIX):
         return "crm"
+    if path == SHARED_PREFIXES[0] or path.startswith(tuple(p + "/" for p in SHARED_PREFIXES)):
+        return "shared_prefix"
     if path in UNAUTHENTICATED or path.startswith(UNAUTHENTICATED_PREFIXES):
         return "unauthenticated"
     if path in DOCS:
@@ -135,6 +146,20 @@ class TestClassification:
             if _classify(path, route) == "shared"
         }
         assert shared == SHARED_ALLOW_LIST
+
+    def test_every_shared_prefix_route_has_a_task_guard(self):
+        """FR-TASK-CHG-02 — each route under `/api/v1/tasks` takes any
+        account and depends on a `TasksDep*` phase guard."""
+        routes = [
+            (method, path, route)
+            for method, path, route in _api_routes()
+            if _classify(path, route) == "shared_prefix"
+        ]
+        assert routes
+        for method, path, route in routes:
+            calls = _calls(route.dependant)
+            assert deps.any_account in calls and deps.current_user not in calls, (method, path)
+            assert calls & TASK_GUARDS, (method, path)
 
     def test_unauthenticated_routes_take_no_session(self):
         for _, path, route in _api_routes():

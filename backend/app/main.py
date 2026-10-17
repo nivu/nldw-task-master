@@ -257,6 +257,14 @@ def _mount_routers() -> None:
         app.include_router(router, prefix="/api/v1")
     logger.info("Mounted router: app.api.crm (%d routers)", len(crm.ROUTERS))
 
+    # Spec 008 — tasks, every path under /api/v1/tasks, in ROUTERS order
+    # (the `tasks.py` router last, contracts §1 "Route order").
+    from app.api import tasks
+
+    for router in tasks.ROUTERS:
+        app.include_router(router, prefix="/api/v1")
+    logger.info("Mounted router: app.api.tasks (%d routers)", len(tasks.ROUTERS))
+
     for module_path, attr_name in router_modules:
         module = importlib.import_module(module_path)
         router = getattr(module, attr_name)

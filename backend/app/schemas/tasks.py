@@ -45,3 +45,53 @@ class TaskCreate(BaseModel):
     waiting_on_text: str | None = Field(default=None, max_length=200)
     category_id: UUID | None = None  # CRM tasks only
     completed_at: datetime | None = None  # import only
+
+
+class TaskIn(BaseModel):
+    """Contracts §1.1 — `POST /tasks` and `task_add`. The route resolves
+    `assignee` (a name or email) to `assignee_id` and turns the rest into a
+    `TaskCreate` field for field, with `source` from the channel."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=20_000)
+    due_on: date | None = None
+    bucket: Literal["today", "this_week", "this_month", "later"] | None = None
+    priority: Literal["urgent", "high", "normal", "low"] = "normal"
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    assignee_id: UUID | None = None
+    assignee: str | None = Field(default=None, min_length=1, max_length=200)
+    links: list[TaskLinkIn] = Field(default_factory=list, max_length=20)
+    parent_id: UUID | None = None
+    status: Literal["open", "waiting"] = "open"
+    waiting_on_id: UUID | None = None
+    waiting_on_text: str | None = Field(default=None, max_length=200)
+    category_id: UUID | None = None
+
+
+class TaskPatch(BaseModel):
+    """Contracts §1.1 — `PATCH /tasks/{id}` and `task_update`. Only the fields
+    sent change; links change only through the link routes."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=20_000)
+    status: Literal["open", "waiting", "done", "cancelled"] | None = None
+    due_on: date | None = None
+    bucket: Literal["today", "this_week", "this_month", "later"] | None = None
+    priority: Literal["urgent", "high", "normal", "low"] | None = None
+    tags: list[str] | None = Field(default=None, max_length=10)
+    assignee_id: UUID | None = None
+    parent_id: UUID | None = None
+    waiting_on_id: UUID | None = None
+    waiting_on_text: str | None = Field(default=None, max_length=200)
+    category_id: UUID | None = None
+    expect_updated_at: datetime | None = None
+
+
+class TaskAudienceIn(BaseModel):
+    """Contracts §1 `POST /tasks/audience` — a draft's assignee and links."""
+
+    model_config = ConfigDict(extra="forbid")
+    assignee_id: UUID | None = None
+    links: list[TaskLinkIn] = Field(default_factory=list, max_length=20)

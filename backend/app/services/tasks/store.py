@@ -17,13 +17,14 @@ database's refusals exactly as the CRM's does.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from postgrest.exceptions import APIError
 
 from app.services import settings_store
 from app.services import supabase as db
-from app.services.crm.store import refusal_for
+from app.services.crm.store import _literal, refusal_for
 
 logger = logging.getLogger("nldw-task-master")
 
@@ -36,6 +37,10 @@ RECORD_TABLES = {
 }
 _PROFILE_COLUMNS = "id, email, display_name, role, is_active, account_type, tasks_level, timezone"
 _ID_BATCH = 100
+_PAGE = 1000
+#: The audit's names of a task's rows, before and after the rename (FR-TASK-CHG-07).
+_TASK_TABLES = ("tasks", "crm_tasks")
+_LINK_TABLES = ("task_links", "crm_task_links")
 
 
 def rpc(fn: str, params: dict[str, Any]) -> Any:
@@ -111,9 +116,188 @@ def subtask_counts(task_ids: list[str]) -> dict[str, int]:
     return counts
 
 
+def _array_literal(value: str) -> str:
+    """One text as a Postgres array literal, quoted, so a comma, brace or
+    quote in it stays part of the value."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{{"{escaped}"}}'
+
+
+def assigned_tasks(
+    user_id: str,
+    statuses: tuple[str, ...],
+    *,
+    tag: str | None = None,
+    priority: str | None = None,
+    ids: list[str] | None = None,
+    q: str | None = None,
+    before: tuple[str, str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Contracts §1 `GET /tasks` — the live tasks assigned to the person with
+    one of `statuses`, narrowed by a tag, a priority, a set of ids (a link
+    filter, read `_ID_BATCH` ids per request) and text in the title or notes,
+    matched literally. With `limit`, one page, most recently changed first
+    (then by id), after the `(updated_at, id)` cursor `before`; without, every
+    row, page by page."""
+    if ids is not None and not ids:
+        return []
+    wanted = sorted(set(ids)) if ids is not None else None
+    chunks = (
+        [wanted[i : i + _ID_BATCH] for i in range(0, len(wanted), _ID_BATCH)]
+        if wanted is not None
+        else [None]
+    )
+
+    def query_for(chunk: list[str] | None):
+        query = (
+            db.supabase.table("tasks")
+            .select("*")
+            .eq("assignee_id", user_id)
+            .in_("status", list(statuses))
+            .is_("deleted_at", "null")
+        )
+        if tag:
+            query = query.contains("tags", _array_literal(tag))
+        if priority:
+            query = query.eq("priority", priority)
+        if chunk is not None:
+            query = query.in_("id", chunk)
+        term = _literal(q or "")
+        if term:
+            query = query.or_(f"title.ilike.%{term}%,body.ilike.%{term}%")
+        if before:
+            at, last_id = before
+            query = query.or_(f'updated_at.lt."{at}",and(updated_at.eq."{at}",id.gt.{last_id})')
+        return query
+
+    rows: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if limit is not None:
+            rows += (
+                query_for(chunk)
+                .order("updated_at", desc=True)
+                .order("id")
+                .limit(limit)
+                .execute()
+                .data
+                or []
+            )
+            continue
+        offset = 0
+        while True:
+            page = (
+                query_for(chunk).order("id").range(offset, offset + _PAGE - 1).execute().data or []
+            )
+            rows += page
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    if limit is None:
+        return sorted(rows, key=lambda r: r["id"])
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: datetime.fromisoformat(str(r["updated_at"])), reverse=True)
+    return rows[:limit]
+
+
+def linked_task_ids(record_type: str, record_id: str) -> list[str]:
+    """The tasks linking this record or project (contracts §1 `link_type`)."""
+    rows = (
+        db.supabase.table("task_links")
+        .select("task_id")
+        .eq("record_type", record_type)
+        .eq("record_id", record_id)
+        .execute()
+        .data
+        or []
+    )
+    return sorted({r["task_id"] for r in rows})
+
+
+def subtasks(parent_ids: list[str]) -> list[dict[str, Any]]:
+    """The live tasks whose parent is one of these, oldest first."""
+    if not parent_ids:
+        return []
+    rows = _in_batches(
+        lambda: db.supabase.table("tasks").select("*").is_("deleted_at", "null"),
+        "parent_id",
+        parent_ids,
+    )
+    return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
+
+
+def task_history(task_id: str) -> list[dict[str, Any]]:
+    """FR-TASK-LIST-06, FR-TASK-CHG-07 — the task's audit rows and its
+    links', under the old and new table names, oldest first."""
+    parts = [f"and(target_table.eq.{t},target_id.eq.{task_id})" for t in _TASK_TABLES] + [
+        f"and(target_table.eq.{t},or(after->>task_id.eq.{task_id},before->>task_id.eq.{task_id}))"
+        for t in _LINK_TABLES
+    ]
+    rows = (
+        db.supabase.table("audit_log").select("*").or_(",".join(parts)).order("id").execute().data
+        or []
+    )
+    return sorted(rows, key=lambda r: r["id"])
+
+
+def deleted_personal_tasks(user_id: str) -> list[dict[str, Any]]:
+    """FR-TASK-DATA-11 — the person's own deleted tasks with no workspace,
+    newest deleted first."""
+    rows = (
+        db.supabase.table("tasks")
+        .select("*")
+        .eq("created_by", user_id)
+        .is_("workspace_id", "null")
+        .not_.is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    return sorted(rows, key=lambda r: (r["deleted_at"], r["id"]), reverse=True)
+
+
 # ---------------------------------------------------------------------------
 # People, memberships, projects and workspaces
 # ---------------------------------------------------------------------------
+
+
+def active_profiles() -> list[dict[str, Any]]:
+    """Every active account, staff and CRM-only, with what the task rules
+    read about them."""
+    return (
+        db.supabase.table("profiles").select(_PROFILE_COLUMNS).eq("is_active", True).execute().data
+        or []
+    )
+
+
+def project_people(project_id: str) -> set[str]:
+    """The people who are or were allocated to a project (TP-01)."""
+    rows = (
+        db.supabase.table("allocations")
+        .select("user_id")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    return {r["user_id"] for r in rows}
+
+
+def projects_named(q: str) -> list[dict[str, Any]]:
+    """Unarchived TVA projects whose name holds `q`, matched literally."""
+    term = _literal(q)
+    if not term:
+        return []
+    return (
+        db.supabase.table("projects")
+        .select("id, name, status, is_archived")
+        .eq("is_archived", False)
+        .ilike("name", f"%{term}%")
+        .order("name")
+        .execute()
+        .data
+        or []
+    )
 
 
 def get_profiles(user_ids: list[str]) -> list[dict[str, Any]]:
