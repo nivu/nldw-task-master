@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 
 import { Bell, useUnreadCount } from "@/components/crm/bell";
+import { ReviewNavItem } from "@/components/crm/review-nav-item";
 import { StaleBanner } from "@/components/crm/stale-banner";
 import { ViewIcon } from "@/components/crm/view-switcher";
 import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
@@ -312,6 +313,7 @@ export function CrmShell({
 
           <nav className="flex-1 space-y-0.5 overflow-y-auto px-2">
             {links.map((link) => navLink(link))}
+            <ReviewNavItem collapsed={collapsed} />
             {pinned.length > 0 && (
               <div className="pt-3" aria-label="Favourites" role="group">
                 {!collapsed && (

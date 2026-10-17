@@ -23,7 +23,7 @@ from app.api.errors import ProblemDetail
 from app.domain.crm import ai_rules
 from app.schemas.crm import PreferencesUpdate
 from app.services import supabase as db
-from app.services.crm import email_sync, jobs, notifications, store
+from app.services.crm import email_sync, jobs, notifications, review, store
 from app.services.crm.context import workspaces_of
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -75,12 +75,13 @@ def bootstrap(ctx: CrmReadDep) -> dict:
         "unread": notifications.unread_for(ctx.user.id),
         "stale_jobs": jobs.stale_for(ctx),
         # Spec 009 FR-CRMAI-FLAG-03, -04, -LLM-08: the phase switches for
-        # every role (the Review Queue arrives in S1b), and for an Admin
-        # whether this month's AI budget is reached; never the figure.
+        # every role, whether the Review Queue shows and the caller's open
+        # items in it, and for an Admin whether this month's AI budget is
+        # reached; never the figure.
         "ai": {
             "phases": ai_rules.phases_of(settings.get("ai")),
-            "review_visible": False,
-            "open_review_count": 0,
+            "review_visible": review.visible(ctx.workspace_id, ctx.user.id, ctx.role),
+            "open_review_count": review.open_count(ctx.workspace_id, ctx.user.id, ctx.role),
         },
     }
     if ctx.may("administer"):

@@ -138,6 +138,9 @@ TABLES = (
     "compoff_credits",
     # Spec 009: the AI usage log (060), a log with no audit trigger.
     "crm_ai_usage",
+    # Spec 009: the Review Queue (061), a log with explicit audit rows.
+    "crm_review_items",
+    "crm_review_item_deals",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -182,6 +185,15 @@ TARGETS = {
     "campaign": "crm_campaigns",
 }
 OPEN_STAGES = ("discovery", "qualification", "proposal", "negotiation")
+#: 061 `crm_review_items.type`.
+REVIEW_TYPES = (
+    "next_step_change",
+    "task_from_commitment",
+    "task_from_meeting",
+    "deal_link",
+    "enrichment_conflict",
+    "rule_suggestion",
+)
 
 
 class CheckViolation(AssertionError):
@@ -1195,6 +1207,14 @@ class FakeCrmStore:
                             and link["record_id"] == target
                         ):
                             del self.rows["crm_email_links"][link["id"]]
+                    # 061: the Review Queue items that target it.
+                    for found in list(self.rows["crm_review_items"].values()):
+                        if (
+                            found["workspace_id"] == ws
+                            and found["record_type"] == kinds[table]
+                            and found["record_id"] == target
+                        ):
+                            del self.rows["crm_review_items"][found["id"]]
                     # 034: the favourites that pin it.
                     for fav in list(self.rows["crm_favourites"].values()):
                         if (
@@ -1206,6 +1226,7 @@ class FakeCrmStore:
                             self._delete(actor, "crm_favourites", fav)
                 self._cascade(actor, table, target)
                 self._delete(actor, table, row)
+                self._review_cascade()
         except Exception:
             self.rows, self.audit[audit_len:] = snapshot, []
             raise
@@ -2374,6 +2395,33 @@ class FakeCrmStore:
                 else:
                     link["record_id"] = keep_id
                 moved["emails"] += 1
+            # 061: the merged company's open review items move, their dedupe
+            # key's target recomputed; a clash with the survivor's expires.
+            for item in sorted(
+                self.rows["crm_review_items"].values(), key=lambda r: (r["created_at"], r["id"])
+            ):
+                if not (
+                    item["workspace_id"] == ws
+                    and item["record_type"] == "company"
+                    and item["record_id"] == gone_id
+                    and item["status"] == "open"
+                ):
+                    continue
+                head = f"{item['source_kind']}|{item['source_key']}|{item['type']}|company:"
+                key = item["dedupe_key"]
+                if key.startswith(head + gone_id):
+                    key = head + keep_id + key[len(head + gone_id) :]
+                if any(
+                    o["id"] != item["id"]
+                    and o["workspace_id"] == ws
+                    and o["status"] == "open"
+                    and o["dedupe_key"] == key
+                    for o in self.rows["crm_review_items"].values()
+                ):
+                    item.update(status="expired", decided_at=_now())
+                    self._review_audit(actor, "review.expired", item["id"], "open", "expired")
+                else:
+                    item.update(record_id=keep_id, dedupe_key=key)
             # 041: campaign members; one the survivor has already keeps it.
             members = self.rows["crm_campaign_members"]
             for m in sorted(list(members.values()), key=lambda r: r["id"]):
@@ -3711,6 +3759,8 @@ class FakeCrmStore:
                 "target_id": row["id"],
                 "before": before,
                 "after": after,
+                # 061: the item an approval made this change for.
+                **({"suggestion_id": actor["suggestion_id"]} if actor.get("suggestion_id") else {}),
             }
         )
 
@@ -3788,6 +3838,265 @@ class FakeCrmStore:
             "total_usd": str(sum(by_job.values(), Decimal(0))),
             "by_job": {job: str(usd) for job, usd in by_job.items()},
         }
+
+    # -- spec 009: the Review Queue (061) -------------------------------------
+
+    def add_review_item(self, workspace: dict[str, Any], **values: Any) -> dict[str, Any]:
+        """An item as `crm_review_upsert` stores it, with the deal choices
+        given as `deal_choices`. Not a store name: a set-up helper."""
+        choices = values.pop("deal_choices", [])
+        row = {
+            "id": str(uuid.uuid4()),
+            "workspace_id": workspace["id"],
+            "status": "open",
+            "owner_id": None,
+            "member_id": None,
+            "suggestion": {},
+            "current_values": {},
+            "source_kind": "email_thread",
+            "source_key": f"gmail:mb:{uuid.uuid4().hex[:8]}",
+            "source_version": "v1",
+            "source_link": {},
+            "model": "claude-sonnet-5-5",
+            "generated_at": _now(),
+            "refusal": None,
+            "created_at": _now(),
+            "decided_at": None,
+            "decided_by": None,
+            "result": {},
+            "tombstoned_at": None,
+            **values,
+        }
+        row.setdefault(
+            "dedupe_key",
+            f"{row['source_kind']}|{row['source_key']}|{row['type']}|"
+            f"{row['record_type']}:{row['record_id']}",
+        )
+        self.rows["crm_review_items"][row["id"]] = row
+        for deal_id in choices:
+            self._add_review_deal(row, deal_id)
+        return row
+
+    def _add_review_deal(self, item: dict[str, Any], deal_id: str) -> None:
+        key = f"{item['id']}:{deal_id}"
+        self.rows["crm_review_item_deals"][key] = {
+            "id": key,
+            "workspace_id": item["workspace_id"],
+            "item_id": item["id"],
+            "opportunity_id": deal_id,
+        }
+
+    def _review_cascade(self) -> None:
+        """061's foreign keys: an item goes with its campaign member, a deal
+        choice with its deal or its item (CASCADE)."""
+        members = self.rows["crm_campaign_members"]
+        for item in list(self.rows["crm_review_items"].values()):
+            if item.get("member_id") and item["member_id"] not in members:
+                del self.rows["crm_review_items"][item["id"]]
+        for key, row in list(self.rows["crm_review_item_deals"].items()):
+            if (
+                row["item_id"] not in self.rows["crm_review_items"]
+                or row["opportunity_id"] not in self.rows["crm_opportunities"]
+            ):
+                del self.rows["crm_review_item_deals"][key]
+
+    def _review_audit(self, actor, action: str, item_id: str, before: str, after: str) -> None:
+        """The audit row 061's functions write themselves: no suggestion text."""
+        self.audit.append(
+            {
+                "id": len(self.audit) + 1,
+                "at": _now(),
+                "actor_id": actor.get("user_id"),
+                "actor_label": actor["kind"],
+                "channel": actor.get("channel"),
+                "workspace_id": actor["workspace_id"],
+                "action": action,
+                "target_table": "crm_review_items",
+                "target_id": item_id,
+                "before": {"status": before},
+                "after": {"status": after},
+                "suggestion_id": item_id,
+            }
+        )
+
+    def list_review_items(
+        self,
+        workspace_id: str,
+        *,
+        status: str = "open",
+        since: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        rows = self._of("crm_review_items", workspace_id)
+        if status == "open":
+            rows = sorted(
+                (r for r in rows if r["status"] == "open"),
+                key=lambda r: (_at(r["created_at"]), r["id"]),
+            )
+        elif status == "decided":
+            rows = [
+                r
+                for r in rows
+                if r["status"] != "open"
+                and r.get("tombstoned_at") is None
+                and (since is None or _at(r["decided_at"]) >= since)
+            ]
+            rows.sort(key=lambda r: r["id"])
+            rows.sort(key=lambda r: _at(r["decided_at"]), reverse=True)
+        else:
+            rows.sort(key=lambda r: r["id"])
+        return json.loads(json.dumps(rows[:limit]))
+
+    def get_review_item(self, workspace_id: str, item_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_review_items"].get(item_id)
+        if row is None or row["workspace_id"] != workspace_id:
+            return None
+        return json.loads(json.dumps(row))
+
+    def list_review_item_deals(self, workspace_id: str, item_ids: list[str]) -> list[dict]:
+        wanted = set(item_ids)
+        return [
+            {"item_id": r["item_id"], "opportunity_id": r["opportunity_id"]}
+            for r in self.rows["crm_review_item_deals"].values()
+            if r["workspace_id"] == workspace_id and r["item_id"] in wanted
+        ]
+
+    def review_upsert(self, actor: dict[str, Any], items: list[dict[str, Any]]) -> list[dict]:
+        """crm_review_upsert (061): the open-once key refreshed, a decided
+        key from the same source version not made again, each deal choice
+        an open deal of the workspace, the target in the workspace."""
+        ws = actor["workspace_id"]
+        assert actor["kind"] in ("sync", "system"), actor
+        out = []
+        for given in json.loads(json.dumps(items)):
+            assert given["type"] in REVIEW_TYPES, given["type"]
+            assert given["source_kind"] in ("email_thread", "meeting", "enrichment", "rule")
+            assert len(json.dumps(given.get("suggestion") or {})) <= 8192
+            mine = self._of("crm_review_items", ws)
+            if any(
+                r["dedupe_key"] == given["dedupe_key"]
+                and r["status"] != "open"
+                and r["source_version"] == given["source_version"]
+                for r in mine
+            ):
+                out.append({"id": None, "created": False})
+                continue
+            target = TARGETS.get(given["record_type"])
+            found = target and self.rows[target].get(given["record_id"])
+            if not found or found["workspace_id"] != ws:
+                raise store.refusal_for(
+                    "CRM04", f"No such {given['record_type']} in this workspace."
+                )
+            for deal_id in given.get("deal_choices") or []:
+                deal = self.rows["crm_opportunities"].get(deal_id)
+                if (
+                    deal is None
+                    or deal["workspace_id"] != ws
+                    or deal.get("deleted_at")
+                    or deal["stage"] not in OPEN_STAGES
+                ):
+                    raise store.refusal_for("CRM04", "No such open deal in this workspace.")
+            existing = next(
+                (
+                    self.rows["crm_review_items"][r["id"]]
+                    for r in mine
+                    if r["status"] == "open" and r["dedupe_key"] == given["dedupe_key"]
+                ),
+                None,
+            )
+            choices = given.pop("deal_choices", None) or []
+            if existing is not None:
+                for name in (
+                    "suggestion",
+                    "current_values",
+                    "source_version",
+                    "model",
+                    "generated_at",
+                ):
+                    existing[name] = given.get(name)
+                row, created = existing, False
+            else:
+                row, created = (
+                    self.add_review_item(
+                        self.rows["crm_workspaces"][ws],
+                        **{k: v for k, v in given.items() if v is not None or k == "owner_id"},
+                    ),
+                    True,
+                )
+            for key in [
+                k
+                for k, r in self.rows["crm_review_item_deals"].items()
+                if r["item_id"] == row["id"]
+            ]:
+                del self.rows["crm_review_item_deals"][key]
+            for deal_id in choices:
+                self._add_review_deal(row, deal_id)
+            out.append({"id": row["id"], "created": created})
+        return out
+
+    def review_claim(self, actor: dict[str, Any], item_id: str, status: str) -> dict:
+        """crm_review_claim (061): one claim wins; one audit row."""
+        assert status in ("approved", "dismissed"), status
+        row = self.rows["crm_review_items"].get(item_id)
+        if row is None or row["workspace_id"] != actor["workspace_id"]:
+            raise store.refusal_for("CRM04", "No such suggestion.")
+        if row["status"] != "open":
+            raise store.refusal_for("CRM09", "This suggestion was already decided.")
+        row.update(status=status, decided_at=_now(), decided_by=actor["user_id"], refusal=None)
+        self._review_audit(actor, f"review.{status}", item_id, "open", status)
+        return json.loads(json.dumps(row))
+
+    def review_release(
+        self, actor: dict[str, Any], item_id: str, refusal: str | None, result: dict | None
+    ) -> None:
+        row = self.rows["crm_review_items"].get(item_id)
+        if row is None or row["workspace_id"] != actor["workspace_id"]:
+            raise store.refusal_for("CRM04", "No such suggestion.")
+        if refusal is not None:
+            if row["status"] != "approved":
+                raise store.refusal_for("CRM04", "No such suggestion.")
+            row.update(status="open", decided_at=None, decided_by=None, refusal=refusal[:500])
+            self._review_audit(actor, "review.reopened", item_id, "approved", "open")
+        else:
+            if row["status"] == "open":
+                raise store.refusal_for("CRM04", "No such suggestion.")
+            row["result"] = json.loads(json.dumps(result or {}))
+
+    def review_expire(self, actor: dict[str, Any], before: datetime) -> int:
+        """crm_review_expire (061): one `review.expired` audit row each."""
+        assert actor["kind"] in ("system", "sync"), actor
+        n = 0
+        for row in self.rows["crm_review_items"].values():
+            if (
+                row["workspace_id"] == actor["workspace_id"]
+                and row["status"] == "open"
+                and _at(row["created_at"]) < before
+            ):
+                row.update(status="expired", decided_at=_now())
+                self._review_audit(actor, "review.expired", row["id"], "open", "expired")
+                n += 1
+        return n
+
+    def review_tombstone(self, actor: dict[str, Any], before: datetime) -> int:
+        """crm_review_tombstone (061): the text goes, the dedupe key stays."""
+        assert actor["kind"] in ("system", "sync"), actor
+        n = 0
+        for row in self.rows["crm_review_items"].values():
+            if (
+                row["workspace_id"] == actor["workspace_id"]
+                and row["status"] != "open"
+                and row.get("tombstoned_at") is None
+                and _at(row["decided_at"]) < before
+            ):
+                row.update(
+                    suggestion={},
+                    current_values={},
+                    source_link={},
+                    refusal=None,
+                    tombstoned_at=_now(),
+                )
+                n += 1
+        return n
 
 
 def _at(value: str | datetime) -> datetime:

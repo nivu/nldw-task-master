@@ -38,6 +38,8 @@ HEADINGS: Final = {
     "tasks": "Tasks for today",
     "silent_clients": "Clients gone silent",
     "loose_ends": "Loose ends",
+    # Spec 009 FR-CRMAI-REV-09: Today's sixth section.
+    "to_review": "To review",
 }
 STAGE_LABELS: Final = {
     "discovery": "Discovery",

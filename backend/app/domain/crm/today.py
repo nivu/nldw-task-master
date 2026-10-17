@@ -208,3 +208,35 @@ def assemble(*, sync_on: bool, built: dict[str, list[dict[str, Any]]]) -> list[d
         else:
             sections.append({"key": key, "items": built.get(key, [])})
     return sections
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — To review, the sixth section (FR-CRMAI-REV-09, FR-CRMAI-CHG-03)
+# ---------------------------------------------------------------------------
+
+#: After the five of FR-CRM-TODAY-01; shown while the Review Queue is
+#: visible (FR-CRMAI-FLAG-04), never to a Viewer.
+TO_REVIEW: Final = "to_review"
+#: How many of the oldest items the section lists.
+TO_REVIEW_SHOWN: Final = 3
+
+
+def to_review(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """The count of the person's open Review Queue items and the three
+    oldest, each opening the queue. `items`: `{id, created_at, title,
+    detail}`."""
+    oldest = sorted(items, key=lambda i: (str(i["created_at"]), i["id"]))
+    return {
+        "key": TO_REVIEW,
+        "count": len(items),
+        "items": [
+            {
+                "record_type": "review_item",
+                "record_id": i["id"],
+                "title": i["title"],
+                "detail": i["detail"],
+                "created_at": i["created_at"],
+            }
+            for i in oldest[:TO_REVIEW_SHOWN]
+        ],
+    }

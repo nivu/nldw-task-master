@@ -23,7 +23,7 @@ from typing import Any
 
 from app.domain.crm import today as rules
 from app.services import supabase as db
-from app.services.crm import CrmRefused, email_sync, jobs, store
+from app.services.crm import CrmRefused, email_sync, jobs, review, store
 from app.services.crm import records as base
 
 
@@ -124,5 +124,6 @@ def build(
     return {
         "as_of": by,
         "timezone": zone,
-        "sections": rules.assemble(sync_on=sync_on, built=built),
+        "sections": rules.assemble(sync_on=sync_on, built=built)
+        + review.today_section(ws_id, person_id),
     }

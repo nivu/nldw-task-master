@@ -25,6 +25,7 @@ from app.api.crm import (
     merge,
     notifications,
     records,
+    review,
     search,
     settings,
     today,
@@ -56,6 +57,7 @@ ROUTERS = [
     email.router,
     dashboard.router,
     export.router,
-    # Spec 009: Settings, AI.
+    # Spec 009: Settings, AI; the Review Queue.
     ai.router,
+    review.router,
 ]

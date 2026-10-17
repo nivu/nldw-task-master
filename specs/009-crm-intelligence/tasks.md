@@ -138,7 +138,7 @@ after 90. Reachable through NLDW. No job produces items yet: tests seed them.
 - [ ] T040 In `build()`, the returned `sections` becomes `rules.assemble(...) + review.today_section(ws_id, person_id)`; nothing else in the file changes — `backend/app/services/crm/today.py`
 - [ ] T041 [P] `HEADINGS["to_review"] = "To review"` — `backend/app/domain/crm/digests.py`
 - [ ] T042 `bootstrap` `ai.review_visible` and `open_review_count` from `review.visible()` — `backend/app/api/crm/workspaces.py`
-- [ ] T043 Timeline entries pass through `suggestion_id` and `approved_suggestion` from the audit row (one field in the entry builder) — `backend/app/services/crm/records.py`
+- [ ] T043 Timeline entries pass through `suggestion_id` and `approved_suggestion` from the audit row (one field in the entry builder) — `backend/app/services/crm/records.py`; the web timeline says "approved AI suggestion" on such an entry (FR-CRMAI-REV-05; amended in S1b) — `frontend/lib/api/crm-types.ts`, `frontend/components/crm/timeline.tsx`
 - [ ] T044 [P] Export `review_items` (with deal choices) through a dedicated reader and presenter branch (ids only, trashed targets left out; `_all_rows`/`present_rows` know record kinds only); extend the exact export-object set — `backend/app/services/crm/export.py`, `backend/tests/test_crm_csv_io.py`
 - [ ] T045 Create `crm_ai.review_expiry` (per workspace through `@crm_job("review_expiry")`, `ignore_result=True`), register it, and add its beat entry (01:30 IST) to the `009` block — `backend/app/tasks/crm_ai.py`, `backend/app/tasks/__init__.py`, `backend/app/worker.py`
 - [ ] T046 Append `crm_review_list` and `crm_review_decide` after `crm_dashboard` (contracts §3, verbatim descriptions) — `backend/app/mcp/crm.py`

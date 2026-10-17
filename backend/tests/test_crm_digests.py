@@ -258,3 +258,53 @@ class TestRoles:
         tasks._digests(KOLKATA_9)
         [mail] = _to(sent, MEMBER)
         assert "Nunnari Labs" in mail.body and "Nunnari Academy B2B" not in mail.body
+
+
+class TestToReview:
+    """Spec 009 FR-CRMAI-REV-09 (Q-35) — the daily digest carries Today's To
+    review section, with the role there."""
+
+    def _item(self, fake, ws, owner):
+        company = fake.add(
+            "crm_companies",
+            **{**DEFAULTS["crm_companies"], "workspace_id": ws["id"], "name": "Review Co"},
+        )
+        return fake.add_review_item(
+            ws,
+            type="enrichment_conflict",
+            source_kind="enrichment",
+            record_type="company",
+            record_id=company["id"],
+            owner_id=owner["id"] if owner else None,
+            suggestion={"field": "city", "value": "Pune"},
+        )
+
+    def test_the_digest_carries_to_review(self, crm):
+        _, fake, labs, _, sent = crm
+        item = self._item(fake, labs, MEMBER)
+        parts = digests.daily_parts(
+            {**MEMBER, "timezone": "Asia/Kolkata"},
+            [
+                m
+                for m in fake.list_all_memberships()
+                if m["user_id"] == MEMBER["id"] and m["workspace_id"] == labs["id"]
+            ],
+            {w["id"]: w for w in fake.list_workspaces()},
+            KOLKATA_9,
+        )
+        [section] = [s for s in parts[0]["sections"] if s["key"] == "to_review"]
+        assert section["heading"] == "To review"
+        assert [(i["record_type"], i["record_id"], i["detail"]) for i in section["items"]] == [
+            ("review_item", item["id"], "Review Co")
+        ]
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, MEMBER)
+        assert "To review" in mail.body and "Review Co" in mail.body
+
+    def test_a_viewers_digest_has_no_to_review(self, crm):
+        _, fake, labs, _, sent = crm
+        fake.set_ai(labs, phases={"1": True})
+        self._item(fake, labs, None)
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, VIEWER)
+        assert "To review" not in mail.body

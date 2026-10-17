@@ -55,6 +55,8 @@ import type {
   CrmQueryResult,
   CrmRecord,
   CrmRecordPage,
+  CrmReviewItem,
+  CrmReviewList,
   CrmRole,
   CrmSavedView,
   CrmSearchResult,
@@ -85,6 +87,9 @@ import type {
   OptionUpdate,
   ProjectCategory,
   QuerySpec,
+  ReviewApproveIn,
+  ReviewApproveResult,
+  ReviewListQuery,
   StageChanges,
   StageKey,
   StageMoveResult,
@@ -811,3 +816,21 @@ export const getCrmAi = (workspace: string) => call<CrmAiOverview>(`/ai${query(w
 /** Saves the budget and the phase switches together: the validator wants both keys. */
 export const setCrmAiSetting = (workspace: string, value: AiSettingsValue) =>
   updateCrmSetting(workspace, "ai", value);
+
+// ---------------------------------------------------------------------------
+// 009 S1b — the Review Queue (009 contracts §2.2; FR-CRMAI-REV)
+// ---------------------------------------------------------------------------
+
+/** Items the person may see: their own, or (Admins) all and the decided ones. */
+export const listCrmReview = (workspace: string, filters: ReviewListQuery = {}) =>
+  call<CrmReviewList>(`/review${query(workspace, { ...filters })}`);
+
+/** Applies the suggestion through the same service a manual edit uses (FR-CRMAI-REV-04). */
+export const approveCrmReview = (workspace: string, id: string, approval: ReviewApproveIn = {}) =>
+  call<ReviewApproveResult>(`/review/${id}/approve${query(workspace)}`, {
+    method: "POST",
+    ...body(approval),
+  });
+
+export const dismissCrmReview = (workspace: string, id: string) =>
+  call<{ item: CrmReviewItem }>(`/review/${id}/dismiss${query(workspace)}`, { method: "POST" });

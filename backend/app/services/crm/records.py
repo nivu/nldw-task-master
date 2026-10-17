@@ -883,6 +883,13 @@ def timeline(
             limit=batch,
         )
         found = show.timeline(rows, kind, ws.facts, around=around)
+        # Spec 009 FR-CRMAI-REV-05: an entry written under an approved
+        # suggestion says so ("approved AI suggestion").
+        suggested = {r["id"]: r.get("suggestion_id") for r in rows}
+        for entry in found:
+            if suggested.get(entry["id"]):
+                entry["suggestion_id"] = suggested[entry["id"]]
+                entry["approved_suggestion"] = True
         if kind == "task":
             _parents_shown(ws, found)
         entries += [e for e in found if not types or e["type"] in types]

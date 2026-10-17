@@ -56,6 +56,7 @@ function Entry({ entry, timeZone }: { entry: CrmTimelineEntry; timeZone: CrmTime
         {entry.actor_name}
         {entry.channel === "mcp" ? " via Claude" : entry.channel === "web" ? " on the web" : ""} ·{" "}
         {formatDate(entry.at, timeZone)}, {time}
+        {entry.approved_suggestion && " · approved AI suggestion"}
       </p>
     </li>
   );

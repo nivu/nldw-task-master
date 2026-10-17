@@ -827,3 +827,59 @@ class AiOverviewOut(BaseModel):
     phases: dict[PhaseKey, bool]
     estimate_note: str
     rates_configured: bool
+
+
+ReviewItemType = Literal[
+    "next_step_change",
+    "task_from_commitment",
+    "task_from_meeting",
+    "deal_link",
+    "enrichment_conflict",
+    "rule_suggestion",
+]
+ReviewStatus = Literal["open", "approved", "dismissed", "expired"]
+
+
+class ReviewListQuery(BaseModel):
+    """`GET /crm/review` — `scope=all` and `status=decided` are for workspace
+    Admins; no other filter (D-3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["mine", "all"] = "mine"
+    status: Literal["open", "decided"] = "open"
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class ReviewApproveIn(BaseModel):
+    """`POST /crm/review/{id}/approve` (contracts §2.2). `deal_id` picks the
+    deal when the item has several; `option` a rule suggestion's choice;
+    `edits` is "Edit and approve": the suggestion's fields as the person
+    changed them, which the manual path then validates as a manual edit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deal_id: str | None = Field(default=None, max_length=64)
+    option: str | None = Field(default=None, max_length=40)
+    edits: dict[str, Any] | None = None
+
+
+class ReviewItemOut(BaseModel):
+    """One Review Queue item as the queue shows it (contracts §2.2.1)."""
+
+    id: str
+    type: ReviewItemType
+    type_label: str
+    status: ReviewStatus
+    owner: dict[str, Any] | None
+    target: dict[str, Any]
+    deal_choices: list[dict[str, Any]]
+    suggestion: dict[str, Any]
+    current: dict[str, Any]
+    source: dict[str, Any]
+    ai: dict[str, Any]
+    refusal: str | None
+    created_at: str
+    expires_on: date
+    decided_at: str | None
+    decided_by: dict[str, Any] | None

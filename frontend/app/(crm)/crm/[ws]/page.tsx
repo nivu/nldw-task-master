@@ -5,8 +5,10 @@ import { useState } from "react";
 
 import { useCrm } from "@/components/crm/shell";
 import { TodayList } from "@/components/crm/today-list";
+import { ToReviewSectionCard } from "@/components/crm/to-review-section";
 import { getCrmMembers, getCrmToday } from "@/lib/api/crm";
 import { formatDate } from "@/lib/crm/format";
+import { splitToReview } from "@/lib/crm/review";
 import { useAsync } from "@/lib/use-async";
 
 /**
@@ -17,7 +19,8 @@ import { useAsync } from "@/lib/use-async";
  * exception to TVA's no-ranking rule); the server refuses anyone else.
  * Replies owed and silent clients come from Gmail sync (S10); while it is
  * off those sections say so, and an Admin is pointed at the Mailboxes
- * settings (FR-CRM-TODAY-02).
+ * settings (FR-CRM-TODAY-02). To review (spec 009 FR-CRMAI-REV-09) follows the
+ * five sections in its own card.
  */
 export default function TodayPage() {
   const { bootstrap } = useCrm();
@@ -27,6 +30,7 @@ export default function TodayPage() {
   const members = useAsync(() => (admin ? getCrmMembers(ws) : Promise.resolve([])), [ws, admin]);
   const today = useAsync(() => getCrmToday(ws, person || undefined), [ws, person]);
   const zone = bootstrap.me.timezone;
+  const split = splitToReview(today.data?.sections ?? []);
 
   return (
     <div className="space-y-4">
@@ -74,7 +78,12 @@ export default function TodayPage() {
       ) : !today.data ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
-        <TodayList workspace={ws} today={today.data} timeZone={zone} />
+        <>
+          <TodayList workspace={ws} today={{ ...today.data, sections: split.sections }} timeZone={zone} />
+          {split.toReview && (
+            <ToReviewSectionCard workspace={ws} section={split.toReview} timeZone={zone} />
+          )}
+        </>
       )}
     </div>
   );

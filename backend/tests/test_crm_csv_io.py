@@ -666,6 +666,8 @@ class TestExport:
             "campaigns",
             "campaign_members",
             "drive_links",
+            # Spec 009 FR-CRMAI-CHG-11.
+            "review_items",
         }
         assert [c["name"] for c in data["objects"]["companies"]] == ["PSG Tech"]
         r = http.get(f"{API}/export/workspace{ACADEMY}&object=people", headers=me)
@@ -806,3 +808,51 @@ class TestTheTool:
         )
         assert done["created"] == 1
         assert any(c["name"] == "KCT" for c in _rows(fake, "crm_companies", academy))
+
+
+class TestTheReviewQueueInTheExport:
+    """Spec 009 FR-CRMAI-CHG-11, data-model §4 — the workspace export holds
+    the Review Queue's items with their deal choices, ids only, and leaves
+    out an item whose target is in the Trash; never the AI usage log."""
+
+    def _item(self, crm, **values):
+        return crm["fake"].add_review_item(
+            crm["academy"],
+            type="enrichment_conflict",
+            source_kind="enrichment",
+            record_type="company",
+            record_id=crm["college"]["id"],
+            suggestion={"field": "city", "value": "Coimbatore", "label": "City"},
+            current_values={"city": None},
+            **values,
+        )
+
+    def _export(self, crm, query=""):
+        r = crm["http"].get(f"{API}/export/workspace{ACADEMY}{query}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        return json.loads(r.content)["objects"]
+
+    def test_items_with_their_deal_choices_ids_only(self, crm):
+        item = self._item(crm)
+        [row] = self._export(crm)["review_items"]
+        assert (row["id"], row["record_id"], row["deal_choices"]) == (
+            item["id"],
+            crm["college"]["id"],
+            [],
+        )
+        assert "PSG Tech" not in json.dumps(row)
+        assert "crm_ai_usage" not in self._export(crm)
+
+    def test_one_object_and_its_audit_row(self, crm):
+        self._item(crm)
+        objects = self._export(crm, "&object=review_items")
+        assert set(objects) == {"review_items"}
+        [audit] = [a for a in crm["fake"].audit if a["action"] == "export.workspace"]
+        assert audit["target_table"] == "crm_review_items"
+
+    def test_a_trashed_target_is_left_out(self, crm):
+        self._item(crm)
+        crm["fake"].rows["crm_companies"][crm["college"]["id"]]["deleted_at"] = (
+            "2026-10-15T00:00:00+00:00"
+        )
+        assert self._export(crm)["review_items"] == []

@@ -43,6 +43,9 @@ class CrmContext:
     workspace: dict[str, Any]
     role: str
     channel: str
+    # Spec 009 FR-CRMAI-REV-05: set only on a copy the Review Queue's approval
+    # makes (`dataclasses.replace`), so the change's audit row carries the item.
+    suggestion_id: str | None = None
 
     @property
     def workspace_id(self) -> str:

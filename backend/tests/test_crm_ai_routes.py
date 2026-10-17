@@ -188,9 +188,10 @@ class TestBootstrap:
     def test_ai_route_bootstrap_phases_and_no_budget_for_non_admins(self, crm, who):
         http, *_ = crm
         got = http.get(f"/api/v1/crm/bootstrap{LABS}", headers=as_(who["id"])).json()
+        # S1b: the Review Queue shows while a phase is on, never to a Viewer.
         assert got["ai"] == {
             "phases": {"1": True, "2": False, "3": True, "4": False},
-            "review_visible": False,
+            "review_visible": who is not VIEWER,
             "open_review_count": 0,
         }
         assert "ai_budget_reached" not in got

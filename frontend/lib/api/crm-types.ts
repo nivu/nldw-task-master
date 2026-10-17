@@ -773,6 +773,9 @@ export interface CrmTimelineEntry {
   type: CrmTimelineType;
   summary: string;
   changes: { field: string; label: string; before: unknown; after: unknown }[];
+  /** 009 FR-CRMAI-REV-05: set when the change was an approved AI suggestion. */
+  suggestion_id?: string;
+  approved_suggestion?: boolean;
 }
 
 /** GET /crm/{object}/{id} — the record page in one call. */
@@ -1561,4 +1564,116 @@ export interface CrmBootstrapAi {
   phases: CrmAiPhases;
   review_visible: boolean;
   open_review_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1b — the Review Queue and Today's To review (009 contracts §0, §1, §2.2)
+// ---------------------------------------------------------------------------
+
+/** Where an AI value came from (P-2). */
+export type AiSourceKind = "email_thread" | "meeting" | "enrichment" | "ai_field" | "rule";
+
+/** The provenance every AI value carries; the AI marker shows it (009 contracts §0). */
+export interface AiProvenance {
+  source_kind: AiSourceKind;
+  /** Null for a deterministic rule (R-2, R-3, R-4). */
+  model: string | null;
+  generated_at: string | null;
+  source?: { record_type: ViewObjectKind; record_id: string } | { thread_key: string } | null;
+}
+
+export type ReviewItemType =
+  | "next_step_change"
+  | "task_from_commitment"
+  | "task_from_meeting"
+  | "deal_link"
+  | "enrichment_conflict"
+  | "rule_suggestion";
+
+export type ReviewItemStatus = "open" | "approved" | "dismissed" | "expired";
+
+/** An open deal the suggestion may apply to (Q-07, FR-CRMAI-MEET-04). */
+export interface ReviewDealChoice {
+  id: string;
+  name: string;
+  next_step: string | null;
+  next_step_on: string | null;
+}
+
+/** One Review Queue item — 009 contracts §2.2.1 (FR-CRMAI-REV-01).
+ *  `suggestion` and `current` hold the type's fields (data-model §3.2.1);
+ *  every string in them is generated plain text. */
+export interface CrmReviewItem {
+  id: string;
+  type: ReviewItemType;
+  type_label: string;
+  status: ReviewItemStatus;
+  /** Null: the item belongs to the workspace's Admins (FR-CRMAI-REV-02). */
+  owner: { id: string; name: string } | null;
+  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string };
+  deal_choices: ReviewDealChoice[];
+  suggestion: Record<string, unknown>;
+  current: Record<string, unknown>;
+  source: {
+    kind: "email_thread" | "meeting" | "enrichment" | "rule";
+    label: string;
+    link: { thread_key?: string; record_type?: ViewObjectKind; record_id?: string } | null;
+  };
+  ai: AiProvenance | null;
+  /** The last refusal of an approval; the item stays open (FR-CRMAI-REV-06). */
+  refusal: string | null;
+  created_at: string;
+  expires_on: string;
+  decided_at: string | null;
+  decided_by: { id: string; name: string | null } | null;
+}
+
+/** GET /crm/review — a Viewer gets no items. */
+export interface CrmReviewList {
+  items: CrmReviewItem[];
+  total: number;
+}
+
+/** GET /crm/review query: `all` and `decided` are an Admin's (D-3). */
+export interface ReviewListQuery {
+  scope?: "mine" | "all";
+  status?: "open" | "decided";
+  limit?: number;
+}
+
+/** POST /crm/review/{id}/approve. `edits` is "Edit and approve". */
+export interface ReviewApproveIn {
+  deal_id?: string;
+  option?: string;
+  edits?: Record<string, unknown>;
+}
+
+/** What approving produced, through the manual path. */
+export interface ReviewApproveResult {
+  item: CrmReviewItem;
+  result: {
+    opportunity?: CrmOpportunity;
+    company?: CrmCompany;
+    person?: CrmPerson;
+    member?: CrmCampaignMember;
+    task?: CrmTask;
+    note?: CrmNote;
+    used?: boolean;
+  };
+}
+
+/** One line of To review: an item, opening the queue. */
+export interface ToReviewItem {
+  record_type: "review_item";
+  record_id: string;
+  title: string;
+  detail: string;
+  created_at: string;
+}
+
+/** Today's sixth section (FR-CRMAI-REV-09): the count and the three oldest. */
+export interface ToReviewSection {
+  key: "to_review";
+  count: number;
+  items: ToReviewItem[];
 }

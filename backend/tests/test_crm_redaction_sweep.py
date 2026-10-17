@@ -86,6 +86,9 @@ WRITES = {
     "/api/v1/crm/mailboxes",
     "/api/v1/crm/email-sync/run",
     "/api/v1/crm/tva-admin/workspaces/{workspace_id}/invitations",
+    # Spec 009 S1b: deciding a Review Queue item.
+    "/api/v1/crm/review/{item_id}/approve",
+    "/api/v1/crm/review/{item_id}/dismiss",
 }
 #: The TVA admin panel spans workspaces and holds no amount; a Viewer is
 #: refused it anyway (test_crm_tva_admin.py).
@@ -355,6 +358,8 @@ def _read_tools(made: dict) -> list[tuple[str, dict]]:
         [("crm_workspaces", {}), ("crm_today", {}), ("crm_search", {"query": "acme"})]
         + gets
         + lists
+        # Spec 009 S1b: a Viewer has no queue (FR-CRMAI-REV-03).
+        + [("crm_review_list", {})]
     )
 
 

@@ -206,6 +206,16 @@ def crm(monkeypatch):
         for m in fake.rows["crm_memberships"].values()
         if m["workspace_id"] == academy["id"] and m["user_id"] != OWNER["id"]
     )
+    # Spec 009 S1b: a Review Queue item.
+    review_item = fake.add_review_item(
+        academy,
+        type="next_step_change",
+        record_type="opportunity",
+        record_id=deal["id"],
+        suggestion={"next_step": "Zqxacad visit", "next_step_on": "2026-10-20"},
+        current_values={deal["id"]: {"next_step": "Zqxacad call", "next_step_on": "2026-10-14"}},
+        deal_choices=[deal["id"]],
+    )
     made = {
         "companies": company,
         "people": person,
@@ -222,6 +232,7 @@ def crm(monkeypatch):
         "option": option,
         "mailbox": mailbox,
         "membership": membership,
+        "review_item": review_item,
     }
     made_in_labs = {"company": labs_co}
     return http, fake, {**made, "_labs": made_in_labs}
@@ -250,6 +261,7 @@ def _value(param: str, path: str, made: dict) -> str:
             "run_id": "run",
             "mapping_id": "mapping",
             "mailbox_id": "mailbox",
+            "item_id": "review_item",
         }[param]
     ]["id"]
 
@@ -580,6 +592,7 @@ def _tool_calls(made: dict) -> list[tuple[str, dict]]:
                 "object": "companies",
             },
         ),
+        ("crm_review_decide", {"item_id": made["review_item"]["id"], "decision": "approve"}),
         (
             "crm_create",
             {
@@ -601,6 +614,7 @@ TOOL_READS = [
     ("crm_today", {"workspace": "labs"}),
     ("crm_search", {"query": MARK, "workspace": "labs"}),
     ("crm_dashboard", {"workspace": "labs"}),
+    ("crm_review_list", {"workspace": "labs"}),
 ] + [
     ("crm_list", {"object": obj, "workspace": "labs"})
     for obj in ("company", "person", "opportunity", "task", "note", "campaign", "campaign_member")
@@ -610,14 +624,14 @@ TOOL_READS = [
 class TestThroughEveryTool:
     def test_every_tool_is_swept(self, crm):
         _, _, made = crm
-        assert len(_tool_calls(made)) == 16  # the parametrize below
+        assert len(_tool_calls(made)) == 17  # the parametrize below
         named = {n for n, _ in _tool_calls(made)} | {n for n, _ in TOOL_READS}
         every = {t.name for t in asyncio.run(server.mcp.list_tools()) if t.name.startswith("crm_")}
         # crm_run_email_sync names no record and reads none: it is refused
         # in Academy's name below.
         assert every - named == {"crm_run_email_sync"}
 
-    @pytest.mark.parametrize("index", range(16))
+    @pytest.mark.parametrize("index", range(17))
     def test_a_tool_naming_an_academy_record_in_labs(self, crm, index):
         _, fake, made = crm
         name, kwargs = _tool_calls(made)[index]

@@ -172,3 +172,13 @@ celery_app.conf.task_routes = {
     **celery_app.conf.task_routes,
     "crm_ai.*": {"queue": CRM_AI_QUEUE},
 }
+celery_app.conf.beat_schedule.update(
+    {
+        # FR-CRMAI-REV-07: Review Queue items expire at 14 days and are
+        # tombstoned at 90, per workspace, daily.
+        "crm-ai-review-expiry": {
+            "task": "crm_ai.review_expiry",
+            "schedule": crontab(hour=1, minute=30),
+        },
+    }
+)

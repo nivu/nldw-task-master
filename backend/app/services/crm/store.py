@@ -92,6 +92,13 @@ ACCOUNT_LEVEL = frozenset(
         "find_mailbox_by_email",
         # An export's audit row (043), in the actor's workspace.
         "record_export",
+        # Spec 009 (061): the Review Queue's functions scope by the actor's
+        # workspace themselves.
+        "review_upsert",
+        "review_claim",
+        "review_release",
+        "review_expire",
+        "review_tombstone",
     }
 )
 
@@ -1996,3 +2003,104 @@ def ai_spend(workspace_id: str, since: datetime) -> dict[str, Any]:
         "total_usd": "0",
         "by_job": {},
     }
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the Review Queue (009 data-model §3.2, §3.2.3)
+#
+# Items are a log with explicit audit rows: they are read directly and
+# written only through the five functions of migration 061, which write the
+# audit rows of a decision themselves.
+# ---------------------------------------------------------------------------
+
+#: 061 `crm_review_claim`'s CRM09: another decision got there first.
+ALREADY_DECIDED = "This suggestion was already decided."
+
+
+def list_review_items(
+    workspace_id: str,
+    *,
+    status: str = "open",
+    since: datetime | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """The workspace's items: `open` oldest first; `decided` (approved,
+    dismissed or expired, tombstones left out) decided at or after `since`,
+    newest first; `all` every item, tombstones included, in id order."""
+    query = supabase.table("crm_review_items").select("*").eq("workspace_id", workspace_id)
+    if status == "open":
+        query = query.eq("status", "open").order("created_at").order("id")
+    elif status == "decided":
+        query = query.neq("status", "open").is_("tombstoned_at", "null")
+        if since is not None:
+            query = query.gte("decided_at", since.isoformat())
+        query = query.order("decided_at", desc=True).order("id")
+    else:
+        query = query.order("id")
+    return query.limit(limit).execute().data or []
+
+
+def get_review_item(workspace_id: str, item_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_review_items")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("id", item_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_review_item_deals(workspace_id: str, item_ids: list[str]) -> list[dict[str, Any]]:
+    """The deal choices of these items (`crm_review_item_deals`)."""
+    found: list[dict[str, Any]] = []
+    for batch in text_batches(sorted(set(item_ids))):
+        found += (
+            supabase.table("crm_review_item_deals")
+            .select("item_id, opportunity_id")
+            .eq("workspace_id", workspace_id)
+            .in_("item_id", batch)
+            .execute()
+            .data
+            or []
+        )
+    return found
+
+
+def review_upsert(actor: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """061 `crm_review_upsert` — `[{id, created}]`; an item decided from the
+    same source version comes back `{id: None, created: False}`."""
+    return rpc("crm_review_upsert", {"p_actor": actor, "p_items": items}) or []
+
+
+def review_claim(actor: dict[str, Any], item_id: str, status: str) -> dict[str, Any]:
+    """061 `crm_review_claim` — the item, now `approved` or `dismissed`; only
+    one claim wins, the other is told it was already decided (409)."""
+    try:
+        return rpc("crm_review_claim", {"p_actor": actor, "p_item_id": item_id, "p_status": status})
+    except CrmRefused as refused:
+        if refused.status == 409:
+            raise CrmRefused(409, ALREADY_DECIDED) from None
+        raise
+
+
+def review_release(
+    actor: dict[str, Any], item_id: str, refusal: str | None, result: dict[str, Any] | None
+) -> None:
+    """061 `crm_review_release` — with a refusal the claimed item opens again
+    and shows it; without one it records what the approval produced."""
+    rpc(
+        "crm_review_release",
+        {"p_actor": actor, "p_item_id": item_id, "p_refusal": refusal, "p_result": result},
+    )
+
+
+def review_expire(actor: dict[str, Any], before: datetime) -> int:
+    """061 `crm_review_expire` — open items created before `before` expire."""
+    return int(rpc("crm_review_expire", {"p_actor": actor, "p_before": before.isoformat()}) or 0)
+
+
+def review_tombstone(actor: dict[str, Any], before: datetime) -> int:
+    """061 `crm_review_tombstone` — items decided before `before` lose their text."""
+    return int(rpc("crm_review_tombstone", {"p_actor": actor, "p_before": before.isoformat()}) or 0)
