@@ -813,6 +813,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
   summaries?: CrmThreadSummary[];
   /** 009 S2b, phase 2 on: a company's enriched values (FR-CRMAI-ENR-03, -04). */
   enrichment?: CrmEnrichment | null;
+  /** 009 S3a, phase 3 on: a company's or deal's AI fields (FR-CRMAI-FIELD-05). */
+  ai_fields?: CrmAiFieldValue[];
 }
 
 export interface CrmPage<T> {
@@ -1773,4 +1775,61 @@ export interface CrmEnrichmentRun {
   queued: number;
   skipped_no_website: number;
   already_enriched: number;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S3a — AI fields (009 contracts §1, §2.5; FR-CRMAI-FIELD)
+// ---------------------------------------------------------------------------
+
+export type AiFieldRecordType = "company" | "opportunity";
+
+export type AiFieldOutputType = "text" | "single_select" | "number";
+
+/** GET /crm/ai-fields — one definition (FR-CRMAI-FIELD-01); Admins only. */
+export interface CrmAiField {
+  id: string;
+  key: string;
+  name: string;
+  record_type: AiFieldRecordType;
+  prompt: string;
+  output_type: AiFieldOutputType;
+  /** 2 to 12 for a single select; empty otherwise. */
+  options: string[];
+  enabled: boolean;
+}
+
+/** POST /crm/ai-fields. */
+export interface CrmAiFieldIn {
+  name: string;
+  record_type: AiFieldRecordType;
+  prompt: string;
+  output_type: AiFieldOutputType;
+  options?: string[];
+  enabled?: boolean;
+}
+
+/** PATCH /crm/ai-fields/{id}: record type and output type are fixed after create. */
+export interface CrmAiFieldPatch {
+  name?: string;
+  prompt?: string;
+  options?: string[];
+  enabled?: boolean;
+}
+
+/** One entry of a company's or deal's `ai_fields` on its record read (009 contracts §1).
+ *  Text and the reason are generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmAiFieldValue {
+  key: string;
+  name: string;
+  output_type: AiFieldOutputType;
+  /** A number output is 0–100, shown on the record page only (Q-27). */
+  value: string | number | null;
+  reason?: string | null;
+  ai: AiProvenance | null;
+}
+
+/** POST /crm/{companies|opportunities}/{id}/ai-fields/recompute (Q-38). */
+export interface CrmAiFieldRecompute {
+  queued: boolean;
+  next_allowed_at: string | null;
 }

@@ -670,6 +670,8 @@ class TestExport:
             "review_items",
             "email_summaries",
             "enrichment",
+            "ai_fields",
+            "ai_field_values",
         }
         assert [c["name"] for c in data["objects"]["companies"]] == ["PSG Tech"]
         r = http.get(f"{API}/export/workspace{ACADEMY}&object=people", headers=me)
@@ -973,3 +975,72 @@ class TestTheEnrichmentInTheExport:
             "2026-10-15T00:00:00+00:00"
         )
         assert self._export(crm)["enrichment"] == []
+
+
+class TestTheAiFieldsInTheExport:
+    """Spec 009 FR-CRMAI-CHG-11, data-model §4 — the workspace export holds
+    the AI field definitions and their values, ids only, and leaves out a
+    value of a record in the Trash."""
+
+    def _export(self, crm, query=""):
+        r = crm["http"].get(f"{API}/export/workspace{ACADEMY}{query}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        return json.loads(r.content)["objects"]
+
+    def _value(self, crm):
+        fake = crm["fake"]
+        fake.seed_ai_fields(crm["academy"])
+        field = fake.ai_field(crm["academy"], "account_brief")
+        fake.write_ai_field_value(
+            crm["academy"]["id"],
+            {
+                "field_id": field["id"],
+                "record_type": "company",
+                "record_id": crm["college"]["id"],
+                "value_text": "An engineering college in Coimbatore.",
+                "value_number": None,
+                "reason": None,
+                "inputs_hash": "sha256:x",
+                "model": "claude-sonnet-5-5",
+                "generated_at": "2026-10-15T06:00:00+00:00",
+                "dirty_at": None,
+                "next_allowed_at": "2026-10-15T07:00:00+00:00",
+            },
+        )
+        return field
+
+    def test_ai_fields_and_their_values_ids_only(self, crm):
+        field = self._value(crm)
+        objects = self._export(crm)
+        assert {f["key"] for f in objects["ai_fields"]} == {
+            "account_brief",
+            "deal_outlook",
+            "what_is_blocking",
+        }
+        [row] = objects["ai_field_values"]
+        assert (row["field_id"], row["record_type"], row["record_id"], row["value_text"]) == (
+            field["id"],
+            "company",
+            crm["college"]["id"],
+            "An engineering college in Coimbatore.",
+        )
+        assert "PSG Tech" not in json.dumps(row)
+
+    @pytest.mark.parametrize(
+        ("name", "table"),
+        [("ai_fields", "crm_ai_fields"), ("ai_field_values", "crm_ai_field_values")],
+    )
+    def test_one_object_and_its_audit_row(self, crm, name, table):
+        self._value(crm)
+        assert set(self._export(crm, f"&object={name}")) == {name}
+        [audit] = [a for a in crm["fake"].audit if a["action"] == "export.workspace"]
+        assert audit["target_table"] == table
+
+    def test_a_value_of_a_record_in_the_trash_is_left_out(self, crm):
+        self._value(crm)
+        crm["fake"].rows["crm_companies"][crm["college"]["id"]]["deleted_at"] = (
+            "2026-10-15T00:00:00+00:00"
+        )
+        objects = self._export(crm)
+        assert objects["ai_field_values"] == []
+        assert len(objects["ai_fields"]) == 3

@@ -58,7 +58,7 @@ from app.domain.crm import enrichment as rules
 from app.domain.crm import review as review_rules
 from app.schemas.crm import EnrichmentOutput
 from app.services import supabase as db
-from app.services.crm import CrmRefused, ai, jobs, review, store, web_fetch
+from app.services.crm import CrmRefused, ai, ai_fields, jobs, review, store, web_fetch
 from app.services.crm import records as base
 
 logger = logging.getLogger("nldw-task-master")
@@ -410,6 +410,8 @@ def _enrich(
     )
     if not written:
         return {"status": None, "items": 0}
+    # Spec 009 FR-CRMAI-FIELD-04: the company's AI fields are due.
+    ai_fields.mark_dirty(ws_id, [{"record_type": "company", "record_id": row["company_id"]}], now)
     found = rules.conflicts(company, values, industries, sizes)
     made = review.upsert(
         ws_id,

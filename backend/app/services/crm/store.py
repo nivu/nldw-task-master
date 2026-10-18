@@ -2375,3 +2375,109 @@ def requeue_enrichment(workspace_id: str, rows: list[dict[str, Any]], at: dateti
         ],
         on_conflict="workspace_id,company_id",
     ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI fields (009 data-model §3.6)
+#
+# A field's definition is audited configuration, written through `apply` by
+# Admins (FR-CRMAI-FIELD-01). Its values are a log with no audit trigger and
+# no source text: the job and the recompute route write them directly, as
+# the enrichment table is written. Neither touches `crm_companies` or
+# `crm_opportunities` (FR-CRMAI-FIELD-05).
+# ---------------------------------------------------------------------------
+
+_AI_FIELD_COLUMNS = (
+    "id, workspace_id, key, name, record_type, prompt, output_type, options, max_lines, "
+    "depends_on, with_reason, enabled, position, created_at, updated_at"
+)
+_AI_VALUE_COLUMNS = (
+    "id, workspace_id, field_id, record_type, record_id, value_text, value_number, reason, "
+    "inputs_hash, model, generated_at, dirty_at, next_allowed_at"
+)
+
+
+def list_ai_fields(workspace_id: str) -> list[dict[str, Any]]:
+    """The workspace's AI fields, enabled or not, in their order."""
+    return (
+        supabase.table("crm_ai_fields")
+        .select(_AI_FIELD_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .order("position")
+        .order("name")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
+def get_ai_field(workspace_id: str, field_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_ai_fields")
+        .select(_AI_FIELD_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", field_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def ai_field_values(
+    workspace_id: str, record_type: str | None = None, record_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """The values of some records of one type; without a type, every value
+    of the workspace (the job and the export)."""
+    if record_ids == []:
+        return []
+
+    def query_for() -> Any:
+        query = (
+            supabase.table("crm_ai_field_values")
+            .select(_AI_VALUE_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        )
+        if record_type is not None:
+            query = query.eq("record_type", record_type)
+        return query
+
+    if record_ids is None:
+        return _every_page(query_for)
+    return sorted(_in_batches(query_for, "record_id", record_ids), key=lambda r: r["id"])
+
+
+def write_ai_field_value(workspace_id: str, row: dict[str, Any]) -> None:
+    """One record's value of one field (`{field_id, record_type, record_id,
+    value_text, value_number, reason, inputs_hash, model, generated_at,
+    dirty_at, next_allowed_at}`), replacing the one before it."""
+    supabase.table("crm_ai_field_values").upsert(
+        {**row, "workspace_id": workspace_id}, on_conflict="field_id,record_id"
+    ).execute()
+
+
+def mark_ai_fields_dirty(
+    workspace_id: str,
+    record_type: str,
+    record_ids: list[str],
+    at: datetime,
+    *,
+    field_ids: list[str] | None = None,
+) -> None:
+    """Q-38 — these records' values (of these fields, or all) are due a
+    recompute once their hour is over; one already marked keeps its mark."""
+    if not record_ids or field_ids == []:
+        return
+    wanted = sorted(set(record_ids))
+    for i in range(0, len(wanted), _ID_BATCH):
+        query = (
+            supabase.table("crm_ai_field_values")
+            .update({"dirty_at": at.isoformat()})
+            .eq("workspace_id", workspace_id)
+            .eq("record_type", record_type)
+            .in_("record_id", wanted[i : i + _ID_BATCH])
+            .is_("dirty_at", "null")
+        )
+        if field_ids is not None:
+            query = query.in_("field_id", sorted(set(field_ids)))
+        query.execute()

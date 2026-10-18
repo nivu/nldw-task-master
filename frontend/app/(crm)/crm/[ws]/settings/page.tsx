@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { AiBudgetBanner } from "@/components/crm/ai-budget-banner";
+import { AiFieldsEditor } from "@/components/crm/ai-fields-editor";
 import { AiSettings } from "@/components/crm/ai-settings";
 import { AuditTable } from "@/components/crm/audit-table";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
@@ -22,6 +23,7 @@ import {
   getCrmFxRates,
   addCrmMailbox,
   getCrmAi,
+  listCrmAiFields,
   getCrmJobs,
   getCrmLists,
   getCrmMailboxes,
@@ -73,6 +75,7 @@ const TABS = [
   "mailboxes",
   "jobs",
   "ai",
+  "ai-fields",
   "audit",
 ];
 
@@ -82,7 +85,8 @@ const TABS = [
  * automation switches (FR-CRM-AUTO-02), the Gmail mailboxes and the sync
  * switch (FR-CRM-SYNC-01, -03), the job log (FR-CRM-JOB-01) and the
  * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02); from 009
- * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01).
+ * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01)
+ * and the AI field definitions (FR-CRMAI-FIELD-01).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -124,6 +128,7 @@ export default function SettingsPage() {
           <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
+          <TabsTrigger value="ai-fields">AI fields</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
         <TabsContent value="members" className="pt-4">
@@ -158,6 +163,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="ai" className="pt-4">
           <AiTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="ai-fields" className="pt-4">
+          <AiFieldsTab workspace={ws} />
         </TabsContent>
         <TabsContent value="audit" className="pt-4">
           <AuditTab workspace={ws} />
@@ -769,6 +777,26 @@ function AiTab({ workspace }: { workspace: string }) {
             }}
           />
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 009 FR-CRMAI-FIELD-01 — the AI field definitions, the four seeds among them. */
+function AiFieldsTab({ workspace }: { workspace: string }) {
+  const { data, error, reload } = useAsync(() => listCrmAiFields(workspace), [workspace]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">AI fields</CardTitle>
+        <CardDescription>
+          Values the AI computes for each company or deal while phase 3 is on, shown read-only on
+          record pages only. They never change a stage, probability, flag or colour.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        {data && <AiFieldsEditor workspace={workspace} fields={data} onChanged={reload} />}
       </CardContent>
     </Card>
   );

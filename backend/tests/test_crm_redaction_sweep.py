@@ -91,6 +91,10 @@ WRITES = {
     "/api/v1/crm/review/{item_id}/dismiss",
     # Spec 009 S2b: Enrich selected.
     "/api/v1/crm/enrichment/run",
+    # Spec 009 S3a: an AI field's definition; a record's recompute.
+    "/api/v1/crm/ai-fields",
+    "/api/v1/crm/companies/{record_id}/ai-fields/recompute",
+    "/api/v1/crm/opportunities/{record_id}/ai-fields/recompute",
 }
 #: The TVA admin panel spans workspaces and holds no amount; a Viewer is
 #: refused it anyway (test_crm_tva_admin.py).

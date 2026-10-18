@@ -253,6 +253,29 @@ def crm(monkeypatch):
         website="https://zqxacad.edu/",
         values={"description": "Zqxacad trains engineers.", "products": ["Zqxacad course"]},
     )
+    # Spec 009 S3a: Academy's AI fields, with a value on its company and
+    # phase 3 on in both workspaces.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True, "3": True})
+    fake.seed_ai_fields(academy)
+    fake.seed_ai_fields(labs)
+    brief = fake.ai_field(academy, "account_brief")
+    fake.write_ai_field_value(
+        academy["id"],
+        {
+            "field_id": brief["id"],
+            "record_type": "company",
+            "record_id": company["id"],
+            "value_text": "Zqxacad trains engineers.",
+            "value_number": None,
+            "reason": None,
+            "inputs_hash": "sha256:zqxacad",
+            "model": "claude-sonnet-5-5",
+            "generated_at": "2026-10-13T09:05:00+00:00",
+            "dirty_at": None,
+            "next_allowed_at": "2026-10-13T10:05:00+00:00",
+        },
+    )
     made = {
         "companies": company,
         "people": person,
@@ -271,6 +294,7 @@ def crm(monkeypatch):
         "membership": membership,
         "review_item": review_item,
         "thread": {"id": f"{mailbox['id']}:t-zqxacad"},
+        "ai_field": brief,
     }
     made_in_labs = {"company": labs_co}
     return http, fake, {**made, "_labs": made_in_labs}
@@ -301,6 +325,7 @@ def _value(param: str, path: str, made: dict) -> str:
             "mailbox_id": "mailbox",
             "item_id": "review_item",
             "thread_key": "thread",
+            "field_id": "ai_field",
         }[param]
     ]["id"]
 
@@ -324,6 +349,7 @@ def _body(method: str, path: str, made: dict) -> dict | None:
         "views/{view_id}": {"name": "X"},
         "imports/{run_id}/apply": {"format": "csv", "content": "Name\nX\n", "object": "companies"},
         "mailboxes/{mailbox_id}": {"labels": ["X"]},
+        "ai-fields/{field_id}": {"name": "X"},
     }
     if tail in bodies:
         return bodies[tail]

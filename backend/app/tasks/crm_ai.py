@@ -14,6 +14,7 @@ through `@crm_job` (services/crm/jobs.py).
 | `crm_ai.meetings` | every 15 minutes | `meetings` (one Fireflies poll, one run per workspace) |
 | `crm_ai.enrichment` | every 15 minutes | starts `enrichment` (a run or a skip per workspace) |
 | `crm_ai.enrichment_batch` | enqueued, a minute apart | ends its workspace's `enrichment` run |
+| `crm_ai.ai_fields` | every 15 minutes | `ai_fields` |
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import enrichment, jobs, meetings, review, summaries
+from app.services.crm import ai_fields, enrichment, jobs, meetings, review, summaries
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -97,3 +98,20 @@ def enrichment_batch(args: dict) -> dict:
     minute later or the run's end (FR-CRMAI-ENR-07). `args` holds ids, the
     run's start and counts, never text."""
     return enrichment.batch(args)
+
+
+@jobs.crm_job("ai_fields")
+def _ai_fields(workspace: dict, now: datetime) -> dict:
+    """FR-CRMAI-FIELD-03 to -05: the workspace's AI field values computed
+    where their inputs changed, at most once an hour per record, behind
+    phase 3 (Q-38)."""
+    return ai_fields.run(workspace, now)
+
+
+@celery_app.task(name="crm_ai.ai_fields", ignore_result=True)
+def compute_ai_fields() -> dict:
+    """Every 15 minutes, per workspace. Idempotent: a value whose inputs did
+    not change and that nobody marked is not computed again."""
+    result = _ai_fields(datetime.now(UTC))
+    logger.info('{"event": "crm_ai_fields_done", "failed": %d}', len(result["failed"]))
+    return result

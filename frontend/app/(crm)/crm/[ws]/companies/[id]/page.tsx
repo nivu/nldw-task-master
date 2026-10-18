@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
+import { AiFieldsPanel } from "@/components/crm/ai-fields-panel";
 import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
@@ -130,7 +131,8 @@ function companyGroups(
  * Members merge a duplicate into it, or it into one; Merge and Delete are
  * also the command menu's quick actions here. (009, phase 2) Its enriched
  * values sit under the header, each promotable by an Admin or Member
- * (FR-CRMAI-ENR-04).
+ * (FR-CRMAI-ENR-04); (phase 3) so do its AI fields, read-only, which an
+ * Admin or Member may recompute (FR-CRMAI-FIELD-04, -05).
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -191,7 +193,7 @@ export default function CompanyPage() {
         title={company.name}
         subtitle={company.domain ?? undefined}
         notice={
-          (page.merged_from || page.enrichment) && (
+          (page.merged_from || page.enrichment || page.ai_fields) && (
             <>
               {page.merged_from && (
                 <p className="rounded-md bg-muted p-2 text-xs">
@@ -207,6 +209,16 @@ export default function CompanyPage() {
                   reviewVisible={bootstrap.ai.review_visible}
                   timeZone={bootstrap.me.timezone}
                   onPromote={save}
+                />
+              )}
+              {page.ai_fields && (
+                <AiFieldsPanel
+                  workspace={ws}
+                  object="companies"
+                  recordId={company.id}
+                  fields={page.ai_fields}
+                  canEdit={canEdit}
+                  timeZone={bootstrap.me.timezone}
                 />
               )}
             </>

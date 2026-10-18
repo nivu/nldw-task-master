@@ -25,6 +25,10 @@ import type {
   CrmCampaignMember,
   CrmAuditEntry,
   CrmAuditFilters,
+  CrmAiField,
+  CrmAiFieldIn,
+  CrmAiFieldPatch,
+  CrmAiFieldRecompute,
   CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
@@ -846,3 +850,21 @@ export const runCrmEnrichment = (workspace: string, companyIds: string[]) =>
     method: "POST",
     ...body({ company_ids: companyIds }),
   });
+
+// ---------------------------------------------------------------------------
+// 009 S3a — AI fields (009 contracts §2.5; FR-CRMAI-FIELD)
+// ---------------------------------------------------------------------------
+
+/** The workspace's AI field definitions; Admins only (web only, FR-CRMAI-MCP-04). */
+export const listCrmAiFields = (workspace: string) => call<CrmAiField[]>(`/ai-fields${query(workspace)}`);
+
+export const createCrmAiField = (workspace: string, field: CrmAiFieldIn) =>
+  call<CrmAiField>(`/ai-fields${query(workspace)}`, { method: "POST", ...body(field) });
+
+/** There is no delete: a field is disabled, and its values stay hidden. */
+export const updateCrmAiField = (workspace: string, id: string, changes: CrmAiFieldPatch) =>
+  call<CrmAiField>(`/ai-fields/${id}${query(workspace)}`, { method: "PATCH", ...body(changes) });
+
+/** Admins and Members: now, or the trailing recompute when inside the hour (Q-38). */
+export const recomputeCrmAiFields = (workspace: string, object: "companies" | "opportunities", id: string) =>
+  call<CrmAiFieldRecompute>(`/${object}/${id}/ai-fields/recompute${query(workspace)}`, { method: "POST" });

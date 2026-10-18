@@ -11,10 +11,10 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, create_model, field_validator
 
 Timezone = Literal["Asia/Kolkata", "Australia/Sydney"]
 CrmRole = Literal["admin", "member", "viewer"]
@@ -1029,3 +1029,72 @@ class EnrichRunIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     company_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI fields (contracts §2.5; FR-CRMAI-FIELD)
+# ---------------------------------------------------------------------------
+
+
+class AiFieldOutput(BaseModel):
+    """FR-CRMAI-FIELD-01 — what the model must answer for one AI field: its
+    `value`, shaped by the field (`for_field`), and for Deal outlook a
+    one-line `reason`. `domain/crm/ai_fields.stored` checks the lines of a
+    text answer before anything is saved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | int | None
+
+    @classmethod
+    def for_field(
+        cls,
+        output_type: str,
+        options: list[str] | tuple[str, ...] = (),
+        *,
+        with_reason: bool = False,
+    ) -> type[AiFieldOutput]:
+        """The output model of one field: one of its options, a whole
+        number from 0 to 100 (or null), or text of at most 600 characters
+        (or null); with a reason of at most 200 when the field gives one."""
+        if output_type == "single_select":
+            value: Any = (Literal[tuple(options)], ...)  # type: ignore[valid-type]
+        elif output_type == "number":
+            value = (int | None, Field(ge=0, le=100))
+        else:
+            value = (str | None, Field(max_length=600))
+        extra: dict[str, Any] = (
+            {"reason": (str, Field(min_length=1, max_length=200))} if with_reason else {}
+        )
+        return create_model(  # type: ignore[call-overload]
+            f"AiField{output_type.title().replace('_', '')}Output",
+            __base__=cls,
+            value=value,
+            **extra,
+        )
+
+
+class AiFieldIn(BaseModel):
+    """`POST /crm/ai-fields` (contracts §2.5): the spec's attributes only
+    (FR-CRMAI-FIELD-01, D-3). Options belong to a single select, 2 to 12."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=60)
+    record_type: Literal["company", "opportunity"]
+    prompt: str = Field(min_length=1, max_length=2000)
+    output_type: Literal["text", "single_select", "number"]
+    options: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=100)
+    enabled: bool = True
+
+
+class AiFieldPatch(BaseModel):
+    """`PATCH /crm/ai-fields/{id}`: name, prompt, options, enabled. The
+    record type and output type are fixed once the field exists (422)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    prompt: str | None = Field(default=None, min_length=1, max_length=2000)
+    options: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=100)
+    enabled: bool | None = None

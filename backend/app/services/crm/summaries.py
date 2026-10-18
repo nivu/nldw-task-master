@@ -42,7 +42,7 @@ from app.domain.crm import ai_rules
 from app.domain.crm import summaries as rules
 from app.schemas.crm import SummaryOutput, ThreadSummaryOut
 from app.services import supabase as db
-from app.services.crm import CrmRefused, ai, email_sync, gmail, jobs, store
+from app.services.crm import CrmRefused, ai, ai_fields, email_sync, gmail, jobs, store
 from app.services.crm import records as base
 
 logger = logging.getLogger("nldw-task-master")
@@ -183,7 +183,10 @@ def _summarise(
         ),
     }
     # Every string came masked from ai.call (FR-CRMAI-LLM-05).
-    return store.store_summary(_sync(ws_id), plan)
+    made = store.store_summary(_sync(ws_id), plan)
+    # Spec 009 FR-CRMAI-FIELD-04: the linked records' AI fields are due.
+    ai_fields.mark_dirty(ws_id, plan["links"], now)
+    return made
 
 
 def _linked(ws_id: str, links: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

@@ -198,5 +198,11 @@ celery_app.conf.beat_schedule.update(
             "task": "crm_ai.enrichment",
             "schedule": crontab(minute="*/15"),
         },
+        # FR-CRMAI-FIELD-04: AI field values recomputed where their inputs
+        # changed, at most once an hour per record (Q-38).
+        "crm-ai-ai-fields": {
+            "task": "crm_ai.ai_fields",
+            "schedule": crontab(minute="*/15"),
+        },
     }
 )

@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.domain.crm import ai_fields as ai_field_rules
 from app.domain.crm import enrichment as enrichment_rules
 from app.domain.crm import pipeline
 from app.main import app
@@ -147,6 +148,9 @@ TABLES = (
     "crm_email_summary_links",
     # Spec 009: company enrichment (064), a log queued by a trigger.
     "crm_company_enrichment",
+    # Spec 009: AI fields (065), audited, and their values, a log.
+    "crm_ai_fields",
+    "crm_ai_field_values",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -355,6 +359,15 @@ DEFAULTS = {
         "page_token": None,
         "backfilled_at": None,
         "last_synced_at": None,
+    },
+    # 009 (065): what an Admin's field keeps (D-3).
+    "crm_ai_fields": {
+        "options": [],
+        "max_lines": None,
+        "depends_on": None,
+        "with_reason": False,
+        "enabled": True,
+        "position": 0,
     },
 }
 
@@ -1229,6 +1242,14 @@ class FakeCrmStore:
                             and link["record_id"] == target
                         ):
                             del self.rows["crm_email_summary_links"][link["id"]]
+                    # 065: its AI field values (a log).
+                    for value in list(self.rows["crm_ai_field_values"].values()):
+                        if (
+                            value["workspace_id"] == ws
+                            and value["record_type"] == kinds[table]
+                            and value["record_id"] == target
+                        ):
+                            del self.rows["crm_ai_field_values"][value["id"]]
                     # 061: the Review Queue items that target it.
                     for found in list(self.rows["crm_review_items"].values()):
                         if (
@@ -2489,6 +2510,21 @@ class FakeCrmStore:
                 for e in mine.values():
                     if e["company_id"] == gone_id:
                         e["company_id"] = keep_id
+            # 065: AI field values; the survivor's own value of a field wins,
+            # else the merged company's moves, marked for recompute.
+            values = self.rows["crm_ai_field_values"]
+            kept = {
+                v["field_id"]
+                for v in values.values()
+                if v["record_type"] == "company" and v["record_id"] == keep_id
+            }
+            for v in list(values.values()):
+                if v["record_type"] != "company" or v["record_id"] != gone_id:
+                    continue
+                if v["field_id"] in kept:
+                    del values[v["id"]]
+                else:
+                    v.update(record_id=keep_id, dirty_at=_now())
             # 041: campaign members; one the survivor has already keeps it.
             members = self.rows["crm_campaign_members"]
             for m in sorted(list(members.values()), key=lambda r: r["id"]):
@@ -3687,6 +3723,14 @@ class FakeCrmStore:
             and not row.get("occurred_on")
         ):
             broken("crm_notes_activity_date")
+        if table == "crm_ai_fields":
+            # 065.
+            if (row["output_type"] == "single_select") != (2 <= len(row["options"]) <= 12):
+                broken("crm_ai_fields_options")
+            if not re.fullmatch(r"[a-z][a-z0-9_]{1,40}", row["key"]):
+                broken("crm_ai_fields_key")
+            if row["name"] != row["name"].strip() or not 1 <= len(row["name"]) <= 60:
+                broken("crm_ai_fields_name")
 
     def _check_unique(self, table: str, row: dict[str, Any]) -> None:
         def clash(name: str) -> None:
@@ -3702,6 +3746,8 @@ class FakeCrmStore:
             "task_links": (("task_id", "record_type", "record_id"), "task_links_target"),
             "crm_note_links": (("note_id", "record_type", "record_id"), "crm_note_links_target"),
             "crm_note_mentions": (("note_id", "member_id"), "crm_note_mentions_pair"),
+            # 065.
+            "crm_ai_fields": (("workspace_id", "key"), "crm_ai_fields_key"),
         }
         if table == "task_links" and row["record_type"] == "tva_project":
             # 047 (TP-13): one project per task.
@@ -4709,6 +4755,101 @@ class FakeCrmStore:
                 )
             else:
                 row.update(values)
+
+    # -- Spec 009: AI fields (065) --------------------------------------------
+
+    def seed_ai_fields(self, workspace: dict[str, Any]) -> list[dict[str, Any]]:
+        """065's seeds in one workspace: ICP fit in Labs only. Not a store
+        name: a set-up helper."""
+        return [
+            self.add(
+                "crm_ai_fields",
+                workspace_id=workspace["id"],
+                created_at=_now(),
+                created_by=None,
+                updated_by=None,
+                enabled=True,
+                **json.loads(json.dumps(f)),
+            )
+            for f in ai_field_rules.defaults_for(workspace["key"])
+        ]
+
+    def ai_field(self, workspace: dict[str, Any], key: str) -> dict[str, Any]:
+        return next(
+            f
+            for f in self.rows["crm_ai_fields"].values()
+            if f["workspace_id"] == workspace["id"] and f["key"] == key
+        )
+
+    def list_ai_fields(self, workspace_id: str) -> list[dict[str, Any]]:
+        rows = self._of("crm_ai_fields", workspace_id)
+        rows.sort(key=lambda f: (float(f.get("position") or 0), f["name"], f["id"]))
+        return json.loads(json.dumps(rows, default=str))
+
+    def get_ai_field(self, workspace_id: str, field_id: str) -> dict[str, Any] | None:
+        row = self.rows["crm_ai_fields"].get(field_id)
+        if row is None or row["workspace_id"] != workspace_id:
+            return None
+        return json.loads(json.dumps(row, default=str))
+
+    def ai_field_values(
+        self,
+        workspace_id: str,
+        record_type: str | None = None,
+        record_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            v
+            for v in self._of("crm_ai_field_values", workspace_id)
+            if (record_type is None or v["record_type"] == record_type)
+            and (record_ids is None or v["record_id"] in record_ids)
+        ]
+        return json.loads(json.dumps(sorted(rows, key=lambda v: v["id"]), default=str))
+
+    def write_ai_field_value(self, workspace_id: str, row: dict[str, Any]) -> None:
+        """The upsert on `(field_id, record_id)`, under 065's CHECKs, its
+        composite key and crm_check_refs."""
+        given = json.loads(json.dumps(row, default=str))
+        field = self.rows["crm_ai_fields"].get(given["field_id"])
+        assert field is not None and field["workspace_id"] == workspace_id, "23503"
+        record = self.rows[TARGETS[given["record_type"]]].get(given["record_id"])
+        if record is None or record["workspace_id"] != workspace_id:
+            raise store.refusal_for("CRM04", f"No such {given['record_type']} in this workspace.")
+        assert given.get("value_text") is None or len(given["value_text"]) <= 600
+        assert given.get("value_number") is None or 0 <= given["value_number"] <= 100
+        assert given.get("reason") is None or len(given["reason"]) <= 200
+        assert given["inputs_hash"] and given["next_allowed_at"]
+        found = next(
+            (
+                v
+                for v in self.rows["crm_ai_field_values"].values()
+                if v["field_id"] == given["field_id"] and v["record_id"] == given["record_id"]
+            ),
+            None,
+        )
+        if found is None:
+            self.add("crm_ai_field_values", workspace_id=workspace_id, **given)
+        else:
+            found.update(given)
+
+    def mark_ai_fields_dirty(
+        self,
+        workspace_id: str,
+        record_type: str,
+        record_ids: list[str],
+        at: datetime,
+        *,
+        field_ids: list[str] | None = None,
+    ) -> None:
+        for v in self.rows["crm_ai_field_values"].values():
+            if (
+                v["workspace_id"] == workspace_id
+                and v["record_type"] == record_type
+                and v["record_id"] in record_ids
+                and (field_ids is None or v["field_id"] in field_ids)
+                and not v.get("dirty_at")
+            ):
+                v["dirty_at"] = at.isoformat()
 
 
 #: 064's failure reasons (FR-CRMAI-ENR-06, FR-CRMAI-LLM-03).

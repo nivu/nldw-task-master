@@ -43,7 +43,7 @@ from app.domain.crm import meetings as rules
 from app.domain.crm.summaries import roster
 from app.schemas.crm import MeetingOutput
 from app.services import supabase as db
-from app.services.crm import ai, fireflies, jobs, store
+from app.services.crm import ai, ai_fields, fireflies, jobs, store
 from app.services.crm import records as base
 
 logger = logging.getLogger("nldw-task-master")
@@ -337,4 +337,7 @@ def _capture(
         ),
     }
     # Every generated string came masked from ai.call (FR-CRMAI-LLM-05).
-    return store.store_meeting_note(_sync(ws_id), plan)
+    made = store.store_meeting_note(_sync(ws_id), plan)
+    # Spec 009 FR-CRMAI-FIELD-04: the linked records' AI fields are due.
+    ai_fields.mark_dirty(ws_id, links, now)
+    return made

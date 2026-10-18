@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from app.api.crm import (
     ai,
+    ai_fields,
     audit,
     campaigns,
     capacity,
@@ -60,9 +61,10 @@ ROUTERS = [
     dashboard.router,
     export.router,
     # Spec 009: Settings, AI; the Review Queue; thread summaries; Enrich
-    # selected.
+    # selected; AI fields.
     ai.router,
     review.router,
     summaries.router,
     enrichment.router,
+    ai_fields.router,
 ]
