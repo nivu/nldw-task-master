@@ -21,8 +21,9 @@ beside it), so a task item is approved through 008's real `create_task`.
 No job makes items yet (S1b): the tests make them through
 `services/crm/review.upsert`, as the jobs will, or seed them directly.
 
-`008`'s morning brief is not on `008-tasks` yet, so the test that it shows
-To review is added by T165.
+`008`'s morning brief shows the same To review section as CRM Today
+(TestTheMorningBrief, T165), driven through 008's `GET /tasks/brief` and
+`task_brief` in 008's TaskWorld.
 """
 
 from __future__ import annotations
@@ -34,12 +35,16 @@ from datetime import UTC, datetime
 import pytest
 from crm_fake import FakeCrmStore, as_
 from crm_fake import client as crm_client
+from tasks_fake import ID, TaskWorld
+from tasks_fake import NOW as TASKS_NOW
 
 from app.domain.crm import ai_rules
 from app.domain.crm import review as rules
 from app.mcp import crm as tools
+from app.mcp import tasks as task_tools
 from app.services.crm import notifications
 from app.services.crm import review as service
+from app.services.crm import today as crm_today
 
 API = "/api/v1/crm"
 LABS = {"workspace": "labs"}
@@ -928,3 +933,94 @@ class TestRuleSuggestions:
         assert r.json()["detail"].startswith("new_opportunity: ")
         assert queue.item(item["id"])["status"] == "open"
         assert queue.fake.rows["crm_campaign_members"][member["id"]]["status"] == "engaged"
+
+
+# ---------------------------------------------------------------------------
+# FR-CRMAI-REV-09 — 008's morning brief shows the same To review (T052, T165)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def world(monkeypatch) -> TaskWorld:
+    """008's brief world (as `test_task_brief.py` builds it): phase 2 of
+    tasks on for the cast, and CRM Today on 008's fixed clock."""
+    w = TaskWorld(monkeypatch)
+    for person in w.fake.profiles.values():
+        if person.get("tasks_level") == 1:
+            person["tasks_level"] = 2
+    monkeypatch.setattr(crm_today, "_now", lambda: TASKS_NOW)
+    return w
+
+
+class TestTheMorningBrief:
+    """Spec §15 "Today shows To review … and 008's brief shows the same
+    section": the brief's Labs sections are CRM Today's, To review among
+    them, through `GET /tasks/brief` and `task_brief`."""
+
+    @staticmethod
+    def _item(world: TaskWorld, owner: str) -> dict:
+        return world.fake.add_review_item(
+            world.labs,
+            type="next_step_change",
+            owner_id=ID[owner],
+            record_type="opportunity",
+            record_id=world.deal["id"],
+            suggestion={"next_step": "Send revised SOW", "next_step_on": "2026-10-24"},
+        )
+
+    @staticmethod
+    def _labs(world: TaskWorld, who: str) -> list[dict]:
+        r = world.call(who, "GET", "/brief")
+        assert r.status_code == 200, r.text
+        [labs] = [w for w in r.json()["workspaces"] if w["workspace"]["key"] == "labs"]
+        return labs["sections"]
+
+    @staticmethod
+    def _today(world: TaskWorld, who: str) -> list[dict]:
+        r = world.http.get(f"{API}/today", params=LABS, headers=as_(ID[who]))
+        assert r.status_code == 200, r.text
+        return r.json()["sections"]
+
+    def test_review_the_brief_shows_the_members_to_review_as_today_does(self, world):
+        item = self._item(world, "member")
+        sections = self._labs(world, "member")
+        assert sections == self._today(world, "member")
+        assert sections[-1] == {
+            "key": "to_review",
+            "count": 1,
+            "items": [
+                {
+                    "record_type": "review_item",
+                    "record_id": item["id"],
+                    "title": "Change next step",
+                    "detail": "Acme RDX",
+                    "created_at": item["created_at"],
+                }
+            ],
+        }
+
+    def test_review_task_brief_shows_the_same_to_review(self, world):
+        item = self._item(world, "member")
+        tool = asyncio.run(task_tools.task_brief(Ctx(ID["member"])))
+        [labs] = [w for w in tool["workspaces"] if w["workspace"]["key"] == "labs"]
+        assert labs["sections"] == self._today(world, "member")
+        assert [i["record_id"] for i in labs["sections"][-1]["items"]] == [item["id"]]
+
+    def test_review_the_brief_never_shows_it_to_a_viewer(self, world):
+        world.fake.set_ai(world.labs, phases={"1": True})
+        self._item(world, "member")
+        sections = self._labs(world, "viewer")
+        assert sections == self._today(world, "viewer")
+        assert "to_review" not in [s["key"] for s in sections]
+
+    def test_review_the_brief_leaves_it_out_while_the_queue_is_not_visible(self, world):
+        """No phase on and no open item of the Member's own (another
+        Member's does not count): absent, as on Today; a phase on shows it."""
+        self._item(world, "creator")
+        sections = self._labs(world, "member")
+        assert sections == self._today(world, "member")
+        assert "to_review" not in [s["key"] for s in sections]
+        world.fake.set_ai(world.labs, phases={"1": True})
+        sections = self._labs(world, "member")
+        assert sections == self._today(world, "member")
+        assert sections[-1] == {"key": "to_review", "count": 0, "items": []}

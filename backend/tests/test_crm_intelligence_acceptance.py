@@ -24,11 +24,9 @@ Each line is proved one of two ways:
   is purged (they are deleted). The named db and export tests are checked
   beside it.
 
-**One stated deferral.** "`008`'s brief shows the same section" (T052, T165)
-needs `008`'s morning brief, a phase-2 part of `008` (`008` §4.8,
-`task_brief`) that is not on `008-tasks`. `DEFERRED` names the clause, and
-`test_the_brief_is_still_not_on_008` fails once the brief arrives, so the
-clause gets its test then.
+"`008`'s brief shows the same section" (T052, T165) is proved through
+`008`'s morning brief itself (`GET /tasks/brief` and `task_brief`) by
+`test_crm_review_routes.py::TestTheMorningBrief`.
 """
 
 from __future__ import annotations
@@ -54,16 +52,6 @@ TESTS = BACKEND / "tests"
 SPEC = BACKEND.parent / "specs" / "009-crm-intelligence" / "spec.md"
 API = "/api/v1/crm"
 LABS = {"workspace": "labs"}
-
-#: Clauses of §15 lines whose proof waits for a part of another spec that is
-#: not on its branch yet (a prefix of the line → the clause and why).
-DEFERRED = {
-    "Today shows To review with the count and the oldest items": (
-        "`008`'s brief shows the same section",
-        "008's morning brief (008 §4.8, task_brief) is phase 2 of 008 and not on "
-        "008-tasks; T052's brief part and T165's brief test wait for it",
-    ),
-}
 
 
 def _section_15() -> list[str]:
@@ -547,6 +535,10 @@ ENTRIES: list[tuple[str, Proof]] = [
         (
             "test_crm_today.py::TestToReview::test_to_review_shows_the_count_and_the_three_oldest",
             "test_crm_review_routes.py::TestBootstrapAndToday::test_review_today_has_the_section_last",
+            "test_crm_review_routes.py::TestTheMorningBrief::test_review_the_brief_shows_the_members_to_review_as_today_does",
+            "test_crm_review_routes.py::TestTheMorningBrief::test_review_task_brief_shows_the_same_to_review",
+            "test_crm_review_routes.py::TestTheMorningBrief::test_review_the_brief_never_shows_it_to_a_viewer",
+            "test_crm_review_routes.py::TestTheMorningBrief::test_review_the_brief_leaves_it_out_while_the_queue_is_not_visible",
         ),
     ),
     (
@@ -783,19 +775,6 @@ class TestTheLines:
     def test_the_scenario_is_the_one_line_assigned_to_s5(self):
         run_here = [line[:40] for line in LINES if callable(_entry(line))]
         assert run_here == ["Trashing a company hides its summaries a"]
-
-    def test_each_deferred_clause_is_in_its_line(self):
-        for prefix, (clause, why) in DEFERRED.items():
-            [line] = [line for line in LINES if line.startswith(prefix)]
-            assert clause in line, clause
-            assert why
-
-    def test_the_brief_is_still_not_on_008(self):
-        """The deferral holds only while 008 has no brief: once `task_brief`
-        is on the branch, this fails until the brief clause has its test."""
-        tools = (BACKEND / "app" / "mcp" / "tasks.py").read_text()
-        assert "task_brief" not in tools
-        assert not list((BACKEND / "app").rglob("*brief*.py"))
 
     def test_a_skipped_cover_is_caught(self, tmp_path, monkeypatch):
         """The check itself: a skipped test or a missing class fails it."""
