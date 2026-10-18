@@ -183,7 +183,18 @@ class TestNeverSent:
     def test_no_job_sends_the_review(self):
         from app.worker import celery_app
 
-        assert not any("review" in name for name in celery_app.conf.beat_schedule)
+        # 008's jobs are the `tasks.*` namespace, and its only beat entries
+        # are the purge and the voice sweep, so a new 008 job (a review
+        # sender included) fails here. 009's `crm_ai.review_expiry` is the
+        # CRM Review Queue's expiry, not the weekly review.
+        beat = celery_app.conf.beat_schedule
+        assert {k: v["task"] for k, v in beat.items() if v["task"].startswith("tasks.")} == {
+            "tasks-purge-deleted": "tasks.purge_deleted",
+            "tasks-voice-sweep": "tasks.voice_sweep",
+        }
+        assert not [
+            k for k, v in beat.items() if "review" in k and not v["task"].startswith("crm_ai.")
+        ]
 
     def test_level_3_is_refused(self, world):
         world.fake.profiles[ID["member"]]["tasks_level"] = 3
