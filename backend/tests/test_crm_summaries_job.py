@@ -554,6 +554,16 @@ class TestPhaseSwitch:
         deal = mail.get(f"opportunities/{mail.pilot['id']}")
         assert [s["summary"] for s in deal["summaries"]] == [ANSWER["summary"]]
 
+    def test_job_a_spent_budget_reads_nothing_from_gmail(self, mail):
+        """The checks of every call run before the thread's messages are
+        read, so a spent workspace reads no email on each tick."""
+        mail.fake.set_ai(mail.labs, budget_usd=0, phases={"1": True})
+        mail.message("g1")
+        claude = mail.answer()
+        run = mail.tick()
+        assert run["counts"]["skipped"] == "AI budget reached"
+        assert claude.calls == [] and mail.gmail.reads == []
+
     def test_job_gmail_off_is_skipped(self, mail, monkeypatch):
         monkeypatch.setattr(config, "CRM_GMAIL_CONFIGURED", False)
         mail.message("g1")

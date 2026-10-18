@@ -280,6 +280,8 @@ def _capture(
     now: datetime,
 ) -> dict[str, Any]:
     ws_id = workspace["id"]
+    # Nothing is read from Fireflies when no call could be made.
+    ai.gate(workspace, rules.PHASE)
     # FR-CRMAI-MEET-02: the content only now, after the match, in memory.
     with fireflies.for_workspace(workspace["key"]):
         content = fireflies.transcript(meeting["id"])

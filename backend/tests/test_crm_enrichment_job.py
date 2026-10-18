@@ -554,6 +554,44 @@ class TestSwitchedOff:
         assert runs["labs"] == {"outcome": "skipped", "counts": {"skipped": "Switched off"}}
         assert sites.web.requests == [] and sites.row(acme)["status"] == "queued"
 
+    def test_enrichment_a_spent_budget_starts_no_run_and_reads_nothing(self, sites):
+        """A workspace past its budget would otherwise read the first queued
+        company's site on every tick and then stop at the call."""
+        sites.fake.set_ai(sites.labs, budget_usd=0, phases={"2": True})
+        acme = sites.company("Acme", "https://acme.in")
+        sites.site()
+        for _ in range(3):
+            runs = sites.run()
+            assert runs["labs"] == {
+                "outcome": "skipped",
+                "counts": {"skipped": "AI budget reached"},
+            }
+        assert sites.queue == [] and sites.locks == {}
+        assert sites.web.requests == [] and sites.claude.calls == []
+        assert sites.row(acme)["status"] == "queued"
+
+    def test_enrichment_unset_rates_start_no_run_and_read_nothing(self, sites):
+        sites.monkeypatch.setattr(config, "CRM_AI_OUTPUT_USD_PER_MTOK", None)
+        acme = sites.company("Acme", "https://acme.in")
+        sites.site()
+        runs = sites.run()
+        assert runs["labs"] == {
+            "outcome": "skipped",
+            "counts": {"skipped": "AI rates are not set"},
+        }
+        assert sites.web.requests == [] and sites.row(acme)["status"] == "queued"
+
+    def test_enrichment_the_budget_reached_mid_run_reads_no_further_site(self, sites):
+        # Each call is estimated at $0.006: the third company finds $0.012
+        # spent and its site is not read.
+        sites.fake.set_ai(sites.labs, budget_usd=0.01, phases={"2": True})
+        for i in range(3):
+            sites.company(f"Acme {i}", f"https://acme{i}.in")
+            sites.web.site(f"acme{i}.in", {"/": HOME, "/about": ABOUT}, address=PUBLIC)
+        sites.run()
+        hosts = {r["host"] for r in sites.web.requests}
+        assert hosts == {"acme0.in", "acme1.in"}
+
     def test_enrichment_hidden_from_the_record_while_off(self, sites):
         acme = sites.company("Acme", "https://acme.in")
         sites.site()

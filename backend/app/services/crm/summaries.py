@@ -135,6 +135,8 @@ def _summarise(
 ) -> dict[str, Any]:
     ws_id = workspace["id"]
     messages = thread.get("messages") or [{"gmail_id": g} for g in thread["message_ids"]]
+    # Nothing is read from Gmail when no call could be made.
+    ai.gate(workspace, rules.PHASE)
     # FR-CRMAI-SUM-03: the stored messages only, each stripped, in memory.
     texts = [rules.strip(gmail.message_text(mailbox["email"], m["gmail_id"])) for m in messages]
     output = ai.call(

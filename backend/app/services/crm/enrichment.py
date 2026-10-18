@@ -149,6 +149,12 @@ def _start(ws: dict[str, Any], now: datetime) -> dict[str, Any]:
         return jobs.run(JOB, ws, _skip(ai_rules.SWITCHED_OFF), now)
     if not store.queued_enrichment(ws["id"], 1, before=now):
         return jobs.run(JOB, ws, lambda workspace, at: dict(EMPTY), now)
+    try:
+        # No run, so no site is read, while the rates are unset or the
+        # month's budget is spent.
+        ai.gate(ws, rules.PHASE)
+    except jobs.Skipped as skipped:
+        return jobs.run(JOB, ws, _skip(skipped.reason), now)
     token = str(uuid.uuid4())
     try:
         held = acquire_lock(ws["id"], token)
@@ -367,6 +373,8 @@ def _enrich(
     """One company: `{status: "enriched" | "failed" | None, items}`; None when
     its website changed meanwhile and the new site is queued instead."""
     ws_id, site = ws["id"], row["website"]
+    # The budget may be spent by the company before: stop before reading.
+    ai.gate(ws, rules.PHASE)
     try:
         # FR-CRMAI-ENR-02: the company's own site, in memory only.
         read = web_fetch.read_site(site, job=JOB, workspace=ws.get("key") or "-")

@@ -511,6 +511,8 @@ class TestTheTaskTimeLimit:
             },
         }
         assert calls.fireflies.cursor == "2026-10-18T09:31:00+00:00"
+        # The second transcript is not fetched once no call could be made.
+        assert calls.fireflies.fetched == ["t1"]
 
 
 class TestTheCallLog:
