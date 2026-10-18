@@ -161,35 +161,37 @@ export function CrmShell({
 
   // Hiding a link is tidiness, not security: the server re-checks every route.
   const links = [
-    { href: `/crm/${ws}`, label: "Today", icon: CalendarCheck, show: true },
-    { href: `/crm/${ws}/pipeline`, label: "Pipeline", icon: Kanban, show: true },
-    { href: `/crm/${ws}/companies`, label: "Companies", icon: Building2, show: true },
-    { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
-    { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, show: true },
-    { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, show: true },
+    { href: `/crm/${ws}`, label: "Today", icon: CalendarCheck, color: "text-blue-600 dark:text-blue-400", show: true },
+    { href: `/crm/${ws}/pipeline`, label: "Pipeline", icon: Kanban, color: "text-orange-600 dark:text-orange-400", show: true },
+    { href: `/crm/${ws}/companies`, label: "Companies", icon: Building2, color: "text-rose-600 dark:text-rose-400", show: true },
+    { href: `/crm/${ws}/people`, label: "People", icon: Users, color: "text-pink-600 dark:text-pink-400", show: true },
+    { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, color: "text-cyan-600 dark:text-cyan-400", show: true },
+    { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, color: "text-teal-600 dark:text-teal-400", show: true },
     // Spec 008 FR-TASK-LIST-08 — the same My Tasks page as TVA's /tasks.
-    { href: `/crm/${ws}/my-tasks`, label: "My Tasks", icon: ListTodo, show: tasksOn },
+    { href: `/crm/${ws}/my-tasks`, label: "My Tasks", icon: ListTodo, color: "text-green-600 dark:text-green-400", show: tasksOn },
     // 1b (FR-CRM-UI-02, FR-CRM-CAMP).
-    { href: `/crm/${ws}/campaigns`, label: "Campaigns", icon: Megaphone, show: true },
+    { href: `/crm/${ws}/campaigns`, label: "Campaigns", icon: Megaphone, color: "text-fuchsia-600 dark:text-fuchsia-400", show: true },
     // FR-CRM-DASH-01: Admins and Members (their own numbers); Viewers have none.
     {
       href: `/crm/${ws}/dashboard`,
       label: "Dashboard",
       icon: LayoutDashboard,
+      color: "text-indigo-600 dark:text-indigo-400",
       show: bootstrap.role !== "viewer",
     },
     {
       href: `/crm/${ws}/settings`,
       label: "Settings",
       icon: Settings,
+      color: "text-slate-600 dark:text-slate-400",
       show: bootstrap.role === "admin",
     },
   ].filter((link) => link.show);
 
   const footer = [
-    { href: "/crm/account", label: "Account", icon: User, show: true },
+    { href: "/crm/account", label: "Account", icon: User, color: "text-gray-600 dark:text-gray-400", show: true },
     // FR-CRM-UI-03, -04: staff only. A CRM-only seller never sees TVA.
-    { href: "/home", label: "Back to TVA", icon: ArrowLeft, show: staff },
+    { href: "/home", label: "Back to TVA", icon: ArrowLeft, color: "text-gray-600 dark:text-gray-400", show: staff },
   ].filter((link) => link.show);
 
   // A record page (/companies/<id>) keeps its section lit; Today is the root.
@@ -197,7 +199,7 @@ export function CrmShell({
     pathname === href || (href !== `/crm/${ws}` && pathname.startsWith(`${href}/`));
 
   const navLink = (
-    { href, label, icon: Icon }: (typeof links)[number],
+    { href, label, icon: Icon, color }: (typeof links)[number],
     { onClick, compact = collapsed }: { onClick?: () => void; compact?: boolean } = {}
   ) => (
     <Link
@@ -214,7 +216,7 @@ export function CrmShell({
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
     >
-      <Icon className="size-4 shrink-0" />
+      <Icon className={cn("size-4 shrink-0", color)} />
       {!compact && label}
     </Link>
   );

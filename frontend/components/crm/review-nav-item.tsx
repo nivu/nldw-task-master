@@ -37,7 +37,7 @@ export function ReviewNavItem({ collapsed }: { collapsed: boolean }) {
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
     >
-      <Inbox className="size-4 shrink-0" />
+      <Inbox className="size-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
       {!collapsed && <span className="flex-1">Review</span>}
       {!collapsed && count > 0 && (
         <span className="rounded-full bg-muted px-1.5 text-xs tabular-nums text-foreground">{count}</span>

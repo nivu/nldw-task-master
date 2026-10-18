@@ -117,26 +117,26 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   const caps = me?.account_type === "staff" ? me.capabilities : undefined;
   const tasksOn = (me?.tasks.level ?? 0) >= 1;
   const links = [
-    { href: "/home", label: "Home", icon: Home, section: "mine", show: true },
-    { href: "/calendar", label: "Calendar", icon: CalendarDays, section: "mine", show: true },
-    { href: "/timesheet", label: "Time", icon: Clock, section: "mine", show: true },
+    { href: "/home", label: "Home", icon: Home, color: "text-blue-600 dark:text-blue-400", section: "mine", show: true },
+    { href: "/calendar", label: "Calendar", icon: CalendarDays, color: "text-violet-600 dark:text-violet-400", section: "mine", show: true },
+    { href: "/timesheet", label: "Time", icon: Clock, color: "text-amber-600 dark:text-amber-400", section: "mine", show: true },
     // Spec 008 FR-TASK-LIST-08 — only with phase 1 switched on.
-    { href: "/tasks", label: "My Tasks", icon: ListTodo, section: "mine", show: tasksOn },
-    { href: "/team", label: "Team", icon: Users, section: "team", show: caps?.team_view },
-    { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: caps?.team_view },
-    { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: caps?.team_view },
+    { href: "/tasks", label: "My Tasks", icon: ListTodo, color: "text-green-600 dark:text-green-400", section: "mine", show: tasksOn },
+    { href: "/team", label: "Team", icon: Users, color: "text-pink-600 dark:text-pink-400", section: "team", show: caps?.team_view },
+    { href: "/approvals", label: "Approvals", icon: CheckSquare, color: "text-teal-600 dark:text-teal-400", section: "team", show: caps?.team_view },
+    { href: "/analytics", label: "Effort", icon: BarChart3, color: "text-orange-600 dark:text-orange-400", section: "team", show: caps?.team_view },
     // Spec 003 FR-DASH — by the owner's authorisation, not by role.
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "manage", show: caps?.dashboard },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, color: "text-indigo-600 dark:text-indigo-400", section: "manage", show: caps?.dashboard },
     // Spec 003 — the manager tier runs projects from its own page, not from
     // inside the admin panel it may not enter (FR-ROLE-03).
-    { href: "/projects", label: "Projects", icon: FolderKanban, section: "manage", show: caps?.manage_projects },
-    { href: "/admin", label: "Admin", icon: Settings, section: "manage", show: caps?.admin_panel },
+    { href: "/projects", label: "Projects", icon: FolderKanban, color: "text-cyan-600 dark:text-cyan-400", section: "manage", show: caps?.manage_projects },
+    { href: "/admin", label: "Admin", icon: Settings, color: "text-slate-600 dark:text-slate-400", section: "manage", show: caps?.admin_panel },
     // Spec 007 FR-CRM-UI-03 — only with a membership; /crm refuses the rest.
-    { href: "/crm", label: "CRM", icon: Briefcase, section: "mine", show: (me?.crm.workspaces.length ?? 0) > 0 },
-    { href: "/account", label: "Account", icon: User, section: "footer", show: true },
+    { href: "/crm", label: "CRM", icon: Briefcase, color: "text-rose-600 dark:text-rose-400", section: "mine", show: (me?.crm.workspaces.length ?? 0) > 0 },
+    { href: "/account", label: "Account", icon: User, color: "text-gray-600 dark:text-gray-400", section: "footer", show: true },
   ].filter((link) => link.show);
 
-  const sidebarLink = ({ href, label, icon: Icon }: (typeof links)[number]) => (
+  const sidebarLink = ({ href, label, icon: Icon, color }: (typeof links)[number]) => (
     <Link
       key={href}
       href={href}
@@ -150,7 +150,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
     >
-      <Icon className="size-4 shrink-0" />
+      <Icon className={cn("size-4 shrink-0", color)} />
       {!collapsed && label}
     </Link>
   );
