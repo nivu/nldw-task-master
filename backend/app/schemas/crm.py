@@ -853,13 +853,16 @@ class ReviewListQuery(BaseModel):
 
 
 class ReviewApproveIn(BaseModel):
-    """`POST /crm/review/{id}/approve` (contracts §2.2). `deal_id` picks the
-    deal when the item has several; `option` a rule suggestion's choice;
-    `edits` is "Edit and approve": the suggestion's fields as the person
-    changed them, which the manual path then validates as a manual edit."""
+    """`POST /crm/review/{id}/approve` (contracts §2.2). `version` is the
+    item's `version` as it was shown: a refreshed item is not approved
+    (409). `deal_id` picks the deal when the item has several; `option` a
+    rule suggestion's choice; `edits` is "Edit and approve": the
+    suggestion's fields as the person changed them, which the manual path
+    then validates as a manual edit."""
 
     model_config = ConfigDict(extra="forbid")
 
+    version: int = Field(ge=1)
     deal_id: str | None = Field(default=None, max_length=64)
     option: str | None = Field(default=None, max_length=40)
     edits: dict[str, Any] | None = None
@@ -872,6 +875,8 @@ class ReviewItemOut(BaseModel):
     type: ReviewItemType
     type_label: str
     status: ReviewStatus
+    #: Counts each refresh of the item; an approval sends it back (069).
+    version: int
     owner: dict[str, Any] | None
     target: dict[str, Any]
     deal_choices: list[dict[str, Any]]

@@ -157,7 +157,7 @@ class TestConflictApproval:
         return sites.http.post(
             f"{API}/review/{item['id']}/approve",
             params=LABS,
-            json=body or {},
+            json={"version": item.get("revision", 1), **(body or {})},
             headers=as_(who["id"]),
         )
 

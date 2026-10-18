@@ -218,10 +218,12 @@ class Queue:
         return self.http.get(f"{API}/{path}", params={**query, **params}, headers=as_(who["id"]))
 
     def approve(self, item, body=None, who=ASHA, query=LABS):
+        """Approve as the queue does: with the version the item shows now,
+        unless `body` names one."""
         return self.http.post(
             f"{API}/review/{item['id']}/approve",
             params=query,
-            json=body or {},
+            json={"version": item.get("revision", 1), **(body or {})},
             headers=as_(who["id"]),
         )
 
@@ -517,6 +519,70 @@ class TestDismissAndTwice:
         assert len(queue.fake.rows["crm_review_items"]) == 1
 
 
+class TestTheVersionShown:
+    """069: an approval applies only the suggestion the person was shown. An
+    open item refreshed in place since (a new summary of the same thread)
+    is refused 409 and stays open, so the new text is shown first."""
+
+    def _refresh(self, queue):
+        return queue.next_step(
+            queue.pilot,
+            suggestion={"next_step": "Pause until Q3", "next_step_on": "2026-12-01"},
+            version="g2",
+        )
+
+    def test_review_the_queue_shows_each_items_version(self, queue):
+        queue.next_step(queue.pilot)
+        [shown] = queue.get("review", who=ASHA).json()["items"]
+        assert shown["version"] == 1
+        self._refresh(queue)
+        [shown] = queue.get("review", who=ASHA).json()["items"]
+        assert (shown["version"], shown["suggestion"]["next_step"]) == (2, "Pause until Q3")
+
+    def test_review_a_refresh_with_the_same_content_keeps_the_version(self, queue):
+        item = queue.next_step(queue.pilot)
+        queue.next_step(queue.pilot)
+        assert item["revision"] == 1
+
+    def test_review_approving_a_refreshed_item_is_refused(self, queue):
+        item = queue.next_step(queue.pilot)
+        self._refresh(queue)
+        r = queue.approve(item, {"version": 1})
+        assert (r.status_code, r.json()["detail"]) == (409, rules.SUGGESTION_CHANGED)
+        assert (item["status"], item["refusal"]) == ("open", None)
+        assert queue.deal_row(queue.pilot)["next_step"] == "Follow up on pilot"
+        r = queue.approve(item, {"version": 2})
+        assert r.status_code == 200, r.text
+        assert queue.deal_row(queue.pilot)["next_step"] == "Pause until Q3"
+
+    def test_review_a_refresh_between_the_read_and_the_claim_is_refused(self, queue, monkeypatch):
+        item = queue.next_step(queue.pilot)
+        claim = queue.fake.review_claim
+
+        def refreshed_first(*args, **kwargs):
+            self._refresh(queue)
+            return claim(*args, **kwargs)
+
+        monkeypatch.setattr(service.store, "review_claim", refreshed_first)
+        r = queue.approve(item, {"version": 1})
+        assert (r.status_code, r.json()["detail"]) == (409, rules.SUGGESTION_CHANGED)
+        assert item["status"] == "open"
+        assert queue.deal_row(queue.pilot)["next_step"] == "Follow up on pilot"
+
+    def test_review_an_approval_needs_the_version(self, queue):
+        item = queue.next_step(queue.pilot)
+        r = queue.http.post(
+            f"{API}/review/{item['id']}/approve", params=LABS, json={}, headers=as_(ASHA["id"])
+        )
+        assert r.status_code == 422
+        assert item["status"] == "open"
+
+    def test_review_a_dismissal_needs_no_version(self, queue):
+        item = queue.next_step(queue.pilot)
+        self._refresh(queue)
+        assert queue.dismiss(item).status_code == 200
+
+
 class TestTasks:
     """FR-CRMAI-REV-06 — through 008's `create_task`."""
 
@@ -715,7 +781,13 @@ class TestThroughClaude:
         listed = asyncio.run(tools.crm_review_list(Ctx(ASHA["id"]), workspace="labs"))
         assert _ids(listed) == [item["id"]]
         done = asyncio.run(
-            tools.crm_review_decide(Ctx(ASHA["id"]), item["id"], "approve", workspace="labs")
+            tools.crm_review_decide(
+                Ctx(ASHA["id"]),
+                item["id"],
+                "approve",
+                listed["items"][0]["version"],
+                workspace="labs",
+            )
         )
         assert done["item"]["status"] == "approved"
         [row] = [
@@ -735,6 +807,7 @@ class TestThroughClaude:
                 Ctx(ASHA["id"]),
                 one["id"],
                 "edit",
+                1,
                 edits={"next_step": "Send the SOW", "next_step_on": "2026-10-30"},
                 workspace="labs",
             )

@@ -831,7 +831,7 @@ export const listCrmReview = (workspace: string, filters: ReviewListQuery = {}) 
   call<CrmReviewList>(`/review${query(workspace, { ...filters })}`);
 
 /** Applies the suggestion through the same service a manual edit uses (FR-CRMAI-REV-04). */
-export const approveCrmReview = (workspace: string, id: string, approval: ReviewApproveIn = {}) =>
+export const approveCrmReview = (workspace: string, id: string, approval: ReviewApproveIn) =>
   call<ReviewApproveResult>(`/review/${id}/approve${query(workspace)}`, {
     method: "POST",
     ...body(approval),

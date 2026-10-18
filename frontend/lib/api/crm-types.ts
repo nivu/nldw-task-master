@@ -1653,6 +1653,8 @@ export interface CrmReviewItem {
   type: ReviewItemType;
   type_label: string;
   status: ReviewItemStatus;
+  /** Counts each refresh of the suggestion; an approval sends it back. */
+  version: number;
   /** Null: the item belongs to the workspace's Admins (FR-CRMAI-REV-02). */
   owner: { id: string; name: string } | null;
   target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string };
@@ -1686,8 +1688,10 @@ export interface ReviewListQuery {
   limit?: number;
 }
 
-/** POST /crm/review/{id}/approve. `edits` is "Edit and approve". */
+/** POST /crm/review/{id}/approve. `version` is the item's as shown (a
+ *  refreshed suggestion is refused 409); `edits` is "Edit and approve". */
 export interface ReviewApproveIn {
+  version: number;
   deal_id?: string;
   option?: string;
   edits?: Record<string, unknown>;

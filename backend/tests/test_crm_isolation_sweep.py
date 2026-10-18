@@ -358,6 +358,7 @@ def _body(method: str, path: str, made: dict) -> dict | None:
         "imports/{run_id}/apply": {"format": "csv", "content": "Name\nX\n", "object": "companies"},
         "mailboxes/{mailbox_id}": {"labels": ["X"]},
         "ai-fields/{field_id}": {"name": "X"},
+        "review/{item_id}/approve": {"version": 1},
     }
     if tail in bodies:
         return bodies[tail]
@@ -687,7 +688,10 @@ def _tool_calls(made: dict) -> list[tuple[str, dict]]:
                 "object": "companies",
             },
         ),
-        ("crm_review_decide", {"item_id": made["review_item"]["id"], "decision": "approve"}),
+        (
+            "crm_review_decide",
+            {"item_id": made["review_item"]["id"], "decision": "approve", "version": 1},
+        ),
         ("crm_thread_summary", {"thread_key": made["thread"]["id"]}),
         (
             "crm_create",

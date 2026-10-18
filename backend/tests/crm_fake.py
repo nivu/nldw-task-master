@@ -4013,6 +4013,7 @@ class FakeCrmStore:
             "decided_by": None,
             "result": {},
             "tombstoned_at": None,
+            "revision": 1,
             **values,
         }
         row.setdefault(
@@ -4154,6 +4155,12 @@ class FakeCrmStore:
             )
             choices = given.pop("deal_choices", None) or []
             if existing is not None:
+                # 069: a refresh that changes what the item shows is a new revision.
+                if any(
+                    existing.get(name) != given.get(name)
+                    for name in ("suggestion", "current_values", "source_version")
+                ):
+                    existing["revision"] = existing.get("revision", 1) + 1
                 for name in (
                     "suggestion",
                     "current_values",
@@ -4182,14 +4189,19 @@ class FakeCrmStore:
             out.append({"id": row["id"], "created": created})
         return out
 
-    def review_claim(self, actor: dict[str, Any], item_id: str, status: str) -> dict:
-        """crm_review_claim (061): one claim wins; one audit row."""
+    def review_claim(
+        self, actor: dict[str, Any], item_id: str, status: str, *, revision: int | None = None
+    ) -> dict:
+        """crm_review_claim (061, 069): one claim wins, at the revision shown
+        when one is given; one audit row."""
         assert status in ("approved", "dismissed"), status
         row = self.rows["crm_review_items"].get(item_id)
         if row is None or row["workspace_id"] != actor["workspace_id"]:
             raise store.refusal_for("CRM04", "No such suggestion.")
         if row["status"] != "open":
             raise store.refusal_for("CRM09", "This suggestion was already decided.")
+        if revision is not None and row.get("revision", 1) != revision:
+            raise store.refusal_for("CRM09", "This suggestion changed; review it again.")
         row.update(status=status, decided_at=_now(), decided_by=actor["user_id"], refusal=None)
         self._review_audit(actor, f"review.{status}", item_id, "open", status)
         return json.loads(json.dumps(row))

@@ -2019,6 +2019,8 @@ def ai_spend(workspace_id: str, since: datetime) -> dict[str, Any]:
 
 #: 061 `crm_review_claim`'s CRM09: another decision got there first.
 ALREADY_DECIDED = "This suggestion was already decided."
+#: 069 `crm_review_claim`'s CRM09: the item was refreshed since it was shown.
+SUGGESTION_CHANGED = "This suggestion changed; review it again."
 
 
 def list_review_items(
@@ -2078,14 +2080,22 @@ def review_upsert(actor: dict[str, Any], items: list[dict[str, Any]]) -> list[di
     return rpc("crm_review_upsert", {"p_actor": actor, "p_items": items}) or []
 
 
-def review_claim(actor: dict[str, Any], item_id: str, status: str) -> dict[str, Any]:
-    """061 `crm_review_claim` — the item, now `approved` or `dismissed`; only
-    one claim wins, the other is told it was already decided (409)."""
+def review_claim(
+    actor: dict[str, Any], item_id: str, status: str, *, revision: int | None = None
+) -> dict[str, Any]:
+    """061/069 `crm_review_claim` — the item, now `approved` or `dismissed`;
+    only one claim wins, the other is told it was already decided (409).
+    With `revision`, an open item at another revision is not claimed: it was
+    refreshed since it was shown (409)."""
+    params: dict[str, Any] = {"p_actor": actor, "p_item_id": item_id, "p_status": status}
+    if revision is not None:
+        params["p_expect_revision"] = revision
     try:
-        return rpc("crm_review_claim", {"p_actor": actor, "p_item_id": item_id, "p_status": status})
+        return rpc("crm_review_claim", params)
     except CrmRefused as refused:
         if refused.status == 409:
-            raise CrmRefused(409, ALREADY_DECIDED) from None
+            detail = SUGGESTION_CHANGED if refused.detail == SUGGESTION_CHANGED else ALREADY_DECIDED
+            raise CrmRefused(409, detail) from None
         raise
 
 

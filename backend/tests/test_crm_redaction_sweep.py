@@ -802,7 +802,11 @@ class TestThe009Tools:
         with pytest.raises(server.ToolError) as refused:
             asyncio.run(
                 tools.crm_review_decide(
-                    Ctx(VIEWER["id"]), item_id=item["id"], decision="approve", workspace="labs"
+                    Ctx(VIEWER["id"]),
+                    item_id=item["id"],
+                    decision="approve",
+                    version=1,
+                    workspace="labs",
                 )
             )
         assert str(refused.value).startswith("403"), str(refused.value)

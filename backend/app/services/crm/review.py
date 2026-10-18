@@ -192,6 +192,7 @@ def present(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 type=item["type"],
                 type_label=rules.TYPES[item["type"]],
                 status=item["status"],
+                version=item.get("revision") or 1,
                 owner={"id": owner, "name": names.get(owner)} if owner else None,
                 target={
                     "record_type": item["record_type"],
@@ -584,6 +585,9 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
     refusals come back as they are, and the item stays open showing it."""
     item = _load(ctx, item_id)
     target = _open_and_live(ctx, item)
+    if (item.get("revision") or 1) != body.version:
+        # Refreshed since it was shown: the person approves what they saw only.
+        raise CrmRefused(409, rules.SUGGESTION_CHANGED)
     kind = item["type"]
     if kind == "next_step_change":
         change = _next_step(ctx, item, body)
@@ -599,7 +603,8 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
         raise CrmRefused(422, rules.NOT_YET)
 
     who = actor(ctx)
-    store.review_claim(who, item_id, "approved")
+    # The claim checks the version again, so a refresh in between is refused too.
+    store.review_claim(who, item_id, "approved", revision=body.version)
     approver = dataclasses.replace(ctx, suggestion_id=item_id)
     try:
         result, shown = change(approver)

@@ -230,7 +230,8 @@ export function ReviewItemCard({
   async function approve(withEdits: boolean) {
     setBusy(true);
     setError(null);
-    const approval: ReviewApproveIn = {};
+    // The version shown: a suggestion refreshed since is refused (409).
+    const approval: ReviewApproveIn = { version: item.version };
     if (item.deal_choices.length > 1) approval.deal_id = dealId;
     if (item.type === "rule_suggestion" && options.length > 1) approval.option = option;
     if (withEdits) approval.edits = editsPayload(item, edits, option);

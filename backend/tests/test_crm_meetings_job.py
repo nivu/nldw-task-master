@@ -435,7 +435,10 @@ class TestPhaseSwitch:
         assert to_review["count"] == 3
         step = next(i for i in queue["items"] if i["type"] == "next_step_change")
         r = calls.http.post(
-            f"{API}/review/{step['id']}/approve", params=LABS, json={}, headers=as_(MEMBER["id"])
+            f"{API}/review/{step['id']}/approve",
+            params=LABS,
+            json={"version": step["version"]},
+            headers=as_(MEMBER["id"]),
         )
         assert r.status_code == 200, r.text
         deal = calls.fake.rows["crm_opportunities"][calls.pilot["id"]]

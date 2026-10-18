@@ -28,7 +28,8 @@ slice and before merge), and `008` never needs any of them.
 | `066_crm_follow_up_rules.sql` | S3b | `automations` and `flag_thresholds` rows of **every** workspace UPDATEd by merging the new keys; `crm_workspaces_seed_ai()` replaced so a new workspace also gets `automations` and `flag_thresholds` with the new keys (§3.7); `crm_campaign_members.status_changed_at` with its backfill from `audit_log` (touch and audit triggers disabled for the backfill, §3.9) and a BEFORE UPDATE trigger; `crm_notifications.kind` CHECK widened with `stuck_in_stage`; `crm_job_runs.job` CHECK widened with `followup_drafts` and `crm_job_latest()` replaced (plan §5.9, D-4 approved); `crm_lead_activity()`; `crm_no_reply_candidates()` |
 | `067_crm_contact_recency.sql` | S4 | `contact_recency` on `crm_companies` and `crm_people`; `crm_set_contact_recency()` (the only writer); `crm_touch_updated_at()` and `crm_audit_row()` replaced (skip it); `crm_object_fields` rows (filter only); `crm_contact_facts()` |
 | `068_crm_intelligence_fixes.sql` | S5 | `crm_review_release()` replaced: a refused item expires, audited, when a newer open item holds its dedupe key (the whole-branch review's finding, §3.2.3) |
-| `069`–`079` | — | Reserved. S5 adds `068_crm_intelligence_fixes.sql` only if a sweep finds something, with the finding named in its header; a `068`+ file also re-copies a function if a late `008` migration replaced one of the seven below (plan §6 rule 1) |
+| `069_crm_review_revision.sql` | post-S5 review | `crm_review_items.revision`; `crm_review_upsert()` replaced (a refresh that changes the item counts the revision); `crm_review_claim()` replaced with `p_expect_revision` (an approval of a refreshed item is refused, §3.2.3) |
+| `070`–`079` | — | Reserved. S5 adds `068_crm_intelligence_fixes.sql` only if a sweep finds something, with the finding named in its header; a `068`+ file also re-copies a function if a late `008` migration replaced one of the seven below (plan §6 rule 1) |
 
 **Replacing a function that `007` or `008` defined.** `009` replaces seven
 existing functions: `crm_audit_row`, `crm_purge`, `crm_merge_companies` and
@@ -128,6 +129,7 @@ Admin-only `GET /crm/ai` (contracts §2.1). Not in the workspace export
 | `decided_at`, `decided_by` | timestamptz, uuid | set by `crm_review_claim` and `crm_review_expire` (`decided_by` NULL on expiry) |
 | `result` | jsonb | NOT NULL DEFAULT '{}': what approval produced (`{task_id}`, `{opportunity_id}`, `{field}`), ids only |
 | `tombstoned_at` | timestamptz | set 90 days after `decided_at` (FR-CRMAI-REV-07, Q-34) |
+| `revision` | integer | NOT NULL DEFAULT 1 `CHECK (revision >= 1)` *(added in 069)*: one more each time `crm_review_upsert` refreshes the open item with a different `suggestion`, `current_values` or `source_version`. The API's `version`; an approval must send the one shown |
 
 Indexes and constraints:
 
@@ -173,7 +175,9 @@ called.
 `crm_review_upsert` inserts with `ON CONFLICT (workspace_id, dedupe_key) WHERE
 status = 'open' DO UPDATE` of `suggestion`, `current_values`, the item's deal rows,
 `source_version`, `model`, `generated_at` (a newer summary refreshes the open
-item instead of adding a second). Before inserting, it skips the item when a
+item instead of adding a second); *(069)* when `suggestion`, `current_values`
+or `source_version` differ, `revision` goes up by one, so an approval of the
+item as it was shown is refused. Before inserting, it skips the item when a
 **decided** item with the same `dedupe_key` and the same `source_version`
 exists (dismissed or expired items are not re-created from an unchanged
 source). R-3 additionally checks Q-40 in Python (no new item within
@@ -188,7 +192,7 @@ id>:<thread id>:<outbound gmail message id>` (FR-CRMAI-RULE-02).
 | Function | Does |
 |---|---|
 | `crm_review_upsert(p_actor jsonb, p_items jsonb) RETURNS jsonb` | Inserts or refreshes items as above, all in the actor's workspace; writes each item's `crm_review_item_deals` from its `deal_choices`, checked against the workspace's open deals (`CRM04`). Returns `[{id, created: bool}]`. Actor kind `sync` |
-| `crm_review_claim(p_actor jsonb, p_item_id uuid, p_status text, p_expect_status text DEFAULT 'open') RETURNS jsonb` | `UPDATE … SET status = p_status, decided_at = now(), decided_by = actor.user_id, refusal = NULL WHERE id AND workspace_id AND status = 'open'`; zero rows → `CRM09` "This suggestion was already decided." Inserts one `audit_log` row (`review.approved` / `review.dismissed`, `target_table 'crm_review_items'`, `before {status: open}`, `after {status}`, `suggestion_id` = the item). No text |
+| `crm_review_claim(p_actor jsonb, p_item_id uuid, p_status text, p_expect_status text DEFAULT 'open', p_expect_revision integer DEFAULT NULL) RETURNS jsonb` *(fifth parameter added in 069)* | `UPDATE … SET status = p_status, decided_at = now(), decided_by = actor.user_id, refusal = NULL WHERE id AND workspace_id AND status = 'open' AND (p_expect_revision IS NULL OR revision = p_expect_revision)`; zero rows → `CRM09` "This suggestion changed; review it again." when the item is still open (at another revision), else `CRM09` "This suggestion was already decided." An approval passes the revision shown; a dismissal passes none. Inserts one `audit_log` row (`review.approved` / `review.dismissed`, `target_table 'crm_review_items'`, `before {status: open}`, `after {status}`, `suggestion_id` = the item). No text |
 | `crm_review_release(p_actor jsonb, p_item_id uuid, p_refusal text, p_result jsonb) RETURNS void` | Either reopens a claimed item after the change was refused (`status = 'open'`, `decided_* = NULL`, `refusal = p_refusal`, audit row `review.reopened`), or records `result` when `p_refusal` is NULL. *(Amended in S5, 068:)* a refused item whose dedupe key another open item now holds expires instead (`status = 'expired'`, `refusal = p_refusal`, audit row `review.expired`) |
 | `crm_review_expire(p_actor jsonb, p_before timestamptz) RETURNS integer` | Open items of the workspace with `created_at < p_before` → `expired`, one `review.expired` audit row each (FR-CRMAI-REV-07) |
 | `crm_review_tombstone(p_actor jsonb, p_before timestamptz) RETURNS integer` | Decided items with `decided_at < p_before` and no tombstone: `suggestion = '{}'`, `current_values = '{}'`, `source_link = '{}'`, `refusal = NULL`, `tombstoned_at = now()`; keeps `dedupe_key`, `source_version`, `status` (Q-34) |

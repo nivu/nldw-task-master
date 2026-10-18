@@ -278,6 +278,32 @@ class TestClaim:
         assert (row["before"], row["after"]) == ({"status": "open"}, {"status": "approved"})
         assert "Pune" not in json.dumps(row)
 
+    def test_review_db_a_refresh_counts_the_revision_and_a_stale_claim_loses(
+        self, stack, ws, owner
+    ):
+        """069: a refresh that changes the item is a new revision; a claim
+        for the revision shown loses to it, and the item stays open."""
+        company = _company(stack, ws, owner)
+        [made] = _upsert(stack, ws, [_item("company", company)])
+        assert _row(stack, made["id"])["revision"] == 1
+        _upsert(stack, ws, [_item("company", company)])
+        assert _row(stack, made["id"])["revision"] == 1
+        changed = _item(
+            "company", company, source_version="v2", suggestion={"field": "city", "value": "X"}
+        )
+        _upsert(stack, ws, [changed])
+        assert _row(stack, made["id"])["revision"] == 2
+        stale = (
+            f"SELECT crm_review_claim({_j(stack, _actor(ws, owner))}, "
+            f"{stack.q(made['id'])}::uuid, 'approved', 'open', 1) AS r"
+        )
+        assert _refused(stack, stale, "CRM09") == "This suggestion changed; review it again."
+        assert (_row(stack, made["id"])["status"], _audit(stack, made["id"])) == ("open", [])
+        won = stack.sql(stale.replace("'open', 1)", "'open', 2)"))[0]["r"]
+        assert (won["status"], won["revision"]) == ("approved", 2)
+        message = _refused(stack, stale.replace("'open', 1)", "'open', 2)"), "CRM09")
+        assert message == "This suggestion was already decided."
+
     def test_review_db_another_workspaces_item_is_not_found(self, stack, ws, other, owner):
         company = _company(stack, ws, owner)
         [made] = _upsert(stack, ws, [_item("company", company)])

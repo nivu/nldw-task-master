@@ -656,6 +656,7 @@ async def crm_review_decide(
     ctx: Context,
     item_id: str,
     decision: Literal["approve", "edit", "dismiss"],
+    version: int | None = None,
     deal_id: str | None = None,
     option: str | None = None,
     edits: dict[str, Any] | None = None,
@@ -666,8 +667,11 @@ async def crm_review_decide(
     and get the person's yes. Approves, edits and approves, or dismisses one
     AI suggestion. Approving makes the change through the same rules as a
     manual edit, as you; a record that changed since the suggestion is
-    refused. deal_id picks the deal when the suggestion lists several; edit
-    sends edits, the suggestion's fields as the person changed them."""
+    refused. To approve or edit, pass the item's version from crm_review_list,
+    as shown to the person: a suggestion refreshed since is refused (list it
+    again and show the new one). deal_id picks the deal when the suggestion
+    lists several; edit sends edits, the suggestion's fields as the person
+    changed them."""
     try:
         item = str(uuid.UUID(item_id))
     except ValueError:
@@ -677,7 +681,9 @@ async def crm_review_decide(
         return await _api(ctx, "POST", f"/crm/review/{item}/dismiss", params=params)
     if decision == "edit" and not edits:
         raise ToolError("Say what changes: edits.")
-    body: dict[str, Any] = {}
+    if version is None:
+        raise ToolError("Pass the suggestion's version from crm_review_list.")
+    body: dict[str, Any] = {"version": version}
     for name, value in (("deal_id", deal_id), ("option", option)):
         if value is not None:
             body[name] = value

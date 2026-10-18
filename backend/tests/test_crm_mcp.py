@@ -1255,20 +1255,25 @@ class TestReviewTools:
                 ("GET", "/crm/review", {"workspace": None, "scope": "all", "limit": 5}, None),
             ),
             (
-                lambda: crm.crm_review_decide(Ctx("u"), C1, "approve", workspace="labs"),
-                ("POST", f"/crm/review/{C1}/approve", {"workspace": "labs"}, {}),
+                lambda: crm.crm_review_decide(Ctx("u"), C1, "approve", 2, workspace="labs"),
+                ("POST", f"/crm/review/{C1}/approve", {"workspace": "labs"}, {"version": 2}),
             ),
             (
-                lambda: crm.crm_review_decide(Ctx("u"), C1, "approve", deal_id=D1),
-                ("POST", f"/crm/review/{C1}/approve", {"workspace": None}, {"deal_id": D1}),
-            ),
-            (
-                lambda: crm.crm_review_decide(Ctx("u"), C1, "edit", edits={"title": "X"}),
+                lambda: crm.crm_review_decide(Ctx("u"), C1, "approve", 1, deal_id=D1),
                 (
                     "POST",
                     f"/crm/review/{C1}/approve",
                     {"workspace": None},
-                    {"edits": {"title": "X"}},
+                    {"version": 1, "deal_id": D1},
+                ),
+            ),
+            (
+                lambda: crm.crm_review_decide(Ctx("u"), C1, "edit", 1, edits={"title": "X"}),
+                (
+                    "POST",
+                    f"/crm/review/{C1}/approve",
+                    {"workspace": None},
+                    {"version": 1, "edits": {"title": "X"}},
                 ),
             ),
             (
@@ -1282,6 +1287,15 @@ class TestReviewTools:
         monkeypatch.setattr(crm, "_api", recorder)
         asyncio.run(call())
         assert recorder.calls == [expected]
+
+    @pytest.mark.parametrize("decision", ["approve", "edit"])
+    def test_decide_needs_the_version_shown_to_approve(self, monkeypatch, decision):
+        recorder = Recorder()
+        monkeypatch.setattr(crm, "_api", recorder)
+        with pytest.raises(server.ToolError) as refused:
+            asyncio.run(crm.crm_review_decide(Ctx("u"), C1, decision, edits={"title": "X"}))
+        assert "version" in str(refused.value)
+        assert recorder.calls == []
 
     def test_decide_refuses_an_id_that_is_not_one(self, monkeypatch):
         recorder = Recorder()

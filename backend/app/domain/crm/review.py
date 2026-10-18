@@ -58,6 +58,8 @@ ZONE: Final = ZoneInfo("Asia/Kolkata")
 #: §2.2).
 NO_SUCH: Final = "No such suggestion."
 ALREADY_DECIDED: Final = "This suggestion was already decided."
+#: The item was refreshed after it was shown (069): approve what was seen only.
+SUGGESTION_CHANGED: Final = "This suggestion changed; review it again."
 CHANGED: Final = "This record changed after the suggestion was made."
 TRASHED: Final = "This record is in the Trash."
 CHOOSE_DEAL: Final = "Choose the deal this applies to."
