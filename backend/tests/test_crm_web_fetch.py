@@ -77,6 +77,19 @@ class TestPrivateAddressesAreRefused:
     def test_web_fetch_a_non_public_address_is_not_public(self, address):
         assert web_fetch.public(address) is False
 
+    @pytest.mark.parametrize("address", ["fec0::1", "fec0:1234::5", "fef0::1", "100::1"])
+    def test_web_fetch_an_ipv6_address_outside_global_unicast_is_not_public(self, address):
+        """Site-local fec0::/10 counts as global to Python; only 2000::/3 is
+        global unicast."""
+        assert web_fetch.public(address) is False
+
+    def test_web_fetch_a_host_resolving_to_a_site_local_address_is_unread(self, web):
+        web.answer("acme.in", ["fec0::1"])
+        web.page("acme.in", "/", PAGE)
+        with pytest.raises(web_fetch.Unreadable):
+            _read()
+        assert web.requests == []
+
     @pytest.mark.parametrize("address", [PUBLIC, "2606:4700:4700::1111", "8.8.8.8"])
     def test_web_fetch_a_public_address_is_public(self, address):
         assert web_fetch.public(address) is True
@@ -116,7 +129,13 @@ class TestTheCheckedAddressIsConnectedTo:
         site = _read()
         assert site.pages == [("/", "Acme Tools\nWe make tools.")]
         assert web.requests == [
-            {"address": PUBLIC, "host": "acme.in", "sni": "acme.in", "path": "/"}
+            {
+                "address": PUBLIC,
+                "host": "acme.in",
+                "sni": "acme.in",
+                "path": "/",
+                "accept_encoding": "identity",
+            }
         ]
 
     def test_web_fetch_a_rebinding_answer_cannot_move_the_connection(self, web):
@@ -155,6 +174,31 @@ class TestRedirects:
             _read()
         assert [r["host"] for r in web.requests] == ["acme.in"]
         assert "evil.example" not in web.lookups
+
+    @pytest.mark.parametrize(
+        ("home", "other"),
+        [
+            ("acme.co.za", "rival.co.za"),
+            ("acme.github.io", "attacker.github.io"),
+            ("shop.acme.com", "acme.com"),
+        ],
+    )
+    def test_web_fetch_a_redirect_beside_the_site_under_a_shared_suffix_is_refused(
+        self, web, home, other
+    ):
+        web.site(home, {})
+        web.page(home, "/", status=302, headers={"location": f"https://{other}/"})
+        web.site(other, {"/": PAGE})
+        with pytest.raises(web_fetch.Unreadable):
+            _read(f"https://{home}/")
+        assert [r["host"] for r in web.requests] == [home]
+        assert other not in web.lookups
+
+    def test_web_fetch_a_link_beside_the_site_is_not_read(self, web):
+        web.site("acme.co.za", {"/": '<a href="https://rival.co.za/about">x</a>' + PAGE})
+        web.site("rival.co.za", {"/about": "<p>Rival</p>"})
+        _read("https://acme.co.za/")
+        assert [r["host"] for r in web.requests] == ["acme.co.za"]
 
     def test_web_fetch_a_redirect_to_a_private_host_on_the_site_is_refused(self, web):
         web.site("acme.in", {})
@@ -220,6 +264,21 @@ class TestCaps:
         web.site("other.in", {"/about": "<p>Other</p>"})
         _read()
         assert [r["host"] for r in web.requests] == ["acme.in"]
+
+    def test_web_fetch_asks_for_an_uncompressed_page(self, web):
+        """A compressed body is inflated before the 1 MB cap is checked, so
+        one small chunk could grow to tens of MB: none is asked for."""
+        web.site("acme.in", {"/": PAGE})
+        _read()
+        assert [r["accept_encoding"] for r in web.requests] == ["identity"]
+
+    @pytest.mark.parametrize("encoding", ["gzip", "deflate", "br"])
+    def test_web_fetch_a_page_compressed_anyway_is_unread(self, web, encoding):
+        web.answer("acme.in", [PUBLIC])
+        web.page("acme.in", "/", headers={"content-encoding": encoding}, chunks=iter([b"x" * 10]))
+        with pytest.raises(web_fetch.Unreadable):
+            _read()
+        assert web.pulled == 0
 
     def test_web_fetch_a_page_is_read_to_one_megabyte_at_most(self, web):
         chunk = b"<p>" + b"a" * 65_533

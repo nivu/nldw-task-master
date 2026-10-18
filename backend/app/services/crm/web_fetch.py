@@ -6,12 +6,13 @@ internal services (OWASP: SSRF). Every request here, the first and each
 redirect hop, is checked before it is sent:
 
 1. the scheme is `http` or `https`, on the default port, with no user;
-2. the host is on the company's own site (the same registered name,
+2. the host is on the company's own site (its host or one under it,
    `domain/crm/enrichment.same_site`);
 3. the host is resolved once (`resolve`), and every address it resolves to
    must be public: private, loopback, link-local, multicast, reserved,
    unspecified and shared addresses are refused, IPv4 and IPv6, including
-   IPv4 inside IPv6;
+   IPv4 inside IPv6, and any IPv6 address outside 2000::/3 (site-local
+   fec0::/10 included);
 4. the connection goes to the address that was checked, never to a second
    lookup (against DNS rebinding), with the original host as `Host` and as
    the TLS SNI name (httpx's `sni_hostname` extension), so the certificate is
@@ -57,7 +58,16 @@ MAX_REDIRECTS: Final = 3
 PORTS: Final = {"http": 80, "https": 443}
 #: What the reader asks for and accepts.
 HTML_TYPES: Final = ("text/html", "application/xhtml+xml")
-HEADERS: Final = {"Accept": "text/html", "User-Agent": "NunnariCRM/1.0 (company enrichment)"}
+#: No compression: a compressed body is inflated chunk by chunk with no
+#: output limit, so one small chunk could grow far past `MAX_BYTES` before
+#: the cap is checked. A body sent compressed anyway is not read.
+HEADERS: Final = {
+    "Accept": "text/html",
+    "Accept-Encoding": "identity",
+    "User-Agent": "NunnariCRM/1.0 (company enrichment)",
+}
+#: The global unicast IPv6 range; any other IPv6 address is refused.
+_GLOBAL_V6: Final = ipaddress.ip_network("2000::/3")
 REDIRECTS: Final = (301, 302, 303, 307, 308)
 
 
@@ -164,6 +174,10 @@ def public(address: str) -> bool:
     if isinstance(ip, ipaddress.IPv6Address):
         inner = ip.ipv4_mapped or ip.sixtofour or (ip.teredo[1] if ip.teredo else None)
         if inner is not None and not public(str(inner)):
+            return False
+        # Site-local fec0::/10 counts as global to Python; only 2000::/3 is
+        # global unicast. (An IPv4-mapped address was judged above.)
+        if inner is None and (ip.is_site_local or ip not in _GLOBAL_V6):
             return False
     return bool(
         ip.is_global
@@ -282,7 +296,12 @@ def fetch(
                     url = urljoin(f"{target.scheme}://{host}{_path}", location)
                     continue
                 kind = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                if response.status_code != 200 or kind not in HTML_TYPES:
+                encoding = response.headers.get("content-encoding", "").strip().lower()
+                if (
+                    response.status_code != 200
+                    or kind not in HTML_TYPES
+                    or encoding not in ("", "identity")
+                ):
                     _log(job, workspace, str(response.status_code), started, 0)
                     return None
                 try:

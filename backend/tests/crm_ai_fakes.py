@@ -227,7 +227,8 @@ class FakeWeb:
     page; `status`, `headers`, `chunks` (an iterator of bytes, pulled
     lazily) and `wait` (seconds the clock moves before the answer arrives)
     shape the answer. Every lookup is in `lookups` and every request
-    in `requests` as `{address, host, sni, path}`: the address is the one
+    in `requests` as `{address, host, sni, path, accept_encoding}`: the
+    address is the one
     connected to. `clock` is the reader's monotonic clock; `tick` moves it on
     with every chunk a body yields, for the time cap."""
 
@@ -298,6 +299,7 @@ class FakeWeb:
                 "host": host,
                 "sni": request.extensions.get("sni_hostname"),
                 "path": request.url.path,
+                "accept_encoding": request.headers.get("accept-encoding"),
             }
         )
         page = self.pages.get((host, request.url.path))

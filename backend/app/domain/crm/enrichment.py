@@ -115,44 +115,22 @@ def site(website: Any, primary_domain: str | None) -> str | None:
     return f"https://{host}/" if host else None
 
 
-#: Second-level suffixes under which a name is registered one label deeper
-#: (acme.co.in, acme.edu.au): the CRM's markets, without a suffix list.
-_SECOND_LEVEL: Final = frozenset(
-    {
-        "ac.in",
-        "co.in",
-        "edu.in",
-        "gov.in",
-        "net.in",
-        "org.in",
-        "res.in",
-        "com.au",
-        "edu.au",
-        "gov.au",
-        "net.au",
-        "org.au",
-        "ac.uk",
-        "co.uk",
-        "gov.uk",
-        "org.uk",
-        "co.nz",
-        "com.sg",
-        "edu.sg",
-    }
-)
+def _bare(host: str) -> str:
+    host = host.lower().rstrip(".")
+    return host[4:] if host.startswith("www.") else host
 
 
-def registrable(host: str) -> str:
-    """The registered name a host belongs to: `about.acme.co.in` →
-    `acme.co.in`, `www.acme.com` → `acme.com`."""
-    labels = host.lower().rstrip(".").split(".")
-    keep = 3 if len(labels) >= 3 and ".".join(labels[-2:]) in _SECOND_LEVEL else 2
-    return ".".join(labels[-keep:])
-
-
-def same_site(host: str, other: str) -> bool:
-    """Q-30 — two hosts of one registered name (`acme.in`, `www.acme.in`)."""
-    return bool(host) and bool(other) and registrable(host) == registrable(other)
+def same_site(host: str, home: str) -> bool:
+    """Q-30 — `host` is on the company's site `home`: the same host or one
+    under it, `www.` aside (`acme.in` and `www.acme.in`; `about.acme.co.in`
+    under `acme.co.in`). Without the public suffix list nothing else counts:
+    not a host beside it under a shared suffix (`rival.co.za` from
+    `acme.co.za`, `attacker.github.io` from `acme.github.io`), nor one above
+    it."""
+    candidate, own = _bare(host or ""), _bare(home or "")
+    if not candidate or not own:
+        return False
+    return candidate == own or candidate.endswith("." + own)
 
 
 # ---------------------------------------------------------------------------

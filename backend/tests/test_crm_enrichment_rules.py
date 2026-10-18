@@ -69,12 +69,22 @@ class TestTheSite:
         ("a", "b", "same"),
         [
             ("acme.in", "www.acme.in", True),
+            ("www.acme.in", "acme.in", True),
             ("about.acme.co.in", "acme.co.in", True),
+            ("shop.acme.com.au", "www.acme.com.au", True),
             ("acme.co.in", "other.co.in", False),
-            ("acme.com.au", "shop.acme.com.au", True),
-            ("acme.in", "acme.in.evil.com", False),
-            ("acme.in", "evilacme.in", False),
+            # Only the company's own host and those under it.
+            ("acme.com.au", "shop.acme.com.au", False),
+            ("acme.in.evil.com", "acme.in", False),
+            ("evilacme.in", "acme.in", False),
+            ("", "acme.in", False),
             ("acme.in", "", False),
+            # Suffixes the code does not know are not a shared site either.
+            ("rival.co.za", "acme.co.za", False),
+            ("co.za", "acme.co.za", False),
+            ("attacker.github.io", "acme.github.io", False),
+            ("rival.vercel.app", "acme.vercel.app", False),
+            ("acme.com.br", "acme.com.br", True),
         ],
     )
     def test_enrichment_the_same_site(self, a, b, same):
