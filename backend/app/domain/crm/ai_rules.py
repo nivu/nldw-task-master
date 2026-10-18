@@ -282,6 +282,23 @@ def quote_untrusted(label: str, text: str) -> str:
 
 _TRAILING: Final = ".,;:!?"
 _URL: Final = re.compile(r"(?:https?://|www\.)[^\s<>\"')\]]+", re.IGNORECASE)
+#: A link written without a scheme: a host (labels and a letters-only top
+#: level), not inside an address or another link, optionally with a port and
+#: a path. `pay at acme-billing.co/pay`.
+_BARE: Final = re.compile(
+    r"(?<![\w@./-])"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w@-])"
+    r"(?::\d{1,5})?(?:/[^\s<>\"')\]]*)?",
+    re.IGNORECASE,
+)
+#: File names, not hosts, when nothing follows them: `Node.js`, `notes.pdf`.
+_FILE_SUFFIXES: Final = frozenset(
+    {
+        "js", "ts", "py", "md", "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt",
+        "pptx", "csv", "json", "png", "jpg", "jpeg", "gif", "svg", "html", "htm",
+        "css", "xml", "yaml", "yml",
+    }
+)  # fmt: skip
 
 
 def _host(netloc: str) -> str:
@@ -313,16 +330,28 @@ def allowed_url(url: str, *, site: str | None = None) -> bool:
 
 
 def drop_urls(text: str, *, site: str | None = None) -> str:
-    """Every link in `text` that is not one of the allowed kinds is removed;
-    with `site` (enrichment), a link on the company's own site is kept too.
-    Punctuation that ends the sentence after a link is kept."""
+    """Every link in `text` that is not one of the allowed kinds is removed,
+    with a scheme, `www.` or neither (`acme-billing.co/pay`); with `site`
+    (enrichment), a link on the company's own site is kept too. A file name
+    such as `Node.js` or `notes.pdf`, or a name such as `R.Priya`, with
+    nothing after it is not a link, and neither is an email address. Punctuation that ends the sentence after a
+    link is kept."""
 
     def keep_or_drop(match: re.Match[str]) -> str:
         url = match.group(0).rstrip(_TRAILING)
         tail = match.group(0)[len(url) :]
         return match.group(0) if allowed_url(url, site=site) else tail
 
-    return _URL.sub(keep_or_drop, text)
+    def bare(match: re.Match[str]) -> str:
+        found = match.group(0)
+        if "/" not in found and ":" not in found:
+            last = found.rstrip(_TRAILING).rsplit(".", 1)[-1]
+            # A file name, or an initial and a name (`R.Priya`, `Dr.Rao`).
+            if last.lower() in _FILE_SUFFIXES or (last[0].isupper() and not last.isupper()):
+                return found
+        return keep_or_drop(match)
+
+    return _BARE.sub(bare, _URL.sub(keep_or_drop, text))
 
 
 # ---------------------------------------------------------------------------

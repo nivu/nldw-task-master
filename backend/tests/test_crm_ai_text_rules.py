@@ -184,6 +184,35 @@ class TestTheUrlPolicy:
         text = "Read https://evil.example/x and www.phish.example now; https://www.linkedin.com/company/acme"
         assert rules.drop_urls(text) == "Read  and  now; https://www.linkedin.com/company/acme"
 
+    @pytest.mark.parametrize(
+        ("text", "kept"),
+        [
+            ("Tell them to pay at acme-billing.co/pay.", "Tell them to pay at ."),
+            ("Pay at evil-pay.com today", "Pay at  today"),
+            ("Invoice: Acme-Billing.Co/Invoice?id=7", "Invoice: "),
+            ("Use pay.acme.md/x or sub.evil.io:8080/login", "Use  or "),
+        ],
+    )
+    def test_urls_a_link_without_a_scheme_is_dropped(self, text, kept):
+        assert rules.drop_urls(text) == kept
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Write to priya@acme.com or r.priya@acme.co.in",
+            "Built on Node.js; the notes are in plan.pdf and readme.md",
+            "Met R.Priya and Dr.Rao, e.g. on 10.30 a.m. in the U.S. office",
+            "Version 2.5 at INR 4.5L",
+            "See linkedin.com/company/acme",
+        ],
+    )
+    def test_urls_what_is_not_a_disallowed_link_stays(self, text):
+        assert rules.drop_urls(text) == text
+
+    def test_urls_a_link_without_a_scheme_on_the_companys_site_stays(self):
+        text = "See acme.com/about and evil.io/pay"
+        assert rules.drop_urls(text, site="https://acme.com/") == "See acme.com/about and "
+
     def test_urls_dropped_keep_the_full_stop_after_them(self):
         text = "See https://evil.example/x. Then call. Ask www.phish.example/y?"
         assert rules.drop_urls(text) == "See . Then call. Ask ?"
