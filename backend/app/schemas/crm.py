@@ -990,3 +990,42 @@ class MeetingOutput(BaseModel):
         if any(not 1 <= len(d.strip()) <= 200 for d in value):
             raise ValueError("a decision is 1 to 200 characters")
         return [d.strip() for d in value]
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — company enrichment (contracts §2.4; FR-CRMAI-ENR)
+# ---------------------------------------------------------------------------
+
+
+class EnrichmentOutput(BaseModel):
+    """FR-CRMAI-ENR-03 — what the model must answer for a company's website,
+    validated before anything is saved: each value a short generated string,
+    or null when the pages do not say (nothing is guessed, FR-CRMAI-ENR-06);
+    the description at most 300 characters, at most eight products of 60."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    industry: str | None = Field(max_length=300)
+    sub_industry: str | None = Field(max_length=300)
+    employee_band: str | None = Field(max_length=300)
+    city: str | None = Field(max_length=100)
+    country: str | None = Field(max_length=100)
+    description: str | None = Field(max_length=300)
+    linkedin: str | None = Field(max_length=300)
+    products: list[str] = Field(max_length=8)
+
+    @field_validator("products")
+    @classmethod
+    def _short_products(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(p.strip()) <= 60 for p in value):
+            raise ValueError("a product is 1 to 60 characters")
+        return [p.strip() for p in value]
+
+
+class EnrichRunIn(BaseModel):
+    """`POST /crm/enrichment/run` — Enrich selected: the companies selected
+    on a company view (contracts §2.4; no view-wide run, D-3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_ids: list[str] = Field(min_length=1, max_length=500)

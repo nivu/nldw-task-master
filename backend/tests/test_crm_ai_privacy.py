@@ -11,6 +11,9 @@ and then finds no marker in the prompts, in any row the fake database holds
 any Celery payload, or in the task's result, which is never stored
 (`ignore_result`). S2a adds a marker in a meeting's transcript and in
 Fireflies' own summary of it, and runs the meetings job the same two ways.
+S2b adds a marker in a company's web pages (its home page and its about
+page), and runs the enrichment job the same two ways, its batches sent
+through the real enqueue path so their Celery payloads are inspected too.
 """
 
 from __future__ import annotations
@@ -20,10 +23,13 @@ import logging
 
 import pytest
 from crm_ai_fakes import INVALID, CapturedCelery
+from test_crm_enrichment_job import ANSWER as ENRICHED
+from test_crm_enrichment_job import Sites
 from test_crm_meetings_job import ANSWER as MEETING_ANSWER
 from test_crm_meetings_job import PRIYA, Calls
 from test_crm_summaries_job import ANSWER, Mail
 
+from app.services.crm import enrichment
 from app.tasks import crm_ai
 
 QUOTED = "ZQXQUOTEDHISTORY"
@@ -32,6 +38,8 @@ INTERNAL = "ZQXINTERNALONLY"
 MARKERS = (QUOTED, SIGNED, INTERNAL)
 TRANSCRIPT = "ZQXTRANSCRIPT"
 FIREFLIES_SUMMARY = "ZQXFIREFLIESSUMMARY"
+WEB_PAGE = "ZQXWEBPAGE"
+WEB_ABOUT = "ZQXWEBABOUT"
 
 EMAIL = (
     "Could you send the pilot plan by Friday?\n\n"
@@ -57,7 +65,7 @@ def mail(monkeypatch, caplog):
     return mail
 
 
-def _everything(mail: Mail | Calls, caplog, result) -> str:
+def _everything(mail: Mail | Calls | Sites, caplog, result) -> str:
     return "\n".join(
         [
             json.dumps(mail.fake.rows, default=str),
@@ -137,3 +145,62 @@ class TestMeeting:
         calls.answer(MEETING_ANSWER)
         crm_ai.capture_meetings()
         assert calls.celery.sent == []
+
+
+@pytest.fixture
+def sites(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    real_enqueue = enrichment.enqueue
+    sites = Sites(monkeypatch)
+    # The batches go through the real enqueue, so their payloads are seen.
+    monkeypatch.setattr(enrichment, "enqueue", real_enqueue)
+    sites.celery = CapturedCelery().install(monkeypatch)
+    sites.company("Acme", "https://acme.in")
+    sites.site(
+        home=f"<html><body><p>Acme makes machine tools. Code {WEB_PAGE}.</p>"
+        '<a href="/about">About</a></body></html>',
+        about=f"<html><body><p>Founded by {WEB_ABOUT} in 1998.</p></body></html>",
+    )
+    return sites
+
+
+def _enrich(sites: Sites) -> dict:
+    """The tick, then every batch it and its batches sent."""
+    result = crm_ai._enrichment()
+    done = 0
+    while done < len(sites.celery.named("crm_ai.enrichment_batch")):
+        [args] = sites.celery.named("crm_ai.enrichment_batch")[done]["args"]
+        crm_ai.enrichment_batch(args)
+        done += 1
+    return result
+
+
+class TestWebPage:
+    def test_privacy_the_web_pages_reach_the_model_only(self, sites):
+        claude = sites.answer(ENRICHED)
+        _enrich(sites)
+        [prompt] = claude.prompts
+        assert WEB_PAGE in prompt and WEB_ABOUT in prompt
+
+    @pytest.mark.parametrize("answers", [(ENRICHED,), (INVALID, INVALID)], ids=["ok", "invalid"])
+    def test_privacy_no_web_page_marker_in_any_column_log_payload_or_result(
+        self, sites, caplog, answers
+    ):
+        sites.answer(*answers)
+        result = _enrich(sites)
+        run = sites.last_run()
+        assert run["counts"]["enriched" if len(answers) == 1 else "failed"] == 1, run
+        assert sites.celery.named("crm_ai.enrichment_batch")
+        found = _everything(sites, caplog, result)
+        for marker in (WEB_PAGE, WEB_ABOUT):
+            assert marker not in found, marker
+        assert "machine tools. Code" not in found
+
+    def test_privacy_the_enrichment_tasks_store_no_result_and_take_no_text(self, sites):
+        assert crm_ai.enrich_companies.ignore_result is True
+        assert crm_ai.enrichment_batch.ignore_result is True
+        sites.answer(ENRICHED)
+        _enrich(sites)
+        for sent in sites.celery.sent:
+            [args] = sent["args"]
+            assert set(args) == {"workspace_id", "run_id", "cutoff", "lock", "counts"}

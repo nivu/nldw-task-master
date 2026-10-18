@@ -171,6 +171,15 @@ class TestTheUrlPolicy:
         assert not rules.allowed_url("https://acme.com.evil.example", site="acme.com")
         assert not rules.allowed_url("https://acme.com/about")
 
+    def test_urls_the_companys_own_site_given_the_normalised_site(self):
+        # Enrichment passes the stored site, `https://host/`.
+        text = "See https://acme.com/about, https://www.acme.com/x and https://acme.com.evil.io/y"
+        assert rules.drop_urls(text, site="https://acme.com/") == (
+            "See https://acme.com/about, https://www.acme.com/x and "
+        )
+        assert rules.allowed_url("https://shop.acme.com", site="https://www.acme.com/")
+        assert not rules.allowed_url("https://evil.example/", site="https://acme.com/")
+
     def test_urls_dropped_from_text(self):
         text = "Read https://evil.example/x and www.phish.example now; https://www.linkedin.com/company/acme"
         assert rules.drop_urls(text) == "Read  and  now; https://www.linkedin.com/company/acme"

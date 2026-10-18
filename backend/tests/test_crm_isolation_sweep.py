@@ -243,6 +243,16 @@ def crm(monkeypatch):
         record_type="company",
         record_id=company["id"],
     )
+    # Spec 009 S2b: the company's enrichment (queued by 064's trigger from
+    # its domain), done, with phase 2 on in both workspaces.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True})
+    fake.add_enrichment(
+        academy,
+        company,
+        website="https://zqxacad.edu/",
+        values={"description": "Zqxacad trains engineers.", "products": ["Zqxacad course"]},
+    )
     made = {
         "companies": company,
         "people": person,
@@ -383,6 +393,19 @@ class TestIdsInTheBodyOrQuery:
         )
         assert [f["id"] for f in r.json()["failed"]] == [made["companies"]["id"]]
         assert fake.rows["crm_companies"][made["companies"]["id"]].get("city") != "X"
+
+    def test_enrich_selected_with_another_workspaces_company(self, crm):
+        http, fake, made = crm
+        before = {k: dict(v) for k, v in fake.rows["crm_company_enrichment"].items()}
+        r = http.post(
+            "/api/v1/crm/enrichment/run",
+            params=LABS,
+            json={"company_ids": [made["companies"]["id"]]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == "No such company."
+        assert {k: dict(v) for k, v in fake.rows["crm_company_enrichment"].items()} == before
 
     def test_a_view_by_another_workspaces_id(self, crm):
         http, _, made = crm

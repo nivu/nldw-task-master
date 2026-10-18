@@ -118,7 +118,7 @@ Admin-only `GET /crm/ai` (contracts §2.1). Not in the workspace export
 | `current_values` | jsonb | NOT NULL DEFAULT '{}'; the value of each field the item would replace, at creation (FR-CRMAI-REV-04). Emptied at tombstoning |
 | `source_kind` | text | NOT NULL `CHECK (source_kind IN ('email_thread','meeting','enrichment','rule'))` |
 | `source_key` | text | NOT NULL ≤ 300: `gmail:<mailbox_id>:<thread_id>`, `fireflies:<transcript_id>`, `enrichment:<company_id>`, `rule:<R-n>:<record or member id>` |
-| `source_version` | text | NOT NULL ≤ 300: what makes the source "changed" (FR-CRMAI-REV-08): the summary watermark message id (a `task_from_commitment`: the commitment fingerprint, so a re-summary after a new message never suggests a decided commitment again, FR-CRMAI-SUM-07; amended in S1c), the transcript's `dateUpdated`, the enrichment `generated_at`, or the rule trigger (§3.2.2) |
+| `source_version` | text | NOT NULL ≤ 300: what makes the source "changed" (FR-CRMAI-REV-08): the summary watermark message id (a `task_from_commitment`: the commitment fingerprint, so a re-summary after a new message never suggests a decided commitment again, FR-CRMAI-SUM-07; amended in S1c), the transcript's `dateUpdated`, for enrichment a hash of the site, field and value (so an Admin's re-run that reads the same value again does not re-suggest a decided conflict, FR-CRMAI-ENR-08; amended in S2b), or the rule trigger (§3.2.2) |
 | `source_link` | jsonb | NOT NULL DEFAULT '{}': `{record_type, record_id}` of the note, company or deal to open, or `{mailbox_id, thread_id}`; never a URL except the Fireflies transcript link |
 | `dedupe_key` | text | NOT NULL ≤ 400: `<source_kind>|<source_key>|<type>|<target>` where target is `record_type:record_id` (plus `member_id` for R-4, plus the commitment fingerprint for `task_from_*`, §3.2.2) |
 | `model`, `generated_at` | text, timestamptz | provenance (P-2); NULL for deterministic R-2, R-3, R-4 items |
@@ -281,7 +281,7 @@ audit row (FR-CRMAI-ENR-06).
 
 `crm_queue_enrichment()` (trigger, `SECURITY INVOKER`): `AFTER INSERT OR
 UPDATE OF website ON crm_companies` and `AFTER INSERT OR UPDATE OF is_primary,
-domain ON crm_company_domains`. Computes the company's site (`website->>'url'`
+domain ON crm_company_domains`. Computes the company's site (`website->'primary'->>'url'`, the Links object's primary address; amended in S2b,
 normalised, else `https://<primary domain>/`). When there is one and the
 company is not deleted, upserts `(workspace_id, company_id)`: a new row as
 `queued`; an existing row whose `website` differs is reset to `queued` with
@@ -463,7 +463,7 @@ the task's own audit rows carry it too.
 | Trash | Reads leave out summaries linked only to trashed records, enrichment and AI values of trashed records, and items whose target is trashed; an item whose target is trashed is refused on decide (422 "This record is in the Trash.") | services (read filters) |
 | Restore | Nothing to do: the rows were never changed | — |
 | Purge | `crm_purge()` (061, 062, 065 versions) also deletes `crm_review_items` targeting the record (`record_type`, `record_id`), `crm_email_summary_links` and `crm_ai_field_values` of it. A purged deal's `crm_review_item_deals` rows go by FK CASCADE. Enrichment goes by FK CASCADE with the company. Notes' `source_ref` goes with the note. Its table-to-record-type CASE is unchanged (no new purgeable table) | 061, 062, 065 |
-| Company merge | `crm_merge_companies()` (061, 062, 064, 065 versions) moves summary links, open items (recomputing `dedupe_key`; an item whose new key collides with an open item on the survivor is expired), enrichment (the survivor's row wins; else the merged one is moved) and AI field values (the survivor's win; else moved, `dirty_at = now()`) | 061, 062, 064, 065 |
+| Company merge | `crm_merge_companies()` (061, 062, 064, 065 versions) moves summary links, open items (recomputing `dedupe_key`; an item whose new key collides with an open item on the survivor is expired), enrichment (the survivor's row wins; else the merged one is moved; a survivor's row that is only queued, by no one, for the merged company's site goes and the merged one is moved, amended in S2b) and AI field values (the survivor's win; else moved, `dirty_at = now()`) | 061, 062, 064, 065 |
 | Export | `GET /crm/export/workspace` gains `email_summaries` (with links), `review_items` (with their deal choices), `enrichment`, `ai_fields`, `ai_field_values`; never `crm_ai_usage`. `export.py`'s `_all_rows` reads `objects.TABLES[kind]` and `present_rows()`, which know record kinds only, so each AI object gets its own reader and presenter branch (ids only, rows whose target is trashed left out per the Trash line). `test_crm_csv_io.py`'s exact set of export objects is extended in the same slice | service |
 
 ---

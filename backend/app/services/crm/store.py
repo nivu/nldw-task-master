@@ -2265,3 +2265,113 @@ def store_meeting_note(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str,
     created}]}`, with `edited_by_person` when a person's edit stopped an
     update (Q-41)."""
     return rpc("crm_store_meeting_note", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — company enrichment (009 data-model §3.5)
+#
+# The enrichment table is a log with no audit trigger and no page text: 064's
+# trigger queues it inside the company's own write, and the worker and the
+# Admin's Enrich selected write it directly, as the usage log is written.
+# It never touches `crm_companies` (FR-CRMAI-ENR-06).
+# ---------------------------------------------------------------------------
+
+_ENRICHMENT_COLUMNS = (
+    "id, workspace_id, company_id, website, status, failure_reason, values, model, "
+    "generated_at, queued_at, requested_by, created_at"
+)
+
+
+def queued_enrichment(workspace_id: str, limit: int, *, before: datetime) -> list[dict[str, Any]]:
+    """The companies waiting to be enriched, queued at or before `before`,
+    oldest first; a company in the Trash waits where it is, so a restore
+    finds it still queued."""
+    out: list[dict[str, Any]] = []
+    after = 0
+    while len(out) < limit:
+        rows = (
+            supabase.table("crm_company_enrichment")
+            .select(_ENRICHMENT_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .eq("status", "queued")
+            .lte("queued_at", before.isoformat())
+            .order("queued_at")
+            .order("id")
+            .range(after, after + _ID_BATCH - 1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            break
+        after += len(rows)
+        live = {
+            r["id"]
+            for r in supabase.table("crm_companies")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+            .in_("id", sorted({r["company_id"] for r in rows}))
+            .execute()
+            .data
+            or []
+        }
+        out += [r for r in rows if r["company_id"] in live]
+    return out[:limit]
+
+
+def enrichment_for(workspace_id: str, company_ids: list[str] | None) -> list[dict[str, Any]]:
+    """The enrichment rows of these companies (None: every company of the
+    workspace, for the export), in company order."""
+    if company_ids == []:
+        return []
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_company_enrichment")
+            .select(_ENRICHMENT_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        ),
+        "company_id",
+        company_ids,
+    )
+    return sorted(rows, key=lambda r: r["company_id"])
+
+
+def write_enrichment(
+    workspace_id: str, company_id: str, website: str, values: dict[str, Any]
+) -> bool:
+    """Records the outcome of one queued enrichment: `{status,
+    failure_reason, values, model, generated_at}`, or a later `queued_at`.
+    Only while the row is still queued for the same site: a website changed
+    meanwhile was queued again by 064's trigger, and its new site wins."""
+    rows = (
+        supabase.table("crm_company_enrichment")
+        .update(values)
+        .eq("workspace_id", workspace_id)
+        .eq("company_id", company_id)
+        .eq("website", website)
+        .eq("status", "queued")
+        .execute()
+        .data
+    )
+    return bool(rows)
+
+
+def requeue_enrichment(workspace_id: str, rows: list[dict[str, Any]], at: datetime) -> None:
+    """Enrich selected (FR-CRMAI-ENR-08): each `{company_id, website,
+    requested_by}` queued at `at`, again when already enriched."""
+    if not rows:
+        return
+    supabase.table("crm_company_enrichment").upsert(
+        [
+            {
+                **row,
+                "workspace_id": workspace_id,
+                "status": "queued",
+                "failure_reason": None,
+                "queued_at": at.isoformat(),
+            }
+            for row in rows
+        ],
+        on_conflict="workspace_id,company_id",
+    ).execute()

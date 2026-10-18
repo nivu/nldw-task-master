@@ -7,6 +7,9 @@ a person or a deal:
 
 - `summaries`: the latest five threads' summaries, while phase 1 is on (the
   key is absent, not empty, while it is off);
+- `enrichment`, for a company not in the Trash: its enriched values, status,
+  what may be promoted and its open conflict items, while phase 2 is on
+  (None when it was never queued; absent while the phase is off);
 - `open_review_items`: how many open Review Queue items about the record
   the caller may see (none for a Viewer, FR-CRMAI-REV-03).
 
@@ -20,7 +23,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.crm import review as review_rules
-from app.services.crm import store, summaries
+from app.services.crm import enrichment, store, summaries
+from app.services.crm import records as base
 
 #: The record kinds the AI layer decorates.
 KINDS = ("company", "person", "opportunity")
@@ -33,6 +37,10 @@ def decorate(ctx: Any, kind: str, answer: dict[str, Any]) -> dict[str, Any]:
     record_id = answer["record"]["id"]
     if summaries.shown(ctx.workspace_id):
         answer["summaries"] = summaries.for_record(ctx.workspace_id, kind, record_id)
+    if kind == "company" and enrichment.shown(ctx.workspace_id):
+        company = base.by_id(ctx.workspace_id, "crm_companies", [record_id]).get(record_id)
+        if company and not company.get("deleted_at"):
+            answer["enrichment"] = enrichment.for_company(ctx, company)
     answer["open_review_items"] = sum(
         1
         for item in store.list_review_items(ctx.workspace_id, status="open")

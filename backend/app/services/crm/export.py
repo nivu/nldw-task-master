@@ -28,7 +28,7 @@ from typing import Any
 from app.domain.crm import csv_io, objects
 from app.domain.crm import views as view_rules
 from app.schemas.crm import ExportViewIn, QueryIn
-from app.services.crm import CrmRefused, review, store, summaries, views
+from app.services.crm import CrmRefused, enrichment, review, store, summaries, views
 from app.services.crm import present as show
 from app.services.crm import records as base
 from app.services.crm.context import actor
@@ -57,10 +57,17 @@ WORKSPACE_OBJECTS = {
     # Spec 009 FR-CRMAI-CHG-11: email thread summaries with their links
     # (`services/crm/summaries.export_rows`).
     "email_summaries": "email_summary",
+    # Spec 009 FR-CRMAI-CHG-11: company enrichment
+    # (`services/crm/enrichment.export_rows`).
+    "enrichment": "enrichment",
 }
 #: Spec 009: the AI objects of the export, which are not record kinds, and
 #: their tables (for the export's audit row).
-AI_TABLES = {"review_item": "crm_review_items", "email_summary": "crm_email_summaries"}
+AI_TABLES = {
+    "review_item": "crm_review_items",
+    "email_summary": "crm_email_summaries",
+    "enrichment": "crm_company_enrichment",
+}
 
 
 def _too_big() -> CrmRefused:
@@ -171,6 +178,8 @@ def _all_rows(ctx: Any, ws: base.Workspace, kind: str) -> list[dict[str, Any]]:
         return review.export_rows(ctx.workspace_id)
     if kind == "email_summary":
         return summaries.export_rows(ctx.workspace_id)
+    if kind == "enrichment":
+        return enrichment.export_rows(ctx.workspace_id)
     rows = store.every_record(ctx.workspace_id, objects.TABLES[kind])
     if kind == "drive_link":
         return [show.drive_link(r, ws.facts) for r in rows]

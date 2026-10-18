@@ -8,6 +8,7 @@ import { useQuickActions } from "@/components/crm/command-menu";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import { EmailsTab } from "@/components/crm/emails-tab";
+import { EnrichmentPanel } from "@/components/crm/enrichment-panel";
 import { MergeDialog } from "@/components/crm/merge-dialog";
 import { NotesTab } from "@/components/crm/note-composer";
 import type { Choice } from "@/components/crm/field-editor";
@@ -127,7 +128,9 @@ function companyGroups(
  * its tasks and notes in their tabs; a Labs company's TVA projects are in
  * Related with their status and phase dates (FR-CRM-CO-02). Admins and
  * Members merge a duplicate into it, or it into one; Merge and Delete are
- * also the command menu's quick actions here.
+ * also the command menu's quick actions here. (009, phase 2) Its enriched
+ * values sit under the header, each promotable by an Admin or Member
+ * (FR-CRMAI-ENR-04).
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -188,10 +191,25 @@ export default function CompanyPage() {
         title={company.name}
         subtitle={company.domain ?? undefined}
         notice={
-          page.merged_from && (
-            <p className="rounded-md bg-muted p-2 text-xs">
-              {page.merged_from.name} was merged into this company.
-            </p>
+          (page.merged_from || page.enrichment) && (
+            <>
+              {page.merged_from && (
+                <p className="rounded-md bg-muted p-2 text-xs">
+                  {page.merged_from.name} was merged into this company.
+                </p>
+              )}
+              {page.enrichment && (
+                <EnrichmentPanel
+                  workspace={ws}
+                  enrichment={page.enrichment}
+                  lists={bootstrap.lists}
+                  canEdit={canEdit}
+                  reviewVisible={bootstrap.ai.review_visible}
+                  timeZone={bootstrap.me.timezone}
+                  onPromote={save}
+                />
+              )}
+            </>
           )
         }
         flags={company}

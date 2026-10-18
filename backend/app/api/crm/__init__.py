@@ -18,6 +18,7 @@ from app.api.crm import (
     dashboard,
     deals,
     email,
+    enrichment,
     export,
     imports,
     jobs,
@@ -58,8 +59,10 @@ ROUTERS = [
     email.router,
     dashboard.router,
     export.router,
-    # Spec 009: Settings, AI; the Review Queue; thread summaries.
+    # Spec 009: Settings, AI; the Review Queue; thread summaries; Enrich
+    # selected.
     ai.router,
     review.router,
     summaries.router,
+    enrichment.router,
 ]

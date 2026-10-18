@@ -295,19 +295,21 @@ def allowed_url(url: str, *, site: str | None = None) -> bool:
     ):
         return True
     if site:
-        own = _host(site)
+        # `site` may be a bare host or the normalised `https://host/`.
+        own = _host(urlparse(site if "://" in site else f"https://{site}").netloc)
         return bool(own) and (host == own or host.endswith("." + own))
     return False
 
 
-def drop_urls(text: str) -> str:
-    """Every link in `text` that is not one of the allowed kinds is removed.
+def drop_urls(text: str, *, site: str | None = None) -> str:
+    """Every link in `text` that is not one of the allowed kinds is removed;
+    with `site` (enrichment), a link on the company's own site is kept too.
     Punctuation that ends the sentence after a link is kept."""
 
     def keep_or_drop(match: re.Match[str]) -> str:
         url = match.group(0).rstrip(_TRAILING)
         tail = match.group(0)[len(url) :]
-        return match.group(0) if allowed_url(url) else tail
+        return match.group(0) if allowed_url(url, site=site) else tail
 
     return _URL.sub(keep_or_drop, text)
 

@@ -8,7 +8,10 @@ prompt it was given, so a test can check what reached the model.
 every message id it was asked for, so a test can check that only stored
 messages are read. `FakeFireflies` stands in for `services/crm/fireflies`'s
 two reads and records every transcript fetch, so a test can check that an
-internal or unmatched meeting is never downloaded. `CapturedCelery` records every task a test enqueues
+internal or unmatched meeting is never downloaded. `FakeWeb` stands in for
+the website reader's DNS lookups and HTTP client (`services/crm/web_fetch`)
+with scripted answers and pages, and records every lookup and request, so a
+test can check which address was connected to. `CapturedCelery` records every task a test enqueues
 instead of sending it.
 The clock helpers build fixed times on the Asia/Kolkata wall clock, where
 the budget month turns (Q-23).
@@ -18,13 +21,16 @@ Route and store tests use `tests/crm_fake.py`; these sit beside it.
 
 from __future__ import annotations
 
+import socket
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 from celery.app.task import Task
 
-from app.services.crm import claude, fireflies, gmail
+from app.services.crm import claude, fireflies, gmail, web_fetch
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -206,6 +212,105 @@ class FakeFireflies:
 
 def _iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+#: A public address for a scripted host (TEST-NET-like answers are not
+#: global, so a real public address is used; nothing connects to it).
+PUBLIC = "93.184.216.34"
+
+
+class FakeWeb:
+    """`web_fetch.resolve` and `web_fetch._client`, scripted. `answer(host,
+    *answers)` sets what a host resolves to: each answer a list of
+    addresses, used in turn (the last one repeats), so a second lookup can
+    differ from the first (DNS rebinding). `page(host, path, html)` serves a
+    page; `status`, `headers`, `chunks` (an iterator of bytes, pulled
+    lazily) and `wait` (seconds the clock moves before the answer arrives)
+    shape the answer. Every lookup is in `lookups` and every request
+    in `requests` as `{address, host, sni, path}`: the address is the one
+    connected to. `clock` is the reader's monotonic clock; `tick` moves it on
+    with every chunk a body yields, for the time cap."""
+
+    def __init__(self) -> None:
+        self.dns: dict[str, list[list[str]]] = {}
+        self.pages: dict[tuple[str, str], dict[str, Any]] = {}
+        self.lookups: list[str] = []
+        self.requests: list[dict[str, Any]] = []
+        self.pulled = 0
+        self.clock = 0.0
+        self.tick = 0.0
+
+    def install(self, monkeypatch) -> FakeWeb:
+        monkeypatch.setattr(web_fetch, "resolve", self.resolve)
+        monkeypatch.setattr(web_fetch, "_client", self.client)
+        monkeypatch.setattr(web_fetch, "_clock", lambda: self.clock)
+        return self
+
+    def answer(self, host: str, *answers: list[str]) -> None:
+        self.dns[host] = [list(a) for a in answers]
+
+    def site(self, host: str, pages: dict[str, str], *, address: str = PUBLIC) -> None:
+        """A host resolving to a public address, serving `pages` by path."""
+        self.answer(host, [address])
+        for path, html in pages.items():
+            self.page(host, path, html)
+
+    def page(
+        self,
+        host: str,
+        path: str,
+        html: str = "",
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        chunks: Iterator[bytes] | None = None,
+        wait: float = 0.0,
+    ) -> None:
+        self.pages[(host, path)] = {
+            "html": html,
+            "status": status,
+            "headers": {"content-type": "text/html; charset=utf-8", **(headers or {})},
+            "chunks": chunks,
+            "wait": wait,
+        }
+
+    def resolve(self, host: str, port: int) -> list[str]:
+        self.lookups.append(host)
+        answers = self.dns.get(host)
+        if not answers:
+            raise socket.gaierror("Name or service not known")
+        return list(answers.pop(0) if len(answers) > 1 else answers[0])
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self._handle), follow_redirects=False)
+
+    def _stream(self, chunks: Iterator[bytes]) -> Iterator[bytes]:
+        for chunk in chunks:
+            self.pulled += len(chunk)
+            self.clock += self.tick
+            yield chunk
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        host = request.headers.get("host", "")
+        self.requests.append(
+            {
+                "address": request.url.host,
+                "host": host,
+                "sni": request.extensions.get("sni_hostname"),
+                "path": request.url.path,
+            }
+        )
+        page = self.pages.get((host, request.url.path))
+        if page is None:
+            return httpx.Response(404, headers={"content-type": "text/html"}, content=b"")
+        self.clock += page["wait"]
+        if page["chunks"] is not None:
+            return httpx.Response(
+                page["status"], headers=page["headers"], content=self._stream(page["chunks"])
+            )
+        body = page["html"].encode()
+        self.pulled += len(body)
+        return httpx.Response(page["status"], headers=page["headers"], content=body)
 
 
 class CapturedCelery:

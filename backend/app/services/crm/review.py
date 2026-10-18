@@ -379,6 +379,9 @@ def _enrichment(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change
     if field not in rules.ENRICHED_FIELDS:
         raise CrmRefused(422, rules.NOT_YET)
     value = edits.get("value", suggestion.get("value"))
+    if field == "linkedin" and isinstance(value, str):
+        # Edit and approve sends the address as typed; the field is a Links.
+        value = {"primary": {"url": value}, "others": []}
     recorded = {k: v for k, v in (item.get("current_values") or {}).items() if k == field}
 
     def change(approver: Any) -> tuple[dict[str, Any], dict[str, Any]]:

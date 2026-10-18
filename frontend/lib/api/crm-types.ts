@@ -811,6 +811,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
   emails?: CrmEmailThread[];
   /** 009 S1c, phase 1 on: the latest 5 threads' summaries (FR-CRMAI-SUM-08). */
   summaries?: CrmThreadSummary[];
+  /** 009 S2b, phase 2 on: a company's enriched values (FR-CRMAI-ENR-03, -04). */
+  enrichment?: CrmEnrichment | null;
 }
 
 export interface CrmPage<T> {
@@ -1729,4 +1731,46 @@ export interface CrmThreadSummary extends CrmThreadSummaryBody {
   next_step?: string | null;
   next_step_on?: string | null;
   links: { record_type: "company" | "person" | "opportunity"; record_id: string; name: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// 009 S2b — company enrichment (009 contracts §1, §2.4; FR-CRMAI-ENR)
+// ---------------------------------------------------------------------------
+
+export type EnrichmentStatus = "queued" | "done" | "failed";
+
+/** The main fields an enriched value promotes to (spec 009 §7.2). */
+export type EnrichmentField = "industry_id" | "size_id" | "city" | "country" | "description" | "linkedin";
+
+/** What was read from the company's own website (data-model §3.5). Every
+ *  string is generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmEnrichmentValues {
+  industry?: string | null;
+  sub_industry?: string | null;
+  employee_band?: string | null;
+  city?: string | null;
+  country?: string | null;
+  description?: string | null;
+  linkedin?: string | null;
+  products?: string[];
+}
+
+/** A company's `enrichment` on its record read (009 contracts §1). */
+export interface CrmEnrichment {
+  status: EnrichmentStatus;
+  /** Set when failed, from a fixed list (FR-CRMAI-ENR-06). */
+  failure_reason?: string | null;
+  values: CrmEnrichmentValues;
+  /** True where the main field is empty and the value may be promoted (FR-CRMAI-ENR-04). */
+  promotable: Partial<Record<EnrichmentField, boolean>>;
+  /** Open `enrichment_conflict` items, where the main field holds another value (FR-CRMAI-ENR-05). */
+  conflicts: string[];
+  ai: AiProvenance | null;
+}
+
+/** POST /crm/enrichment/run — **Enrich selected** (FR-CRMAI-ENR-01, -08). */
+export interface CrmEnrichmentRun {
+  queued: number;
+  skipped_no_website: number;
+  already_enriched: number;
 }

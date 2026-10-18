@@ -12,6 +12,8 @@ through `@crm_job` (services/crm/jobs.py).
 | `crm_ai.review_expiry` | 01:30 daily | `review_expiry` |
 | `crm_ai.summaries` | every 15 minutes | `summaries` |
 | `crm_ai.meetings` | every 15 minutes | `meetings` (one Fireflies poll, one run per workspace) |
+| `crm_ai.enrichment` | every 15 minutes | starts `enrichment` (a run or a skip per workspace) |
+| `crm_ai.enrichment_batch` | enqueued, a minute apart | ends its workspace's `enrichment` run |
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import jobs, meetings, review, summaries
+from app.services.crm import enrichment, jobs, meetings, review, summaries
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -72,3 +74,26 @@ def capture_meetings() -> dict:
     result = _meetings(datetime.now(UTC))
     logger.info('{"event": "crm_meetings_done", "failed": %d}', len(result["failed"]))
     return result
+
+
+def _enrichment(now: datetime | None = None) -> dict:
+    """FR-CRMAI-ENR-07: per workspace, a skip while phase 2 is off, an
+    empty run, or a run whose batches follow (plan §5.1)."""
+    return enrichment.tick(now)
+
+
+@celery_app.task(name="crm_ai.enrichment", ignore_result=True)
+def enrich_companies() -> dict:
+    """Every 15 minutes. Idempotent: a company enriched from the same site is
+    not queued, and a running run holds its workspace's lock."""
+    result = _enrichment(datetime.now(UTC))
+    logger.info('{"event": "crm_enrichment_tick_done", "failed": %d}', len(result["failed"]))
+    return result
+
+
+@celery_app.task(name="crm_ai.enrichment_batch", ignore_result=True)
+def enrichment_batch(args: dict) -> dict:
+    """At most 10 companies of one workspace's run, then the next batch a
+    minute later or the run's end (FR-CRMAI-ENR-07). `args` holds ids, the
+    run's start and counts, never text."""
+    return enrichment.batch(args)

@@ -669,6 +669,7 @@ class TestExport:
             # Spec 009 FR-CRMAI-CHG-11.
             "review_items",
             "email_summaries",
+            "enrichment",
         }
         assert [c["name"] for c in data["objects"]["companies"]] == ["PSG Tech"]
         r = http.get(f"{API}/export/workspace{ACADEMY}&object=people", headers=me)
@@ -928,3 +929,47 @@ class TestTheEmailSummariesInTheExport:
             "2026-10-15T00:00:00+00:00"
         )
         assert self._export(crm)["email_summaries"] == []
+
+
+class TestTheEnrichmentInTheExport:
+    """Spec 009 FR-CRMAI-CHG-11, data-model §4 — the workspace export holds
+    the company enrichment rows, ids only, and leaves out one of a company
+    in the Trash."""
+
+    def _export(self, crm, query=""):
+        r = crm["http"].get(f"{API}/export/workspace{ACADEMY}{query}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        return json.loads(r.content)["objects"]
+
+    def _enriched(self, crm):
+        return crm["fake"].add_enrichment(
+            crm["academy"],
+            crm["college"],
+            website="https://psgtech.edu/",
+            values={"city": "Coimbatore", "products": ["Engineering degrees"]},
+        )
+
+    def test_enrichment_rows_ids_only(self, crm):
+        made = self._enriched(crm)
+        [row] = self._export(crm)["enrichment"]
+        assert (row["id"], row["company_id"], row["website"], row["status"]) == (
+            made["id"],
+            crm["college"]["id"],
+            "https://psgtech.edu/",
+            "done",
+        )
+        assert row["values"]["city"] == "Coimbatore"
+        assert "PSG Tech" not in json.dumps(row)
+
+    def test_one_object_and_its_audit_row(self, crm):
+        self._enriched(crm)
+        assert set(self._export(crm, "&object=enrichment")) == {"enrichment"}
+        [audit] = [a for a in crm["fake"].audit if a["action"] == "export.workspace"]
+        assert audit["target_table"] == "crm_company_enrichment"
+
+    def test_a_company_in_the_trash_is_left_out(self, crm):
+        self._enriched(crm)
+        crm["fake"].rows["crm_companies"][crm["college"]["id"]]["deleted_at"] = (
+            "2026-10-15T00:00:00+00:00"
+        )
+        assert self._export(crm)["enrichment"] == []

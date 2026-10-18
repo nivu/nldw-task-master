@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.domain.crm import enrichment as enrichment_rules
 from app.domain.crm import pipeline
 from app.main import app
 from app.services import supabase as db
@@ -144,6 +145,8 @@ TABLES = (
     # Spec 009: email thread summaries and their links (062), logs.
     "crm_email_summaries",
     "crm_email_summary_links",
+    # Spec 009: company enrichment (064), a log queued by a trigger.
+    "crm_company_enrichment",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -1315,6 +1318,10 @@ class FakeCrmStore:
             for d in list(self.rows["crm_company_domains"].values()):
                 if d["company_id"] == target:
                     self._delete(actor, "crm_company_domains", d)
+            # 064: the company's enrichment goes with it (CASCADE).
+            for e in list(self.rows["crm_company_enrichment"].values()):
+                if e["company_id"] == target:
+                    del self.rows["crm_company_enrichment"][e["id"]]
             for p in self.rows["crm_people"].values():
                 if p.get("company_id") == target:
                     self._update(actor, {"table": "crm_people"}, p, {"company_id": None})
@@ -2462,6 +2469,26 @@ class FakeCrmStore:
                     self._review_audit(actor, "review.expired", item["id"], "open", "expired")
                 else:
                     item.update(record_id=keep_id, dedupe_key=key)
+            # 064: enrichment; the survivor's own row wins, else the merged
+            # company's moves. A survivor's row only the chosen website
+            # queued, for the merged company's site, goes first.
+            mine = self.rows["crm_company_enrichment"]
+            gone_sites = {e["website"] for e in mine.values() if e["company_id"] == gone_id}
+            for e in list(mine.values()):
+                if (
+                    e["company_id"] == keep_id
+                    and e["status"] == "queued"
+                    and e.get("requested_by") is None
+                    and e["website"] in gone_sites
+                ):
+                    del mine[e["id"]]
+            if any(e["company_id"] == keep_id for e in mine.values()):
+                for e in [e for e in mine.values() if e["company_id"] == gone_id]:
+                    del mine[e["id"]]
+            else:
+                for e in mine.values():
+                    if e["company_id"] == gone_id:
+                        e["company_id"] = keep_id
             # 041: campaign members; one the survivor has already keeps it.
             members = self.rows["crm_campaign_members"]
             for m in sorted(list(members.values()), key=lambda r: r["id"]):
@@ -3399,6 +3426,11 @@ class FakeCrmStore:
             self._check_unique(op["table"], row)
             table[row["id"]] = row
             self._audit(actor, {**op, "op": "insert"}, row, None, dict(row))
+            # 064's triggers: a new company or domain may queue enrichment.
+            if op["table"] == "crm_companies":
+                self._queue_enrichment(ws, row["id"])
+            elif op["table"] == "crm_company_domains":
+                self._queue_enrichment(ws, row["company_id"])
             if op["table"] == "crm_opportunities" and op["op"] == "insert":
                 self.add(
                     "crm_stage_history",
@@ -3463,6 +3495,11 @@ class FakeCrmStore:
             self._audit(actor, op, row, before, {k: row.get(k) for k in changed})
         if op["table"] == "crm_opportunities" and "company_id" in changed:
             self._project_follows_company(actor, row)
+        # 064's triggers fire on an update of these columns, changed or not.
+        if op["table"] == "crm_companies" and "website" in values:
+            self._queue_enrichment(row["workspace_id"], row["id"])
+        if op["table"] == "crm_company_domains" and {"is_primary", "domain"} & set(values):
+            self._queue_enrichment(row["workspace_id"], row["company_id"])
 
     def _project_follows_company(self, actor, opp: dict[str, Any]) -> None:
         """033's `crm_opportunities_project_company` trigger: the deal's
@@ -4508,6 +4545,181 @@ class FakeCrmStore:
             self.rows, self.audit[audit_len:] = snapshot, []
             raise
         return {"note_id": note_id, "created": created, "updated": updated, "items": made}
+
+    # -- Spec 009: company enrichment (064) ----------------------------------
+
+    def add_enrichment(self, workspace: dict[str, Any], company: dict[str, Any], **values) -> dict:
+        """An enrichment row as the job leaves it. Not a store name: a set-up
+        helper."""
+        found = [
+            e
+            for e in self.rows["crm_company_enrichment"].values()
+            if e["company_id"] == company["id"]
+        ]
+        for e in found:
+            del self.rows["crm_company_enrichment"][e["id"]]
+        return self.add(
+            "crm_company_enrichment",
+            workspace_id=workspace["id"],
+            company_id=company["id"],
+            **{
+                "website": "https://acme.in/",
+                "status": "done",
+                "failure_reason": None,
+                "values": {},
+                "model": "claude-sonnet-5-5",
+                "generated_at": "2026-10-18T06:00:00+00:00",
+                "queued_at": _now(),
+                "requested_by": None,
+                "created_at": _now(),
+                **values,
+            },
+        )
+
+    def _queue_enrichment(self, workspace_id: str, company_id: str) -> None:
+        """064's `crm_queue_enrichment` trigger: the company's site queued, or
+        queued again with its old values cleared when it changed (Q-32); the
+        same site changes nothing; a company in the Trash is not queued. The
+        company row is not touched."""
+        company = self.rows["crm_companies"].get(company_id)
+        if company is None or company["workspace_id"] != workspace_id or company.get("deleted_at"):
+            return
+        primary = next(
+            (
+                d["domain"]
+                for d in self.rows["crm_company_domains"].values()
+                if d["company_id"] == company_id and d.get("is_primary")
+            ),
+            None,
+        )
+        site = enrichment_rules.site(company.get("website"), primary)
+        if site is None:
+            return
+        row = next(
+            (
+                e
+                for e in self.rows["crm_company_enrichment"].values()
+                if e["workspace_id"] == workspace_id and e["company_id"] == company_id
+            ),
+            None,
+        )
+        fresh = {
+            "website": site,
+            "status": "queued",
+            "failure_reason": None,
+            "values": {},
+            "model": None,
+            "generated_at": None,
+            "queued_at": _now(),
+            "requested_by": None,
+        }
+        if row is None:
+            self.add(
+                "crm_company_enrichment",
+                workspace_id=workspace_id,
+                company_id=company_id,
+                created_at=_now(),
+                **fresh,
+            )
+        elif row["website"] != site:
+            row.update(fresh)
+
+    def _enrichment_live(self, workspace_id: str, company_id: str) -> bool:
+        company = self.rows["crm_companies"].get(company_id)
+        return (
+            bool(company)
+            and company["workspace_id"] == workspace_id
+            and not company.get("deleted_at")
+        )
+
+    def queued_enrichment(
+        self, workspace_id: str, limit: int, *, before: datetime
+    ) -> list[dict[str, Any]]:
+        rows = [
+            e
+            for e in self._of("crm_company_enrichment", workspace_id)
+            if e["status"] == "queued"
+            and _at(e["queued_at"]) <= before
+            and self._enrichment_live(workspace_id, e["company_id"])
+        ]
+        rows.sort(key=lambda e: (_at(e["queued_at"]), e["id"]))
+        return json.loads(json.dumps(rows[:limit], default=str))
+
+    def enrichment_for(
+        self, workspace_id: str, company_ids: list[str] | None
+    ) -> list[dict[str, Any]]:
+        rows = [
+            e
+            for e in self._of("crm_company_enrichment", workspace_id)
+            if company_ids is None or e["company_id"] in company_ids
+        ]
+        return json.loads(json.dumps(sorted(rows, key=lambda e: e["company_id"]), default=str))
+
+    def write_enrichment(
+        self, workspace_id: str, company_id: str, website: str, values: dict[str, Any]
+    ) -> bool:
+        """The worker's update, only while queued for the same site, under
+        064's CHECKs."""
+        row = next(
+            (
+                e
+                for e in self.rows["crm_company_enrichment"].values()
+                if e["workspace_id"] == workspace_id
+                and e["company_id"] == company_id
+                and e["website"] == website
+                and e["status"] == "queued"
+            ),
+            None,
+        )
+        if row is None:
+            return False
+        after = {**row, **json.loads(json.dumps(values, default=str))}
+        assert after["status"] in ("queued", "done", "failed"), after["status"]
+        assert (after["status"] == "failed") == (after.get("failure_reason") is not None), after
+        assert after.get("failure_reason") in (None, *ENRICHMENT_REASONS), after["failure_reason"]
+        assert isinstance(after["values"], dict) and len(json.dumps(after["values"])) <= 4000
+        row.update(after)
+        return True
+
+    def requeue_enrichment(
+        self, workspace_id: str, rows: list[dict[str, Any]], at: datetime
+    ) -> None:
+        for given in json.loads(json.dumps(rows, default=str)):
+            assert self._enrichment_live(workspace_id, given["company_id"])
+            values = {
+                **given,
+                "status": "queued",
+                "failure_reason": None,
+                "queued_at": at.isoformat(),
+            }
+            row = next(
+                (
+                    e
+                    for e in self.rows["crm_company_enrichment"].values()
+                    if e["workspace_id"] == workspace_id and e["company_id"] == given["company_id"]
+                ),
+                None,
+            )
+            if row is None:
+                self.add(
+                    "crm_company_enrichment",
+                    workspace_id=workspace_id,
+                    created_at=_now(),
+                    **{"values": {}, "model": None, "generated_at": None, **values},
+                )
+            else:
+                row.update(values)
+
+
+#: 064's failure reasons (FR-CRMAI-ENR-06, FR-CRMAI-LLM-03).
+ENRICHMENT_REASONS = (
+    "Website did not respond",
+    "No company information found",
+    "Output did not match the schema",
+    "Model call failed",
+    "Model call timed out",
+    "AI budget reached",
+)
 
 
 def _at(value: str | datetime) -> datetime:

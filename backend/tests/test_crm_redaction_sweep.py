@@ -89,6 +89,8 @@ WRITES = {
     # Spec 009 S1b: deciding a Review Queue item.
     "/api/v1/crm/review/{item_id}/approve",
     "/api/v1/crm/review/{item_id}/dismiss",
+    # Spec 009 S2b: Enrich selected.
+    "/api/v1/crm/enrichment/run",
 }
 #: The TVA admin panel spans workspaces and holds no amount; a Viewer is
 #: refused it anyway (test_crm_tva_admin.py).

@@ -21,7 +21,8 @@ Every model call of every job goes through `call()`, on `worker-crm-ai`:
    answer is asked again once, and a second invalid answer fails the item
    "Output did not match the schema" (FR-CRMAI-LLM-03, Q-36);
 8. money is masked and disallowed links dropped in every string of the
-   answer (FR-CRMAI-LLM-04, -05), so no job can forget to.
+   answer (FR-CRMAI-LLM-04, -05), so no job can forget to. Enrichment passes
+   the company's `site`, whose own addresses are kept too.
 
 A skip raises `jobs.Skipped`, which the job log records as `skipped` with
 its reason. A failed item raises `AiFailed`, whose `reason` is one of
@@ -71,12 +72,14 @@ def call(
     instruction: str,
     parts: Sequence[tuple[str, str]],
     now: datetime,
+    *,
+    site: str | None = None,
 ) -> BaseModel:
     """One model answer for `job` in workspace `ws`, validated against
     `output_model` and masked. `parts` are `(label, text)` pairs, each quoted
-    as data."""
+    as data. With `site`, links on that site survive the link policy."""
     try:
-        return _call(ws, job, phase, output_model, instruction, parts, now)
+        return _call(ws, job, phase, output_model, instruction, parts, now, site=site)
     except (jobs.Skipped, SafeError):
         raise
     except Exception as exc:
@@ -108,6 +111,8 @@ def _call(
     instruction: str,
     parts: Sequence[tuple[str, str]],
     now: datetime,
+    *,
+    site: str | None = None,
 ) -> BaseModel:
     value = store.ai_setting(ws["id"])
     if not rules.phase_on(value, phase):
@@ -148,7 +153,7 @@ def _call(
             if attempt == 2:
                 raise AiFailed(rules.OUTPUT_INVALID, "Schema validation", "ValidationError")
             continue
-        masked = _valid(output_model, _clean(output.model_dump(mode="python")))
+        masked = _valid(output_model, _clean(output.model_dump(mode="python"), site))
         if masked is None:
             raise AiFailed(rules.OUTPUT_INVALID, "Schema validation", "ValidationError")
         return masked
@@ -185,14 +190,14 @@ def _valid(output_model: type[BaseModel], data: Any) -> BaseModel | None:
         return None
 
 
-def _clean(value: Any) -> Any:
+def _clean(value: Any, site: str | None = None) -> Any:
     """Money masked and disallowed links dropped in every string."""
     if isinstance(value, str):
-        return rules.mask_money(rules.drop_urls(value))
+        return rules.mask_money(rules.drop_urls(value, site=site))
     if isinstance(value, dict):
-        return {k: _clean(v) for k, v in value.items()}
+        return {k: _clean(v, site) for k, v in value.items()}
     if isinstance(value, list | tuple):
-        return [_clean(v) for v in value]
+        return [_clean(v, site) for v in value]
     return value
 
 

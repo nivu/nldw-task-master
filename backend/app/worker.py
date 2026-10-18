@@ -192,5 +192,11 @@ celery_app.conf.beat_schedule.update(
             "task": "crm_ai.meetings",
             "schedule": crontab(minute="*/15"),
         },
+        # FR-CRMAI-ENR-07: queued companies enriched in the background, at
+        # most 10 a minute per workspace, by batches the tick starts.
+        "crm-ai-enrichment": {
+            "task": "crm_ai.enrichment",
+            "schedule": crontab(minute="*/15"),
+        },
     }
 )

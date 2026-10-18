@@ -28,6 +28,7 @@ import type {
   CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
+  CrmEnrichmentRun,
   CrmColor,
   CrmCompany,
   CrmContact,
@@ -834,3 +835,14 @@ export const approveCrmReview = (workspace: string, id: string, approval: Review
 
 export const dismissCrmReview = (workspace: string, id: string) =>
   call<{ item: CrmReviewItem }>(`/review/${id}/dismiss${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// 009 S2b — company enrichment (009 contracts §2.4; FR-CRMAI-ENR)
+// ---------------------------------------------------------------------------
+
+/** **Enrich selected**: Admins only, at most 500 companies; the work runs in the background. */
+export const runCrmEnrichment = (workspace: string, companyIds: string[]) =>
+  call<CrmEnrichmentRun>(`/enrichment/run${query(workspace)}`, {
+    method: "POST",
+    ...body({ company_ids: companyIds }),
+  });
