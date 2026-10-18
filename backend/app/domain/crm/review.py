@@ -63,6 +63,9 @@ TRASHED: Final = "This record is in the Trash."
 CHOOSE_DEAL: Final = "Choose the deal this applies to."
 ADMINS_ONLY: Final = "Only a workspace admin can see the whole queue."
 NOT_YET: Final = "This kind of suggestion cannot be approved yet."
+#: An approval's change failed for a reason that is not a refusal (a
+#: timeout, a database fault): the item opens again showing this.
+NOT_MADE: Final = "The change could not be made. Nothing was changed; try again."
 
 
 # ---------------------------------------------------------------------------

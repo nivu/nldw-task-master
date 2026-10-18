@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 import pytest
 from crm_fake import FakeCrmStore, as_
 from crm_fake import client as crm_client
+from postgrest.exceptions import APIError
 from tasks_fake import ID, TaskWorld
 from tasks_fake import NOW as TASKS_NOW
 
@@ -381,6 +382,32 @@ class TestNextStep:
         after = queue.item(item["id"])
         assert (after["status"], after["refusal"]) == ("open", rules.CHANGED)
         assert queue.deal_row(queue.pilot)["next_step"] == "Follow up on pilot"
+
+    def test_review_a_fault_during_the_change_reopens_the_item(self, queue, monkeypatch):
+        """A failure that is not a refusal (here a statement timeout the
+        store does not map) must not leave the item claimed with nothing
+        changed: it opens again, and can be approved once the fault is gone."""
+        item = queue.next_step(queue.pilot)
+        real = service.deals.update
+
+        def times_out(*args, **kwargs):
+            raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
+
+        monkeypatch.setattr(service.deals, "update", times_out)
+        with pytest.raises(APIError):
+            queue.approve(item)
+        after = queue.item(item["id"])
+        assert (after["status"], after["decided_by"], after["refusal"]) == (
+            "open",
+            None,
+            rules.NOT_MADE,
+        )
+        assert "57014" not in after["refusal"] and "timeout" not in after["refusal"]
+        assert queue.deal_row(queue.pilot)["next_step"] == "Follow up on pilot"
+        monkeypatch.setattr(service.deals, "update", real)
+        r = queue.approve(item)
+        assert r.status_code == 200, r.text
+        assert queue.deal_row(queue.pilot)["next_step"] == "Send revised SOW"
 
     def test_review_a_last_inbound_change_does_not_refuse(self, queue):
         item = queue.next_step(queue.pilot)

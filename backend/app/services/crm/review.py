@@ -23,7 +23,9 @@ rows carry it through `TaskActor.suggestion_id`.
 
 An approval first claims the item (`crm_review_claim`: only one claim wins),
 then makes the change. If the manual path refuses, the item opens again and
-shows the refusal (`crm_review_release`), and the refusal is the answer.
+shows the refusal (`crm_review_release`), and the refusal is the answer. If
+the change fails any other way, the item opens again too, showing a fixed
+sentence, and the failure is raised.
 
 Creating or refreshing an item sends no bell and no message
 (FR-CRMAI-REV-10): Today's To review section and the daily digest carry
@@ -603,6 +605,12 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
         result, shown = change(approver)
     except CrmRefused as refused:
         store.review_release(who, item_id, refused.detail, None)
+        raise
+    except Exception:
+        # Not a refusal (a timeout, a database fault): the item must not stay
+        # claimed with nothing changed, so it opens again with a fixed
+        # sentence (never the exception's text), and the fault goes on.
+        store.review_release(who, item_id, rules.NOT_MADE, None)
         raise
     store.review_release(who, item_id, None, result)
     after = store.get_review_item(ctx.workspace_id, item_id) or item
