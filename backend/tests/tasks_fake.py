@@ -193,6 +193,18 @@ class FakeTaskStore:
         ]
         return sorted(rows, key=lambda r: r["id"])
 
+    def done_between(self, user_id: str, start: str, end: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(t)
+            for t in self.rows["tasks"].values()
+            if t.get("assignee_id") == user_id
+            and t["status"] == "done"
+            and not t.get("deleted_at")
+            and t.get("completed_at")
+            and _at(start) <= _at(t["completed_at"]) < _at(end)
+        ]
+        return sorted(rows, key=lambda r: (_at(r["completed_at"]), r["id"]))
+
     def linked_task_ids(self, record_type: str, record_id: str) -> list[str]:
         return sorted(
             {

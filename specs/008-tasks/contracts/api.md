@@ -180,7 +180,7 @@ change of assignee to someone else enqueues one `tasks.send_notice`.
 | `POST /crm/tasks`, `PATCH /crm/tasks/{id}`, the CRM CSV import, `crm_add_task` | New status keys (old keys accepted as `open`); `bucket` required while open or waiting: every CRM write path that creates a task, reopens one (status back to open or waiting) or imports one fills a missing bucket with `rules.default_bucket` (FR-TASK-DATA-08); `priority`, `tags`, `parent_id`, `waiting_on_*` accepted; a task created here needs ≥ 1 CRM link (writer parameter); removing its last link 422; link replacement never touches a project link | CHG-01 |
 | `GET /crm/{object}/{id}`, `GET /crm/tasks/{id}`, timelines, Today, search, export | Task status keys and labels as above; a project link only as FR-TASK-VIS-07 allows; timelines read history under both table names | CHG-05, -07, -10, VIS-07 |
 | `POST /crm/opportunities/{id}/stage` (Closed Lost) | Open and waiting tasks of the deal → Cancelled with the note | CHG-04 |
-| `GET /timesheet/day` (phase 3) | Adds `suggestions: [{task_id, title, project: {id, name} \| null}]` for callers at level ≥ 3 on a loggable day; `[]` otherwise; never in `/timesheet/of/{user_id}/week`, team weeks or sign-off | LOG-01 to -07 |
+| `GET /timesheet/day` (phase 3) | Adds `suggestions: [{task_id, title, project: {id, name} \| null, added}]` for callers at level ≥ 3 on a loggable day; `[]` otherwise; `project` only when the caller sees it in full (VIS-07), else null; `added` is true when the title is already a whole item of a note that day (LOG-05); never in `/timesheet/of/{user_id}/week`, team weeks or sign-off | LOG-01 to -07, VIS-07 |
 
 ---
 

@@ -18,11 +18,13 @@ from app.api.errors import ProblemDetail
 from app.domain import timesheets as timesheet_rules
 from app.domain.approval import Person, can_view_timesheet
 from app.domain.calendar import today_in_company_tz
+from app.domain.tasks import rollout as task_rollout
 from app.schemas import TimesheetDay
 from app.services import analytics as analytics_service
 from app.services import supabase as db
 from app.services import timesheets as timesheet_service
 from app.services.crm.tva import ProjectLinks
+from app.services.tasks import store as task_store
 
 router = APIRouter(prefix="/timesheet", tags=["timesheet"])
 
@@ -32,8 +34,17 @@ def my_day(
     user: CurrentUserDep,
     day: date | None = Query(default=None, description="Defaults to today"),
 ) -> dict:
-    """Everything the log-a-day screen needs, in one request — NFR-01/02."""
-    return timesheet_service.day_for(user.id, day or today_in_company_tz())
+    """Everything the log-a-day screen needs, in one request — NFR-01/02.
+
+    Spec 008 FR-TASK-LOG-01, -02: the caller's task level decides whether the
+    day carries suggestions.
+    """
+    return timesheet_service.day_for(
+        user.id,
+        day or today_in_company_tz(),
+        tasks_level=task_rollout.level_for(user.profile, task_store.default_level()),
+        account_type=user.account_type,
+    )
 
 
 @router.put("/day")

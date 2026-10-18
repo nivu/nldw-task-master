@@ -50,7 +50,7 @@ will be filled in on Friday for the whole week, from memory, and will be wrong.
 
 ### 2.2 Non-goals
 
-- Task-level tracking. This records effort against a **project phase**, not against tickets. ClickUp keeps that job.
+- Task-level tracking. This records effort against a **project phase**, not against tickets. ClickUp keeps that job. *Amended 18 October 2026 by `008`: tasks live in the portal, not ClickUp; the day log still records effort against a project phase, and its note stays free text (`008` FR-TASK-CHG-08).*
 - Billing, invoicing, rates, or currency. Budget is expressed in **hours**, not money (§9, Q-05).
 - Approval of timesheets. Nobody signs off hours (§9, Q-04).
 - Start/stop timers. Hours are entered as numbers, not measured.

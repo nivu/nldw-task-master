@@ -1,11 +1,17 @@
-"""Phases 1 and 2's acceptance criteria, one test each — spec 008 §12
-(phases 1 and 2); NFR-TASK-08; tasks T073, T098.
+"""Phases 1 to 3's acceptance criteria, one test each — spec 008 §12
+(phases 1 to 3); NFR-TASK-08; tasks T073, T098, T104.
 
 The lines are read from `specs/008-tasks/spec.md` §12 itself, from "Phase 1 —
-migration and CRM" to "Phase 2" and from "Phase 2" to "Phase 3", so each one
-is its own test here and a line added to or reworded in the spec fails
-`test_every_line_has_exactly_one_entry` until this file says how it is
-proved. Phase 2's lines are proved by named covering tests only.
+migration and CRM" to "Phase 2", from "Phase 2" to "Phase 3" and from
+"Phase 3" to "Phase 4", so each one is its own test here and a line added to
+or reworded in the spec fails `test_every_line_has_exactly_one_entry` until
+this file says how it is proved. Phase 2's lines are proved by named
+covering tests only. Phase 3's lines (S3a) are proved by named covering
+tests and, for what is screen state only (Accept, the merge, the warning;
+plan §5.9), by named tests of the local Playwright spec
+`frontend/e2e/day-log.spec.ts`, each asserted to exist and the spec to skip
+nothing. The recurrence line is S3b's (T111) and is the only phase-3 line
+without an entry until then.
 
 Each line is proved one of two ways:
 
@@ -115,6 +121,22 @@ def _phase_2_lines() -> list[str]:
 
 
 LINES_2 = _phase_2_lines()
+
+
+def _phase_3_lines() -> list[str]:
+    """Spec §12's phase-3 lines, in order, without their check boxes."""
+    text = SPEC.read_text()
+    start = text.index("\nPhase 3\n")
+    end = text.index("\nPhase 4\n", start)
+    return [
+        line.removeprefix("- [ ] ").removeprefix("- [x] ")
+        for line in text[start:end].splitlines()
+        if line.startswith(("- [ ] ", "- [x] "))
+    ]
+
+
+LINES_3 = _phase_3_lines()
+DAY_LOG_E2E = BACKEND.parent / "frontend" / "e2e" / "day-log.spec.ts"
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +656,53 @@ ENTRIES_2: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+#: Phase 3 (S3a): (a prefix that starts exactly one spec line, its covering
+#: tests). `e2e:<title>` names a test of `frontend/e2e/day-log.spec.ts`.
+ENTRIES_3: list[tuple[str, tuple[str, ...]]] = [
+    (
+        "Tasks completed today appear as suggestions on Log a day",
+        (
+            "test_task_suggestions.py::TestWhichTasks",
+            "test_task_suggestions.py::TestWhenOffered",
+        ),
+    ),
+    (
+        "Accepting two tasks on one project gives one line",
+        (
+            "e2e:accepting two tasks on one project gives one line at zero hours",
+            "e2e:saving with hours writes one normal entry through Save day",
+            "e2e:nothing is written without Save",
+            "e2e:a task with no project asks where it goes, and a zero-hour line is not saved",
+            "test_task_suggestions.py::TestNothingStored",
+        ),
+    ),
+    (
+        "Suggestions never appear in someone else's week view",
+        (
+            "test_task_suggestions.py::TestOnlyTheOwnDay",
+            "test_task_suggestions.py::TestWhichTasks::test_an_imported_task_is_never_suggested",
+            "test_task_suggestions.py::TestAlreadyAdded",
+            "test_task_suggestions.py::TestNothingStored",
+        ),
+    ),
+    (
+        "Log a day warns that a note is visible",
+        ("e2e:Log a day warns that a note is visible to the lead, managers and admins",),
+    ),
+]
+#: Phase-3 lines a later slice proves: the recurrence line (S3b, T111).
+LATER_3 = ("Completing or cancelling a recurring task",)
+
+
+def check_e2e(title: str) -> None:
+    """A test of the local Playwright spec exists by `title`, and the spec
+    skips, fixes or focuses nothing."""
+    source = DAY_LOG_E2E.read_text()
+    assert f'test("{title}",' in source, f"day-log.spec.ts: no test {title!r}"
+    for mark in ("test.skip(", "test.fixme(", ".only("):
+        assert mark not in source, f"day-log.spec.ts: {mark}"
+
+
 def _entry(line: str) -> Proof:
     [proof] = [proof for prefix, proof in ENTRIES if line.startswith(prefix)]
     return proof
@@ -661,6 +730,29 @@ class TestTheLines:
             assert sum(line.startswith(p) for p, _ in ENTRIES_2) == 1, line
         for prefix, _ in ENTRIES_2:
             assert sum(line.startswith(prefix) for line in LINES_2) == 1, prefix
+
+    def test_phase_3_has_its_lines(self):
+        assert len(LINES_3) == 5
+
+    def test_every_phase_3_line_has_exactly_one_entry(self):
+        for line in LINES_3:
+            covered = sum(line.startswith(p) for p, _ in ENTRIES_3)
+            assert covered == (0 if line.startswith(LATER_3) else 1), line
+        for prefix, _ in ENTRIES_3:
+            assert sum(line.startswith(prefix) for line in LINES_3) == 1, prefix
+        for prefix in LATER_3:
+            assert sum(line.startswith(prefix) for line in LINES_3) == 1, prefix
+
+    def test_a_missing_or_skipped_e2e_test_is_caught(self, tmp_path, monkeypatch):
+        spec = tmp_path / "day-log.spec.ts"
+        spec.write_text('test("a", async () => {});\n')
+        monkeypatch.setattr(sys.modules[__name__], "DAY_LOG_E2E", spec)
+        check_e2e("a")
+        with pytest.raises(AssertionError, match="no test"):
+            check_e2e("b")
+        spec.write_text('test("a", async () => {});\ntest.skip("b", async () => {});\n')
+        with pytest.raises(AssertionError, match=r"test\.skip"):
+            check_e2e("a")
 
     def test_the_recorded_proofs_are_the_two_exceptions(self):
         """Only the migration mapping and the 5,000-task line rest on a
@@ -769,5 +861,18 @@ def test_phase_1_line(line, monkeypatch):
 def test_phase_2_line(line):
     [proof] = [proof for prefix, proof in ENTRIES_2 if line.startswith(prefix)]
     for ref in proof:
+        assert ref not in RECORDED
+        check_cover(ref)
+
+
+@pytest.mark.parametrize(
+    "line", [line for line in LINES_3 if not line.startswith(LATER_3)], ids=_id
+)
+def test_phase_3_line(line):
+    [proof] = [proof for prefix, proof in ENTRIES_3 if line.startswith(prefix)]
+    for ref in proof:
+        if ref.startswith("e2e:"):
+            check_e2e(ref.removeprefix("e2e:"))
+            continue
         assert ref not in RECORDED
         check_cover(ref)

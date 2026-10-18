@@ -389,6 +389,19 @@ export interface TimesheetDay {
   /** FR-TIME-12 — offered alongside projects, always. */
   activities: { id: Activity; name: string }[];
   total: string;
+  /** Spec 008 FR-TASK-LOG-01 — tasks finished that day; `[]` unless phase 3
+   *  is on and the day can be logged. */
+  suggestions: TaskSuggestion[];
+}
+
+/** Spec 008 FR-TASK-LOG-01, -05 — a task offered on Log a day. */
+export interface TaskSuggestion {
+  task_id: string;
+  title: string;
+  /** Only a confirmed, unarchived project. */
+  project: { id: string; name: string } | null;
+  /** The title is already in a note that day. */
+  added: boolean;
 }
 
 export interface TimesheetWeekDay {

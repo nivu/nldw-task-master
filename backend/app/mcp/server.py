@@ -363,7 +363,11 @@ async def mark_absent(ctx: Context, user_id: str, day: str, note: str | None = N
 async def my_day(ctx: Context, day: str | None = None) -> dict:
     """The person's timesheet for one day (default today): entries so far,
     the projects and activities they can log against, the hour cap, and
-    whether the day is still editable."""
+    whether the day is still editable. With tasks phase 3 on, on a day they
+    can still log, suggestions lists the tasks they finished that day
+    ({task_id, title, project or null, added: title already in a note}).
+    A suggestion is only an offer: nothing is logged until log_day saves it,
+    and a line at zero hours is not saved."""
     return await _api(ctx, "GET", "/timesheet/day", params={"day": day})
 
 
@@ -373,7 +377,10 @@ async def log_day(ctx: Context, day: str, lines: list[dict[str, Any]]) -> dict:
     FIRST, showing every line. Each line: {"project_id": ...} OR
     {"activity": "learning"|"internal"|"admin"|"other"} (never both), plus
     "hours_office", "hours_home" (decimal strings, quarter hours) and "note"
-    (what was done — required in spirit, it is the only task record)."""
+    (what was done, free text, seen by the person's lead, managers and
+    admins). Tasks live in the portal; the note records the effort, not the
+    task. This is the only write: my_day's suggestions are never logged on
+    their own."""
     return await _api(ctx, "PUT", "/timesheet/day", body={"date": day, "lines": lines})
 
 

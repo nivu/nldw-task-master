@@ -20,6 +20,7 @@ from app.domain.calendar import today_in_company_tz
 from app.domain.rules import CATEGORY_LABELS, CONSUMING_STATES, is_leave
 from app.services import audit, settings_store
 from app.services import supabase as db
+from app.services.tasks import suggestions as task_suggestions
 
 logger = logging.getLogger("nldw-task-master")
 
@@ -102,15 +103,23 @@ def holidays_between(start: date, end: date) -> set[date]:
 # ---------------------------------------------------------------------------
 
 
-def day_for(user_id: str, day: date) -> dict[str, Any]:
+def day_for(
+    user_id: str, day: date, *, tasks_level: int = 0, account_type: str = "staff"
+) -> dict[str, Any]:
     """Everything the "log today" screen needs, in one call.
 
     NFR-02: the form pre-fills from current allocations, so the common case is
     adjusting numbers rather than hunting for projects in a list. The four
     activities (spec 003 FR-ACT) are always offered alongside them.
+
+    Spec 008 FR-TASK-LOG-01 to -03: at task level 3 or more, on a day that
+    can be logged, the tasks the person finished that day come back as
+    `suggestions`; `[]` otherwise. Only this read carries them, never a week
+    (FR-TASK-LOG-07), and nothing is written for them.
     """
     today = today_in_company_tz()
     grace = _grace_days()
+    can_log = rules.check_can_log(day, today=today, grace_days=grace) is None
 
     entries = db.list_time_entries(user_ids=[user_id], start=day, end=day)
     allocations = [
@@ -138,7 +147,7 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
         "today": today.isoformat(),
         "locked": rules.is_locked(day, today, grace_days=grace),
         "locks_on": rules.entry_locks_on(day, grace_days=grace).isoformat(),
-        "can_log": rules.check_can_log(day, today=today, grace_days=grace) is None,
+        "can_log": can_log,
         "refusal": rules.check_can_log(day, today=today, grace_days=grace),
         # Q-03 / FR-TIME-10 — a warning, never a refusal.
         "leave_warning": rules.leave_warning(
@@ -165,6 +174,14 @@ def day_for(user_id: str, day: date) -> dict[str, Any]:
                 (Decimal(str(e["hours_office"])) + Decimal(str(e["hours_home"])) for e in entries),
                 ZERO,
             )
+        ),
+        "suggestions": task_suggestions.for_day(
+            user_id,
+            day,
+            level=tasks_level,
+            account_type=account_type,
+            can_log=can_log,
+            notes=[e.get("note") for e in entries],
         ),
     }
 

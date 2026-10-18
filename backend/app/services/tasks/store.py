@@ -234,6 +234,25 @@ def created_tasks(
     return rows
 
 
+def done_between(user_id: str, start: str, end: str) -> list[dict[str, Any]]:
+    """Plan §5.9 — the live Done tasks assigned to the person, completed in
+    `[start, end)` (`tasks_done_on`, 047), oldest first."""
+    return (
+        db.supabase.table("tasks")
+        .select("*")
+        .eq("assignee_id", user_id)
+        .eq("status", "done")
+        .is_("deleted_at", "null")
+        .gte("completed_at", start)
+        .lt("completed_at", end)
+        .order("completed_at")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
 def linked_task_ids(record_type: str, record_id: str) -> list[str]:
     """The tasks linking this record or project (contracts §1 `link_type`)."""
     rows = (

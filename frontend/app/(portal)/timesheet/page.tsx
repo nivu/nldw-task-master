@@ -10,7 +10,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { errorMessage, getTimesheetDay, getTimesheetWeek, saveTimesheetDay } from "@/lib/api/portal";
-import type { Activity, TimesheetDay, TimesheetWeek } from "@/lib/api/types";
+import type {
+  Activity,
+  LoggableProject,
+  TaskSuggestion,
+  TimesheetDay,
+  TimesheetWeek,
+} from "@/lib/api/types";
 import { useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
@@ -29,9 +35,17 @@ import { isoDate } from "@/lib/dates";
  *
  * Spec 003 adds two things. A line is for a project OR an activity — learning,
  * internal work, admin — never both (FR-ACT-01), so a day spent on a course is
- * a logged day rather than a gap. And the note is the only record of what was
- * done (Q-03: free text, not a task tracker), so it is labelled as such and
- * sits above the hours rather than as an afterthought below them (FR-TIME-11).
+ * a logged day rather than a gap. And the note says what was done (Q-03: free
+ * text), so it is labelled as such and sits above the hours rather than as an
+ * afterthought below them (FR-TIME-11).
+ *
+ * Spec 008 (FR-TASK-CHG-08): tasks now live in the portal, so the note is no
+ * longer the only task record. With phase 3 on, the tasks finished that day
+ * are offered as suggestions (FR-TASK-LOG-01). Add and Ignore are screen-only
+ * state: Add puts the title in a line's note at zero hours, merging tasks of
+ * one project into one line; a suggestion shows as added while its title is
+ * in a line's note; and Save day stays the only write
+ * (FR-TASK-LOG-04, -05). The page warns who can read a note (FR-TASK-LOG-06).
  */
 
 interface Line {
@@ -46,6 +60,17 @@ interface Line {
 
 const lineKey = (line: { project_id: string | null; activity: Activity | null }) =>
   line.project_id ?? `activity:${line.activity}`;
+
+/** FR-TIME-11 — a note's limit, kept when a task title is added to it. */
+const NOTE_LIMIT = 500;
+
+/**
+ * Spec 008 FR-TASK-LOG-05 — the title is a whole item of the note: the note
+ * itself, or one of its `; `-separated items as Accept merges them. The same
+ * rule as the backend's `already_added`.
+ */
+const inNote = (title: string, note: string) =>
+  `; ${note.trim()}; `.includes(`; ${title.trim()}; `);
 
 export default function TimesheetPage() {
   const [day, setDay] = useState<string>("");
@@ -147,9 +172,15 @@ function DayForm({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // Spec 008 FR-TASK-LOG-04, -05 — screen-only: nothing here is stored.
+  const [extra, setExtra] = useState<LoggableProject[]>([]);
+  const [ignored, setIgnored] = useState<Set<string>>(() => new Set());
+  const [asking, setAsking] = useState<TaskSuggestion | null>(null);
 
+  const projects = [...data.projects, ...extra];
+  const suggestions = data.suggestions.filter((s) => !ignored.has(s.task_id));
   const used = new Set(lines.map(lineKey));
-  const available = data.projects.filter((p) => !used.has(p.id));
+  const available = projects.filter((p) => !used.has(p.id));
   const availableActivities = data.activities.filter((a) => !used.has(`activity:${a.id}`));
   const total = lines.reduce(
     (sum, l) => sum + (Number(l.hours_office) || 0) + (Number(l.hours_home) || 0),
@@ -165,6 +196,48 @@ function DayForm({
 
   function update(key: string, patch: Partial<Line>) {
     setLines((current) => current.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+    setDirty(true);
+  }
+
+  /**
+   * FR-TASK-LOG-04 — the task's title goes into the target line's note,
+   * creating the line at zero hours when there is none, so two tasks of one
+   * project share one line. A project not offered today joins the choices.
+   */
+  function accept(
+    suggestion: TaskSuggestion,
+    target: { project_id: string | null; activity: Activity | null }
+  ) {
+    const current = lines.find((l) => lineKey(l) === lineKey(target));
+    const before = current?.note.trim() ?? "";
+    const note = before ? `${before}; ${suggestion.title}` : suggestion.title;
+    if (note.length > NOTE_LIMIT) {
+      setProblem(
+        `Adding “${suggestion.title}” would make the note longer than ${NOTE_LIMIT} characters. Shorten the note first.`
+      );
+      return;
+    }
+    const project = suggestion.project;
+    if (target.project_id && project && !projects.some((p) => p.id === project.id)) {
+      setExtra((c) => [...c, { id: project.id, name: project.name, client: null, allocated: false }]);
+    }
+    setLines((c) =>
+      current
+        ? c.map((l) => (l.key === current.key ? { ...l, note } : l))
+        : [
+            ...c,
+            {
+              key: `new-${lineKey(target)}`,
+              project_id: target.project_id,
+              activity: target.activity,
+              hours_office: "0",
+              hours_home: "0",
+              note,
+            },
+          ]
+    );
+    setAsking(null);
+    setProblem(null);
     setDirty(true);
   }
 
@@ -249,10 +322,101 @@ function DayForm({
       )}
       {saved && <div className="rounded-md bg-muted p-3 text-sm">{saved}</div>}
 
+      {data.can_log && suggestions.length > 0 && (
+        <Card data-testid="suggestions">
+          <CardContent className="space-y-2 p-3">
+            <p className="text-sm font-medium">Tasks you finished</p>
+            {suggestions.map((s) => {
+              // Read from the draft, so removing the line or editing the
+              // title out of its note offers the task again.
+              const added = lines.some((l) => inNote(s.title, l.note));
+              return (
+                <div
+                  key={s.task_id}
+                  data-testid="suggestion"
+                  className="flex flex-wrap items-center gap-2 text-sm"
+                >
+                  <span className="min-w-0 flex-1">
+                    {s.title}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {s.project?.name ?? "No project"}
+                    </span>
+                  </span>
+                  {added ? (
+                    <Badge variant="secondary">Added</Badge>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          s.project
+                            ? accept(s, { project_id: s.project.id, activity: null })
+                            : setAsking(s)
+                        }
+                      >
+                        Add
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setIgnored((c) => new Set(c).add(s.task_id));
+                          if (asking?.task_id === s.task_id) setAsking(null);
+                        }}
+                      >
+                        Ignore
+                      </Button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            {asking && (
+              <div data-testid="suggestion-target" className="space-y-2 border-t pt-2">
+                <p className="text-xs text-muted-foreground">
+                  “{asking.title}” has no project. Log it against:
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {projects.map((p) => (
+                    <Button
+                      key={p.id}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => accept(asking, { project_id: p.id, activity: null })}
+                    >
+                      {p.name}
+                    </Button>
+                  ))}
+                  {data.activities.map((a) => (
+                    <Button
+                      key={a.id}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => accept(asking, { project_id: null, activity: a.id })}
+                    >
+                      {a.name}
+                    </Button>
+                  ))}
+                  <Button variant="ghost" size="sm" onClick={() => setAsking(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Spec 008 FR-TASK-LOG-06 (TP-20). */}
+      <p data-testid="note-visibility" className="text-xs text-muted-foreground">
+        Your notes are visible to your lead, managers and admins.
+      </p>
+
       <div className="space-y-3">
         {lines.map((line) => {
           const project = line.project_id
-            ? data.projects.find((p) => p.id === line.project_id)
+            ? projects.find((p) => p.id === line.project_id)
             : undefined;
           const activity = line.activity
             ? data.activities.find((a) => a.id === line.activity)
@@ -289,8 +453,8 @@ function DayForm({
                   </Button>
                 </div>
 
-                {/* FR-TIME-11 — the only task record there is, so it comes
-                    first and says what it is for. */}
+                {/* FR-TIME-11 — what was done, so it comes first and says
+                    what it is for. */}
                 <div className="space-y-1.5">
                   <Label htmlFor={`note-${line.key}`} className="text-xs">
                     What did you do?
@@ -394,7 +558,7 @@ function DayForm({
           </div>
         )}
 
-        {data.projects.length === 0 && (
+        {projects.length === 0 && (
           <Card>
             <CardContent className="p-4 text-sm text-muted-foreground">
               You are not allocated to any project for this date. A manager can

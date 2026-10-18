@@ -162,7 +162,7 @@ Keywords follow RFC 2119.
 
 | ID | Requirement |
 |---|---|
-| FR-TIME-11 | The note field MUST be prominent and labelled as *what was done*, since it is the only task record (§8, Q-03). |
+| FR-TIME-11 | The note field MUST be prominent and labelled as *what was done*, since it is the only task record (§8, Q-03). *Amended 18 October 2026 by `008`: the note is no longer the only task record, since tasks live in the portal; it stays prominent, labelled and free text (`008` FR-TASK-CHG-08).* |
 | FR-TIME-12 | The day form MUST offer activities alongside allocated projects. |
 
 ### 5.6 CEO dashboard — FR-DASH
@@ -227,7 +227,7 @@ Settled 11 September 2026, before any schema was written.
 |---|---|---|
 | **Q-01** | Who sees cost rates and money? | **Admin and manager only.** Not leads. Not the person themselves. Reverses `002` Q-05 deliberately, by adding a tier rather than exposing rates to leads. |
 | **Q-02** | Does a manager see all projects or only their own? | **All projects.** Chosen against the recommendation; consequence recorded in §3. |
-| **Q-03** | "Tasks done" — structured or free text? | **Free text.** The note field, made prominent. Task tracking stays in ClickUp (`002` §2.2). |
+| **Q-03** | "Tasks done" — structured or free text? | **Free text.** The note field, made prominent. Task tracking stays in ClickUp (`002` §2.2). *Amended 18 October 2026 by `008`: task tracking moves to the portal's tasks; the note stays free text (`008` FR-TASK-CHG-08).* |
 | **Q-04** | Deploy `002` before building this? | **Yes.** Done 11 September; `002` is in production. |
 | **Q-05** | How is COGS priced when rates change? | **Snapshot at save.** Each entry carries the rate in force when it was logged. Not asked; decided because the alternative silently re-prices history. |
 | **Q-06** | What does "revenue per employee" compute? | **Attributed revenue** = project revenue × (their hours ÷ total project hours), per project, summed across projects. Not asked; the phrase was ambiguous and this is the reading that is both computable from the data and defensible to a finance person. |
