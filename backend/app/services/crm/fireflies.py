@@ -66,7 +66,6 @@ query Transcripts($fromDate: DateTime, $limit: Int, $skip: Int) {
     id
     title
     date
-    dateUpdated
     transcript_url
     organizer_email
     participants
@@ -193,7 +192,9 @@ def _meta(row: dict[str, Any]) -> dict[str, Any] | None:
         "id": str(row["id"])[:150],
         "title": str(row.get("title") or "")[:300],
         "date": date,
-        "updated_at": _when(row.get("dateUpdated")) or date,
+        # Fireflies has no update time on a transcript: the meeting date
+        # stands for it, and LOOKBACK covers transcripts finished later.
+        "updated_at": date,
         "attendees": _emails(row),
         "transcript_url": row.get("transcript_url") or None,
     }

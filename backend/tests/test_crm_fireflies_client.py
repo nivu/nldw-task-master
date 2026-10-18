@@ -31,12 +31,11 @@ def _ok(data: dict) -> httpx.Response:
     return httpx.Response(200, json={"data": data})
 
 
-def _row(transcript_id: str, *, date: str, updated: str | None = None, **values) -> dict:
+def _row(transcript_id: str, *, date: str, **values) -> dict:
     return {
         "id": transcript_id,
         "title": "Pilot review",
         "date": date,
-        "dateUpdated": updated or date,
         "transcript_url": f"https://app.fireflies.ai/view/{transcript_id}",
         "organizer_email": "Deepika@nunnarilabs.com",
         "participants": ["priya@acme.in", "not an address"],
@@ -80,7 +79,7 @@ class TestTheRequest:
         assert body["variables"] == {"fromDate": "2026-10-11T06:00:00Z", "limit": 50, "skip": 0}
         # Metadata only: the list never asks for what was said.
         assert "sentences" not in body["query"] and "summary" not in body["query"]
-        for field in ("id", "title", "date", "dateUpdated", "transcript_url", "participants"):
+        for field in ("id", "title", "date", "transcript_url", "participants"):
             assert field in body["query"]
 
     def test_fireflies_first_poll_reaches_back_from_now(self, transport):
@@ -128,6 +127,75 @@ class TestTheRequest:
         assert seen == []
 
 
+class TestTheRealSchema:
+    """The queries name only fields Fireflies' API has. Read from its schema
+    on 18 Oct 2026, after `dateUpdated` (not a Fireflies field) failed every
+    production poll with a 400 that the mocked tests could not see."""
+
+    TRANSCRIPT_FIELDS = {
+        "id",
+        "sentences",
+        "title",
+        "host_email",
+        "organizer_email",
+        "user",
+        "privacy",
+        "participants",
+        "date",
+        "duration",
+        "summary",
+        "meeting_info",
+        "is_live",
+        "transcript_url",
+        "audio_url",
+        "video_url",
+        "dateString",
+        "apps_preview",
+        "meeting_attendees",
+        "meeting_attendance",
+        "speakers",
+        "calendar_id",
+        "cal_id",
+        "calendar_type",
+        "meeting_link",
+        "analytics",
+        "fireflies_users",
+        "workspace_users",
+        "channels",
+        "shared_with",
+    }
+
+    @staticmethod
+    def _top_fields(query: str, root: str) -> set[str]:
+        body = query.split(root, 1)[1]
+        body = body[body.index("{") + 1 :]
+        depth, names, word = 0, set(), ""
+        for ch in body:
+            if ch == "{":
+                if depth == 0 and word:
+                    names.add(word)
+                depth, word = depth + 1, ""
+            elif ch == "}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and (ch.isalnum() or ch == "_"):
+                word += ch
+            else:
+                if depth == 0 and word:
+                    names.add(word)
+                word = ""
+        return names
+
+    def test_the_list_asks_only_for_real_transcript_fields(self):
+        fields = self._top_fields(fireflies.LIST_QUERY, "transcripts(")
+        assert fields and fields <= self.TRANSCRIPT_FIELDS, fields - self.TRANSCRIPT_FIELDS
+
+    def test_one_transcript_asks_only_for_real_fields(self):
+        fields = self._top_fields(fireflies.TRANSCRIPT_QUERY, "transcript(")
+        assert fields and fields <= self.TRANSCRIPT_FIELDS, fields - self.TRANSCRIPT_FIELDS
+
+
 class TestTheList:
     """FR-CRMAI-MEET-02, -07: metadata, updated after the cursor."""
 
@@ -139,15 +207,16 @@ class TestTheList:
                     "transcripts": [
                         _row("old", date="2026-10-17T09:00:00Z"),
                         _row("new", date="2026-10-18T09:00:00Z"),
-                        # An older meeting whose transcript was updated since.
-                        _row("redone", date="2026-10-16T09:00:00Z", updated=1792317600000),
+                        # Fireflies has no update time: an older meeting is
+                        # not listed again (its note was written once).
+                        _row("older", date="2026-10-16T09:00:00Z"),
                         {"title": "No id"},
                     ]
                 }
             )
         )
         listed = fireflies.list_since("2026-10-18T00:00:00+00:00")
-        assert [m["id"] for m in listed] == ["new", "redone"]
+        assert [m["id"] for m in listed] == ["new"]
         assert listed[0] == {
             "id": "new",
             "title": "Pilot review",
@@ -156,7 +225,6 @@ class TestTheList:
             "attendees": ["deepika@nunnarilabs.com", "priya@acme.in", "ravi@acme.in"],
             "transcript_url": "https://app.fireflies.ai/view/new",
         }
-        assert listed[1]["updated_at"] == "2026-10-18T10:00:00+00:00"
 
     def test_fireflies_list_reads_page_after_page(self, transport):
         seen, answers = transport
