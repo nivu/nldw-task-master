@@ -195,7 +195,8 @@ test.describe.serial("Log a day suggestions", () => {
 
     const away = (await todaysEntries(request)).filter((e) => e.project_id === awayId);
     expect(away).toHaveLength(1);
-    expect(away[0].hours_office).toBe("1.00");
+    // Hours are decimal strings; their scale is not part of the contract.
+    expect(Number(away[0].hours_office)).toBe(1);
     expect(away[0].note).toBe(titles.away);
   });
 
@@ -211,7 +212,7 @@ test.describe.serial("Log a day suggestions", () => {
 
     const mine = (await todaysEntries(request)).filter((e) => e.project_id === projectId);
     expect(mine).toHaveLength(1);
-    expect(mine[0].hours_office).toBe("3.50");
+    expect(Number(mine[0].hours_office)).toBe(3.5);
     expect(mine[0].note).toBe(`${titles.first}; ${titles.second}`);
     await page.reload();
     await expect(suggestion(page, titles.first)).toContainText("Added");

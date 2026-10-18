@@ -10,8 +10,10 @@ this file says how it is proved. Phase 2's lines are proved by named
 covering tests only. Phase 3's lines (S3a) are proved by named covering
 tests and, for what is screen state only (Accept, the merge, the warning;
 plan §5.9), by named tests of the local Playwright spec
-`frontend/e2e/day-log.spec.ts`, each asserted to exist and the spec to skip
-nothing; the recurrence line (S3b) by named covering tests. Phase 4's lines
+`frontend/e2e/day-log.spec.ts`. No gate runs that spec, so those are
+recorded proofs: each is asserted to exist, the spec to skip nothing, and
+the test to be among those a recorded run saw pass (`E2E_RECORDED`,
+`E2E_PASSED`); the recurrence line (S3b) by named covering tests. Phase 4's lines
 (S4a, S4b) are proved by named covering tests only.
 
 Each line is proved one of two ways:
@@ -153,6 +155,27 @@ def _phase_4_lines() -> list[str]:
 
 LINES_4 = _phase_4_lines()
 DAY_LOG_E2E = BACKEND.parent / "frontend" / "e2e" / "day-log.spec.ts"
+
+#: Where the recorded run of `day-log.spec.ts` is: no gate runs Playwright,
+#: so a title in the file proves nothing until a run is seen to pass it.
+E2E_RECORDED = (
+    'the commit message of "Record a passing run of the Log a day browser tests '
+    '(008 slice S3a)": "16 passed" (each test on the mobile and the desktop project, '
+    "after `npx supabase db reset`, with that commit's API and frontend)"
+)
+#: The tests that run passed (the titles as `test(` names them).
+E2E_PASSED = frozenset(
+    {
+        "accepting two tasks on one project gives one line at zero hours",
+        "nothing is written without Save",
+        "removing the line, or the title from its note, offers the task again",
+        "ignoring a task while choosing where it goes closes the choice",
+        "a task on a project not allocated that day adds the project to the choices",
+        "saving with hours writes one normal entry through Save day",
+        "a task with no project asks where it goes, and a zero-hour line is not saved",
+        "Log a day warns that a note is visible to the lead, managers and admins",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -764,12 +787,14 @@ ENTRIES_4: list[tuple[str, tuple[str, ...]]] = [
 
 
 def check_e2e(title: str) -> None:
-    """A test of the local Playwright spec exists by `title`, and the spec
-    skips, fixes or focuses nothing."""
+    """A test of the local Playwright spec exists by `title`, the spec skips,
+    fixes or focuses nothing, and the recorded run saw the test pass."""
     source = DAY_LOG_E2E.read_text()
     assert f'test("{title}",' in source, f"day-log.spec.ts: no test {title!r}"
     for mark in ("test.skip(", "test.fixme(", ".only("):
         assert mark not in source, f"day-log.spec.ts: {mark}"
+    assert E2E_RECORDED
+    assert title in E2E_PASSED, f"day-log.spec.ts: no recorded passing run of {title!r}"
 
 
 def _entry(line: str) -> Proof:
@@ -822,12 +847,28 @@ class TestTheLines:
         spec = tmp_path / "day-log.spec.ts"
         spec.write_text('test("a", async () => {});\n')
         monkeypatch.setattr(sys.modules[__name__], "DAY_LOG_E2E", spec)
+        monkeypatch.setattr(sys.modules[__name__], "E2E_PASSED", frozenset({"a", "b"}))
         check_e2e("a")
         with pytest.raises(AssertionError, match="no test"):
             check_e2e("b")
         spec.write_text('test("a", async () => {});\ntest.skip("b", async () => {});\n')
         with pytest.raises(AssertionError, match=r"test\.skip"):
             check_e2e("a")
+
+    def test_an_e2e_test_never_seen_passing_is_caught(self, tmp_path, monkeypatch):
+        """A title in the spec is not a proof: no gate runs Playwright."""
+        spec = tmp_path / "day-log.spec.ts"
+        spec.write_text('test("a", async () => {});\ntest("new", async () => {});\n')
+        monkeypatch.setattr(sys.modules[__name__], "DAY_LOG_E2E", spec)
+        monkeypatch.setattr(sys.modules[__name__], "E2E_PASSED", frozenset({"a"}))
+        check_e2e("a")
+        with pytest.raises(AssertionError, match="no recorded passing run"):
+            check_e2e("new")
+
+    def test_every_recorded_e2e_title_is_in_the_spec(self):
+        source = DAY_LOG_E2E.read_text()
+        for title in E2E_PASSED:
+            assert f'test("{title}",' in source, title
 
     def test_the_recorded_proofs_are_the_two_exceptions(self):
         """Only the migration mapping and the 5,000-task line rest on a
