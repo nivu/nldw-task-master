@@ -663,6 +663,8 @@ ENTRIES: list[tuple[str, Proof]] = [
             "test_crm_followup_rules.py::TestNoReply::test_rules_a_dismissed_draft_is_not_made_again",
             "test_crm_followup_rules.py::TestLeadCold::test_rules_one_open_suggestion_per_company",
             "test_crm_followup_rules.py::TestLeadCold::test_rules_not_again_within_lead_cold_days_of_a_dismissal",
+            "test_crm_followup_rules.py::TestFollowThrough::test_rules_one_suggestion_per_member_across_ticks",
+            "test_crm_followup_rules.py::TestFollowThrough::test_rules_not_again_after_a_dismissal_until_the_status_changes",
             "test_crm_followup_rules.py::TestPhasesAndSwitches::test_rules_each_switch_on_its_own",
             "test_crm_review_expiry.py::TestExpiry::test_review_expiry_is_not_re_created_from_the_same_source",
         ),

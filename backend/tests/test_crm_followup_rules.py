@@ -9,9 +9,10 @@ fields and rules" (rules):
   reads no message body;
 - R-3's activity, its options by lead stage, its suppression after a
   dismissal;
-- R-4 is measured from `status_changed_at`, and makes nothing when the
-  member has a converted deal or its company or person an Open or Waiting
-  task;
+- R-4 is measured from `status_changed_at`, makes one item per status
+  change (none again after a dismissal or expiry until the status changes),
+  and makes nothing when the member has a converted deal or its company or
+  person an Open or Waiting task;
 - a company whose only people are marked Do not contact gets nothing from
   R-1 or R-4;
 - with phase 3 off and every rule switch on: no item, no Stuck in stage
@@ -586,6 +587,42 @@ class TestFollowThrough:
             )
             == []
         )
+
+    def test_rules_one_suggestion_per_member_across_ticks(self, made):
+        """FR-CRMAI-RULE-06, -REV-08: the trigger is the member's status
+        change, so later ticks refresh nothing and add nothing."""
+        camp = made.campaign()
+        made.member(camp, company_id=made.acme["id"])
+        made.automations()
+        [item] = made.items("R-4")
+        made.automations()
+        made.automations(NOW + timedelta(days=1))
+        assert [i["id"] for i in made.items("R-4")] == [item["id"]]
+        assert item["status"] == "open" and item.get("revision", 1) == 1
+
+    @pytest.mark.parametrize("status", ["dismissed", "expired"])
+    def test_rules_not_again_after_a_dismissal_until_the_status_changes(self, made, status):
+        camp = made.campaign()
+        member = made.member(camp, company_id=made.acme["id"])
+        made.automations()
+        [item] = made.items("R-4")
+        if status == "dismissed":
+            made.dismiss(item)
+        else:
+            # An expiry counts as a dismissal (FR-CRMAI-REV-08).
+            made.fake.rows["crm_review_items"][item["id"]].update(
+                status="expired", decided_at=NOW.isoformat()
+            )
+        for later in (NOW, NOW + timedelta(days=1), NOW + timedelta(days=20)):
+            made.automations(later)
+            assert [i["status"] for i in made.items("R-4")] == [status]
+        # The trigger recurs: the member's status changes again and, a week
+        # later, they are still engaged.
+        made.fake.rows["crm_campaign_members"][member["id"]]["status_changed_at"] = (
+            NOW + timedelta(days=21)
+        ).isoformat()
+        made.automations(NOW + timedelta(days=29))
+        assert sorted(i["status"] for i in made.items("R-4")) == sorted([status, "open"])
 
     def test_rules_none_for_a_person_marked_do_not_contact(self, made):
         camp = made.campaign()
