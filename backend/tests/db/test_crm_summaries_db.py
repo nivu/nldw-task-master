@@ -499,6 +499,26 @@ class TestTheThreadAndItsRecords:
             f"WHERE record_id = {stack.q(thread['acme'])}"
         ) == [{"n": 0}]
 
+    def test_summaries_db_removing_the_watermark_message_drops_the_summary(
+        self, stack, ws, real, thread
+    ):
+        """070: the summary was built from the message removed; the thread is
+        due again and is summarised from what is still stored."""
+        real.store_emails(
+            ws, thread["box"], [_message("m2", thread["links"], sent_at="2026-10-14T09:00:00Z")]
+        )
+        [pending] = real.pending_threads(ws, 20)
+        real.store_summary(_sync(ws), _plan(thread["box"], pending["latest"], thread["links"]))
+        assert [s["watermark_message_id"] for s in _summaries(stack, thread["box"])] == ["m2"]
+        real.remove_emails(ws, thread["box"], ["m2"])
+        assert _summaries(stack, thread["box"]) == []
+        assert stack.sql(
+            "SELECT count(*) AS n FROM crm_email_summary_links "
+            f"WHERE record_id = {stack.q(thread['acme'])}"
+        ) == [{"n": 0}]
+        [again] = real.pending_threads(ws, 20)
+        assert (again["latest"]["gmail_id"], again["message_ids"]) == ("m1", ["m1"])
+
     def test_summaries_db_remove_emails_during_a_store_drops_the_new_summary(
         self, stack, ws, real, thread
     ):

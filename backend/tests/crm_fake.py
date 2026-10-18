@@ -3192,7 +3192,8 @@ class FakeCrmStore:
         }
         for m in gone:
             self._forget_message(m["id"])
-        # 062: a thread left with no stored message loses its summary.
+        # 062: a thread left with no stored message loses its summary; 070:
+        # so does a summary whose watermark message was removed.
         left = {
             m["thread_id"]
             for m in self._of("crm_email_messages", workspace_id)
@@ -3202,7 +3203,10 @@ class FakeCrmStore:
             if (
                 summary["mailbox_id"] == mailbox_id
                 and summary["thread_id"] in {m["thread_id"] for m in gone}
-                and summary["thread_id"] not in left
+                and (
+                    summary["thread_id"] not in left
+                    or summary.get("watermark_message_id") in gmail_ids
+                )
             ):
                 self._forget_summary(summary["id"])
         return {

@@ -425,6 +425,24 @@ class TestRemovedAndPaused:
         assert mail.rows("crm_email_summaries") == []
         assert mail.rows("crm_email_summary_links") == []
 
+    def test_job_removing_the_watermark_message_summarises_what_is_left(self, mail):
+        """070: the summary built from a removed message goes, and the next
+        tick summarises the thread from the messages still stored."""
+        from app.services.crm import store
+
+        mail.message("g1")
+        mail.message("g2", "Any news?", sent_at="2026-10-17T09:00:00+00:00")
+        mail.answer(ANSWER)
+        mail.tick()
+        [summary] = mail.rows("crm_email_summaries")
+        assert summary["watermark_message_id"] == "g2"
+        store.remove_emails(mail.labs["id"], mail.mailbox["id"], ["g2"])
+        assert mail.rows("crm_email_summaries") == []
+        mail.answer(ANSWER)
+        mail.tick()
+        [summary] = mail.rows("crm_email_summaries")
+        assert summary["watermark_message_id"] == "g1"
+
     def test_job_paused_mailbox_skipped_and_its_summaries_kept(self, mail):
         mail.message("g1")
         mail.answer(ANSWER)
