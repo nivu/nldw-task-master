@@ -27,9 +27,10 @@ only (`009` owns `060`–`079`; plan §9).
 | `054_task_voice.sql` | S4a | `voice_uploads`; Storage bucket `task-voice` (private) (§2.9) |
 | `055_task_inbox_review.sql` | S4b | `inbox_items`; `profiles.tasks_review_dismissed_week` (§2.10) |
 | `056_task_link_removal_lock.sql` | S1b | `tasks_workspace_check` locks the task row when a link is removed, so two concurrent removals cannot leave a CRM task with no CRM link (§5.1) |
+| `057_task_link_removal_no_key_lock.sql` | post-009 review | `tasks_workspace_check` takes that lock `FOR NO KEY UPDATE` instead of `FOR UPDATE`: removals still wait for each other, but no longer deadlock with a transaction that inserted a link of the same task (whose foreign key check holds `FOR KEY SHARE`) (§5.1) |
 
 `057`–`059` are spare, for a fix found in a later slice (a new file, never an
-edit). **Functions 009 also replaces.** `009`'s migrations (`060`–`067`)
+edit); `057` is used. **Functions 009 also replaces.** `009`'s migrations (`060`–`067`)
 replace seven existing functions: `crm_audit_row`, `crm_purge`,
 `crm_merge_companies` and (067, only if needed) `crm_query_rank`, which 048
 also replaces, and `crm_remove_emails`, `crm_touch_updated_at` and

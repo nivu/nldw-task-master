@@ -1,6 +1,6 @@
 """Tasks, their links and the workspace invariant in the real database —
 spec 008 FR-TASK-DATA-05, -06, -15, FR-TASK-VIS-03; T3, T4; TP-13;
-data-model §2.1, §2.2, §5.1; migrations 047, 048, 049, 056.
+data-model §2.1, §2.2, §5.1; migrations 047, 048, 049, 056, 057.
 
 What only Postgres can prove: the deferred `tasks_workspace_check` judges a
 task at commit, after its links (both ways: a first CRM link written with the
@@ -278,6 +278,75 @@ class TestTheDeferredCheck:
         assert failed == []
         left = stack.sql(f"SELECT id FROM task_links WHERE task_id = {stack.q(task)}")
         assert [r["id"] for r in left] == [second]
+
+    def test_two_link_moves_at_once_do_not_deadlock(self, stack, user, labs):
+        """057: each transaction adds one link and removes another of the
+        same task (a company merge moving a link while a person edits the
+        task's links). The insert's foreign key check holds KEY SHARE on the
+        task; the removal's lock at commit must not conflict with it, or
+        each waits for the other and one is aborted 40P01."""
+        companies = [_company(stack, labs, user) for _ in range(4)]
+        made = _crm_apply(
+            stack,
+            _crm_actor(labs, user),
+            [
+                {
+                    "op": "insert",
+                    "table": "tasks",
+                    "ref": "t",
+                    "values": {"title": "Call", "assignee_id": user, "bucket": "later"},
+                },
+                *(
+                    {
+                        "op": "insert",
+                        "table": "task_links",
+                        "values": {
+                            "task_id": "$ref:t",
+                            "record_type": "company",
+                            "record_id": company,
+                        },
+                    }
+                    for company in companies[:2]
+                ),
+            ],
+        )
+        task, links = made[0]["id"], [made[1]["id"], made[2]["id"]]
+
+        def move(removed: str, added: str) -> list[dict]:
+            return [
+                {
+                    "op": "insert",
+                    "table": "task_links",
+                    "values": {"task_id": task, "record_type": "company", "record_id": added},
+                },
+                {"op": "delete", "table": "task_links", "id": removed},
+            ]
+
+        failed: list[Exception] = []
+
+        def run(removed: str, added: str) -> None:
+            # Both reach commit while the other still holds its KEY SHARE.
+            try:
+                ops = _j(stack, move(removed, added))
+                stack.sql(
+                    f"BEGIN; SELECT crm_apply({_j(stack, _crm_actor(labs, user))}, {ops}); "
+                    "SELECT pg_sleep(1.5); COMMIT;"
+                )
+            except Exception as exc:
+                failed.append(exc)
+
+        first = threading.Thread(target=run, args=(links[0], companies[2]))
+        second = threading.Thread(target=run, args=(links[1], companies[3]))
+        first.start()
+        time.sleep(0.4)
+        second.start()
+        first.join()
+        second.join()
+        assert failed == []
+        left = stack.sql(
+            f"SELECT record_id FROM task_links WHERE task_id = {stack.q(task)} ORDER BY record_id"
+        )
+        assert [r["record_id"] for r in left] == sorted(companies[2:])
 
     def test_the_workspace_changes_only_from_empty_to_a_value(self, stack, user, labs, academy):
         company = _company(stack, labs, user)
