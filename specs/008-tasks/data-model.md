@@ -228,7 +228,14 @@ an occurrence ends the series (FR-TASK-RRULE-04).
 | `created_at`, `transcribed_at` | timestamptz | |
 
 Not audited (a transcript must never reach `audit_log`, FR-TASK-VOICE-05).
-Written directly by `services/tasks/voice.py` and the worker. Index
+Written directly by `services/tasks/voice.py` and the worker. A candidate's
+`handled` flag changes only through `voice_candidate_mark(p_upload, p_index,
+p_handled) → boolean`, one conditional UPDATE that applies only while the row
+is `transcribed` with its transcript and the flag is still the other way (two
+confirms of one candidate cannot both pass, two requests cannot undo each
+other's flag, a swept row is never written again); `voice_upload_finish(p_upload)
+→ boolean` sets `done` and clears the transcript and the candidates' text once
+every candidate is handled. Both service role only. Index
 `(created_at) WHERE transcript IS NOT NULL OR object_path IS NOT NULL` for the
 sweep. RLS on, no grants. Storage: `INSERT INTO storage.buckets (id, name,
 public, file_size_limit, allowed_mime_types) VALUES ('task-voice',

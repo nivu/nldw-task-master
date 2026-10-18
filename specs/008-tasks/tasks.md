@@ -444,18 +444,18 @@ most.
 
 **Migrations.** `054_task_voice.sql` (data-model §2.9).
 
-- [ ] T112 Write `supabase/migrations/054_task_voice.sql`
-- [ ] T113 [P] Modify `backend/app/config.py`: `GROQ_API_KEY: SecretStr | None`, `TASKS_VOICE_CONFIGURED: bool = False`
-- [ ] T114 [P] Create `backend/app/domain/tasks/voice_split.py` (sentences, then "and" / "also" joins; "idea" / "read" / a link → inbox; each candidate through `quick_add.parse`) (FR-TASK-VOICE-03)
-- [ ] T115 Create `backend/app/services/tasks/groq.py` (one `httpx` multipart POST to Groq `whisper-large-v3`; no SDK; the key never logged) and `backend/app/services/tasks/voice.py` (upload to the private bucket, row, candidates, confirm, drop, transcript cleared on the last)
-- [ ] T116 Modify `backend/app/tasks/task_jobs.py`: `tasks.transcribe_voice` (`ignore_result=True`; deletes the audio in `finally`) and `tasks.voice_sweep`; add `"tasks-voice-sweep"` (every 30 min) to the 008 block in `backend/app/worker.py`
-- [ ] T117 Create `backend/app/api/tasks/voice.py` (contracts §2 voice routes; `upload_id: UUID`) and register it in `ROUTERS` before the `tasks.py` router
-- [ ] T118 [P] Create `frontend/components/tasks/voice-capture.tsx` (record with `MediaRecorder` or upload, poll, candidates with confirm, edit, drop) and add it to `frontend/components/tasks/my-tasks.tsx` at level ≥ 4
-- [ ] T119 [P] Create `backend/tests/test_task_voice_split.py` and `backend/tests/test_task_voice_routes.py` (fake Groq: nothing saved before confirm; source `voice`; audio deleted after transcription and after failure; sweep deletes within 24 h; transcript cleared on the last candidate; never in the Celery result or logs; 503 while unconfigured; a file over 4 MB answers 413 (FR-TASK-VOICE-01); `/tasks/voice` reaches its own handler); `backend/tests/db/test_task_voice_db.py` (bucket private, no `storage.objects` policy)
+- [x] T112 Write `supabase/migrations/054_task_voice.sql`
+- [x] T113 [P] Modify `backend/app/config.py`: `GROQ_API_KEY: SecretStr | None`, `TASKS_VOICE_CONFIGURED: bool = False`
+- [x] T114 [P] Create `backend/app/domain/tasks/voice_split.py` (sentences, then "and" / "also" joins; "idea" / "read" / a link → inbox; each candidate through `quick_add.parse`) (FR-TASK-VOICE-03)
+- [x] T115 Create `backend/app/services/tasks/groq.py` (one `httpx` multipart POST to Groq `whisper-large-v3`; no SDK; the key never logged) and `backend/app/services/tasks/voice.py` (upload to the private bucket, row, candidates, confirm, drop, transcript cleared on the last)
+- [x] T116 Modify `backend/app/tasks/task_jobs.py`: `tasks.transcribe_voice` (`ignore_result=True`; deletes the audio in `finally`) and `tasks.voice_sweep`; add `"tasks-voice-sweep"` (every 30 min) to the 008 block in `backend/app/worker.py`
+- [x] T117 Create `backend/app/api/tasks/voice.py` (contracts §2 voice routes; `upload_id: UUID`) and register it in `ROUTERS` before the `tasks.py` router; modify `backend/app/schemas/tasks.py` (`VoiceConfirmIn`, `VoiceDropIn`: the confirm and drop bodies)
+- [x] T118 [P] Create `frontend/components/tasks/voice-capture.tsx` (record with `MediaRecorder` or upload, poll, candidates with confirm, edit, drop) and add it to `frontend/components/tasks/my-tasks.tsx` at level ≥ 4; modify `frontend/lib/api/tasks.ts` and `frontend/lib/api/task-types.ts` (the four voice calls and their types)
+- [x] T119 [P] Create `backend/tests/test_task_voice_split.py` and `backend/tests/test_task_voice_routes.py` (fake Groq: nothing saved before confirm; source `voice`; audio deleted after transcription and after failure; sweep deletes within 24 h; transcript cleared on the last candidate; never in the Celery result or logs; 503 while unconfigured; a file over 4 MB answers 413 (FR-TASK-VOICE-01); `/tasks/voice` reaches its own handler); `backend/tests/db/test_task_voice_db.py` (bucket private, no `storage.objects` policy); modify `backend/tests/test_task_privacy_sweep.py` (a fixture per voice route, so the scope check stays green until T126 extends them) and `backend/tests/test_task_routes.py` (the route count, 27 → 31)
 
 **Done when.**
-- [ ] All gates
-- [ ] Journey 4.10 by hand with a real key locally (or the fake, said in the commit); `docs/operations/deployment.md` gains `GROQ_API_KEY` (worker only) and `TASKS_VOICE_CONFIGURED` (api)
+- [x] All gates
+- [ ] Journey 4.10 by hand with a real key locally (or the fake, said in the commit), its task half: until S4b the idea is shown and can only be dropped (no Confirm on an inbox candidate; the route answers 422 "The Ideas and Reading inbox is not set up yet."), and S4b's T121 completes the journey; `docs/operations/deployment.md` gains `GROQ_API_KEY` (worker only) and `TASKS_VOICE_CONFIGURED` (api)
 
 ---
 
@@ -474,11 +474,11 @@ it, the Monday review panel, and the acceptance sweep for phases 2–4.
 **Migrations.** `055_task_inbox_review.sql` (data-model §2.10).
 
 - [ ] T120 Write `supabase/migrations/055_task_inbox_review.sql`
-- [ ] T121 [P] Create `backend/app/services/tasks/inbox.py` (owner-only; Make it a task through `create_task`; archive) and `backend/app/domain/tasks/review.py` (Monday in the caller's zone; This week and This month items; waiting over 7 days; unprocessed inbox; dismissed week)
+- [ ] T121 [P] Create `backend/app/services/tasks/inbox.py` (owner-only; Make it a task through `create_task`; archive; also used by `services/tasks/voice.py`, whose confirm of an inbox candidate creates the inbox item from its draft in place of S4a's 422, completing Journey 4.10 and FR-TASK-VOICE-04; `frontend/components/tasks/voice-capture.tsx` shows Confirm on inbox candidates again) and `backend/app/domain/tasks/review.py` (Monday in the caller's zone; This week and This month items; waiting over 7 days; unprocessed inbox; dismissed week)
 - [ ] T122 Create `backend/app/api/tasks/inbox.py` and `backend/app/api/tasks/review.py` (contracts §2; `{id}` typed `UUID`) and register them in `ROUTERS` before the `tasks.py` router
 - [ ] T123 Modify `backend/app/mcp/tasks.py`: `inbox_add`
 - [ ] T124 [P] Create `frontend/components/tasks/inbox.tsx` and `frontend/components/tasks/weekly-review.tsx`; modify `frontend/components/tasks/my-tasks.tsx` (Inbox view; review panel on Mondays with one-tap bucket moves and Dismiss)
-- [ ] T125 [P] Create `backend/tests/test_task_inbox_routes.py` (owner-only, admins included; Make it a task links the two; `/tasks/inbox` and `/tasks/review` reach their own handlers, not `/tasks/{id}`) and `backend/tests/db/test_task_inbox_db.py` (deleting a profile that owns inbox items succeeds, the cascade audited as the system) and `backend/tests/test_task_review.py` (fixed clock Monday/Tuesday; dismiss for the week; never sent)
+- [ ] T125 [P] Create `backend/tests/test_task_inbox_routes.py` (owner-only, admins included; Make it a task links the two; a confirmed voice idea lands in the inbox, replacing `test_task_voice_routes.py`'s `test_the_idea_waits_for_the_inbox`; `/tasks/inbox` and `/tasks/review` reach their own handlers, not `/tasks/{id}`) and `backend/tests/db/test_task_inbox_db.py` (deleting a profile that owns inbox items succeeds, the cascade audited as the system) and `backend/tests/test_task_review.py` (fixed clock Monday/Tuesday; dismiss for the week; never sent)
 - [ ] T126 Extend `backend/tests/test_task_privacy_sweep.py` (inbox and voice routes, `inbox_add`; same scope as T050), `backend/tests/test_task_mcp.py` (six tools), and `backend/tests/test_task_acceptance.py` to every line of spec §12 phases 2–4
 - [ ] T127 [P] Modify `docs/guides/10-tasks.md` (voice, inbox, weekly review) and `docs/architecture/tasks.md` (phases 2–4)
 

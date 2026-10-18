@@ -300,6 +300,20 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
         _http(s, who, "POST", f"{TASKS}/templates/{key}")
         for key in ("pipeline_review", "statutory_dates")
     ],
+    # S4a: phase 4 is off for the cast, so the voice routes refuse them;
+    # S4b's sweep extends these (T126).
+    ("POST", f"{TASKS}/voice"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/voice", files={"file": ("v.webm", b"zqx", "audio/webm")})
+    ],
+    ("GET", f"{TASKS}/voice/{{upload_id}}"): lambda s, who: [
+        _http(s, who, "GET", f"{TASKS}/voice/{uuid.uuid4()}")
+    ],
+    ("POST", f"{TASKS}/voice/{{upload_id}}/confirm"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/voice/{uuid.uuid4()}/confirm", json={"index": 0})
+    ],
+    ("POST", f"{TASKS}/voice/{{upload_id}}/drop"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/voice/{uuid.uuid4()}/drop", json={"index": 0})
+    ],
     ("GET", f"{TASKS}/project/{{project_id}}"): lambda s, who: [
         _http(s, who, "GET", f"{TASKS}/project/{s.w.lumen['id']}", params=p)
         for p in ({}, {"include_closed": True})

@@ -29,6 +29,7 @@ import type {
   TaskSettings,
   TaskTemplate,
   TrashedTask,
+  VoiceNote,
   WaitingView,
 } from "@/lib/api/task-types";
 import { createClient } from "@/lib/supabase/client";
@@ -179,3 +180,25 @@ export const applyLifeOs = async (runId: string, file: File) => {
     await accessToken()
   );
 };
+
+// ---------------------------------------------------------------------------
+// Voice capture, phase 4 (FR-TASK-VOICE-01 to -05). The note goes up as
+// multipart through the proxy, at most 4 MB.
+// ---------------------------------------------------------------------------
+
+export const uploadVoiceNote = async (file: File) => {
+  const form = new FormData();
+  form.set("file", file);
+  return upload<{ upload_id: string; status: "uploaded" }>("/api/v1/tasks/voice", form, await accessToken());
+};
+
+export const getVoiceNote = (uploadId: string) => call<VoiceNote>(`/voice/${encodeURIComponent(uploadId)}`);
+
+export const confirmVoiceCandidate = (uploadId: string, index: number, draft?: TaskIn) =>
+  call<TaskOut>(`/voice/${encodeURIComponent(uploadId)}/confirm`, {
+    method: "POST",
+    ...body(draft ? { index, draft } : { index }),
+  });
+
+export const dropVoiceCandidate = (uploadId: string, index: number) =>
+  call<{ handled: true }>(`/voice/${encodeURIComponent(uploadId)}/drop`, { method: "POST", ...body({ index }) });

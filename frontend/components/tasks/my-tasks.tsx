@@ -10,6 +10,7 @@ import { TaskPanel } from "@/components/tasks/task-panel";
 import { FOCUS_CLASS } from "@/components/tasks/task-row";
 import { TaskSections } from "@/components/tasks/task-sections";
 import { TaskSettings } from "@/components/tasks/task-settings";
+import { VoiceCapture } from "@/components/tasks/voice-capture";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   AssignedByMeView,
@@ -373,6 +374,7 @@ export function MyTasks({
       {view === "brief" && <Brief version={version} onOpen={(task) => setOpen(task.id)} meId={meId} />}
       {view === "mine" && <TaskFilters value={filters} onChange={setFilters} />}
       {view === "mine" && level >= 2 && <TaskSettings onAdded={() => setReloads((n) => n + 1)} />}
+      {view === "mine" && level >= 4 && <VoiceCapture />}
       {view === "mine" && error && (
         <p role="alert" className="text-sm text-destructive">
           {error}

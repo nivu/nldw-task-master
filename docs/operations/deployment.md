@@ -532,6 +532,21 @@ global default, which starts at 0.
 CRM task behaviour never depends on the level: CRM tasks work for everyone
 from the release on.
 
+### Voice capture (phase 4)
+
+Migration `054` adds the `voice_uploads` table and the private Storage bucket
+`task-voice`. The worker transcribes each note with Groq (`whisper-large-v3`)
+through the Celery task `tasks.transcribe_voice`; the beat entry
+`tasks-voice-sweep` (every 30 minutes) deletes any audio or transcript before
+it is 24 hours old.
+
+| Variable | Service | Value |
+|---|---|---|
+| `GROQ_API_KEY` | `worker` **only** | The Groq API key, created by the owner (spec §15.1). Never on `api` or `beat`; never in Netlify; never logged |
+| `TASKS_VOICE_CONFIGURED` | `api` | `true` once the key is set on `worker`. A non-secret flag: while it is false, uploading a voice note answers "Voice capture is not set up yet." |
+
+Set the key on `worker` first and redeploy it, then set the flag on `api`.
+
 ## Releasing a change
 
 Every release, in this order:

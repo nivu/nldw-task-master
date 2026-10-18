@@ -307,3 +307,31 @@ export interface LifeOsApplied {
   run_id: string;
   counts: { created: number; existing: number; repeated: number; skipped: number };
 }
+
+/** GET /tasks/voice/{upload_id} — a voice note and its candidates
+ *  (FR-TASK-VOICE-03, -04). */
+export type VoiceStatus = "uploaded" | "transcribing" | "transcribed" | "failed" | "done";
+
+export interface VoiceInboxDraft {
+  kind: "idea" | "link" | "note";
+  title: string;
+  url: string | null;
+  tags: string[];
+}
+
+interface VoiceCandidateBase {
+  index: number;
+  /** Null once the transcript is cleared (FR-TASK-VOICE-05). */
+  text: string | null;
+  handled: boolean;
+}
+
+export type VoiceCandidate =
+  | (VoiceCandidateBase & { kind: "task"; draft?: QuickAddPreview["draft"]; questions?: QuickAddQuestion[] })
+  | (VoiceCandidateBase & { kind: "inbox"; draft?: VoiceInboxDraft });
+
+export interface VoiceNote {
+  status: VoiceStatus;
+  candidates: VoiceCandidate[];
+  error: string | null;
+}

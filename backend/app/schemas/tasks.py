@@ -158,3 +158,20 @@ class TaskSettingsIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     nudge_days: int | None = Field(default=None, ge=1, le=30)
+
+
+class VoiceConfirmIn(BaseModel):
+    """Contracts §2 `POST /tasks/voice/{upload_id}/confirm` — the candidate,
+    and its edited draft (the fields of `POST /tasks`) when it was edited
+    (FR-TASK-VOICE-04)."""
+
+    model_config = ConfigDict(extra="forbid")
+    index: int = Field(ge=0)
+    draft: TaskIn | None = None
+
+
+class VoiceDropIn(BaseModel):
+    """Contracts §2 `POST /tasks/voice/{upload_id}/drop` — the candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+    index: int = Field(ge=0)

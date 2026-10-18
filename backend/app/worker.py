@@ -148,5 +148,10 @@ celery_app.conf.beat_schedule.update(
             "task": "tasks.purge_deleted",
             "schedule": crontab(hour=1, minute=20),
         },
+        # FR-TASK-VOICE-02, -05: voice audio and transcripts before 24 hours.
+        "tasks-voice-sweep": {
+            "task": "tasks.voice_sweep",
+            "schedule": crontab(minute="*/30"),
+        },
     }
 )

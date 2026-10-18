@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     GOOGLE_SERVICE_ACCOUNT_JSON: SecretStr | None = None
     CRM_GMAIL_CONFIGURED: bool = False
 
+    # ------------------------------------------------------------------
+    # Spec 008 voice capture — FR-TASK-VOICE-02, plan §2.2, T10
+    #
+    # The Groq key is set on the `worker` service ONLY: it is the one process
+    # that transcribes. The API reads the non-secret TASKS_VOICE_CONFIGURED
+    # flag instead, which says the key exists there; `POST /tasks/voice`
+    # answers 503 while it is false. The key is never logged.
+    # ------------------------------------------------------------------
+    GROQ_API_KEY: SecretStr | None = None
+    TASKS_VOICE_CONFIGURED: bool = False
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
