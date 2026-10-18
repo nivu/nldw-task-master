@@ -4,7 +4,10 @@ No test calls Claude, Fireflies, Gmail or a website. `FakeClaude` stands in
 for `services/crm/claude.messages`: it answers from a script, can answer
 with output that fails the schema, time out or fail, and records every
 prompt it was given, so a test can check what reached the model.
-`CapturedCelery` records every task a test enqueues instead of sending it.
+`FakeGmailText` stands in for `services/crm/gmail.message_text` and records
+every message id it was asked for, so a test can check that only stored
+messages are read. `CapturedCelery` records every task a test enqueues
+instead of sending it.
 The clock helpers build fixed times on the Asia/Kolkata wall clock, where
 the budget month turns (Q-23).
 
@@ -19,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from celery.app.task import Task
 
-from app.services.crm import claude
+from app.services.crm import claude, gmail
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -89,6 +92,32 @@ class FakeClaude:
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
         )
+
+
+class FakeGmailText:
+    """`gmail.message_text`, from a dict of Gmail id → text. Every read is
+    recorded as `(mailbox address, Gmail id)`. An id it does not know is
+    the empty text, as a message deleted meanwhile is; `failing` ids raise
+    a `GmailError`."""
+
+    def __init__(self, texts: dict[str, str] | None = None, *, failing: set[str] = frozenset()):
+        self.texts = dict(texts or {})
+        self.failing = set(failing)
+        self.reads: list[tuple[str, str]] = []
+
+    def install(self, monkeypatch) -> FakeGmailText:
+        monkeypatch.setattr(gmail, "message_text", self.message_text)
+        return self
+
+    @property
+    def ids(self) -> list[str]:
+        return [gmail_id for _, gmail_id in self.reads]
+
+    def message_text(self, mailbox: str, message_id: str) -> str:
+        self.reads.append((mailbox, message_id))
+        if message_id in self.failing:
+            raise gmail.GmailError("Gmail message_text failed (500).")
+        return self.texts.get(message_id, "")
 
 
 class CapturedCelery:

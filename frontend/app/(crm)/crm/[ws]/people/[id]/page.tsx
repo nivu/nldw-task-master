@@ -168,6 +168,7 @@ export default function PersonPage() {
             initial={page.timeline_head}
             timeZone={bootstrap.me.timezone}
             version={version}
+            summaries={page.summaries}
           />
         }
         files={

@@ -38,6 +38,8 @@ NOT_AUDITED = {
     "crm_ai_usage",  # the AI usage log, cost per call, no text (009 FR-CRMAI-LLM-06)
     "crm_review_items",  # the Review Queue; decisions audited by its own functions (009 Q-34)
     "crm_review_item_deals",  # a Review Queue item's deal choices, ids only (009 Q-07)
+    "crm_email_summaries",  # AI thread summaries, rewritten each message, removable (009 Q-34)
+    "crm_email_summary_links",  # an email summary's links to its records (009 FR-CRMAI-SUM-05)
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}

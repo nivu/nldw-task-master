@@ -28,6 +28,7 @@ from app.api.crm import (
     review,
     search,
     settings,
+    summaries,
     today,
     tva_admin,
     views,
@@ -57,7 +58,8 @@ ROUTERS = [
     email.router,
     dashboard.router,
     export.router,
-    # Spec 009: Settings, AI; the Review Queue.
+    # Spec 009: Settings, AI; the Review Queue; thread summaries.
     ai.router,
     review.router,
+    summaries.router,
 ]

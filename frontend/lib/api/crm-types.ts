@@ -803,6 +803,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
   merged_from?: { id: string; name: string };
   /** 1b: companies, people and deals — the latest email threads (S10). */
   emails?: CrmEmailThread[];
+  /** 009 S1c, phase 1 on: the latest 5 threads' summaries (FR-CRMAI-SUM-08). */
+  summaries?: CrmThreadSummary[];
 }
 
 export interface CrmPage<T> {
@@ -1287,6 +1289,10 @@ export interface CrmEmailThread {
   /** The synced mailbox it came from. */
   mailbox: string | null;
   messages: number;
+  /** 009 S1c: `<mailbox_id>:<gmail thread id>` (FR-CRMAI-MCP-01). */
+  thread_key: string;
+  /** 009 S1c: present while phase 1 is on and the thread has a summary. */
+  summary?: CrmThreadSummaryBody;
 }
 
 export interface CrmEmailThreads {
@@ -1676,4 +1682,38 @@ export interface ToReviewSection {
   key: "to_review";
   count: number;
   items: ToReviewItem[];
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1c — email thread summaries (009 contracts §1, §2.3; FR-CRMAI-SUM)
+// ---------------------------------------------------------------------------
+
+export type ThreadSentiment = "positive" | "neutral" | "concern";
+
+/** What Nunnari promised; the owner and date only when the thread stated them. */
+export interface ThreadCommitment {
+  text: string;
+  owner_name: string | null;
+  due_on: string | null;
+}
+
+/** A thread's summary as the Emails tab carries it. Every string is
+ *  generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmThreadSummaryBody {
+  summary: string;
+  asks: string[];
+  commitments: ThreadCommitment[];
+  sentiment: ThreadSentiment;
+  ai: AiProvenance;
+}
+
+/** GET /crm/email-threads/{thread_key}/summary, and each of a record's
+ *  `summaries`. */
+export interface CrmThreadSummary extends CrmThreadSummaryBody {
+  thread_key: string;
+  subject: string | null;
+  last_at: string;
+  next_step?: string | null;
+  next_step_on?: string | null;
+  links: { record_type: "company" | "person" | "opportunity"; record_id: string; name: string }[];
 }

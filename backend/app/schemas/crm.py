@@ -8,12 +8,13 @@ cross the wire as decimal strings, as everywhere in the portal.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 Timezone = Literal["Asia/Kolkata", "Australia/Sydney"]
 CrmRole = Literal["admin", "member", "viewer"]
@@ -883,3 +884,67 @@ class ReviewItemOut(BaseModel):
     expires_on: date
     decided_at: str | None
     decided_by: dict[str, Any] | None
+
+
+#: FR-CRMAI-SUM-04 — a sentence ends at `.`, `!` or `?` before a space or
+#: the end of the text.
+_SENTENCE_END = re.compile(r"[.!?]+(?=\s|$)")
+
+
+class SummaryCommitment(BaseModel):
+    """What Nunnari promised on the thread: a paraphrase, its owner as the
+    number of a listed team member or "unknown" (FR-CRMAI-SUM-12), and its
+    date when one was stated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200)
+    owner: str = Field(max_length=40)
+    due_on: date | None
+
+
+class SummaryOutput(BaseModel):
+    """FR-CRMAI-SUM-04 — what the model must answer for a thread, validated
+    before anything is saved: 2 to 3 plain sentences, the other side's asks
+    and Nunnari's commitments as paraphrases of at most 200 characters, a
+    next step and date only when the thread implies one, and the sentiment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=600)
+    asks: list[str] = Field(max_length=10)
+    commitments: list[SummaryCommitment] = Field(max_length=10)
+    next_step: str | None = Field(max_length=500)
+    next_step_on: date | None
+    sentiment: Literal["positive", "neutral", "concern"]
+
+    @field_validator("summary")
+    @classmethod
+    def _two_or_three_sentences(cls, value: str) -> str:
+        value = value.strip()
+        if not 2 <= len(_SENTENCE_END.findall(value)) <= 3:
+            raise ValueError("a summary is 2 to 3 sentences")
+        return value
+
+    @field_validator("asks")
+    @classmethod
+    def _short_asks(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(a.strip()) <= 200 for a in value):
+            raise ValueError("an ask is 1 to 200 characters")
+        return [a.strip() for a in value]
+
+
+class ThreadSummaryOut(BaseModel):
+    """`GET /crm/email-threads/{thread_key}/summary` (contracts §2.3)."""
+
+    thread_key: str
+    subject: str | None
+    last_at: str | None
+    summary: str
+    asks: list[str]
+    commitments: list[dict[str, Any]]
+    next_step: str | None
+    next_step_on: date | None
+    sentiment: Literal["positive", "neutral", "concern"]
+    links: list[dict[str, Any]]
+    ai: dict[str, Any]

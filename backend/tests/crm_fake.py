@@ -141,6 +141,9 @@ TABLES = (
     # Spec 009: the Review Queue (061), a log with explicit audit rows.
     "crm_review_items",
     "crm_review_item_deals",
+    # Spec 009: email thread summaries and their links (062), logs.
+    "crm_email_summaries",
+    "crm_email_summary_links",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -1207,6 +1210,14 @@ class FakeCrmStore:
                             and link["record_id"] == target
                         ):
                             del self.rows["crm_email_links"][link["id"]]
+                    # 062: the email summaries' links to it (a log).
+                    for link in list(self.rows["crm_email_summary_links"].values()):
+                        if (
+                            link["workspace_id"] == ws
+                            and link["record_type"] == kinds[table]
+                            and link["record_id"] == target
+                        ):
+                            del self.rows["crm_email_summary_links"][link["id"]]
                     # 061: the Review Queue items that target it.
                     for found in list(self.rows["crm_review_items"].values()):
                         if (
@@ -1286,6 +1297,10 @@ class FakeCrmStore:
             for msg in list(self.rows["crm_email_messages"].values()):
                 if msg["mailbox_id"] == target:
                     self._forget_message(msg["id"])
+            # 062: a mailbox's summaries go with it (CASCADE).
+            for summary in list(self.rows["crm_email_summaries"].values()):
+                if summary["mailbox_id"] == target:
+                    self._forget_summary(summary["id"])
         if table == "crm_companies":
             if any(d["company_id"] == target for d in self.rows["crm_opportunities"].values()):
                 raise store.refusal_for("23503", "violates foreign key constraint")
@@ -2395,6 +2410,23 @@ class FakeCrmStore:
                 else:
                     link["record_id"] = keep_id
                 moved["emails"] += 1
+            # 062: email summary links, as email links.
+            for link in list(self.rows["crm_email_summary_links"].values()):
+                if not (
+                    link["workspace_id"] == ws
+                    and link["record_type"] == "company"
+                    and link["record_id"] == gone_id
+                ):
+                    continue
+                if any(
+                    other["summary_id"] == link["summary_id"]
+                    and other["record_type"] == "company"
+                    and other["record_id"] == keep_id
+                    for other in self.rows["crm_email_summary_links"].values()
+                ):
+                    del self.rows["crm_email_summary_links"][link["id"]]
+                else:
+                    link["record_id"] = keep_id
             # 061: the merged company's open review items move, their dedupe
             # key's target recomputed; a clash with the survivor's expires.
             for item in sorted(
@@ -3085,6 +3117,19 @@ class FakeCrmStore:
         }
         for m in gone:
             self._forget_message(m["id"])
+        # 062: a thread left with no stored message loses its summary.
+        left = {
+            m["thread_id"]
+            for m in self._of("crm_email_messages", workspace_id)
+            if m["mailbox_id"] == mailbox_id
+        }
+        for summary in list(self.rows["crm_email_summaries"].values()):
+            if (
+                summary["mailbox_id"] == mailbox_id
+                and summary["thread_id"] in {m["thread_id"] for m in gone}
+                and summary["thread_id"] not in left
+            ):
+                self._forget_summary(summary["id"])
         return {
             "removed": len(gone),
             "records": [{"record_type": t, "record_id": r} for t, r in sorted(records)],
@@ -4097,6 +4142,263 @@ class FakeCrmStore:
                 )
                 n += 1
         return n
+
+    # -- spec 009: email thread summaries (062) -------------------------------
+
+    def _forget_summary(self, summary_id: str) -> None:
+        del self.rows["crm_email_summaries"][summary_id]
+        for link in list(self.rows["crm_email_summary_links"].values()):
+            if link["summary_id"] == summary_id:
+                del self.rows["crm_email_summary_links"][link["id"]]
+
+    def _qualifying(self, workspace_id: str) -> list[dict[str, Any]]:
+        """062's qualifying messages: not internal-only, not auto, linked to
+        a company or person, of an active mailbox."""
+        linked = {
+            link["message_id"]
+            for link in self._of("crm_email_links", workspace_id)
+            if link["record_type"] in ("company", "person")
+        }
+        mailboxes = self.rows["crm_mailboxes"]
+        return sorted(
+            (
+                m
+                for m in self._of("crm_email_messages", workspace_id)
+                if not m.get("is_internal")
+                and not m.get("is_auto")
+                and m["id"] in linked
+                and mailboxes[m["mailbox_id"]]["is_active"]
+            ),
+            key=lambda m: (_at(m["sent_at"]), m["gmail_message_id"]),
+        )
+
+    def pending_threads(self, workspace_id: str, limit: int) -> list[dict[str, Any]]:
+        """crm_pending_threads (062), as the SQL reads it."""
+        threads: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for m in self._qualifying(workspace_id):
+            threads.setdefault((m["mailbox_id"], m["thread_id"]), []).append(m)
+        out = []
+        for (mailbox_id, thread_id), msgs in threads.items():
+            mailbox = self.rows["crm_mailboxes"][mailbox_id]
+            done = mailbox.get("backfilled_at")
+            if not done or not any(_at(m["created_at"]) > _at(done) for m in msgs):
+                continue
+            latest = msgs[-1]
+            summary = next(
+                (
+                    s
+                    for s in self.rows["crm_email_summaries"].values()
+                    if s["mailbox_id"] == mailbox_id and s["thread_id"] == thread_id
+                ),
+                None,
+            )
+            if summary is not None and not (
+                latest["gmail_message_id"] != summary["watermark_message_id"]
+                and _at(latest["sent_at"]) >= _at(summary["watermark_at"])
+            ):
+                continue
+            ids = {m["id"] for m in msgs}
+            links = sorted(
+                {
+                    (link["record_type"], link["record_id"])
+                    for link in self.rows["crm_email_links"].values()
+                    if link["message_id"] in ids
+                }
+            )
+            out.append(
+                {
+                    "mailbox_id": mailbox_id,
+                    "thread_id": thread_id,
+                    "message_ids": [m["gmail_message_id"] for m in msgs],
+                    "messages": [
+                        {
+                            "gmail_id": m["gmail_message_id"],
+                            "direction": m["direction"],
+                            "sent_at": m["sent_at"],
+                        }
+                        for m in msgs
+                    ],
+                    "latest": {
+                        "gmail_id": latest["gmail_message_id"],
+                        "sent_at": latest["sent_at"],
+                    },
+                    "links": [{"record_type": t, "record_id": r} for t, r in links],
+                }
+            )
+        out.sort(key=lambda t: (_at(t["latest"]["sent_at"]), t["mailbox_id"], t["thread_id"]))
+        return json.loads(json.dumps(out[:limit]))
+
+    def store_summary(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_store_summary (062): the watermark re-checked (CRM09), the
+        summary upserted with 062's CHECKs, its links replaced (each in the
+        workspace, CRM04) and its items through crm_review_upsert, in one
+        transaction."""
+        ws = actor["workspace_id"]
+        assert actor["kind"] in ("sync", "system"), actor
+        plan = json.loads(json.dumps(plan))
+        mailbox = self.rows["crm_mailboxes"].get(plan["mailbox_id"])
+        if mailbox is None or mailbox["workspace_id"] != ws:
+            raise store.refusal_for("CRM04", "No such mailbox.")
+        # The SQL re-check reads qualifying messages whether or not the
+        # mailbox is still active.
+        linked = {
+            link["message_id"]
+            for link in self._of("crm_email_links", ws)
+            if link["record_type"] in ("company", "person")
+        }
+        mine = sorted(
+            (
+                m
+                for m in self._of("crm_email_messages", ws)
+                if m["mailbox_id"] == plan["mailbox_id"]
+                and m["thread_id"] == plan["thread_id"]
+                and not m.get("is_internal")
+                and not m.get("is_auto")
+                and m["id"] in linked
+            ),
+            key=lambda m: (_at(m["sent_at"]), m["gmail_message_id"]),
+        )
+        if not mine or mine[-1]["gmail_message_id"] != plan["watermark"]["gmail_id"]:
+            raise store.refusal_for("CRM09", "This thread changed while it was summarised.")
+        summary = plan["summary"]
+        assert summary == summary.strip() and 1 <= len(summary) <= 600, summary
+        assert len(plan["asks"]) <= 10 and len(plan["commitments"]) <= 10
+        assert plan.get("next_step_on") is None or plan.get("next_step") is not None
+        assert plan["sentiment"] in ("positive", "neutral", "concern")
+        assert plan.get("next_step") is None or len(plan["next_step"]) <= 500
+        tables = ("crm_email_summaries", "crm_email_summary_links", "crm_review_items")
+        snapshot = {t: {k: dict(v) for k, v in self.rows[t].items()} for t in tables}
+        snapshot["crm_review_item_deals"] = dict(self.rows["crm_review_item_deals"])
+        try:
+            values = {
+                "summary": summary,
+                "asks": plan["asks"],
+                "commitments": plan["commitments"],
+                "next_step": plan.get("next_step"),
+                "next_step_on": plan.get("next_step_on"),
+                "sentiment": plan["sentiment"],
+                "watermark_message_id": plan["watermark"]["gmail_id"],
+                "watermark_at": plan["watermark"]["sent_at"],
+                "model": plan["model"],
+                "generated_at": plan["generated_at"],
+                "updated_at": _now(),
+            }
+            row = next(
+                (
+                    s
+                    for s in self.rows["crm_email_summaries"].values()
+                    if s["mailbox_id"] == plan["mailbox_id"] and s["thread_id"] == plan["thread_id"]
+                ),
+                None,
+            )
+            if row is None:
+                row = self.add(
+                    "crm_email_summaries",
+                    workspace_id=ws,
+                    mailbox_id=plan["mailbox_id"],
+                    thread_id=plan["thread_id"],
+                    created_at=_now(),
+                    **values,
+                )
+            else:
+                row.update(values)
+            for link in list(self.rows["crm_email_summary_links"].values()):
+                if link["summary_id"] == row["id"]:
+                    del self.rows["crm_email_summary_links"][link["id"]]
+            for link in plan.get("links") or []:
+                target = self.rows[TARGETS[link["record_type"]]].get(link["record_id"])
+                if target is None or target["workspace_id"] != ws:
+                    raise store.refusal_for(
+                        "CRM04", f"No such {link['record_type']} in this workspace."
+                    )
+                self.add(
+                    "crm_email_summary_links",
+                    workspace_id=ws,
+                    summary_id=row["id"],
+                    record_type=link["record_type"],
+                    record_id=link["record_id"],
+                )
+            # A commitment already suggested on the thread under another
+            # target is left out (062).
+            known = self._of("crm_review_items", ws)
+            wanted = [
+                i
+                for i in plan.get("items") or []
+                if not (
+                    i["type"] == "task_from_commitment"
+                    and any(
+                        r["type"] == "task_from_commitment"
+                        and r["source_kind"] == i["source_kind"]
+                        and r["source_key"] == i["source_key"]
+                        and r["source_version"] == i["source_version"]
+                        and r["dedupe_key"] != i["dedupe_key"]
+                        for r in known
+                    )
+                )
+            ]
+            items = self.review_upsert(actor, wanted)
+        except Exception:
+            self.rows.update(snapshot)
+            raise
+        return {"id": row["id"], "items": items}
+
+    def _summary_details(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for r in rows:
+            msgs = sorted(
+                (
+                    m
+                    for m in self.rows["crm_email_messages"].values()
+                    if m["mailbox_id"] == r["mailbox_id"] and m["thread_id"] == r["thread_id"]
+                ),
+                key=lambda m: _at(m["sent_at"]),
+            )
+            subject = None
+            for m in msgs:
+                subject = m.get("subject") or subject
+            out.append(
+                {
+                    **r,
+                    "links": [
+                        {"record_type": lk["record_type"], "record_id": lk["record_id"]}
+                        for lk in self.rows["crm_email_summary_links"].values()
+                        if lk["summary_id"] == r["id"]
+                    ],
+                    "subject": subject,
+                    "last_at": msgs[-1]["sent_at"] if msgs else None,
+                }
+            )
+        return json.loads(json.dumps(out))
+
+    def summaries_for(
+        self,
+        workspace_id: str,
+        record_type: str | None = None,
+        record_id: str | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self._of("crm_email_summaries", workspace_id)
+        if record_type and record_id:
+            ids = {
+                lk["summary_id"]
+                for lk in self._of("crm_email_summary_links", workspace_id)
+                if lk["record_type"] == record_type and lk["record_id"] == record_id
+            }
+            rows = [r for r in rows if r["id"] in ids]
+        rows.sort(key=lambda r: r["id"])
+        rows.sort(key=lambda r: str(r["updated_at"]), reverse=True)
+        return self._summary_details(rows[:limit] if limit else rows)
+
+    def summary_by_thread(
+        self, workspace_id: str, mailbox_id: str, thread_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        rows = [
+            r
+            for r in self._of("crm_email_summaries", workspace_id)
+            if r["mailbox_id"] == mailbox_id and r["thread_id"] in thread_ids
+        ]
+        return {r["thread_id"]: r for r in self._summary_details(rows)}
 
 
 def _at(value: str | datetime) -> datetime:

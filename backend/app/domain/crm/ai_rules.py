@@ -269,6 +269,7 @@ def quote_untrusted(label: str, text: str) -> str:
 # Links — FR-CRMAI-LLM-04
 # ---------------------------------------------------------------------------
 
+_TRAILING: Final = ".,;:!?"
 _URL: Final = re.compile(r"(?:https?://|www\.)[^\s<>\"')\]]+", re.IGNORECASE)
 
 
@@ -300,8 +301,15 @@ def allowed_url(url: str, *, site: str | None = None) -> bool:
 
 
 def drop_urls(text: str) -> str:
-    """Every link in `text` that is not one of the allowed kinds is removed."""
-    return _URL.sub(lambda m: m.group(0) if allowed_url(m.group(0)) else "", text)
+    """Every link in `text` that is not one of the allowed kinds is removed.
+    Punctuation that ends the sentence after a link is kept."""
+
+    def keep_or_drop(match: re.Match[str]) -> str:
+        url = match.group(0).rstrip(_TRAILING)
+        tail = match.group(0)[len(url) :]
+        return match.group(0) if allowed_url(url) else tail
+
+    return _URL.sub(keep_or_drop, text)
 
 
 # ---------------------------------------------------------------------------

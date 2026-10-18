@@ -10,6 +10,7 @@ through `@crm_job` (services/crm/jobs.py).
 | Task | Beat | Jobs it records |
 |---|---|---|
 | `crm_ai.review_expiry` | 01:30 daily | `review_expiry` |
+| `crm_ai.summaries` | every 15 minutes | `summaries` |
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import jobs, review
+from app.services.crm import jobs, review, summaries
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -37,4 +38,20 @@ def review_expiry() -> dict:
     nothing left to expire or tombstone."""
     result = _review_expiry(datetime.now(UTC))
     logger.info('{"event": "crm_review_expiry_done", "failed": %d}', len(result["failed"]))
+    return result
+
+
+@jobs.crm_job("summaries")
+def _summaries(workspace: dict, now: datetime) -> dict:
+    """FR-CRMAI-SUM-01 to -12: the workspace's pending threads summarised,
+    behind phase 1 and live Gmail sync."""
+    return summaries.run(workspace, now)
+
+
+@celery_app.task(name="crm_ai.summaries", ignore_result=True)
+def summarise_threads() -> dict:
+    """Every 15 minutes, per workspace (NFR-CRMAI-05). Idempotent: a thread
+    with no new message is not pending, so a second run makes no call."""
+    result = _summaries(datetime.now(UTC))
+    logger.info('{"event": "crm_summaries_done", "failed": %d}', len(result["failed"]))
     return result

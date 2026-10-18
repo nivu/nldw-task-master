@@ -99,6 +99,8 @@ ACCOUNT_LEVEL = frozenset(
         "review_release",
         "review_expire",
         "review_tombstone",
+        # Spec 009 (062): crm_store_summary scopes by the actor's workspace.
+        "store_summary",
     }
 )
 
@@ -2104,3 +2106,142 @@ def review_expire(actor: dict[str, Any], before: datetime) -> int:
 def review_tombstone(actor: dict[str, Any], before: datetime) -> int:
     """061 `crm_review_tombstone` — items decided before `before` lose their text."""
     return int(rpc("crm_review_tombstone", {"p_actor": actor, "p_before": before.isoformat()}) or 0)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — email thread summaries (009 data-model §3.3)
+#
+# Summaries and their links are a log: read directly, written only through
+# migration 062's `crm_store_summary`, and removed with their thread by
+# `crm_remove_emails`. No column holds email text.
+# ---------------------------------------------------------------------------
+
+_SUMMARY_COLUMNS = (
+    "id, workspace_id, mailbox_id, thread_id, summary, asks, commitments, next_step, "
+    "next_step_on, sentiment, watermark_message_id, watermark_at, model, generated_at, "
+    "created_at, updated_at"
+)
+
+
+def pending_threads(workspace_id: str, limit: int) -> list[dict[str, Any]]:
+    """062 `crm_pending_threads` — the threads due a summary, oldest first:
+    `[{mailbox_id, thread_id, message_ids, latest: {gmail_id, sent_at},
+    links: [{record_type, record_id}]}]`. Ids only."""
+    return rpc("crm_pending_threads", {"p_workspace": workspace_id, "p_limit": limit}) or []
+
+
+def store_summary(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """062 `crm_store_summary` — the summary, its links and its Review Queue
+    items in one transaction: `{id, items: [{id, created}]}`. A watermark
+    that is no longer the thread's latest message is CRM09 (409)."""
+    return rpc("crm_store_summary", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+def _with_links(workspace_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each summary with its `links`, `[{record_type, record_id}]`, and its
+    thread's `subject` and `last_at` (the latest stored message's, metadata
+    only)."""
+    if not rows:
+        return []
+    links = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summary_links")
+            .select("summary_id, record_type, record_id")
+            .eq("workspace_id", workspace_id)
+        ),
+        "summary_id",
+        [r["id"] for r in rows],
+    )
+    by_summary: dict[str, list[dict[str, Any]]] = {}
+    for link in links:
+        by_summary.setdefault(link["summary_id"], []).append(
+            {"record_type": link["record_type"], "record_id": link["record_id"]}
+        )
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for mailbox_id in sorted({r["mailbox_id"] for r in rows}):
+        messages = _in_batches(
+            lambda mailbox_id=mailbox_id: (
+                supabase.table("crm_email_messages")
+                .select("mailbox_id, thread_id, subject, sent_at")
+                .eq("workspace_id", workspace_id)
+                .eq("mailbox_id", mailbox_id)
+            ),
+            "thread_id",
+            [r["thread_id"] for r in rows if r["mailbox_id"] == mailbox_id],
+        )
+        for m in sorted(messages, key=lambda m: str(m["sent_at"])):
+            seen = latest.setdefault((m["mailbox_id"], m["thread_id"]), {"subject": None})
+            seen["last_at"] = m["sent_at"]
+            seen["subject"] = m.get("subject") or seen["subject"]
+    return [
+        {
+            **r,
+            "links": by_summary.get(r["id"], []),
+            "subject": latest.get((r["mailbox_id"], r["thread_id"]), {}).get("subject"),
+            "last_at": latest.get((r["mailbox_id"], r["thread_id"]), {}).get("last_at"),
+        }
+        for r in rows
+    ]
+
+
+def summaries_for(
+    workspace_id: str,
+    record_type: str | None = None,
+    record_id: str | None = None,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """The summaries linked to one record, latest first, with their links;
+    without a record, every summary of the workspace (the export)."""
+    if not (record_type and record_id):
+        ids = None
+    else:
+        ids = sorted(
+            {
+                r["summary_id"]
+                for r in (
+                    supabase.table("crm_email_summary_links")
+                    .select("summary_id")
+                    .eq("workspace_id", workspace_id)
+                    .eq("record_type", record_type)
+                    .eq("record_id", record_id)
+                    .execute()
+                    .data
+                    or []
+                )
+            }
+        )
+        if not ids:
+            return []
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summaries")
+            .select(_SUMMARY_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        ),
+        "id",
+        ids,
+    )
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: str(r["updated_at"]), reverse=True)
+    return _with_links(workspace_id, rows[:limit] if limit else rows)
+
+
+def summary_by_thread(
+    workspace_id: str, mailbox_id: str, thread_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The summaries of some threads of one mailbox, by Gmail thread id, with
+    their links."""
+    if not thread_ids:
+        return {}
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summaries")
+            .select(_SUMMARY_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .eq("mailbox_id", mailbox_id)
+        ),
+        "thread_id",
+        thread_ids,
+    )
+    return {r["thread_id"]: r for r in _with_links(workspace_id, rows)}

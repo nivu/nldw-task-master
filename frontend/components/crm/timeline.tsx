@@ -2,9 +2,15 @@
 
 import { useState } from "react";
 
+import { ThreadSummary } from "@/components/crm/thread-summary";
 import { Button } from "@/components/ui/button";
 import { getCrmTimeline } from "@/lib/api/crm";
-import type { CrmObject, CrmTimelineEntry, CrmTimelineType } from "@/lib/api/crm-types";
+import type {
+  CrmObject,
+  CrmThreadSummary,
+  CrmTimelineEntry,
+  CrmTimelineType,
+} from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { formatDate, type CrmTimezone } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
@@ -16,6 +22,10 @@ import { cn } from "@/lib/utils";
  * Everything that happened to the record, newest first, filterable by type.
  * Every entry names who did it and whether it came through the web app or
  * Claude. For a Viewer the server has already removed every amount.
+ *
+ * With 009 phase 1 on, the record's latest summarised email threads are
+ * entries too, by their last message, each expanding to its AI summary
+ * (009 FR-CRMAI-SUM-08). They show while no type filter is chosen.
  */
 
 const TYPES: { key: CrmTimelineType; label: string }[] = [
@@ -62,6 +72,20 @@ function Entry({ entry, timeZone }: { entry: CrmTimelineEntry; timeZone: CrmTime
   );
 }
 
+/** A summarised email thread, dated by its last message. */
+function ThreadEntry({ thread, timeZone }: { thread: CrmThreadSummary; timeZone: CrmTimezone }) {
+  return (
+    <li className="relative border-l pl-4">
+      <span className="absolute -left-1 top-1.5 size-2 rounded-full bg-muted-foreground/60" />
+      <p className="break-words text-sm">Email thread “{thread.subject || "(no subject)"}”</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">Last message {formatDate(thread.last_at, timeZone)}</p>
+      <div className="mt-1">
+        <ThreadSummary summary={thread} subject={thread.subject} timeZone={timeZone} />
+      </div>
+    </li>
+  );
+}
+
 export function Timeline({
   workspace,
   object,
@@ -69,6 +93,7 @@ export function Timeline({
   initial,
   timeZone,
   version,
+  summaries,
 }: {
   workspace: string;
   object: CrmObject;
@@ -78,6 +103,8 @@ export function Timeline({
   timeZone: CrmTimezone;
   /** Bumped by the page after a change, so the timeline reloads. */
   version: number;
+  /** 009 S1c: the record page's `summaries`, absent while phase 1 is off. */
+  summaries?: CrmThreadSummary[];
 }) {
   const [types, setTypes] = useState<CrmTimelineType[]>([]);
   const [older, setOlder] = useState<CrmTimelineEntry[]>([]);
@@ -93,6 +120,11 @@ export function Timeline({
     [workspace, object, recordId, types.join(","), version]
   );
   const entries = [...(data ?? initial), ...older];
+  const threads = types.length === 0 ? (summaries ?? []) : [];
+  const rows = [
+    ...entries.map((entry) => ({ at: Date.parse(entry.at), entry, thread: null })),
+    ...threads.map((thread) => ({ at: Date.parse(thread.last_at), entry: null, thread })),
+  ].sort((a, b) => b.at - a.at);
 
   function toggle(type: CrmTimelineType) {
     setOlder([]);
@@ -137,13 +169,17 @@ export function Timeline({
         ))}
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {entries.length === 0 ? (
+      {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing yet.</p>
       ) : (
         <ol className="space-y-3">
-          {entries.map((entry) => (
-            <Entry key={entry.id} entry={entry} timeZone={timeZone} />
-          ))}
+          {rows.map((row) =>
+            row.entry ? (
+              <Entry key={row.entry.id} entry={row.entry} timeZone={timeZone} />
+            ) : (
+              <ThreadEntry key={row.thread.thread_key} thread={row.thread} timeZone={timeZone} />
+            )
+          )}
         </ol>
       )}
       {entries.length >= 10 && more && (

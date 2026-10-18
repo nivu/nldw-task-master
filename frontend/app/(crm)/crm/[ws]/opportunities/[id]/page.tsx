@@ -353,6 +353,7 @@ export default function OpportunityPage() {
             initial={page.timeline_head}
             timeZone={bootstrap.me.timezone}
             version={version}
+            summaries={page.summaries}
           />
         }
         tasks={

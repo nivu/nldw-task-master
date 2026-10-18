@@ -175,6 +175,66 @@ def crm(monkeypatch):
     call("POST", f"campaigns/{campaign['id']}/members", {"person_ids": [person["id"]]})
     member = call("GET", f"campaigns/{campaign['id']}/members")["rows"][0]
     call("POST", f"campaign-members/{member['id']}/convert", {"opportunity_id": deal["id"]})
+    # Spec 009 S1c: a thread summary, phase 1 on; its money was masked
+    # before it was stored (FR-CRMAI-LLM-05).
+    fake.set_ai(labs, phases={"1": True})
+    mailbox = fake.add(
+        "crm_mailboxes",
+        workspace_id=labs["id"],
+        email="owner@nunnarilabs.com",
+        owner_id=OWNER["id"],
+        labels=["Clients"],
+        is_active=True,
+    )
+    message = fake.add(
+        "crm_email_messages",
+        workspace_id=labs["id"],
+        mailbox_id=mailbox["id"],
+        gmail_message_id="g1",
+        thread_id="t1",
+        subject="Acme pricing",
+        sent_at="2026-10-13T09:00:00+00:00",
+        direction="inbound",
+        from_email="priya@acme.in",
+        participants=[{"email": "priya@acme.in", "name": "Priya", "role": "from"}],
+        is_internal=False,
+        is_auto=False,
+    )
+    for kind, record in (("company", company), ("opportunity", deal)):
+        fake.add(
+            "crm_email_links",
+            workspace_id=labs["id"],
+            message_id=message["id"],
+            record_type=kind,
+            record_id=record["id"],
+        )
+    summary = fake.add(
+        "crm_email_summaries",
+        workspace_id=labs["id"],
+        mailbox_id=mailbox["id"],
+        thread_id="t1",
+        summary="Priya asked about the price of [amount]. We will send a revised quote.",
+        asks=["A revised quote of [amount]"],
+        commitments=[
+            {"text": "Send the quote", "owner_id": None, "owner_unknown": True, "due_on": None}
+        ],
+        next_step="Send the quote",
+        next_step_on="2026-10-20",
+        sentiment="neutral",
+        watermark_message_id="g1",
+        watermark_at="2026-10-13T09:00:00+00:00",
+        model="claude-sonnet-5-5",
+        generated_at="2026-10-13T09:05:00+00:00",
+        created_at="2026-10-13T09:05:00+00:00",
+    )
+    for kind, record in (("company", company), ("opportunity", deal)):
+        fake.add(
+            "crm_email_summary_links",
+            workspace_id=labs["id"],
+            summary_id=summary["id"],
+            record_type=kind,
+            record_id=record["id"],
+        )
     made = {
         "companies": company,
         "people": person,
@@ -182,6 +242,7 @@ def crm(monkeypatch):
         "tasks": task,
         "notes": note,
         "campaigns": campaign,
+        "thread": {"id": f"{mailbox['id']}:t1"},
     }
     return http, made
 
@@ -191,7 +252,9 @@ def _url(path: str, made: dict) -> str:
         param = m.group(1)
         if param == "record_id":
             return made[path.removeprefix(CRM).split("/")[0]]["id"]
-        return made[{"deal_id": "opportunities", "campaign_id": "campaigns"}[param]]["id"]
+        return made[
+            {"deal_id": "opportunities", "campaign_id": "campaigns", "thread_key": "thread"}[param]
+        ]["id"]
 
     return re.sub(r"\{([^}]+)\}", value, path)
 
@@ -360,6 +423,8 @@ def _read_tools(made: dict) -> list[tuple[str, dict]]:
         + lists
         # Spec 009 S1b: a Viewer has no queue (FR-CRMAI-REV-03).
         + [("crm_review_list", {})]
+        # Spec 009 S1c: a Viewer reads a thread's summary (FR-CRMAI-SUM-08).
+        + [("crm_thread_summary", {"thread_key": made["thread"]["id"]})]
     )
 
 

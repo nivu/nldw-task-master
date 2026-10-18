@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.crm.deps import CrmAdminDep, CrmReadDep, CrmWriteDep
 from app.schemas.crm import CompanyDeleteIn, DriveLinkIn, DuplicatesIn, MoveDealsTo
-from app.services.crm import deals, present
+from app.services.crm import deals, intelligence, present
 from app.services.crm import records as service
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -133,7 +133,8 @@ def _register(plural: str) -> None:
         )
 
     def read(record_id: str, ctx: CrmReadDep) -> dict:
-        return service.get(ctx, kind, record_id)
+        # Spec 009: summaries and the open item count (FR-CRMAI-MCP-02).
+        return intelligence.decorate(ctx, kind, service.get(ctx, kind, record_id))
 
     def update(record_id: str, ctx: CrmWriteDep, payload: dict[str, Any] = Body(...)) -> dict:
         if kind == "opportunity":

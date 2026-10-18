@@ -174,3 +174,10 @@ class TestTheUrlPolicy:
     def test_urls_dropped_from_text(self):
         text = "Read https://evil.example/x and www.phish.example now; https://www.linkedin.com/company/acme"
         assert rules.drop_urls(text) == "Read  and  now; https://www.linkedin.com/company/acme"
+
+    def test_urls_dropped_keep_the_full_stop_after_them(self):
+        text = "See https://evil.example/x. Then call. Ask www.phish.example/y?"
+        assert rules.drop_urls(text) == "See . Then call. Ask ?"
+        assert rules.drop_urls("Notes: https://app.fireflies.ai/view/abc.") == (
+            "Notes: https://app.fireflies.ai/view/abc."
+        )

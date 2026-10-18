@@ -9,15 +9,19 @@ naming the key's `client_email`, the mailbox (`sub`) and the scope, and
 POST it to the key's token endpoint.
 
 The key (`GOOGLE_SERVICE_ACCOUNT_JSON`) is set on the `worker-crm-sync`
-service only, the one process that calls this module; the API, beat and the
-shared worker read the non-secret `CRM_GMAIL_CONFIGURED` flag instead
+service, and on `worker-crm-ai` for `message_text()` (spec 009), the only
+processes that call this module; the API, beat and the shared worker read the non-secret `CRM_GMAIL_CONFIGURED` flag instead
 (plan §2.2). Access tokens live in this process's memory only, never in
 Redis, the database or a Celery argument. Neither the key nor a token is
 ever logged; every call logs its operation, status and latency (NFR-CRM-08)
 and nothing that names a mailbox's content.
 
-Only metadata is read (`format=metadata` with the headers the rules need):
-no message body is ever fetched (Q-29).
+Metadata only for sync: the sync reads `format=metadata` with the headers
+the rules need, and no message body is ever fetched for it (Q-29).
+`message_text()` exists for the summariser alone (spec 009 FR-CRMAI-CHG-01):
+on `worker-crm-ai`, it reads the text parts of one message the sync stored,
+in memory, for `services/crm/summaries.py` to strip and hand to Claude. The
+text is never stored, logged or queued, and no other module calls it.
 """
 
 from __future__ import annotations
@@ -245,3 +249,35 @@ def message(mailbox: str, message_id: str) -> dict[str, Any]:
         "internalDate": found.get("internalDate"),
         "headers": (found.get("payload") or {}).get("headers") or [],
     }
+
+
+# ---------------------------------------------------------------------------
+# The summariser's read — spec 009 FR-CRMAI-CHG-01, FR-CRMAI-SUM-03
+# ---------------------------------------------------------------------------
+
+
+def _text_parts(part: dict[str, Any]) -> list[str]:
+    """The decoded `text/plain` parts of a message payload, in order; HTML,
+    attachments and every other part are left out."""
+    found: list[str] = []
+    if part.get("mimeType") == "text/plain" and not part.get("filename"):
+        data = (part.get("body") or {}).get("data")
+        if data:
+            raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+            found.append(raw.decode("utf-8", errors="replace"))
+    for sub in part.get("parts") or []:
+        found += _text_parts(sub)
+    return found
+
+
+def message_text(mailbox: str, message_id: str) -> str:
+    """The plain text of one message (`format=full`, decoded text parts
+    only), for the summariser alone. Returned in memory: never stored,
+    logged or queued. A message deleted meanwhile (404) answers ""."""
+    try:
+        found = _get(mailbox, "message_text", f"/messages/{message_id}", [("format", "full")])
+    except GmailError as exc:
+        if "(404)" in str(exc):
+            return ""
+        raise
+    return "\n\n".join(_text_parts(found.get("payload") or {}))

@@ -217,7 +217,7 @@ COVERAGE: dict[str, list[str]] = {
     # MCP (1a, 1b tools)
     "Claude can run the whole morning follow-up review": [
         "run here",
-        "test_crm_mcp.py::TestTheFinalSet::test_exactly_the_twenty_crm_tools",
+        "test_crm_mcp.py::TestTheFinalSet::test_exactly_the_twenty_one_crm_tools",
     ],
     "A write by a two-workspace member naming no workspace is refused": [
         "test_crm_mcp.py::TestThroughTheBridge::test_a_write_naming_no_workspace_lists_them",

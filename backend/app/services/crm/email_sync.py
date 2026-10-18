@@ -826,7 +826,8 @@ def threads(
     threads, newest first: a person's own; a company's and all its
     people's; a deal's, its company's and its contacts'. Subject,
     participants, direction and time only (Q-29). Paged by `before`, the
-    `last_at` of the last thread shown."""
+    `last_at` of the last thread shown. Each thread carries its
+    `thread_key` and, while phase 1 is on, its AI `summary` (spec 009)."""
     ws_id = ctx.workspace_id
     row = records.live(ws_id, kind, record_id)
     wanted: dict[str, set[str]] = {"company": set(), "person": set(), "opportunity": set()}
@@ -862,6 +863,8 @@ def threads(
         out.append(
             {
                 "thread_id": thread_id,
+                # Spec 009 contracts §0: what crm_thread_summary takes.
+                "thread_key": f"{mailbox_id}:{thread_id}",
                 "subject": last.get("subject")
                 or next((m["subject"] for m in reversed(msgs) if m.get("subject")), None),
                 "last_at": last["sent_at"],
@@ -874,8 +877,23 @@ def threads(
     out.sort(key=lambda t: (str(t["last_at"]), t["thread_id"]), reverse=True)
     if before:
         out = [t for t in out if str(t["last_at"]) < before]
+    page = out[:limit]
+    # Spec 009 FR-CRMAI-SUM-08: each thread's summary, while phase 1 is on.
+    # Imported here: the summariser reads the sync's switch through this
+    # module.
+    from app.services.crm import summaries
+
+    if page and summaries.shown(ws_id):
+        found = summaries.for_threads(ws_id, [tuple(t["thread_key"].split(":", 1)) for t in page])
+        for t in page:
+            key = tuple(t["thread_key"].split(":", 1))
+            if key in found:
+                shown = found[key]
+                t["summary"] = {
+                    k: shown[k] for k in ("summary", "asks", "commitments", "sentiment", "ai")
+                }
     return {
-        "threads": out[:limit],
+        "threads": page,
         "next": str(out[limit - 1]["last_at"]) if len(out) > limit else None,
     }
 

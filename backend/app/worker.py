@@ -180,5 +180,11 @@ celery_app.conf.beat_schedule.update(
             "task": "crm_ai.review_expiry",
             "schedule": crontab(hour=1, minute=30),
         },
+        # FR-CRMAI-SUM-02, NFR-CRMAI-05: labelled threads summarised within
+        # one sync cycle of a message being stored.
+        "crm-ai-summaries": {
+            "task": "crm_ai.summaries",
+            "schedule": crontab(minute="*/15"),
+        },
     }
 )

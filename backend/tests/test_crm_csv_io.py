@@ -668,6 +668,7 @@ class TestExport:
             "drive_links",
             # Spec 009 FR-CRMAI-CHG-11.
             "review_items",
+            "email_summaries",
         }
         assert [c["name"] for c in data["objects"]["companies"]] == ["PSG Tech"]
         r = http.get(f"{API}/export/workspace{ACADEMY}&object=people", headers=me)
@@ -856,3 +857,74 @@ class TestTheReviewQueueInTheExport:
             "2026-10-15T00:00:00+00:00"
         )
         assert self._export(crm)["review_items"] == []
+
+
+class TestTheEmailSummariesInTheExport:
+    """Spec 009 FR-CRMAI-CHG-11, data-model §4 — the workspace export holds
+    the email thread summaries with their links, ids only, and leaves out a
+    summary linked only to records in the Trash."""
+
+    def _summary(self, crm):
+        fake = crm["fake"]
+        mailbox = fake.add(
+            "crm_mailboxes",
+            workspace_id=crm["academy"]["id"],
+            email="owner@nunnari.academy",
+            owner_id=OWNER["id"],
+            labels=["Clients"],
+            is_active=True,
+        )
+        summary = fake.add(
+            "crm_email_summaries",
+            workspace_id=crm["academy"]["id"],
+            mailbox_id=mailbox["id"],
+            thread_id="t1",
+            summary="They asked for a pilot. We will send the plan.",
+            asks=["A pilot plan"],
+            commitments=[],
+            next_step=None,
+            next_step_on=None,
+            sentiment="positive",
+            watermark_message_id="g1",
+            watermark_at="2026-10-15T00:00:00+00:00",
+            model="claude-sonnet-5-5",
+            generated_at="2026-10-15T00:00:00+00:00",
+            created_at="2026-10-15T00:00:00+00:00",
+        )
+        fake.add(
+            "crm_email_summary_links",
+            workspace_id=crm["academy"]["id"],
+            summary_id=summary["id"],
+            record_type="company",
+            record_id=crm["college"]["id"],
+        )
+        return summary
+
+    def _export(self, crm, query=""):
+        r = crm["http"].get(f"{API}/export/workspace{ACADEMY}{query}", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        return json.loads(r.content)["objects"]
+
+    def test_summaries_with_their_links_ids_only(self, crm):
+        summary = self._summary(crm)
+        [row] = self._export(crm)["email_summaries"]
+        assert (row["id"], row["thread_id"], row["links"]) == (
+            summary["id"],
+            "t1",
+            [{"record_type": "company", "record_id": crm["college"]["id"]}],
+        )
+        assert "PSG Tech" not in json.dumps(row)
+
+    def test_one_object_and_its_audit_row(self, crm):
+        self._summary(crm)
+        objects = self._export(crm, "&object=email_summaries")
+        assert set(objects) == {"email_summaries"}
+        [audit] = [a for a in crm["fake"].audit if a["action"] == "export.workspace"]
+        assert audit["target_table"] == "crm_email_summaries"
+
+    def test_a_summary_linked_only_to_the_trash_is_left_out(self, crm):
+        self._summary(crm)
+        crm["fake"].rows["crm_companies"][crm["college"]["id"]]["deleted_at"] = (
+            "2026-10-15T00:00:00+00:00"
+        )
+        assert self._export(crm)["email_summaries"] == []
