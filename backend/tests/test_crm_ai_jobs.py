@@ -54,7 +54,7 @@ def crm(monkeypatch):
 
 
 def _summarise(ws, now, text=SECRET):
-    return ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", text)], now)
+    return ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", text)])
 
 
 class TestInvalidOutput:

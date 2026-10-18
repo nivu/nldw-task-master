@@ -5,18 +5,19 @@ Every model call of every job goes through `call()`, on `worker-crm-ai`:
 
 1. the job's phase must be on in the workspace's `ai` setting, else the run
    is skipped "Switched off" (FR-CRMAI-FLAG-03);
-2. both rates of the rate table must be set, else "AI rates are not set"
-   (D-1);
-3. month-to-date estimated spend (Asia/Kolkata month) must be under the
-   budget, else the Admins are told once that month and the run is skipped
+2. both rates of the rate table must be set, and above 0, else "AI rates
+   are not set" (D-1);
+3. month-to-date estimated spend (the Asia/Kolkata month of the check,
+   not of the run's start) must be under the budget, else the Admins are told once that month and the run is skipped
    "AI budget reached" (FR-CRMAI-LLM-07, -08). The check runs before every
    call, the retry included; `worker-crm-ai` runs one task at a time, so
    overshoot is the one call in flight;
 4. the prompt is the fixed rules, the job's instruction, and each part as a
    quoted <data> block with phone numbers removed (FR-CRMAI-LLM-04);
 5. one structured-output call (`services/crm/claude.py`);
-6. one usage row per attempt: tokens, estimated cost, outcome, never text
-   (FR-CRMAI-LLM-06);
+6. one usage row per attempt, stamped when it ended: tokens (for a call
+   sent but not answered, the client's upper bound), estimated cost,
+   outcome, never text (FR-CRMAI-LLM-06);
 7. the answer is validated against the job's output model; an invalid
    answer is asked again once, and a second invalid answer fails the item
    "Output did not match the schema" (FR-CRMAI-LLM-03, Q-36);
@@ -36,7 +37,6 @@ live only in local variables.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -71,7 +71,6 @@ def call(
     output_model: type[BaseModel],
     instruction: str,
     parts: Sequence[tuple[str, str]],
-    now: datetime,
     *,
     site: str | None = None,
 ) -> BaseModel:
@@ -79,7 +78,7 @@ def call(
     `output_model` and masked. `parts` are `(label, text)` pairs, each quoted
     as data. With `site`, links on that site survive the link policy."""
     try:
-        return _call(ws, job, phase, output_model, instruction, parts, now, site=site)
+        return _call(ws, job, phase, output_model, instruction, parts, site=site)
     except (jobs.Skipped, SafeError):
         raise
     except Exception as exc:
@@ -90,13 +89,28 @@ def call(
 
 
 def _rates() -> tuple[Decimal, Decimal] | None:
-    if settings.CRM_AI_INPUT_USD_PER_MTOK is None or settings.CRM_AI_OUTPUT_USD_PER_MTOK is None:
-        return None
-    return settings.CRM_AI_INPUT_USD_PER_MTOK, settings.CRM_AI_OUTPUT_USD_PER_MTOK
+    return rules.rates(settings.CRM_AI_INPUT_USD_PER_MTOK, settings.CRM_AI_OUTPUT_USD_PER_MTOK)
 
 
-def _check_budget(ws: dict[str, Any], value: Any, now: datetime) -> None:
-    month_start = rules.ist_month_start(now)
+def gate(ws: dict[str, Any], phase: str) -> tuple[Any, tuple[Decimal, Decimal]]:
+    """Steps 1 to 3 (the phase, the rates, the budget), as `call` runs them:
+    `(the ai setting, the rates)`, else `jobs.Skipped`. A job runs it before
+    any outside read (a website, Gmail, Fireflies), so a switched-off or
+    spent workspace reads nothing."""
+    value = store.ai_setting(ws["id"])
+    if not rules.phase_on(value, phase):
+        raise jobs.Skipped(rules.SWITCHED_OFF)
+    rates = _rates()
+    if rates is None:
+        raise jobs.Skipped(rules.RATES_NOT_SET)
+    _check_budget(ws, value)
+    return value, rates
+
+
+def _check_budget(ws: dict[str, Any], value: Any) -> None:
+    # The month of this check, not of the run's start: a run that crosses
+    # midnight at the month's end is held to the new month's budget.
+    month_start = rules.ist_month_start(jobs._now())
     spend = Decimal(str(store.ai_spend(ws["id"], month_start).get("total_usd") or "0"))
     if spend >= rules.budget_of(value):
         notifications.budget_reached_notice(ws, month_start.strftime("%Y-%m"))
@@ -110,16 +124,10 @@ def _call(
     output_model: type[BaseModel],
     instruction: str,
     parts: Sequence[tuple[str, str]],
-    now: datetime,
     *,
     site: str | None = None,
 ) -> BaseModel:
-    value = store.ai_setting(ws["id"])
-    if not rules.phase_on(value, phase):
-        raise jobs.Skipped(rules.SWITCHED_OFF)
-    rates = _rates()
-    if rates is None:
-        raise jobs.Skipped(rules.RATES_NOT_SET)
+    value, rates = gate(ws, phase)
 
     system = f"{rules.PROMPT_RULES}\n\n{instruction}"
     user = "\n\n".join(
@@ -128,7 +136,8 @@ def _call(
     schema = output_model.model_json_schema()
 
     for attempt in (1, 2):
-        _check_budget(ws, value, now)
+        if attempt == 2:
+            _check_budget(ws, value)
         reply, failed = _ask(ws, job, system, user, schema)
         if failed is not None:
             reason, exc = failed
@@ -142,13 +151,12 @@ def _call(
                     exc.output_tokens,
                     outcome,
                     rates,
-                    now,
                 )
             raise AiFailed(reason, "Claude call", type(exc).__name__)
         assert reply is not None
         output = _valid(output_model, reply.data)
         outcome = "ok" if output is not None else "invalid_output"
-        _usage(ws, job, reply.model, reply.input_tokens, reply.output_tokens, outcome, rates, now)
+        _usage(ws, job, reply.model, reply.input_tokens, reply.output_tokens, outcome, rates)
         if output is None:
             if attempt == 2:
                 raise AiFailed(rules.OUTPUT_INVALID, "Schema validation", "ValidationError")
@@ -209,8 +217,9 @@ def _usage(
     output_tokens: int,
     outcome: str,
     rates: tuple[Decimal, Decimal],
-    now: datetime,
 ) -> None:
+    # Stamped when the call ended, not when the run began, so it counts in
+    # the month it was made.
     store.insert_ai_usage(
         ws["id"],
         {
@@ -220,6 +229,6 @@ def _usage(
             "output_tokens": output_tokens,
             "cost_usd": str(rules.estimate_cost(input_tokens, output_tokens, *rates)),
             "outcome": outcome,
-            "at": now.isoformat(),
+            "at": jobs._now().isoformat(),
         },
     )

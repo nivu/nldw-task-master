@@ -113,6 +113,13 @@ class TestAnAdminReadsIt:
         assert got["budget_reached"] is True
         assert got["rates_configured"] is False
 
+    @pytest.mark.parametrize("rate", ["0", "-3"])
+    def test_ai_route_a_rate_of_zero_or_less_is_not_set(self, crm, monkeypatch, rate):
+        http, *_ = crm
+        monkeypatch.setattr(config, "CRM_AI_OUTPUT_USD_PER_MTOK", Decimal(rate))
+        got = http.get(f"/api/v1/crm/ai{LABS}", headers=as_(OWNER["id"])).json()
+        assert got["rates_configured"] is False
+
     def test_ai_route_a_workspace_without_the_row(self, crm):
         http, *_ = crm
         got = http.get("/api/v1/crm/ai?workspace=academy", headers=as_(OWNER["id"])).json()
@@ -157,7 +164,7 @@ class TestNoCostAnywhereElse:
         FakeClaude({"summary": "Fine."}).install(monkeypatch)
 
         def work(ws, now):
-            ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", "hi")], now)
+            ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", "hi")])
             return {"summarised": 1}
 
         assert jobs.run("summaries", labs, work, NOW)["outcome"] == "ok"

@@ -63,7 +63,9 @@ _UNSUPPORTED: Final = frozenset(
 
 class ClaudeError(Exception):
     """A Claude call failed. The message names the status or the exception
-    type only. A declined call is still billed, so it carries its tokens."""
+    type only. A declined call is still billed, so it carries its tokens; a
+    call that timed out or broke after it was sent may be billed too, so it
+    carries an upper bound of them (`_unanswered`)."""
 
     input_tokens = 0
     output_tokens = 0
@@ -84,6 +86,19 @@ class Reply:
     model: str
     input_tokens: int
     output_tokens: int
+
+
+#: Failures before the request was sent: nothing can have been billed.
+_NOT_SENT: Final = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def _unanswered(error: ClaudeError, body: dict[str, Any]) -> ClaudeError:
+    """A sent call with no answer may still be billed in full: it carries
+    the request's size in bytes (more than its tokens) and `MAX_TOKENS` of
+    output, so the budget counts it rather than nothing."""
+    error.input_tokens = len(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    error.output_tokens = MAX_TOKENS
+    return error
 
 
 def _http() -> httpx.Client:
@@ -142,21 +157,22 @@ def messages(
     }
     headers = {"x-api-key": key, "anthropic-version": VERSION, "content-type": "application/json"}
     started = time.monotonic()
-    failed: tuple[type[ClaudeError], str] | None = None
+    failed: tuple[type[ClaudeError], str, bool] | None = None
     try:
         with _http() as http:
             response = http.post(API, json=body, headers=headers, timeout=TIMEOUT)
     except httpx.TimeoutException as exc:
-        failed = (ClaudeTimeout, type(exc).__name__)
+        failed = (ClaudeTimeout, type(exc).__name__, not isinstance(exc, _NOT_SENT))
     except httpx.HTTPError as exc:
-        failed = (ClaudeError, type(exc).__name__)
+        failed = (ClaudeError, type(exc).__name__, not isinstance(exc, _NOT_SENT))
     if failed is not None:
         # Raised outside the handler, so the original exception (whose text
         # may name the request) is not kept as the context either.
-        error, name = failed
+        kind, name, sent = failed
         _log(job, workspace, name, started, None)
-        verb = "timed out" if error is ClaudeTimeout else "failed"
-        raise error(f"The Claude call {verb} ({name}).")
+        verb = "timed out" if kind is ClaudeTimeout else "failed"
+        error = kind(f"The Claude call {verb} ({name}).")
+        raise _unanswered(error, body) if sent else error
     try:
         answer = response.json() if response.status_code == 200 else {}
     except ValueError:

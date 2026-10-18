@@ -144,7 +144,6 @@ def _summarise(
         SummaryOutput,
         rules.INSTRUCTION,
         rules.prompt_parts(messages, texts, team),
-        now,
     )
     answer = output.model_dump(mode="json")
     stored = rules.commitments(answer["commitments"], team)

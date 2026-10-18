@@ -146,6 +146,17 @@ def ist_month_start(now: datetime) -> datetime:
     return local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+def rates(
+    input_rate: Decimal | None, output_rate: Decimal | None
+) -> tuple[Decimal, Decimal] | None:
+    """The rate table `(input, output)` USD per million tokens, or None when
+    it is not set (D-1). A rate of 0 or less is not set either: it would make
+    every estimate 0 and the budget would never be reached."""
+    if input_rate is None or output_rate is None or input_rate <= 0 or output_rate <= 0:
+        return None
+    return input_rate, output_rate
+
+
 def estimate_cost(
     input_tokens: int, output_tokens: int, input_rate: Decimal, output_rate: Decimal
 ) -> Decimal:

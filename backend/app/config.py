@@ -101,8 +101,8 @@ class Settings(BaseSettings):
     # The rate table (USD per million input and output tokens, spec §17.1)
     # is not secret: it is set on `worker-crm-ai`, which estimates each call's
     # cost, and on the API, whose GET /crm/ai reports whether it is set, once
-    # the owner confirms it. While either rate is unset every AI job is
-    # skipped "AI rates are not set" and GET /crm/ai reports
+    # the owner confirms it. While either rate is unset, or 0 or less, every
+    # AI job is skipped "AI rates are not set" and GET /crm/ai reports
     # rates_configured false (D-1, plan §11.1).
     # ------------------------------------------------------------------
     ANTHROPIC_API_KEY: SecretStr | None = None

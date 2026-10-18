@@ -216,6 +216,54 @@ class TestTheKeyNeverShows:
         assert raised.value.input_tokens == 9
 
 
+class TestAnUnansweredCallIsCounted:
+    """FR-CRMAI-LLM-06, -07 — a call sent but not answered (a read timeout,
+    a broken connection) may be billed in full, so it carries an upper
+    bound of its tokens; one never sent carries none."""
+
+    @pytest.mark.parametrize(
+        ("failure", "error"),
+        [
+            (httpx.ReadTimeout("timed out"), claude.ClaudeTimeout),
+            (httpx.RemoteProtocolError("closed"), claude.ClaudeError),
+        ],
+    )
+    def test_client_a_sent_call_carries_an_upper_bound(self, transport, failure, error):
+        _, answers = transport
+        answers.append(failure)
+        user = "<data>" + "word " * 2000 + "</data>"
+        with pytest.raises(error) as raised:
+            _call(user=user)
+        assert raised.value.input_tokens >= len(user)
+        assert raised.value.output_tokens == claude.MAX_TOKENS
+
+    @pytest.mark.parametrize(
+        "failure", [httpx.ConnectError("refused"), httpx.ConnectTimeout("no route")]
+    )
+    def test_client_a_call_never_sent_carries_none(self, transport, failure):
+        _, answers = transport
+        answers.append(failure)
+        with pytest.raises(claude.ClaudeError) as raised:
+            _call()
+        assert (raised.value.input_tokens, raised.value.output_tokens) == (0, 0)
+
+    def test_client_a_timed_out_call_counts_towards_the_budget(self, transport, monkeypatch):
+        _, answers = transport
+        fake = FakeCrmStore().install(monkeypatch)
+        labs, _ = two_workspaces(fake)
+        fake.set_ai(labs, budget_usd=10, phases={"1": True})
+        monkeypatch.setattr(config, "CRM_AI_INPUT_USD_PER_MTOK", Decimal("3"))
+        monkeypatch.setattr(config, "CRM_AI_OUTPUT_USD_PER_MTOK", Decimal("15"))
+        answers.append(httpx.ReadTimeout("timed out"))
+        with pytest.raises(ai.AiFailed):
+            ai.call(labs, "summaries", "1", Answer, "Summarise.", [("email", "hi")])
+        [row] = fake.rows["crm_ai_usage"].values()
+        assert row["outcome"] == "timed_out"
+        assert row["output_tokens"] == claude.MAX_TOKENS
+        # 16,000 output tokens at 15 USD a million: at least 0.24 USD.
+        assert Decimal(row["cost_usd"]) >= Decimal("0.24")
+
+
 class TestTheModelIdGoesWithEveryOutput:
     """FR-CRMAI-LLM-02 — through the wrapper, on the real client."""
 
@@ -227,7 +275,7 @@ class TestTheModelIdGoesWithEveryOutput:
         monkeypatch.setattr(config, "CRM_AI_INPUT_USD_PER_MTOK", Decimal("3"))
         monkeypatch.setattr(config, "CRM_AI_OUTPUT_USD_PER_MTOK", Decimal("15"))
         answers.append(_ok({"summary": "Fine.", "asks": []}))
-        out = ai.call(labs, "summaries", "1", Answer, "Summarise.", [("email", "hi")], NOW)
+        out = ai.call(labs, "summaries", "1", Answer, "Summarise.", [("email", "hi")])
         assert out == Answer(summary="Fine.", asks=[])
         [row] = fake.rows["crm_ai_usage"].values()
         assert row["model"] == ai_rules.CRM_AI_MODEL == "claude-sonnet-5-5"

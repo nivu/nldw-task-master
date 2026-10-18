@@ -130,7 +130,7 @@ class TestAWorkspaceWithoutTheRow:
         claude = FakeClaude().install(monkeypatch)
 
         def work(ws, now):
-            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")], now)
+            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")])
 
         result = jobs.run("summaries", academy, work, NOW)
         assert result == {"outcome": "skipped", "counts": {"skipped": "Switched off"}}
@@ -145,7 +145,7 @@ class TestSwitchingAPhaseOff:
         claude = FakeClaude(default={"summary": "Fine."}).install(monkeypatch)
 
         def work(ws, now):
-            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")], now)
+            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")])
             return {"done": 1}
 
         _patch(http, {"budget_usd": 50, "phases": ON})
@@ -167,7 +167,7 @@ class TestSwitchingAPhaseOff:
         _patch(http, {"budget_usd": 50, "phases": {**OFF, "2": True}})
 
         def work(ws, now):
-            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")], now)
+            ai.call(ws, "summaries", "1", Answer, "Summarise.", [("email", "hi")])
 
         assert jobs.run("summaries", labs, work, NOW)["counts"] == {"skipped": "Switched off"}
         assert claude.calls == []

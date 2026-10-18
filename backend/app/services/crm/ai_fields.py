@@ -348,7 +348,6 @@ def _compute(
         ),
         rules.instruction(field),
         rules.prompt_parts(facts, now, depends),
-        now,
     )
     # Every string came masked from ai.call (FR-CRMAI-LLM-05).
     answer = rules.stored(field, output.model_dump(mode="json"))

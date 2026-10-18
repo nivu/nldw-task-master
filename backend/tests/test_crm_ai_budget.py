@@ -62,7 +62,7 @@ class ThreadJob:
     def __call__(self, ws, now):
         done = 0
         for thread in list(self.pending):
-            out = ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", thread)], now)
+            out = ai.call(ws, "summaries", "1", Summary, "Summarise.", [("email", thread)])
             self.summaries[thread] = out.model_dump()
             self.items[thread] = list(out.asks)
             self.pending.remove(thread)
@@ -109,6 +109,17 @@ class TestNothingRunsWithoutLeave:
         assert result == {"outcome": "skipped", "counts": {"skipped": "AI budget reached"}}
         assert claude.calls == []
 
+    @pytest.mark.parametrize("rate", ["0", "-1"])
+    def test_budget_a_rate_of_zero_or_less_makes_no_call(self, crm, monkeypatch, rate):
+        """A zero rate would estimate every call at 0 and never reach the
+        budget, so it counts as not set."""
+        _, labs, _ = crm
+        monkeypatch.setattr(config, "CRM_AI_INPUT_USD_PER_MTOK", Decimal(rate))
+        claude = FakeClaude().install(monkeypatch)
+        result = jobs.run("summaries", labs, ThreadJob(["t1"]), NOW)
+        assert result == {"outcome": "skipped", "counts": {"skipped": "AI rates are not set"}}
+        assert claude.calls == []
+
     def test_budget_rates_unset_makes_no_call(self, crm, monkeypatch):
         _, labs, _ = crm
         monkeypatch.setattr(config, "CRM_AI_OUTPUT_USD_PER_MTOK", None)
@@ -144,7 +155,9 @@ class TestTheBudgetIsReached:
         FakeClaude().install(monkeypatch)
         fake.set_ai(labs, budget_usd=0, phases={"1": True})
         jobs.run("summaries", labs, ThreadJob(["t1"]), NOW)
-        jobs.run("summaries", labs, ThreadJob(["t1"]), ist(2026, 11, 2, 9, 0))
+        november = ist(2026, 11, 2, 9, 0)
+        monkeypatch.setattr(jobs, "_now", lambda: november)
+        jobs.run("summaries", labs, ThreadJob(["t1"]), november)
         assert sorted(n["dedupe_key"] for n in _budget_notices(fake)) == [
             f"ai_budget:{labs['id']}:2026-10",
             f"ai_budget:{labs['id']}:2026-11",
@@ -179,12 +192,47 @@ class TestTheMonthTurnsInKolkata:
         _spent(fake, labs, "10.000000", ist(2026, 10, 31, 23, 0))
         claude = FakeClaude(default=ANSWER).install(monkeypatch)
 
+        monkeypatch.setattr(jobs, "_now", lambda: last)
         assert jobs.run("summaries", labs, ThreadJob(["t1"]), last)["counts"] == {
             "skipped": "AI budget reached"
         }
         assert claude.calls == []
+        monkeypatch.setattr(jobs, "_now", lambda: first)
         assert jobs.run("summaries", labs, ThreadJob(["t1"]), first)["outcome"] == "ok"
         assert len(claude.calls) == 1
+
+    def test_budget_a_run_that_crosses_midnight_counts_in_the_new_month(self, crm, monkeypatch):
+        """The month of each call, not of the run's start: a run begun at
+        23:58 IST on 31 October whose calls are made after midnight is held
+        to November's budget, and its spend is November's."""
+        fake, labs, _ = crm
+        started = ist(2026, 10, 31, 23, 58)
+        after_midnight = ist(2026, 11, 1, 0, 5)
+        _spent(fake, labs, "10.000000", ist(2026, 10, 31, 23, 0))
+        claude = FakeClaude(default=ANSWER).install(monkeypatch)
+        monkeypatch.setattr(jobs, "_now", lambda: after_midnight)
+        result = jobs.run("summaries", labs, ThreadJob(["t1", "t2"]), started)
+        assert result == {"outcome": "ok", "counts": {"summarised": 2}}
+        assert len(claude.calls) == 2
+        made = [
+            u
+            for u in fake.rows["crm_ai_usage"].values()
+            if u["workspace_id"] == labs["id"] and u["input_tokens"] > 0
+        ]
+        assert [u["at"] for u in made] == [after_midnight.isoformat()] * 2
+        november = fake.ai_spend(labs["id"], ai_rules.ist_month_start(after_midnight))
+        assert Decimal(str(november["total_usd"])) > 0
+
+    def test_budget_a_run_begun_with_budget_left_stops_in_a_spent_month(self, crm, monkeypatch):
+        """The other way: a run begun in a month with budget left is stopped
+        once its calls fall in a month whose budget is spent."""
+        fake, labs, _ = crm
+        _spent(fake, labs, "10.000000", ist(2026, 11, 1, 0, 1))
+        claude = FakeClaude(default=ANSWER).install(monkeypatch)
+        monkeypatch.setattr(jobs, "_now", lambda: ist(2026, 11, 1, 0, 5))
+        result = jobs.run("summaries", labs, ThreadJob(["t1"]), ist(2026, 10, 31, 23, 58))
+        assert result["counts"] == {"skipped": "AI budget reached"}
+        assert claude.calls == []
 
     def test_budget_the_month_start_is_ist_midnight(self):
         assert ai_rules.ist_month_start(ist(2026, 10, 31, 23, 59)).isoformat() == (

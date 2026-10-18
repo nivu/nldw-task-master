@@ -384,7 +384,6 @@ def _enrich(
             EnrichmentOutput,
             rules.INSTRUCTION,
             parts,
-            now,
             site=site,
         )
     except ai.AiFailed as failed:

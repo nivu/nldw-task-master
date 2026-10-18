@@ -59,8 +59,8 @@ def read_ai(ctx: CrmAdminDep) -> dict:
         budget_reached=total >= budget,
         phases=ai_rules.phases_of(value),
         estimate_note=ESTIMATE_NOTE,
-        rates_configured=(
-            config.CRM_AI_INPUT_USD_PER_MTOK is not None
-            and config.CRM_AI_OUTPUT_USD_PER_MTOK is not None
-        ),
+        rates_configured=ai_rules.rates(
+            config.CRM_AI_INPUT_USD_PER_MTOK, config.CRM_AI_OUTPUT_USD_PER_MTOK
+        )
+        is not None,
     ).model_dump(mode="json")

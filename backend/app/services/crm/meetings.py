@@ -290,7 +290,6 @@ def _capture(
         MeetingOutput,
         rules.INSTRUCTION,
         rules.prompt_parts(meeting["title"], content, team),
-        now,
     )
     del content
     answer = output.model_dump(mode="json")

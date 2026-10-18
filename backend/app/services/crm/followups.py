@@ -271,7 +271,6 @@ def _draft(
         FollowupDraftOutput,
         rules.DRAFT_INSTRUCTION,
         rules.draft_parts(summary, to or company_name or "", company_name),
-        now,
     )
     # The draft came masked from ai.call; review.upsert masks it again.
     return rules.no_reply_item(
