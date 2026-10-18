@@ -1,5 +1,5 @@
 /**
- * Calls to the task routes — spec 008 contracts/api.md §1.
+ * Calls to the task routes — spec 008 contracts/api.md §1, §2.
  *
  * Every request goes through `backendFetch` and so through `/api/proxy`, the
  * only path from the browser to the backend: My Tasks reads nothing from
@@ -15,6 +15,7 @@ import type {
   QuickAddIn,
   QuickAddPreview,
   TaskAudienceIn,
+  TaskComment,
   TaskDetail,
   TaskIn,
   TaskLinkable,
@@ -22,6 +23,7 @@ import type {
   TaskOut,
   TaskPatch,
   TaskPerson,
+  TaskSettings,
   TrashedTask,
 } from "@/lib/api/task-types";
 import { createClient } from "@/lib/supabase/client";
@@ -92,6 +94,28 @@ export const addTaskLink = (id: string, link: TaskLinkIn) =>
 /** `linkId` is a `links[].id`, or for the project link the `project.id`. */
 export const removeTaskLink = (id: string, linkId: string) =>
   call<TaskOut>(`/${id}/links/${linkId}`, { method: "DELETE" });
+
+// ---------------------------------------------------------------------------
+// Handing work over — phase 2 (FR-TASK-DEL-02 to -04, -06)
+// ---------------------------------------------------------------------------
+
+export const acceptTask = (id: string) => call<TaskOut>(`/${id}/accept`, { method: "POST" });
+
+export const handBackTask = (id: string, note: string) =>
+  call<TaskOut>(`/${id}/hand-back`, { method: "POST", ...body({ note }) });
+
+export const getTaskComments = (id: string) => call<TaskComment[]>(`/${id}/comments`);
+
+export const addTaskComment = (id: string, text: string) =>
+  call<TaskComment>(`/${id}/comments`, { method: "POST", ...body({ body: text }) });
+
+export const deleteTaskComment = (id: string, commentId: string) =>
+  call<{ deleted: true }>(`/${id}/comments/${commentId}`, { method: "DELETE" });
+
+export const getTaskSettings = () => call<TaskSettings>("/settings");
+
+export const updateTaskSettings = (changes: Partial<TaskSettings>) =>
+  call<TaskSettings>("/settings", { method: "PATCH", ...body(changes) });
 
 // ---------------------------------------------------------------------------
 // Drafts: who sees, who may be assigned, what may be linked, quick add

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from app.domain.tasks import labels, rules, visibility
+from app.domain.tasks import delegation, labels, rules, visibility
 from app.domain.tasks.visibility import TaskFacts, Viewer
 from app.services.crm import store as crm_store
 from app.services.crm.records import link_names
@@ -85,7 +85,11 @@ def present(viewer: Viewer, rows: list[dict[str, Any]], *, today: date) -> list[
                 {
                     pid
                     for r in rows
-                    for pid in (r.get("assignee_id"), r.get("created_by"), r.get("waiting_on_id"))
+                    for pid in (
+                        r.get("assignee_id"),
+                        r.get("created_by"),
+                        r.get("waiting_on_id"),
+                    )
                     if pid
                 }
             )
@@ -201,6 +205,14 @@ def present(viewer: Viewer, rows: list[dict[str, Any]], *, today: date) -> list[
                 "completed_at": row.get("completed_at"),
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
+                # Phase 2 (FR-TASK-DEL-02): New in the assignee's own view,
+                # once phase 2 is on for them, while the task is open or
+                # waiting.
+                "new": viewer.tasks_level >= 2
+                and row.get("status") in rules.OPEN
+                and delegation.is_new(row)
+                and row.get("assignee_id") == viewer.id,
+                "accepted_at": row.get("accepted_at"),
             }
         )
     return out

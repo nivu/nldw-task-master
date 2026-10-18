@@ -29,6 +29,8 @@ from pydantic import BaseModel, ValidationError
 from app.domain.calendar import today_in_company_tz
 from app.domain.crm import campaigns as campaign_rules
 from app.domain.crm import dedupe, objects, pipeline
+from app.domain.tasks import delegation as task_delegation
+from app.domain.tasks import rollout as task_rollout
 from app.domain.tasks import rules as task_rules
 from app.domain.tasks import visibility as task_visibility
 from app.domain.tasks.visibility import TaskFacts
@@ -51,6 +53,7 @@ from app.services import supabase as db
 from app.services.crm import CrmRefused, flags, notifications, store, tva
 from app.services.crm import present as show
 from app.services.crm.context import actor
+from app.services.tasks import notices as task_notices
 from app.services.tasks import store as task_store
 from app.services.tasks import viewer as task_viewer
 
@@ -1538,6 +1541,12 @@ def _bucket(ctx: Any, values: dict[str, Any], existing: dict[str, Any] | None) -
         values["bucket"] = task_rules.default_bucket(after.get("due_on"), today)
 
 
+def _tasks_level(ctx: Any) -> int:
+    """008 FR-TASK-ROLL-03 — the actor's phase level: a task write sends its
+    delegation messages (FR-TASK-DEL-01, -05) only from phase 2."""
+    return task_rollout.level_for(ctx.user.profile, task_store.default_level())
+
+
 def _task_extras(ws: Workspace, values: dict[str, Any], existing: dict[str, Any] | None) -> None:
     """008 FR-TASK-CHG-01 — the new task fields through the CRM: tags trimmed
     with exact repeats dropped (TP-14); a parent that is a live task of this
@@ -1623,6 +1632,11 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
     links and (a note) its mentions in one `crm_apply` call."""
     ws = load(ctx)
     values, links, mentions = _task_or_note_values(ws, kind, payload, None)
+    if kind == "task":
+        # Who set the assignee (008 FR-TASK-DEL-02).
+        values["assigned_by"] = task_delegation.assignment(values["assignee_id"], ctx.user.id)[
+            "assigned_by"
+        ]
     owner = "task_id" if kind == "task" else "note_id"
     ops: list[dict[str, Any]] = [
         {"op": "insert", "table": KINDS[kind].table, "ref": "record", "values": values}
@@ -1648,6 +1662,8 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
     targets = [{"record_type": t, "record_id": i} for t, i in links or []]
     reflag(ws.id, kind, [row], links=targets)
     if kind == "task":
+        # 008 FR-TASK-DEL-01: the message, and the bell as well.
+        task_notices.after_write(_tasks_level(ctx), ctx.user.id, None, row)
         notifications.quietly(
             notifications.assigned(ctx, "task", row["id"], row["title"], row.get("assignee_id"))
         )
@@ -1737,6 +1753,12 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     changes = {k: v for k, v in values.items() if row.get(k) != v}
     if not changes and not ops:
         return present_rows(ws, kind, [row])[0]
+    # 008 FR-TASK-DEL-02: a new assignee has not accepted yet; any other
+    # change by the assignee accepts.
+    if kind == "task" and "assignee_id" in changes:
+        changes.update(task_delegation.assignment(changes["assignee_id"], ctx.user.id))
+    elif kind == "task":
+        changes.update(task_delegation.accepting(row, ctx.user.id, datetime.now(UTC).isoformat()))
     main = {
         "op": "update",
         "table": KINDS[kind].table,
@@ -1755,6 +1777,8 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
         flags.logger.exception('{"event": "crm_links_reread_failed", "kind": "%s"}', kind)
         now_links = current_links or []
     reflag(ws.id, kind, [after], links=[*now_links, *(current_links or [])])
+    if kind == "task":
+        task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, after)
     if kind == "task" and "assignee_id" in changes:
         notifications.quietly(
             notifications.assigned(ctx, "task", record_id, after["title"], changes["assignee_id"])
@@ -1777,6 +1801,7 @@ def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
         raise CrmRefused(403, "Only the task's assignee or a member can mark it done.")
     if row["status"] == "done":
         return present_rows(ws, "task", [row])[0]
+    now = datetime.now(UTC)
     done = store.apply(
         actor(ctx),
         [
@@ -1784,9 +1809,13 @@ def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
                 "op": "update",
                 "table": "tasks",
                 "id": task_id,
-                "values": task_rules.status_values("done", row["status"], datetime.now(UTC)),
+                "values": {
+                    **task_rules.status_values("done", row["status"], now),
+                    **task_delegation.accepting(row, ctx.user.id, now.isoformat()),
+                },
             }
         ],
     )
+    task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, done[0]["row"])
     reflag(ws.id, "task", [done[0]["row"]])
     return present_rows(ws, "task", [done[0]["row"]])[0]

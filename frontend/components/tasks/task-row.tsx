@@ -14,7 +14,8 @@ import { cn } from "@/lib/utils";
  * Done is one tap (the box); Undo puts a closed task back to Open. Moving a
  * task to another section is one drag (the handle) or one tap (the section
  * menu), and changes its bucket only (FR-TASK-LIST-04). Overdue and
- * priority are said in words, never by colour alone.
+ * priority are said in words, never by colour alone. A task someone else
+ * gave the reader shows "New" until they act on it (FR-TASK-DEL-02).
  */
 
 /** A native select with the visible focus ring every control here has. */
@@ -92,6 +93,11 @@ export function TaskRow({
           {task.title}
         </button>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          {task.new && (
+            <Badge variant="secondary" className="h-5 px-1.5 text-[11px]">
+              New
+            </Badge>
+          )}
           {closed && <span>{task.status_label}</span>}
           {task.status === "waiting" && (
             <span>Waiting{task.waiting_on?.label ? ` on ${task.waiting_on.label}` : ""}</span>

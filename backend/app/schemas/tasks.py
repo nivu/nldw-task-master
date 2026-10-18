@@ -123,3 +123,26 @@ class LifeOsMapping(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     owners: dict[str, EmailStr | None] = Field(default_factory=dict)
+
+
+class TaskNoteIn(BaseModel):
+    """Contracts §2 `POST /tasks/{id}/hand-back` — the note kept as a
+    `hand_back` comment (FR-TASK-DEL-03)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    note: str = Field(min_length=1, max_length=2_000)
+
+
+class TaskCommentIn(BaseModel):
+    """Contracts §2 `POST /tasks/{id}/comments` (FR-TASK-DEL-04)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    body: str = Field(min_length=1, max_length=2_000)
+
+
+class TaskSettingsIn(BaseModel):
+    """Contracts §2 `PATCH /tasks/settings` — the person's idle days before a
+    waiting task is a "nudge?" (FR-TASK-DEL-06)."""
+
+    model_config = ConfigDict(extra="forbid")
+    nudge_days: int | None = Field(default=None, ge=1, le=30)

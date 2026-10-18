@@ -1,5 +1,5 @@
 /**
- * Tasks' API types — spec 008 contracts/api.md §0.1, §1, §1.1.
+ * Tasks' API types — spec 008 contracts/api.md §0.1, §1, §1.1, §2.
  *
  * Mirrors `backend/app/schemas/tasks.py` and the `TaskOut` the backend
  * returns, by hand, as `crm-types.ts` mirrors `schemas/crm.py`.
@@ -66,6 +66,26 @@ export interface TaskOut {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Phase 2 (FR-TASK-DEL-02): given to the reader by someone else and not
+   *  yet accepted. */
+  new: boolean;
+  accepted_at: string | null;
+}
+
+/** Contracts §2 — GET /tasks/{id}/comments (FR-TASK-DEL-04). */
+export interface TaskComment {
+  id: string;
+  author: TaskPersonRef;
+  body: string;
+  /** A hand-back's note is kept as a comment (FR-TASK-DEL-03). */
+  kind: "comment" | "hand_back";
+  created_at: string;
+  may_delete: boolean;
+}
+
+/** Contracts §2 — GET/PATCH /tasks/settings (FR-TASK-DEL-06). */
+export interface TaskSettings {
+  nudge_days: number;
 }
 
 export interface TaskHistoryEntry {

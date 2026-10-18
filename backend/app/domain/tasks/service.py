@@ -1,5 +1,6 @@
 """The task service and the 008/009 interface — spec 008 §14, contracts §4;
-FR-TASK-DATA-05 to -09, -13, -15, FR-TASK-ROLL-04; plan §9 rule 2, §4 CT-2.
+FR-TASK-DATA-05 to -09, -13, -15, FR-TASK-ROLL-04, FR-TASK-DEL-01 to -06;
+plan §9 rule 2, §4 CT-2.
 
 `create_task(actor, payload)` is the one way a task is created: `POST /tasks`
 calls it, quick add and the Life OS import call it, and `009`'s Review Queue
@@ -10,6 +11,11 @@ shape (`TaskActor`, `TaskCreate`) is fixed in slice S1a and pinned by
 The one `domain/tasks` module that does IO (CT-2): it reads through
 `app.services.tasks.store`, decides with the pure modules beside it, writes
 through `task_apply` in one call and returns the task as `TaskOut`.
+
+Delegation (phase 2, contracts §2): every write records who set the
+assignee (`assigned_by`) and when the assignee took it up (`accepted_at`),
+and, when the actor has phase 2 switched on, enqueues the messages of
+FR-TASK-DEL-01 and -05 (`services/tasks/notices`); an import sends none.
 """
 
 from __future__ import annotations
@@ -21,13 +27,13 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.api.deps import CurrentUser
-from app.domain.tasks import rollout, rules, visibility
+from app.domain.tasks import delegation, rollout, rules, visibility
 from app.domain.tasks.errors import TaskRefused
 from app.schemas.tasks import TaskCreate, TaskLinkIn, TaskPatch
 from app.services.crm import notifications
 from app.services.crm import records as crm_records
 from app.services.crm import store as crm_store
-from app.services.tasks import present, store, viewer
+from app.services.tasks import notices, present, store, viewer
 
 #: A CRM link's record type, as a person says it.
 _NOUNS = {"company": "company", "person": "person", "opportunity": "deal", "campaign": "campaign"}
@@ -59,6 +65,8 @@ DELETE_CRM = "Only a workspace admin or the task's creator can delete this task.
 DELETE_OWN = "Only the task's creator can delete it."
 RESTORE_CRM = "Only a workspace admin can restore this task."
 RESTORE_OWN = "Only the task's creator can restore it."
+NO_SUCH_COMMENT = "No such comment."
+COMMENT_AUTHOR = "Only its author can delete a comment."
 
 
 @dataclass(frozen=True)
@@ -146,6 +154,43 @@ def _check_category(ws_id: str | None, category_id: str) -> None:
         raise TaskRefused(422, NOT_A_CATEGORY)
 
 
+def _assignable(actor: TaskActor, ws_id: str | None, project_id: str | None) -> set[str]:
+    """The people the actor may assign for this task (FR-TASK-DEL-06: Waiting
+    on names one of them), as `GET /tasks/people` offers them."""
+    from app.services.tasks import people
+
+    try:
+        offered = people.people(
+            actor, workspace_id=ws_id, project_id=project_id if ws_id is None else None
+        )
+    except TaskRefused:
+        return set()
+    return {p["id"] for p in offered}
+
+
+def _check_waiting_on(
+    actor: TaskActor, person_id: str, ws_id: str | None, project_id: str | None
+) -> None:
+    why = delegation.waiting_on_refusal(person_id, _assignable(actor, ws_id, project_id))
+    if why:
+        raise TaskRefused(422, why)
+
+
+def _notices(
+    actor: TaskActor,
+    me: visibility.Viewer,
+    before: dict[str, Any] | None,
+    after: dict[str, Any],
+    *,
+    handed_back: bool = False,
+) -> None:
+    """FR-TASK-DEL-01, -05 — one job per message this write sends, when the
+    actor has phase 2 switched on; an import sends none (FR-TASK-IMP-06)."""
+    if actor.kind == "import":
+        return
+    notices.after_write(me.tasks_level, actor.user.id, before, after, handed_back=handed_back)
+
+
 def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
     """Contracts §4 — creates one task and its links in one `task_apply` call,
     audited with the actor's kind and channel, and returns it as `TaskOut`
@@ -230,6 +275,7 @@ def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
             has_project=project_id is not None,
             default=default,
         )
+        _check_waiting_on(actor, waiting_on_id, ws_id, project_id)
         waiting_on_text = person.get("display_name") or waiting_on_text
     if payload.status == "waiting" and not (waiting_on_text or "").strip():
         raise TaskRefused(422, WAITING)
@@ -256,6 +302,10 @@ def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
             (payload.completed_at or now).isoformat() if payload.status == "done" else None
         ),
     }
+    # Who set the assignee (FR-TASK-DEL-02); an imported row is nobody's
+    # assignment.
+    if actor.kind != "import":
+        values["assigned_by"] = delegation.assignment(assignee_id, actor.user.id)["assigned_by"]
     if ws_id is not None:
         values["workspace_id"] = ws_id
 
@@ -290,6 +340,7 @@ def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
             }
         )
     row = store.apply(actor.as_rpc(), ops)[0]["row"]
+    _notices(actor, me, None, row)
 
     # 6. A CRM task keeps the CRM's flags and its bell notice (as today).
     if ws_id is not None:
@@ -395,6 +446,15 @@ def _write(actor: TaskActor, op: dict[str, Any]) -> dict[str, Any]:
     return store.apply(actor.as_rpc(), [op])[0]["row"]
 
 
+def _accepting_ops(actor: TaskActor, task: _Loaded) -> list[dict[str, Any]]:
+    """FR-TASK-DEL-02 — the write that accepts a New task when its assignee
+    acts on it some other way (a link, a comment); none otherwise."""
+    values = delegation.accepting(task.row, actor.user.id, _now().isoformat())
+    if not values:
+        return []
+    return [{"op": "update", "table": "tasks", "id": task.row["id"], "values": values}]
+
+
 #: Fields a change may not clear.
 _REQUIRED = ("title", "status", "priority", "tags", "assignee_id")
 
@@ -458,6 +518,7 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
             has_project=task.facts.project_id is not None,
             default=default,
         )
+        _check_waiting_on(actor, values["waiting_on_id"], ws_id, task.facts.project_id)
         values["waiting_on_text"] = person.get("display_name") or values.get("waiting_on_text")
     if "status" in values:
         values.update(rules.status_values(values["status"], row["status"], _now()))
@@ -470,10 +531,17 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
     changes = {k: v for k, v in values.items() if row.get(k) != v}
     if not changes:
         return present.present(task.me, [row], today=_today(actor))[0]
+    # FR-TASK-DEL-02: a new assignee has not accepted yet; any other change
+    # by the assignee accepts.
+    if "assignee_id" in changes:
+        changes.update(delegation.assignment(changes["assignee_id"], actor.user.id))
+    else:
+        changes.update(delegation.accepting(row, actor.user.id, _now().isoformat()))
     op: dict[str, Any] = {"op": "update", "table": "tasks", "id": task_id, "values": changes}
     if patch.expect_updated_at is not None:
         op["expect_updated_at"] = patch.expect_updated_at.isoformat()
     written = _write(actor, op)
+    _notices(actor, task.me, row, written)
     assigned = changes.get("assignee_id")
     return _after_write(actor, task, written, assigned=assigned)
 
@@ -486,7 +554,9 @@ def complete_task(actor: TaskActor, task_id: str) -> dict:
     if task.row["status"] == "done":
         return present.present(task.me, [task.row], today=_today(actor))[0]
     values = rules.status_values("done", task.row["status"], _now())
+    values.update(delegation.accepting(task.row, actor.user.id, _now().isoformat()))
     written = _write(actor, {"op": "update", "table": "tasks", "id": task_id, "values": values})
+    _notices(actor, task.me, task.row, written)
     return _after_write(actor, task, written)
 
 
@@ -500,6 +570,7 @@ def reopen_task(actor: TaskActor, task_id: str) -> dict:
     values = rules.status_values("open", task.row["status"], _now())
     if not task.row.get("bucket"):
         values["bucket"] = rules.default_bucket(task.row.get("due_on"), _today(actor))
+    values.update(delegation.accepting(task.row, actor.user.id, _now().isoformat()))
     written = _write(actor, {"op": "update", "table": "tasks", "id": task_id, "values": values})
     return _after_write(actor, task, written)
 
@@ -570,7 +641,7 @@ def add_link(actor: TaskActor, task_id: str, link: TaskLinkIn) -> dict:
                 },
             }
         )
-    store.apply(actor.as_rpc(), ops)
+    store.apply(actor.as_rpc(), [*_accepting_ops(actor, task), *ops])
     written = store.get_task(task_id) or task.row
     return _after_write(
         actor, task, written, links=[*task.links, {"record_type": pair[0], "record_id": pair[1]}]
@@ -602,7 +673,13 @@ def remove_link(actor: TaskActor, task_id: str, link_id: str) -> dict:
         raise TaskRefused(404, NO_SUCH_LINK)
     if link["record_type"] != "tva_project" and len(task.crm_links) <= 1:
         raise TaskRefused(422, LAST_LINK)
-    store.apply(actor.as_rpc(), [{"op": "delete", "table": "task_links", "id": link["id"]}])
+    store.apply(
+        actor.as_rpc(),
+        [
+            *_accepting_ops(actor, task),
+            {"op": "delete", "table": "task_links", "id": link["id"]},
+        ],
+    )
     written = store.get_task(task_id) or task.row
     return _after_write(actor, task, written)
 
@@ -643,3 +720,128 @@ def restore_task(actor: TaskActor, task_id: str) -> dict:
         raise TaskRefused(422, NO_LINK_LEFT)
     written = _write(actor, {"op": "restore", "table": "tasks", "id": task_id})
     return _after_write(actor, task, written)
+
+
+# ---------------------------------------------------------------------------
+# Delegation — contracts §2; FR-TASK-DEL-02 to -05
+# ---------------------------------------------------------------------------
+
+
+def accept_task(actor: TaskActor, task_id: str) -> dict:
+    """Contracts §2 `POST /tasks/{id}/accept` — the assignee takes up a task
+    someone else gave them; it is New no longer (FR-TASK-DEL-02)."""
+    task = _load(actor, task_id)
+    if task.row.get("assignee_id") != actor.user.id:
+        raise TaskRefused(403, delegation.NOT_ASSIGNEE)
+    values = delegation.accepting(task.row, actor.user.id, _now().isoformat())
+    if not values:
+        return present.present(task.me, [task.row], today=_today(actor))[0]
+    written = _write(actor, {"op": "update", "table": "tasks", "id": task_id, "values": values})
+    return present.present(task.me, [written], today=_today(actor))[0]
+
+
+def hand_back(actor: TaskActor, task_id: str, note: str) -> dict:
+    """Contracts §2 `POST /tasks/{id}/hand-back` — the assignee gives the task
+    back: the creator is its assignee again, set by the person handing back,
+    the note is kept as a `hand_back` comment, and the creator is told
+    (FR-TASK-DEL-03, -05). 403 unless the caller is the current assignee and
+    not the creator."""
+    task = _load(actor, task_id)
+    _may_change(task, {"assignee_id"})
+    try:
+        values = delegation.hand_back_plan(task.row, actor.user.id)
+    except ValueError as exc:
+        raise TaskRefused(403, str(exc)) from None
+    _check_person(
+        values["assignee_id"],
+        actor.user.id,
+        workspace_id=task.row.get("workspace_id"),
+        has_project=task.facts.project_id is not None,
+        default=store.default_level(),
+    )
+    # The note first: once the task is the creator's again, the person
+    # handing it back may no longer write to it (049's re-check).
+    written = store.apply(
+        actor.as_rpc(),
+        [
+            {
+                "op": "insert",
+                "table": "task_comments",
+                "values": {
+                    "task_id": task_id,
+                    "workspace_id": task.row.get("workspace_id"),
+                    "author_id": actor.user.id,
+                    "body": note,
+                    "kind": "hand_back",
+                },
+            },
+            {"op": "update", "table": "tasks", "id": task_id, "values": values},
+        ],
+    )[1]["row"]
+    _notices(actor, task.me, task.row, written, handed_back=True)
+    return _after_write(actor, task, written)
+
+
+def _comment_out(me: visibility.Viewer, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    names = {
+        p["id"]: p["display_name"]
+        for p in store.get_profiles(sorted({r["author_id"] for r in rows}))
+    }
+    return [
+        {
+            "id": r["id"],
+            "author": {"id": r["author_id"], "name": names.get(r["author_id"])},
+            "body": r["body"],
+            "kind": r["kind"],
+            "created_at": r["created_at"],
+            "may_delete": r["author_id"] == me.id,
+        }
+        for r in rows
+    ]
+
+
+def comments(actor: TaskActor, task_id: str) -> list[dict[str, Any]]:
+    """Contracts §2 `GET /tasks/{id}/comments` — to whoever may see the task
+    (FR-TASK-DEL-04), oldest first."""
+    task = _load(actor, task_id)
+    return _comment_out(task.me, store.list_comments(task_id))
+
+
+def add_comment(actor: TaskActor, task_id: str, body: str) -> dict[str, Any]:
+    """Contracts §2 `POST /tasks/{id}/comments` — by anyone who may change
+    the task, or the Viewer it is assigned to; never edited afterwards. A
+    comment by the assignee accepts a New task (FR-TASK-DEL-02, -04)."""
+    task = _load(actor, task_id)
+    if visibility.sight(task.me, task.facts) not in ("edit", "status_only"):
+        raise TaskRefused(403, READ_ONLY)
+    result = store.apply(
+        actor.as_rpc(),
+        [
+            {
+                "op": "insert",
+                "table": "task_comments",
+                "values": {
+                    "task_id": task_id,
+                    "workspace_id": task.row.get("workspace_id"),
+                    "author_id": actor.user.id,
+                    "body": body,
+                    "kind": "comment",
+                },
+            },
+            *_accepting_ops(actor, task),
+        ],
+    )
+    return _comment_out(task.me, [result[0]["row"]])[0]
+
+
+def delete_comment(actor: TaskActor, task_id: str, comment_id: str) -> dict:
+    """Contracts §2 `DELETE /tasks/{id}/comments/{comment_id}` — by its
+    author only (FR-TASK-DEL-04)."""
+    _load(actor, task_id)
+    comment = store.get_comment(comment_id)
+    if comment is None or comment["task_id"] != task_id or comment.get("deleted_at"):
+        raise TaskRefused(404, NO_SUCH_COMMENT)
+    if comment["author_id"] != actor.user.id:
+        raise TaskRefused(403, COMMENT_AUTHOR)
+    _write(actor, {"op": "soft_delete", "table": "task_comments", "id": comment_id})
+    return {"deleted": True}

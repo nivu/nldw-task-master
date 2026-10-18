@@ -5,7 +5,9 @@ over the **same** in-memory tables as `tests/crm_fake.py` (`tasks`,
 `task_links`, the memberships, projects and allocations), with Python fakes
 of `task_apply` (049), the deferred workspace check (047) and
 `task_purge_expired` (049), so route tests never touch a database. The real
-functions are covered by `tests/db/`.
+functions are covered by `tests/db/`. S2a adds 052's comments (insert and
+soft delete only, the workspace of their task) and the delegation messages'
+sent markers.
 
 `FakeCrmStore.install` installs one beside itself, so a CRM route that
 presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
@@ -14,7 +16,8 @@ presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
 tests share: the TVA roles and account kinds of spec §3 and FR-TASK-VIS-06
 with My Tasks switched on (uuid ids, keyed by `ID`), a Labs deal and
 an Academy company made through the CRM routes, and TVA projects, at a fixed
-clock (Tuesday 20 October 2026, noon IST).
+clock (Tuesday 20 October 2026, noon IST). Its delegation messages (S2a) are
+sent at once, through the real `notices.send`, and kept in `messages`.
 """
 
 from __future__ import annotations
@@ -36,10 +39,11 @@ from crm_fake import (
 )
 
 from app.domain.tasks import service
-from app.services.tasks import store
+from app.services import notify
+from app.services.tasks import notices, store
 
 #: 049: the tables `task_apply` writes; the later ones arrive in 051-055.
-TASK_TABLES = ("tasks", "task_links", "task_import_runs")
+TASK_TABLES = ("tasks", "task_links", "task_import_runs", "task_comments")
 
 
 def public_task_store_names() -> list[str]:
@@ -66,6 +70,9 @@ class FakeTaskStore:
         self.purges: list[tuple[dict[str, Any], str]] = []
         # 051: the Life OS import's run records, beside the CRM's tables.
         self.rows.setdefault("task_import_runs", {})
+        # 052: comments (audited) and the messages' sent markers (a log).
+        self.rows.setdefault("task_comments", {})
+        self.rows.setdefault("task_notice_sends", {})
 
     @property
     def rows(self) -> dict[str, dict[str, dict[str, Any]]]:
@@ -226,6 +233,48 @@ class FakeTaskStore:
         runs = self.rows["task_import_runs"].values()
         mine = [r["id"] for r in runs if r["uploader_id"] == uploader_id]
         return mine[-1] if mine else None
+
+    def list_comments(self, task_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(c)
+            for c in self.rows["task_comments"].values()
+            if c["task_id"] == task_id and not c.get("deleted_at")
+        ]
+        return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
+
+    def get_comment(self, comment_id: str) -> dict[str, Any] | None:
+        row = self.rows["task_comments"].get(comment_id)
+        return dict(row) if row else None
+
+    def claim_notice(
+        self, task_id: str, event: str, recipient_id: str, occurred_at: str
+    ) -> str | None:
+        """052 `task_notice_sends_once`: a new marker's id, else None."""
+        key = (task_id, event, recipient_id, _at(occurred_at))
+        for row in self.rows["task_notice_sends"].values():
+            if (row["task_id"], row["event"], row["recipient_id"], _at(row["occurred_at"])) == key:
+                return None
+        row = {
+            "id": str(uuid.uuid4()),
+            "task_id": task_id,
+            "event": event,
+            "recipient_id": recipient_id,
+            "occurred_at": occurred_at,
+            "sent_at": None,
+            "channels": None,
+        }
+        self.rows["task_notice_sends"][row["id"]] = row
+        return row["id"]
+
+    def mark_notice_sent(self, notice_id: str, sent_at: str, channels: list[str]) -> None:
+        self.rows["task_notice_sends"][notice_id].update(sent_at=sent_at, channels=channels)
+
+    def set_nudge_days(self, user_id: str, days: int) -> dict[str, Any]:
+        """052 `profiles.task_nudge_days`, on the profiles the client signs in."""
+        if not 1 <= days <= 30:
+            raise _refuse("23514", "violates check constraint")
+        self.crm.profiles[user_id]["task_nudge_days"] = days
+        return dict(self.crm.profiles[user_id])
 
     def active_profiles(self) -> list[dict[str, Any]]:
         ids = list(self.crm.profiles) or list(PEOPLE)
@@ -403,6 +452,8 @@ class FakeTaskStore:
             raise _refuse("CRM22", "That is not a task table.")
         if op.get("op") not in ("insert", "update", "soft_delete", "restore", "delete"):
             raise _refuse("CRM22", "Unknown task operation.")
+        if table == "task_comments" and op["op"] not in ("insert", "soft_delete"):
+            raise _refuse("CRM22", "A comment cannot be changed.")
         values = {
             k: refs[v[5:]] if isinstance(v, str) and v.startswith("$ref:") else v
             for k, v in (op.get("values") or {}).items()
@@ -422,6 +473,11 @@ class FakeTaskStore:
                 **({"updated_by": who} if table == "tasks" else {}),
                 **DEFAULTS.get(table, {}),
                 **(self._import_run_defaults() if table == "task_import_runs" else {}),
+                **(
+                    {"kind": "comment", "deleted_at": None, "deleted_by": None}
+                    if table == "task_comments"
+                    else {}
+                ),
                 **values,
             }
             if not self._allowed(actor, table, row):
@@ -429,6 +485,11 @@ class FakeTaskStore:
             if table == "tasks":
                 self._parent_check(row)
                 self._lifeos_key_check(row)
+            if table == "task_comments":
+                # 052 `task_comments_workspace`.
+                task = self.rows["tasks"].get(row["task_id"]) or {}
+                if row.get("workspace_id") != task.get("workspace_id"):
+                    raise _refuse("CRM22", "A comment belongs to its task's workspace.")
             self.crm._check_refs(table, row)
             self.crm._check_unique(table, row)
             rows[row["id"]] = row
@@ -447,14 +508,15 @@ class FakeTaskStore:
             self.crm._delete(actor, table, row, op.get("action"))
             return {"ref": op.get("ref"), "id": row["id"], "row": dict(row)}
         if op["op"] in ("soft_delete", "restore"):
-            if table != "tasks":
+            if table not in ("tasks", "task_comments"):
                 raise _refuse("CRM22", "This kind of row cannot be deleted.")
             deleting = op["op"] == "soft_delete"
             values = {
                 "deleted_at": _now() if deleting else None,
                 "deleted_by": who if deleting else None,
-                "deleted_group": op.get("deleted_group") if deleting else None,
             }
+            if table == "tasks":
+                values["deleted_group"] = op.get("deleted_group") if deleting else None
         elif not values:
             raise _refuse("CRM22", "Nothing to change.")
         if table == "tasks":
@@ -562,6 +624,11 @@ class TaskWorld:
         self.fake.add_member(self.labs, ID["viewer"], "viewer")
         self.http = client(monkeypatch, TASK_PEOPLE, fake=self.fake)
         monkeypatch.setattr(service, "_now", lambda: NOW)
+        # S2a: each delegation message is sent at once, through the real
+        # sender, and kept here instead of going to Slack or email.
+        self.messages: list[notify.Message] = []
+        monkeypatch.setattr(notices, "enqueue", notices.send)
+        monkeypatch.setattr(notify, "deliver", self._deliver)
         labs, me = "?workspace=labs", as_(ID["owner"])
         self.acme = self._made(f"/api/v1/crm/companies{labs}", {"name": "Acme"})
         self.deepa = self._made(f"/api/v1/crm/people{labs}", {"first_name": "Deepa"})
@@ -584,6 +651,10 @@ class TaskWorld:
         self.orbit = self.fake.add_project("Orbit", status="tentative")
         self.old = self.fake.add_project("Old", status="confirmed", is_archived=True)
         self.fake.add_allocation(self.lumen, ID["member"])
+
+    def _deliver(self, message: notify.Message) -> list[str]:
+        self.messages.append(message)
+        return ["slack"]
 
     def _made(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         r = self.http.post(path, json=body, headers=as_(ID["owner"]))

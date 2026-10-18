@@ -6,6 +6,7 @@ import { TASK_CREATED_EVENT } from "@/components/tasks/quick-add";
 import { TaskFilters } from "@/components/tasks/task-filters";
 import { TaskPanel } from "@/components/tasks/task-panel";
 import { TaskSections } from "@/components/tasks/task-sections";
+import { TaskSettings } from "@/components/tasks/task-settings";
 import type { MyTasks as MyTasksData, MyTasksFilters, TaskBucket, TaskOut } from "@/lib/api/task-types";
 import { errorMessage } from "@/lib/api/portal";
 import { completeTask, getMyTasks, reopenTask, updateTask } from "@/lib/api/tasks";
@@ -18,7 +19,9 @@ import { PRIORITIES, SECTIONS } from "@/lib/tasks/labels";
  * for everyone with a workspace, CRM-only sellers included). It reads and
  * writes only through `/api/proxy`. A task saved by the quick-add box is put
  * in its section at once, from the box's `tasks:created` event; nobody
- * else's page is pushed anything.
+ * else's page is pushed anything. With phase 2 on for the reader, the
+ * panel offers Accept, Hand back and comments, and the page their nudge days
+ * (FR-TASK-DEL-02 to -06).
  */
 
 const PAGE = 20;
@@ -50,7 +53,17 @@ function placed(data: MyTasksData, task: TaskOut, mine: boolean): MyTasksData {
   return { ...data, sections, closed };
 }
 
-export function MyTasks({ projectsHref }: { projectsHref?: string }) {
+export function MyTasks({
+  projectsHref,
+  level = 1,
+  meId = null,
+}: {
+  projectsHref?: string;
+  /** The reader's effective tasks level (`me.tasks.level`). */
+  level?: number;
+  /** The reader's own id (`me.id`). */
+  meId?: string | null;
+}) {
   const [filters, setFilters] = useState<MyTasksFilters>({});
   const [data, setData] = useState<MyTasksData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +143,7 @@ export function MyTasks({ projectsHref }: { projectsHref?: string }) {
         <p className="text-sm text-muted-foreground">What you have on, and what you are helping others with.</p>
       </div>
       <TaskFilters value={filters} onChange={setFilters} />
+      {level >= 2 && <TaskSettings />}
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -164,6 +178,8 @@ export function MyTasks({ projectsHref }: { projectsHref?: string }) {
         onChanged={changed}
         onOpenTask={setOpen}
         projectsHref={projectsHref}
+        meId={meId}
+        delegation={level >= 2}
       />
     </div>
   );

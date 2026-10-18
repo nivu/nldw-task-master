@@ -297,6 +297,71 @@ def latest_import_run_id(uploader_id: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Comments and messages — FR-TASK-DEL-04, -07 (052)
+# ---------------------------------------------------------------------------
+
+
+def list_comments(task_id: str) -> list[dict[str, Any]]:
+    """The task's comments that are not deleted, oldest first."""
+    rows = (
+        db.supabase.table("task_comments")
+        .select("*")
+        .eq("task_id", task_id)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
+
+
+def get_comment(comment_id: str) -> dict[str, Any] | None:
+    """One comment, deleted or not; the caller decides."""
+    rows = db.supabase.table("task_comments").select("*").eq("id", comment_id).execute().data
+    return rows[0] if rows else None
+
+
+def claim_notice(task_id: str, event: str, recipient_id: str, occurred_at: str) -> str | None:
+    """Data-model §2.6 — the sent marker's id when this message was not sent
+    yet (INSERT ... ON CONFLICT DO NOTHING RETURNING id), else None."""
+    rows = (
+        db.supabase.table("task_notice_sends")
+        .upsert(
+            {
+                "task_id": task_id,
+                "event": event,
+                "recipient_id": recipient_id,
+                "occurred_at": occurred_at,
+            },
+            on_conflict="task_id,event,recipient_id,occurred_at",
+            ignore_duplicates=True,
+        )
+        .execute()
+        .data
+        or []
+    )
+    return rows[0]["id"] if rows else None
+
+
+def mark_notice_sent(notice_id: str, sent_at: str, channels: list[str]) -> None:
+    """Records when a claimed message went, and through which channels."""
+    db.supabase.table("task_notice_sends").update({"sent_at": sent_at, "channels": channels}).eq(
+        "id", notice_id
+    ).execute()
+
+
+def set_nudge_days(user_id: str, days: int) -> dict[str, Any]:
+    """FR-TASK-DEL-06 — the person's own `profiles.task_nudge_days` (052)."""
+    return (
+        db.supabase.table("profiles")
+        .update({"task_nudge_days": days})
+        .eq("id", user_id)
+        .execute()
+        .data[0]
+    )
+
+
+# ---------------------------------------------------------------------------
 # People, memberships, projects and workspaces
 # ---------------------------------------------------------------------------
 

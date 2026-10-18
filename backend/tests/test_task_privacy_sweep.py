@@ -16,7 +16,9 @@ self-test proves that check fails when one is added.
 
 Chitra (a Labs Member whose TVA lead is Lakshmi) holds a private task, a
 shared personal task first given to Farah and then reassigned to Arun and
-waiting on Wasim, one handed back to her by Farah, and a deleted one. Each of
+waiting on Wasim, one handed back to her by Farah, and a deleted one; the
+private and the shared one carry a comment of hers (S2a). Phase 2 is on for
+the cast, so the comment routes answer them too. Each of
 the ten account kinds of FR-TASK-VIS-06 — a TVA admin, a manager, the owner,
 the creator's TVA lead, a CRM workspace Admin, a Viewer, a `crm_only`
 account, the former assignee, the Waiting-on person and a removed workspace
@@ -164,6 +166,11 @@ def _registries() -> tuple[set[tuple[str, str]], set[str]]:
 class Sweep:
     def __init__(self, monkeypatch) -> None:
         w = self.w = TaskWorld(monkeypatch)
+        # S2a: phase 2 on for everyone who has phase 1, so the comment and
+        # delegation routes answer the ten accounts with 404, not 403.
+        for person in w.fake.profiles.values():
+            if person.get("tasks_level") == 1:
+                person["tasks_level"] = 2
         self.private = w.add(
             "creator",
             title="Zqxpriv dentist",
@@ -183,6 +190,9 @@ class Sweep:
         )
         self.handed = w.add("creator", title="Zqxhanded back", assignee_id="former")
         self._as("former", "PATCH", self.handed, json={"assignee_id": ID["creator"]})
+        for task, mark in ((self.private, "Zqxpriv"), (self.shared, "Zqxshared")):
+            r = w.call("creator", "POST", f"/{task['id']}/comments", json={"body": f"{mark} said"})
+            assert r.status_code == 200, r.text
         self.trashed = w.add("creator", title="Zqxtrash old", tags=["zqxtrash"])
         self._as("creator", "DELETE", self.trashed)
         del w.fake.rows["crm_memberships"][w.removed["id"]]
@@ -268,6 +278,10 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
             files={"file": ("t.csv", ZQX_CSV)},
         )
     ],
+    ("GET", f"{TASKS}/settings"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/settings")],
+    ("PATCH", f"{TASKS}/settings"): lambda s, who: [
+        _http(s, who, "PATCH", f"{TASKS}/settings", json={"nudge_days": 5})
+    ],
     ("GET", f"{TASKS}/{{id}}"): lambda s, who: _each(s, who, "GET", ""),
     ("PATCH", f"{TASKS}/{{id}}"): lambda s, who: _each(
         s, who, "PATCH", "", json={"priority": "low"}
@@ -281,6 +295,17 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     ),
     ("DELETE", f"{TASKS}/{{id}}/links/{{link_id}}"): lambda s, who: _each(
         s, who, "DELETE", f"/links/{uuid.uuid4()}"
+    ),
+    ("POST", f"{TASKS}/{{id}}/accept"): lambda s, who: _each(s, who, "POST", "/accept"),
+    ("POST", f"{TASKS}/{{id}}/hand-back"): lambda s, who: _each(
+        s, who, "POST", "/hand-back", json={"note": "x"}
+    ),
+    ("GET", f"{TASKS}/{{id}}/comments"): lambda s, who: _each(s, who, "GET", "/comments"),
+    ("POST", f"{TASKS}/{{id}}/comments"): lambda s, who: _each(
+        s, who, "POST", "/comments", json={"body": "x"}
+    ),
+    ("DELETE", f"{TASKS}/{{id}}/comments/{{comment_id}}"): lambda s, who: _each(
+        s, who, "DELETE", f"/comments/{uuid.uuid4()}"
     ),
     # -- every task tool ----------------------------------------------------
     ("tool", "task_add"): lambda s, who: [

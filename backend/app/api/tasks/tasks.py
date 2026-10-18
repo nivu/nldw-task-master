@@ -1,8 +1,9 @@
-"""Task routes, phase 1 — spec 008 contracts §1; FR-TASK-LIST-01 to -07,
-FR-TASK-VIS-01 to -08, FR-TASK-DATA-05 to -13, FR-TASK-ROLL-03, -04.
+"""Task routes, phases 1 and 2 — spec 008 contracts §1, §2; FR-TASK-LIST-01
+to -07, FR-TASK-VIS-01 to -08, FR-TASK-DATA-05 to -13, FR-TASK-ROLL-03, -04,
+FR-TASK-DEL-02, -03, -06.
 
 HTTP only: each route takes its `TaskActor` from the phase guard
-(`TasksDep`, level 1) and hands the rest to `app.domain.tasks.service` (every
+(`TasksDep`, level 1; `TasksDep2` for phase 2) and hands the rest to `app.domain.tasks.service` (every
 write, and `create_task`, the 008/009 interface) or to `services/tasks`
 (reads). The same routes serve the web app and the `task_*` MCP tools.
 
@@ -19,8 +20,8 @@ from uuid import UUID
 from fastapi import APIRouter, Query
 
 from app.api.errors import ProblemDetail
-from app.api.tasks.deps import TasksDep
-from app.domain.tasks import quick_add, rules, service
+from app.api.tasks.deps import TasksDep, TasksDep2
+from app.domain.tasks import delegation, quick_add, rules, service
 from app.schemas.tasks import (
     QuickAddAnswers,
     QuickAddIn,
@@ -28,9 +29,11 @@ from app.schemas.tasks import (
     TaskCreate,
     TaskIn,
     TaskLinkIn,
+    TaskNoteIn,
     TaskPatch,
+    TaskSettingsIn,
 )
-from app.services.tasks import listing, people
+from app.services.tasks import listing, people, store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -155,6 +158,25 @@ def trash(actor: TasksDep) -> list[dict[str, Any]]:
     return listing.trash(actor)
 
 
+def _settings(profile: dict[str, Any]) -> dict[str, Any]:
+    return {"nudge_days": profile.get("task_nudge_days") or delegation.DEFAULT_NUDGE_DAYS}
+
+
+@router.get("/settings")
+def get_settings(actor: TasksDep2) -> dict[str, Any]:
+    """The caller's own task settings (FR-TASK-DEL-06)."""
+    return _settings(actor.user.profile)
+
+
+@router.patch("/settings")
+def update_settings(actor: TasksDep2, body: TaskSettingsIn) -> dict[str, Any]:
+    """Changes the caller's idle days before a waiting task is a "nudge?"
+    (1-30, FR-TASK-DEL-06)."""
+    if body.nudge_days is None:
+        return _settings(actor.user.profile)
+    return _settings(store.set_nudge_days(actor.user.id, body.nudge_days))
+
+
 # ---------------------------------------------------------------------------
 # One task — /tasks/{id}
 # ---------------------------------------------------------------------------
@@ -206,3 +228,15 @@ def remove_link(actor: TasksDep, id: UUID, link_id: UUID) -> dict[str, Any]:
 def restore(actor: TasksDep, id: UUID) -> dict[str, Any]:
     """Brings the task back from the Trash."""
     return service.restore_task(actor, str(id))
+
+
+@router.post("/{id}/accept")
+def accept(actor: TasksDep2, id: UUID) -> dict[str, Any]:
+    """The assignee takes up a task someone else gave them (FR-TASK-DEL-02)."""
+    return service.accept_task(actor, str(id))
+
+
+@router.post("/{id}/hand-back")
+def hand_back(actor: TasksDep2, id: UUID, body: TaskNoteIn) -> dict[str, Any]:
+    """Gives the task back to its creator, with a note (FR-TASK-DEL-03)."""
+    return service.hand_back(actor, str(id), body.note)

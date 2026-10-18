@@ -77,7 +77,9 @@ def _detail(r) -> tuple[int, str]:
 
 class TestOffByDefault:
     def test_the_slice_adds_routes(self):
-        assert len(TASK_ROUTES) == 17
+        # 17 of phase 1; S2a: accept, hand-back, three comment routes and
+        # GET and PATCH settings.
+        assert len(TASK_ROUTES) == 24
 
     @pytest.mark.parametrize(
         ("method", "path"), TASK_ROUTES, ids=[f"{m} {p}" for m, p in TASK_ROUTES]
@@ -516,14 +518,25 @@ class TestDeleteAndRestore:
 
 class TestFixedPaths:
     def test_every_fixed_path_is_declared_before_the_id_routes(self):
+        """No route that could take a fixed path as an id comes before it.
+        S2a: `comments.py` is listed before `tasks.py` (contracts §1), so its
+        `/tasks/{id}/comments` routes come first; they have more segments
+        than any fixed path and can never take one."""
         paths = [
             rc.path
             for rc in iter_route_contexts(app.routes)
             if isinstance(rc.original_route, APIRoute) and (rc.path or "").startswith(PREFIX)
         ]
-        first_id = min(i for i, p in enumerate(paths) if "{id}" in p)
+
+        def could_take(pattern: str, path: str) -> bool:
+            a, b = pattern.split("/"), path.split("/")
+            return len(a) == len(b) and all(x == y or x.startswith("{") for x, y in zip(a, b))
+
         fixed = [i for i, p in enumerate(paths) if "{" not in p]
-        assert fixed and max(fixed) < first_id
+        assert fixed
+        for i in fixed:
+            earlier = [p for p in paths[:i] if "{" in p and could_take(p, paths[i])]
+            assert earlier == [], paths[i]
 
     def test_trash(self, world):
         r = world.call("member", "GET", "/trash")

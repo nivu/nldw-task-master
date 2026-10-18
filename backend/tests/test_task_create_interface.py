@@ -307,6 +307,9 @@ class TestOnlyTheRule2Fields:
             "completed_at",
             "created_at",
             "updated_at",
+            # Phase 2 (contracts §0.1).
+            "new",
+            "accepted_at",
         }
         assert (out["status_label"], out["bucket_label"], out["priority_label"]) == (
             "Open",

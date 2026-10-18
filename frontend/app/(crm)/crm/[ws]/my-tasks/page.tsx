@@ -23,5 +23,5 @@ export default function CrmMyTasksPage() {
     if (off) router.replace(`/crm/${ws}`);
   }, [off, router, ws]);
   if (!me || off) return null;
-  return <MyTasks />;
+  return <MyTasks level={me.tasks.level} meId={me.id} />;
 }

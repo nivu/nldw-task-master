@@ -22,5 +22,5 @@ export default function TasksPage() {
   }, [off, router]);
   if (!me || off) return null;
   const projects = me.account_type === "staff" && me.capabilities.manage_projects;
-  return <MyTasks projectsHref={projects ? "/projects" : undefined} />;
+  return <MyTasks projectsHref={projects ? "/projects" : undefined} level={me.tasks.level} meId={me.id} />;
 }

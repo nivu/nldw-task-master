@@ -6,6 +6,7 @@ triggered by accident; imported in `app/tasks/__init__.py`.
 | Task | Beat | Notes |
 |---|---|---|
 | `tasks.purge_deleted` | 01:20 daily | tasks with no workspace deleted more than 90 days ago (TP-12) |
+| `tasks.send_notice` | enqueued on the event | ids only; text built at send; once per task, event, recipient and time (FR-TASK-DEL-07) |
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from app.services.tasks import store
+from app.services.tasks import notices, store
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -38,3 +39,10 @@ def purge_deleted() -> int:
     purged = store.purge_expired(SYSTEM, (_now() - timedelta(days=KEEP_DAYS)).isoformat())
     logger.info('{"event": "tasks_purge_done", "purged": %d}', purged)
     return purged
+
+
+@celery_app.task(name="tasks.send_notice")
+def send_notice(task_id: str, event: str, recipient_id: str, occurred_at: str) -> dict:
+    """FR-TASK-DEL-01, -05, -07 — one delegation message, from ids only; the
+    text is built when it is sent, and a retry sends nothing twice."""
+    return notices.send(task_id, event, recipient_id, occurred_at)

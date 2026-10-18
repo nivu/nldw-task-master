@@ -14,6 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Textarea } from "@/components/ui/textarea";
 import type {
   TaskBucket,
+  TaskComment,
   TaskDetail,
   TaskOut,
   TaskPatch,
@@ -22,7 +23,17 @@ import type {
   TaskStatus,
 } from "@/lib/api/task-types";
 import { errorMessage } from "@/lib/api/portal";
-import { addTaskLink, getTask, removeTaskLink, updateTask } from "@/lib/api/tasks";
+import {
+  acceptTask,
+  addTaskComment,
+  addTaskLink,
+  deleteTaskComment,
+  getTask,
+  getTaskComments,
+  handBackTask,
+  removeTaskLink,
+  updateTask,
+} from "@/lib/api/tasks";
 import { OBJECT_PATH } from "@/lib/crm/view-fields";
 import {
   BUCKET_LABEL,
@@ -46,6 +57,11 @@ import { cn } from "@/lib/utils";
  * is shown with who will then see the task (`POST /tasks/audience`) before
  * it is saved. What the reader may change follows `may`: everything, the
  * status only (a CRM Viewer, `007` Q-57) or nothing (TP-02).
+ *
+ * With phase 2 on (`delegation`, FR-TASK-DEL-02 to -04): Accept for a task
+ * someone else gave the reader, Hand back with a note for its assignee when
+ * they are not its creator, and the task's comments, which anyone who may
+ * see it reads and only their author deletes.
  */
 
 const STATUSES: TaskStatus[] = ["open", "waiting", "done", "cancelled"];
@@ -74,6 +90,8 @@ export function TaskPanel({
   onChanged,
   onOpenTask,
   projectsHref,
+  meId = null,
+  delegation = false,
 }: {
   taskId: string | null;
   onOpenChange: (open: boolean) => void;
@@ -81,6 +99,10 @@ export function TaskPanel({
   onOpenTask: (id: string) => void;
   /** Where a project the reader may see opens; none when they have no page. */
   projectsHref?: string;
+  /** The reader's own id, to offer Hand back to the assignee only. */
+  meId?: string | null;
+  /** Phase 2 is switched on for the reader. */
+  delegation?: boolean;
 }) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +113,29 @@ export function TaskPanel({
   const [pickingLink, setPickingLink] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [waitingText, setWaitingText] = useState("");
+  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [comment, setComment] = useState("");
+  const [handingBack, setHandingBack] = useState(false);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (!taskId || !delegation) return;
+    let cancelled = false;
+    getTaskComments(taskId)
+      .then((out) => {
+        if (!cancelled) setComments(out);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err));
+      });
+    return () => {
+      cancelled = true;
+      setComments([]);
+      setComment("");
+      setHandingBack(false);
+      setNote("");
+    };
+  }, [taskId, delegation]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -131,11 +176,62 @@ export function TaskPanel({
     }
   }
 
+  async function postComment() {
+    if (!task) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await addTaskComment(task.id, comment.trim());
+      setComment("");
+      setComments(await getTaskComments(task.id));
+      // A comment by the assignee accepts a New task (FR-TASK-DEL-02).
+      const fresh = await getTask(task.id);
+      setTask(fresh);
+      onChanged(fresh);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeComment(id: string) {
+    if (!task) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteTaskComment(task.id, id);
+      setComments(await getTaskComments(task.id));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handBack() {
+    if (!task) return;
+    setSaving(true);
+    setError(null);
+    try {
+      // The creator has it again; a personal task is then out of the
+      // reader's sight, so the panel closes.
+      onChanged(await handBackTask(task.id, note.trim()));
+      onOpenChange(false);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const save = (changes: TaskPatch) =>
     settle(() => updateTask(task!.id, { ...changes, expect_updated_at: task!.updated_at }));
 
   const edit = Boolean(task?.may.edit);
   const statusOnly = Boolean(task?.may.status_only);
+  const mayHandBack =
+    delegation && edit && meId !== null && task?.assignee.id === meId && task?.created_by.id !== meId;
   const workspaceId = task?.workspace?.id ?? null;
   const projectId = task && task.project && "id" in task.project ? task.project.id : null;
   const recordHref = (type: keyof typeof OBJECT_PATH, id: string) =>
@@ -162,6 +258,39 @@ export function TaskPanel({
               <VisibleTo text={task.visible_to} />
               {!edit && !statusOnly && (
                 <p className="text-xs text-muted-foreground">You can read this task but not change it.</p>
+              )}
+              {task.new && (
+                <div className="flex items-center gap-2 rounded-md border p-2">
+                  <p className="flex-1 text-sm">Someone gave you this task.</p>
+                  <Button size="sm" disabled={saving} onClick={() => settle(() => acceptTask(task.id))}>
+                    Accept
+                  </Button>
+                </div>
+              )}
+              {mayHandBack && !handingBack && (
+                <Button variant="outline" size="sm" disabled={saving} onClick={() => setHandingBack(true)}>
+                  Hand back to {task.created_by.name ?? "its creator"}
+                </Button>
+              )}
+              {handingBack && (
+                <Field label="Note for the hand-back" htmlFor="task-hand-back">
+                  <Textarea
+                    id="task-hand-back"
+                    rows={2}
+                    maxLength={2000}
+                    placeholder="Why you are handing it back"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={!note.trim() || saving} onClick={handBack}>
+                      Hand back
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setHandingBack(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </Field>
               )}
 
               <Field label="Title" htmlFor="task-title">
@@ -520,6 +649,52 @@ export function TaskPanel({
                       </li>
                     ))}
                   </ul>
+                </Field>
+              )}
+
+              {delegation && (
+                <Field label="Comments" htmlFor="task-comment">
+                  {comments.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No comments.</p>
+                  ) : (
+                    <ol className="space-y-2 text-sm">
+                      {comments.map((c) => (
+                        <li key={c.id} className="rounded-md border p-2">
+                          <p className="text-xs text-muted-foreground">
+                            {c.author.name ?? "Someone"} · {new Date(c.created_at).toLocaleString()}
+                            {c.kind === "hand_back" && " · handed it back"}
+                          </p>
+                          <p className="whitespace-pre-wrap">{c.body}</p>
+                          {c.may_delete && (
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              aria-label="Delete your comment"
+                              disabled={saving}
+                              onClick={() => removeComment(c.id)}
+                            >
+                              Delete
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {(edit || statusOnly) && (
+                    <div className="space-y-2">
+                      <Textarea
+                        id="task-comment"
+                        rows={2}
+                        maxLength={2000}
+                        placeholder="Add a comment"
+                        value={comment}
+                        onChange={(e) => setComment(e.target.value)}
+                      />
+                      <Button size="sm" disabled={!comment.trim() || saving} onClick={postComment}>
+                        Comment
+                      </Button>
+                    </div>
+                  )}
                 </Field>
               )}
 
