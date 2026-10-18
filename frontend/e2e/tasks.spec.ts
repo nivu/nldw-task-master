@@ -43,8 +43,8 @@ async function tokenFor(request: APIRequestContext, email: string): Promise<stri
   return (await r.json()).access_token;
 }
 
-/** Phase 1 on for these people (FR-TASK-ROLL-02), as the admin. */
-async function switchOn(request: APIRequestContext, emails: string[]) {
+/** Phase 1 (or `level`) on for these people (FR-TASK-ROLL-02), as the admin. */
+async function switchOn(request: APIRequestContext, emails: string[], level = 1) {
   const token = await tokenFor(request, PEOPLE.admin);
   const auth = { Authorization: `Bearer ${token}` };
   const users = await (await request.get("/api/proxy/api/v1/admin/users", { headers: auth })).json();
@@ -53,7 +53,7 @@ async function switchOn(request: APIRequestContext, emails: string[]) {
     expect(user, email).toBeTruthy();
     const r = await request.patch(`/api/proxy/api/v1/admin/users/${user.id}`, {
       headers: auth,
-      data: { tasks_level: 1 },
+      data: { tasks_level: level },
     });
     expect(r.ok(), await r.text()).toBeTruthy();
   }
@@ -240,4 +240,58 @@ test("below phase 1 the My Tasks pages show nothing of tasks", async ({ page }) 
   await page.waitForURL(/\/crm\/labs$/);
   await expect(page.getByRole("heading", { name: "My Tasks" })).toHaveCount(0);
   await expect(page.locator('[data-testid="quick-add"]')).toHaveCount(0);
+});
+
+test("the Brief shows a workspace's To review as its own card, opening the Review Queue", async ({
+  page,
+  request,
+}) => {
+  // 009 FR-CRMAI-REV-09: since 009 the brief's CRM sections carry To review
+  // after the five of 007. Answered here so the queue need not be filled.
+  await switchOn(request, [PEOPLE.lead], 2);
+  await page.route("**/api/proxy/api/v1/tasks/brief", async (route) => {
+    const five = ["replies_owed", "next_steps", "tasks", "silent_clients", "loose_ends"].map((key) => ({
+      key,
+      items: [],
+    }));
+    await route.fulfill({
+      json: {
+        as_of: "2026-10-20",
+        today: [],
+        overdue: [],
+        nudge: [],
+        workspaces: [
+          {
+            workspace: { key: "labs", name: "Nunnari Labs" },
+            sections: [
+              ...five,
+              {
+                key: "to_review",
+                count: 4,
+                items: [
+                  {
+                    record_type: "review_item",
+                    record_id: "c0000000-0000-4000-8000-000000000001",
+                    title: "Change next step",
+                    detail: "Acme pilot",
+                    created_at: "2026-10-19T05:00:00+00:00",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+  await signIn(page, PEOPLE.lead);
+  await page.goto("/tasks?view=brief");
+  const card = page.getByTestId("today-to_review");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("To review");
+  await expect(card).toContainText("4");
+  await expect(card.getByRole("link", { name: /Change next step/ })).toHaveAttribute("href", "/crm/labs/review");
+  await expect(card.getByRole("link", { name: "All 4 in Review" })).toHaveAttribute("href", "/crm/labs/review");
+  // No card without a title, and no link to an object page that does not exist.
+  await expect(page.locator('a[href*="undefined"]')).toHaveCount(0);
 });

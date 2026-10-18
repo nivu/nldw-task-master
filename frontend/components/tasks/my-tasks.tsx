@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { TodayList } from "@/components/crm/today-list";
+import { ToReviewSectionCard } from "@/components/crm/to-review-section";
 import { Inbox } from "@/components/tasks/inbox";
 import { TASK_CREATED_EVENT } from "@/components/tasks/quick-add";
 import { TaskFilters } from "@/components/tasks/task-filters";
@@ -24,6 +25,7 @@ import type {
   WaitingView,
 } from "@/lib/api/task-types";
 import { errorMessage, getMe } from "@/lib/api/portal";
+import { splitToReview } from "@/lib/crm/review";
 import {
   completeTask,
   getAssignedByMe,
@@ -213,21 +215,29 @@ function Brief({
           />
         ))}
       </Block>
-      {data.workspaces.map((w) => (
-        <section key={w.workspace.key} className="space-y-2">
-          <h2 className="text-sm font-semibold">{w.workspace.name} — CRM Today</h2>
-          <TodayList
-            workspace={w.workspace.key}
-            today={{
-              as_of: data.as_of,
-              timezone: zone,
-              person: { id: meId ?? "", name: null },
-              sections: w.sections,
-            }}
-            timeZone={zone}
-          />
-        </section>
-      ))}
+      {data.workspaces.map((w) => {
+        // TodayList knows the five sections of 007 only; To review has its
+        // own card, as on CRM Today (009 FR-CRMAI-REV-09).
+        const split = splitToReview(w.sections);
+        return (
+          <section key={w.workspace.key} className="space-y-2">
+            <h2 className="text-sm font-semibold">{w.workspace.name} — CRM Today</h2>
+            <TodayList
+              workspace={w.workspace.key}
+              today={{
+                as_of: data.as_of,
+                timezone: zone,
+                person: { id: meId ?? "", name: null },
+                sections: split.sections,
+              }}
+              timeZone={zone}
+            />
+            {split.toReview && (
+              <ToReviewSectionCard workspace={w.workspace.key} section={split.toReview} timeZone={zone} />
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }

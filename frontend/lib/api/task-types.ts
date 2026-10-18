@@ -5,7 +5,7 @@
  * returns, by hand, as `crm-types.ts` mirrors `schemas/crm.py`.
  */
 
-import type { TodaySection } from "@/lib/api/crm-types";
+import type { TodaySection, ToReviewSection } from "@/lib/api/crm-types";
 
 export type TaskKind = "private" | "shared_personal" | "crm" | "project";
 export type TaskStatus = "open" | "waiting" | "done" | "cancelled";
@@ -168,8 +168,9 @@ export interface TaskBrief {
   overdue: TaskOut[];
   /** Waiting tasks the reader created, untouched for their nudge days. */
   nudge: (TaskOut & { idle_days: number })[];
-  /** Each workspace's CRM Today sections, exactly as CRM Today gives them. */
-  workspaces: { workspace: { key: string; name: string }; sections: TodaySection[] }[];
+  /** Each workspace's CRM Today sections, exactly as CRM Today gives them:
+   *  since 009, To review among them (split it out with `splitToReview`). */
+  workspaces: { workspace: { key: string; name: string }; sections: (TodaySection | ToReviewSection)[] }[];
 }
 
 /** GET /tasks/trash. */
