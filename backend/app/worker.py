@@ -186,5 +186,11 @@ celery_app.conf.beat_schedule.update(
             "task": "crm_ai.summaries",
             "schedule": crontab(minute="*/15"),
         },
+        # FR-CRMAI-MEET-01, NFR-CRMAI-05: the Fireflies poll, a meeting note
+        # within 30 minutes of the transcript being ready.
+        "crm-ai-meetings": {
+            "task": "crm_ai.meetings",
+            "schedule": crontab(minute="*/15"),
+        },
     }
 )

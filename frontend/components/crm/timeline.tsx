@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { AiMarker } from "@/components/crm/ai-marker";
 import { ThreadSummary } from "@/components/crm/thread-summary";
 import { Button } from "@/components/ui/button";
 import { getCrmTimeline } from "@/lib/api/crm";
@@ -26,6 +27,8 @@ import { cn } from "@/lib/utils";
  * With 009 phase 1 on, the record's latest summarised email threads are
  * entries too, by their last message, each expanding to its AI summary
  * (009 FR-CRMAI-SUM-08). They show while no type filter is chosen.
+ * A note entry for a meeting note the job wrote shows the AI marker
+ * (009 FR-CRMAI-MEET-05); the body itself is on the Notes tab.
  */
 
 const TYPES: { key: CrmTimelineType; label: string }[] = [
@@ -52,7 +55,12 @@ function Entry({ entry, timeZone }: { entry: CrmTimelineEntry; timeZone: CrmTime
   return (
     <li className="relative border-l pl-4">
       <span className="absolute -left-1 top-1.5 size-2 rounded-full bg-muted-foreground/60" />
-      <p className="text-sm">{entry.summary}</p>
+      <p className="text-sm">
+        {entry.summary}
+        {entry.type === "note" && entry.ai && (
+          <AiMarker ai={entry.ai} timeZone={timeZone} className="ml-1.5 align-middle" />
+        )}
+      </p>
       {entry.changes.length > 0 && (
         <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
           {entry.changes.map((change) => (

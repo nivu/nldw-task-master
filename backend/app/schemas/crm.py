@@ -948,3 +948,45 @@ class ThreadSummaryOut(BaseModel):
     sentiment: Literal["positive", "neutral", "concern"]
     links: list[dict[str, Any]]
     ai: dict[str, Any]
+
+
+class MeetingActionItem(BaseModel):
+    """An action item agreed in the meeting: a paraphrase, its owner as the
+    number of a listed team member or "unknown" (FR-CRMAI-SUM-12, applied by
+    FR-CRMAI-MEET-05), and its date when one was stated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200)
+    owner: str = Field(max_length=40)
+    due_on: date | None
+
+
+class MeetingOutput(BaseModel):
+    """FR-CRMAI-MEET-05, -06 — what the model must answer for a meeting,
+    validated before anything is saved: a summary of at most 5 lines, the
+    decisions and action items as paraphrases of at most 200 characters, and
+    a next step and date only when the meeting agreed one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=1000)
+    decisions: list[str] = Field(max_length=10)
+    action_items: list[MeetingActionItem] = Field(max_length=20)
+    next_step: str | None = Field(max_length=500)
+    next_step_on: date | None
+
+    @field_validator("summary")
+    @classmethod
+    def _five_lines(cls, value: str) -> str:
+        lines = [line.strip() for line in value.strip().splitlines() if line.strip()]
+        if not 1 <= len(lines) <= 5:
+            raise ValueError("a meeting summary is 1 to 5 lines")
+        return "\n".join(lines)
+
+    @field_validator("decisions")
+    @classmethod
+    def _short_decisions(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(d.strip()) <= 200 for d in value):
+            raise ValueError("a decision is 1 to 200 characters")
+        return [d.strip() for d in value]

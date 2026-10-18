@@ -6,7 +6,9 @@ with output that fails the schema, time out or fail, and records every
 prompt it was given, so a test can check what reached the model.
 `FakeGmailText` stands in for `services/crm/gmail.message_text` and records
 every message id it was asked for, so a test can check that only stored
-messages are read. `CapturedCelery` records every task a test enqueues
+messages are read. `FakeFireflies` stands in for `services/crm/fireflies`'s
+two reads and records every transcript fetch, so a test can check that an
+internal or unmatched meeting is never downloaded. `CapturedCelery` records every task a test enqueues
 instead of sending it.
 The clock helpers build fixed times on the Asia/Kolkata wall clock, where
 the budget month turns (Q-23).
@@ -22,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 from celery.app.task import Task
 
-from app.services.crm import claude, gmail
+from app.services.crm import claude, fireflies, gmail
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -118,6 +120,92 @@ class FakeGmailText:
         if message_id in self.failing:
             raise gmail.GmailError("Gmail message_text failed (500).")
         return self.texts.get(message_id, "")
+
+
+class FakeFireflies:
+    """`fireflies.list_since` and `fireflies.transcript`, from meetings added
+    with `meeting()`. The list answers metadata only, updated after the
+    cursor, as the client does; every content fetch is recorded in
+    `fetched`. `failing` ids raise a `FirefliesError` when fetched, and
+    `down` makes the list fail. Installing it also sets a Fireflies key
+    and keeps the poll cursor in memory (`cursor`), not in Redis."""
+
+    def __init__(self) -> None:
+        self.meetings: dict[str, dict[str, Any]] = {}
+        self.contents: dict[str, dict[str, Any]] = {}
+        self.fetched: list[str] = []
+        self.listed: list[str | None] = []
+        self.failing: set[str] = set()
+        self.down = False
+        self.cursor: str | None = None
+
+    def install(self, monkeypatch, *, key: bool = True) -> FakeFireflies:
+        from pydantic import SecretStr
+
+        from app.config import settings
+        from app.services.crm import meetings
+
+        monkeypatch.setattr(settings, "FIREFLIES_API_KEY", SecretStr("ff-test") if key else None)
+        monkeypatch.setattr(fireflies, "list_since", self.list_since)
+        monkeypatch.setattr(fireflies, "transcript", self.transcript)
+        monkeypatch.setattr(meetings, "read_cursor", lambda: self.cursor)
+        monkeypatch.setattr(meetings, "save_cursor", self._save)
+        return self
+
+    def _save(self, value: str) -> None:
+        self.cursor = value
+
+    def meeting(
+        self,
+        transcript_id: str,
+        attendees: list[str],
+        *,
+        title: str = "Pilot review",
+        date: str = "2026-10-18T09:30:00+00:00",
+        updated_at: str | None = None,
+        sentences: list[tuple[str, str]] | None = None,
+        overview: str = "",
+        action_items: str = "",
+    ) -> dict[str, Any]:
+        """A recorded meeting: its metadata as listed and its content."""
+        self.meetings[transcript_id] = {
+            "id": transcript_id,
+            "title": title,
+            "date": date,
+            "updated_at": updated_at or date,
+            "attendees": sorted(a.lower() for a in attendees),
+            "transcript_url": f"https://app.fireflies.ai/view/{transcript_id}",
+        }
+        self.contents[transcript_id] = {
+            "sentences": [
+                {"speaker": who, "text": text}
+                for who, text in (sentences or [("Priya", "Could you send the pilot plan?")])
+            ],
+            "overview": overview,
+            "action_items": action_items,
+        }
+        return self.meetings[transcript_id]
+
+    def list_since(self, cursor: str | None, *, now: datetime | None = None) -> list[dict]:
+        self.listed.append(cursor)
+        if self.down:
+            raise fireflies.FirefliesError("Fireflies list failed (503).")
+        found = [
+            dict(m)
+            for m in self.meetings.values()
+            if cursor is None or _iso(m["updated_at"]) > _iso(cursor)
+        ]
+        return sorted(found, key=lambda m: (m["updated_at"], m["id"]))
+
+    def transcript(self, transcript_id: str) -> dict[str, Any]:
+        self.fetched.append(transcript_id)
+        if transcript_id in self.failing:
+            raise fireflies.FirefliesError("Fireflies transcript failed (500).")
+        return self.contents[transcript_id]
+
+
+def _iso(value: str) -> datetime:
+    return datetime.fromisoformat(value)
 
 
 class CapturedCelery:

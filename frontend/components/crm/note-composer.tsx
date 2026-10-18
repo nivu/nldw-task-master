@@ -3,6 +3,7 @@
 import { X } from "lucide-react";
 import { useState } from "react";
 
+import { AiMarker } from "@/components/crm/ai-marker";
 import { Markdown } from "@/components/crm/field-editor";
 import { LinkRefs } from "@/components/crm/task-dialog";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,10 @@ import { formatDate, todayIn, type CrmTimezone } from "@/lib/crm/format";
  * everywhere in the CRM). Logging a call, meeting, WhatsApp message or other
  * touch is a note with that kind and the day it happened. Only members of the
  * workspace can be mentioned; the picker offers nobody else.
+ *
+ * A meeting note written from a Fireflies transcript (009 FR-CRMAI-MEET-05)
+ * carries `ai_provenance`: its body is rendered as plain text, never as
+ * markdown (FR-CRMAI-LLM-04), with the AI marker and the transcript link.
  */
 
 const KINDS: { value: NoteKind; label: string }[] = [
@@ -225,8 +230,25 @@ export function NoteList({
             )}
             <span>{note.created_by_name ?? "Someone"}</span>
             <span>{formatDate(note.created_at, timeZone)}</span>
+            {note.ai_provenance && <AiMarker ai={note.ai_provenance} timeZone={timeZone} />}
           </p>
-          <Markdown text={note.body} />
+          {note.ai_provenance ? (
+            <>
+              <p className="whitespace-pre-line break-words text-sm">{note.body}</p>
+              {note.ai_provenance.transcript_url?.startsWith("https://") && (
+                <a
+                  href={note.ai_provenance.transcript_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs underline underline-offset-2"
+                >
+                  Open the transcript in Fireflies
+                </a>
+              )}
+            </>
+          ) : (
+            <Markdown text={note.body} />
+          )}
           {(note.links.length > 1 || note.mentions.length > 0) && (
             <div className="space-y-0.5 text-xs text-muted-foreground">
               {note.links.length > 1 && (

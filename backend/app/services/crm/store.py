@@ -101,6 +101,8 @@ ACCOUNT_LEVEL = frozenset(
         "review_tombstone",
         # Spec 009 (062): crm_store_summary scopes by the actor's workspace.
         "store_summary",
+        # Spec 009 (063): crm_store_meeting_note scopes by the actor's workspace.
+        "store_meeting_note",
     }
 )
 
@@ -2245,3 +2247,21 @@ def summary_by_thread(
         thread_ids,
     )
     return {r["thread_id"]: r for r in _with_links(workspace_id, rows)}
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — meeting notes (009 data-model §3.4)
+#
+# A meeting note is an ordinary audited note of kind `meeting`, written only
+# through migration 063's `crm_store_meeting_note` as the `sync` actor. Its
+# people are matched with `people_by_emails` above, workspace by workspace.
+# No column holds transcript text.
+# ---------------------------------------------------------------------------
+
+
+def store_meeting_note(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """063 `crm_store_meeting_note` — the note, its links and its Review Queue
+    items in one transaction: `{note_id, created, updated, items: [{id,
+    created}]}`, with `edited_by_person` when a person's edit stopped an
+    update (Q-41)."""
+    return rpc("crm_store_meeting_note", {"p_actor": actor, "p_plan": plan}) or {}

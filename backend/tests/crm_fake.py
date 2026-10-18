@@ -325,7 +325,15 @@ DEFAULTS = {
         **_TRASH,
     },
     "task_links": {"project_id": None},
-    "crm_notes": {"kind": "note", "occurred_on": None, "twenty_id": None, **_TRASH},
+    "crm_notes": {
+        "kind": "note",
+        "occurred_on": None,
+        "twenty_id": None,
+        # 009 (063): a meeting note the job wrote.
+        "source_ref": None,
+        "ai_provenance": None,
+        **_TRASH,
+    },
     "crm_saved_views": {
         "icon": None,
         "kind": "table",
@@ -4399,6 +4407,107 @@ class FakeCrmStore:
             if r["mailbox_id"] == mailbox_id and r["thread_id"] in thread_ids
         ]
         return {r["thread_id"]: r for r in self._summary_details(rows)}
+
+    # -- spec 009: meeting notes (063) ----------------------------------------
+
+    def store_meeting_note(self, actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        """crm_store_meeting_note (063): the note inserted through crm_apply's
+        audited path with its links, or its body and provenance rewritten for
+        a newer transcript while no person has edited it (Q-41); then its
+        items through crm_review_upsert, each pointing at the note, in one
+        transaction."""
+        ws = actor["workspace_id"]
+        assert actor["kind"] in ("sync", "system"), actor
+        plan = json.loads(json.dumps(plan))
+        ref = plan.get("source_ref") or ""
+        if not ref.startswith("fireflies:") or ref == "fireflies:":
+            raise store.refusal_for("CRM22", "A meeting note needs its transcript.")
+        assert len(ref) <= 200
+        provenance = plan["ai_provenance"]
+        assert isinstance(provenance, dict)
+        snapshot = {t: {k: dict(v) for k, v in rows.items()} for t, rows in self.rows.items()}
+        audit_len = len(self.audit)
+        try:
+            existing = next(
+                (n for n in self._of("crm_notes", ws) if n.get("source_ref") == ref), None
+            )
+            created = updated = False
+            if existing is None:
+                ops = [
+                    {
+                        "op": "insert",
+                        "table": "crm_notes",
+                        "ref": "note",
+                        "values": {
+                            "body": plan["body"],
+                            "kind": "meeting",
+                            "occurred_on": plan["occurred_on"],
+                            "source_ref": ref,
+                            "ai_provenance": provenance,
+                        },
+                    }
+                ]
+                ops += [
+                    {
+                        "op": "insert",
+                        "table": "crm_note_links",
+                        "values": {
+                            "note_id": "$ref:note",
+                            "record_type": link["record_type"],
+                            "record_id": link["record_id"],
+                        },
+                    }
+                    for link in plan.get("links") or []
+                ]
+                note_id = self.apply(actor, ops)[0]["id"]
+                created = True
+            else:
+                note_id = existing["id"]
+                seen = (existing.get("ai_provenance") or {}).get("transcript_updated_at")
+                if seen and _at(provenance["transcript_updated_at"]) <= _at(seen):
+                    return {"note_id": note_id, "created": False, "updated": False, "items": []}
+                if any(
+                    r["target_table"] == "crm_notes"
+                    and r["target_id"] == note_id
+                    and r["actor_label"] == "user"
+                    and r["action"] != "note.created"
+                    for r in self.audit
+                ):
+                    return {
+                        "note_id": note_id,
+                        "created": False,
+                        "updated": False,
+                        "edited_by_person": True,
+                        "items": [],
+                    }
+                self.apply(
+                    actor,
+                    [
+                        {
+                            "op": "update",
+                            "table": "crm_notes",
+                            "id": note_id,
+                            "values": {"body": plan["body"], "ai_provenance": provenance},
+                        }
+                    ],
+                )
+                updated = True
+            items = []
+            for item in plan.get("items") or []:
+                if item["type"] == "deal_link":
+                    item = {
+                        **item,
+                        "record_type": "note",
+                        "record_id": note_id,
+                        "suggestion": {"note_id": note_id},
+                        "dedupe_key": item["dedupe_key"].replace("$note", note_id),
+                    }
+                items.append({**item, "source_link": {"record_type": "note", "record_id": note_id}})
+            made = self.review_upsert(actor, items)
+        except Exception:
+            self.rows, self.audit[audit_len:] = snapshot, []
+            raise
+        return {"note_id": note_id, "created": created, "updated": updated, "items": made}
 
 
 def _at(value: str | datetime) -> datetime:

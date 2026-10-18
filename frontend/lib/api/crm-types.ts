@@ -499,6 +499,10 @@ export interface CrmNote extends RecordStamps {
   occurred_on: string | null;
   links: CrmLinkRef[];
   mentions: { id: string; name: string | null }[];
+  /** 009 FR-CRMAI-MEET-05: `fireflies:<transcript_id>` on a meeting note the job wrote. */
+  source_ref?: string | null;
+  /** 009 FR-CRMAI-MEET-05: set on a meeting note the job wrote; its body is plain text. */
+  ai_provenance?: CrmMeetingProvenance | null;
 }
 
 /** A deal's other contact and their Role in deal (spec §5.8). */
@@ -776,6 +780,8 @@ export interface CrmTimelineEntry {
   /** 009 FR-CRMAI-REV-05: set when the change was an approved AI suggestion. */
   suggestion_id?: string;
   approved_suggestion?: boolean;
+  /** 009 FR-CRMAI-MEET-05: on a note entry for a meeting note the job wrote. */
+  ai?: AiProvenance | null;
 }
 
 /** GET /crm/{object}/{id} — the record page in one call. */
@@ -1586,6 +1592,13 @@ export interface AiProvenance {
   model: string | null;
   generated_at: string | null;
   source?: { record_type: ViewObjectKind; record_id: string } | { thread_key: string } | null;
+}
+
+/** A meeting note's provenance (009 data-model §3.4); the transcript link is the only URL stored. */
+export interface CrmMeetingProvenance extends AiProvenance {
+  source_kind: "meeting";
+  transcript_updated_at: string | null;
+  transcript_url: string | null;
 }
 
 export type ReviewItemType =

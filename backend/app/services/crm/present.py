@@ -472,6 +472,26 @@ def note(
             {"id": m["member_id"], "name": facts.name(m["member_id"])} for m in mentions or []
         ],
         **_stamps(row, facts),
+        # Spec 009 FR-CRMAI-MEET-05: a meeting note the job wrote; its body
+        # is plain text (contracts §1).
+        "source_ref": row.get("source_ref"),
+        "ai_provenance": row.get("ai_provenance"),
+        **_note_ai(row),
+    }
+
+
+def _note_ai(row: dict[str, Any]) -> dict[str, Any]:
+    """The `ai` provenance of a meeting note the job wrote (contracts §1, P-2)."""
+    made = row.get("ai_provenance")
+    if not made:
+        return {}
+    return {
+        "ai": {
+            "source_kind": made.get("source_kind"),
+            "model": made.get("model"),
+            "generated_at": made.get("generated_at"),
+            "source": {"record_type": "note", "record_id": row["id"]},
+        }
     }
 
 
@@ -657,7 +677,17 @@ def _note_entry(row, verb, before, after, near: Around) -> dict[str, Any] | None
         said = _ACTIVITY.get(found.get("kind") or "note", "Added a note")
         if found.get("occurred_on") and found.get("kind") != "note":
             said = f"{said} on {found['occurred_on']}"
-        return {"type": "note", "summary": said, "changes": []}
+        entry = {"type": "note", "summary": said, "changes": []}
+        # Spec 009 FR-CRMAI-MEET-05: the AI marker on a meeting note's entry.
+        made = found.get("ai_provenance")
+        if made:
+            entry["ai"] = {
+                "source_kind": made.get("source_kind"),
+                "model": made.get("model"),
+                "generated_at": made.get("generated_at"),
+                "source": {"record_type": "note", "record_id": note_id},
+            }
+        return entry
     if verb == "created":
         return None  # the link row says it
     said = {
