@@ -322,6 +322,10 @@ export function MyTasks({
     (task: TaskOut) => {
       setData((d) => (d ? placed(d, task, me === null || task.assignee.id === me) : d));
       setVersion((n) => n + 1);
+      // Closing a recurring task created its next occurrence (FR-TASK-RRULE-02).
+      if (task.recurrence && (task.status === "done" || task.status === "cancelled")) {
+        setReloads((n) => n + 1);
+      }
     },
     [me]
   );
@@ -368,7 +372,7 @@ export function MyTasks({
       {view === "assigned_by_me" && <AssignedByMe version={version} onOpen={(task) => setOpen(task.id)} />}
       {view === "brief" && <Brief version={version} onOpen={(task) => setOpen(task.id)} meId={meId} />}
       {view === "mine" && <TaskFilters value={filters} onChange={setFilters} />}
-      {view === "mine" && level >= 2 && <TaskSettings />}
+      {view === "mine" && level >= 2 && <TaskSettings onAdded={() => setReloads((n) => n + 1)} />}
       {view === "mine" && error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -405,6 +409,7 @@ export function MyTasks({
         projectsHref={projectsHref}
         meId={meId}
         delegation={level >= 2}
+        recurring={level >= 3}
       />
     </div>
   );

@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query
 from app.api.errors import ProblemDetail
 from app.api.tasks.deps import TasksDep, TasksDep2
 from app.domain.tasks import delegation, quick_add, rollout, rules, service
+from app.domain.tasks.service import TaskActor
 from app.schemas.tasks import (
     QuickAddAnswers,
     QuickAddIn,
@@ -33,7 +34,7 @@ from app.schemas.tasks import (
     TaskPatch,
     TaskSettingsIn,
 )
-from app.services.tasks import listing, people, store
+from app.services.tasks import listing, people, store, templates
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -165,14 +166,21 @@ def trash(actor: TasksDep) -> list[dict[str, Any]]:
     return listing.trash(actor)
 
 
-def _settings(profile: dict[str, Any]) -> dict[str, Any]:
-    return {"nudge_days": profile.get("task_nudge_days") or delegation.DEFAULT_NUDGE_DAYS}
+def _settings(actor: TaskActor, profile: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "nudge_days": profile.get("task_nudge_days") or delegation.DEFAULT_NUDGE_DAYS
+    }
+    # Phase 3 lists the starter templates (FR-TASK-RRULE-05).
+    if rollout.level_for(actor.user.profile, store.default_level()) >= 3:
+        out["templates"] = templates.offered()
+    return out
 
 
 @router.get("/settings")
 def get_settings(actor: TasksDep2) -> dict[str, Any]:
-    """The caller's own task settings (FR-TASK-DEL-06)."""
-    return _settings(actor.user.profile)
+    """The caller's own task settings (FR-TASK-DEL-06); from phase 3 the
+    starter templates (FR-TASK-RRULE-05)."""
+    return _settings(actor, actor.user.profile)
 
 
 @router.patch("/settings")
@@ -180,8 +188,8 @@ def update_settings(actor: TasksDep2, body: TaskSettingsIn) -> dict[str, Any]:
     """Changes the caller's idle days before a waiting task is a "nudge?"
     (1-30, FR-TASK-DEL-06)."""
     if body.nudge_days is None:
-        return _settings(actor.user.profile)
-    return _settings(store.set_nudge_days(actor.user.id, body.nudge_days))
+        return _settings(actor, actor.user.profile)
+    return _settings(actor, store.set_nudge_days(actor.user.id, body.nudge_days))
 
 
 @router.get("/project/{project_id}")

@@ -310,6 +310,8 @@ class TestOnlyTheRule2Fields:
             # Phase 2 (contracts §0.1).
             "new",
             "accepted_at",
+            # Phase 3 (contracts §0.1).
+            "recurrence",
         }
         assert (out["status_label"], out["bucket_label"], out["priority_label"]) == (
             "Open",

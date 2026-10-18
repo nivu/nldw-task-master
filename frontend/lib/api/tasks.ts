@@ -27,6 +27,7 @@ import type {
   TaskPatch,
   TaskPerson,
   TaskSettings,
+  TaskTemplate,
   TrashedTask,
   WaitingView,
 } from "@/lib/api/task-types";
@@ -120,6 +121,10 @@ export const getTaskSettings = () => call<TaskSettings>("/settings");
 
 export const updateTaskSettings = (changes: Partial<TaskSettings>) =>
   call<TaskSettings>("/settings", { method: "PATCH", ...body(changes) });
+
+/** Phase 3 — adds a starter template's recurring task (FR-TASK-RRULE-05). */
+export const addTaskTemplate = (key: TaskTemplate["key"]) =>
+  call<TaskOut>(`/templates/${key}`, { method: "POST" });
 
 // ---------------------------------------------------------------------------
 // Views, the project panel and the brief — phase 2 (FR-TASK-VIEW-01 to -03,

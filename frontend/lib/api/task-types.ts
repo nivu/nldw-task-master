@@ -72,6 +72,9 @@ export interface TaskOut {
    *  yet accepted. */
   new: boolean;
   accepted_at: string | null;
+  /** Phase 3 (FR-TASK-RRULE-01): an RRULE body such as
+   *  `FREQ=WEEKLY;BYDAY=MO,TH`, or null. */
+  recurrence: string | null;
 }
 
 /** Contracts §2 — GET /tasks/{id}/comments (FR-TASK-DEL-04). */
@@ -85,9 +88,21 @@ export interface TaskComment {
   may_delete: boolean;
 }
 
-/** Contracts §2 — GET/PATCH /tasks/settings (FR-TASK-DEL-06). */
+/** Contracts §2 — a starter template, listed from phase 3 (FR-TASK-RRULE-05). */
+export interface TaskTemplate {
+  key: "invoice_follow_ups" | "pipeline_review" | "statutory_dates" | "payroll_check";
+  title: string;
+  /** The recurrence in words; null while the template is not available. */
+  repeats: string | null;
+  /** False for the statutory dates until the owner supplies them. */
+  available: boolean;
+}
+
+/** Contracts §2 — GET/PATCH /tasks/settings (FR-TASK-DEL-06; phase 3 lists
+ *  the templates). */
 export interface TaskSettings {
   nudge_days: number;
+  templates?: TaskTemplate[];
 }
 
 export interface TaskHistoryEntry {
@@ -200,6 +215,8 @@ export interface TaskPatch {
   waiting_on_id?: string | null;
   waiting_on_text?: string | null;
   category_id?: string | null;
+  /** Phase 3: null ends the series (FR-TASK-RRULE-04). */
+  recurrence?: string | null;
   expect_updated_at?: string;
 }
 

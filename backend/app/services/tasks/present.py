@@ -213,6 +213,8 @@ def present(viewer: Viewer, rows: list[dict[str, Any]], *, today: date) -> list[
                 and delegation.is_new(row)
                 and row.get("assignee_id") == viewer.id,
                 "accepted_at": row.get("accepted_at"),
+                # Phase 3 (FR-TASK-RRULE-01): the RRULE body, or null.
+                "recurrence": row.get("recurrence"),
             }
         )
     return out

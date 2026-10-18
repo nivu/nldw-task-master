@@ -44,6 +44,10 @@ TASK_TABLES = "('tasks', 'task_links')"
 #: 008 (047, FR-TASK-DATA-09, -15): the two plain references among them, by
 #: design — a link's task and a subtask's parent, which may have no workspace.
 PLAIN_TASK_KEYS = {"task_links_task_id", "tasks_parent_id_fkey"}
+#: 008 (053, FR-TASK-RRULE-03): a recurring task's series key, the first
+#: occurrence's id, which stays the series' name after that task is purged;
+#: a key, not a reference.
+SERIES_KEYS = {("tasks", "series_id")}
 
 
 def _tables(stack, like: str = "%") -> list[str]:
@@ -190,7 +194,8 @@ class TestReferencesStayInTheWorkspace:
         unchecked = [
             (r["table_name"], r["column_name"])
             for r in rows
-            if r["column_name"] not in POLYMORPHIC or r["table_name"] not in checked
+            if (r["table_name"], r["column_name"]) not in SERIES_KEYS
+            and (r["column_name"] not in POLYMORPHIC or r["table_name"] not in checked)
         ]
         assert unchecked == []
 

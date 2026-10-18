@@ -1,5 +1,5 @@
 """Phases 1 to 3's acceptance criteria, one test each — spec 008 §12
-(phases 1 to 3); NFR-TASK-08; tasks T073, T098, T104.
+(phases 1 to 3); NFR-TASK-08; tasks T073, T098, T104, T111.
 
 The lines are read from `specs/008-tasks/spec.md` §12 itself, from "Phase 1 —
 migration and CRM" to "Phase 2", from "Phase 2" to "Phase 3" and from
@@ -10,8 +10,7 @@ covering tests only. Phase 3's lines (S3a) are proved by named covering
 tests and, for what is screen state only (Accept, the merge, the warning;
 plan §5.9), by named tests of the local Playwright spec
 `frontend/e2e/day-log.spec.ts`, each asserted to exist and the spec to skip
-nothing. The recurrence line is S3b's (T111) and is the only phase-3 line
-without an entry until then.
+nothing; the recurrence line (S3b) by named covering tests.
 
 Each line is proved one of two ways:
 
@@ -689,9 +688,16 @@ ENTRIES_3: list[tuple[str, tuple[str, ...]]] = [
         "Log a day warns that a note is visible",
         ("e2e:Log a day warns that a note is visible to the lead, managers and admins",),
     ),
+    (
+        "Completing or cancelling a recurring task",
+        (
+            "test_task_recurrence.py::TestNextDue",
+            "test_task_recurrence_routes.py::TestNextOccurrence",
+            "test_task_recurrence_routes.py::TestSameFieldsAndLinks",
+            "db/test_task_recurrence_db.py::TestSeriesDueDates",
+        ),
+    ),
 ]
-#: Phase-3 lines a later slice proves: the recurrence line (S3b, T111).
-LATER_3 = ("Completing or cancelling a recurring task",)
 
 
 def check_e2e(title: str) -> None:
@@ -736,11 +742,8 @@ class TestTheLines:
 
     def test_every_phase_3_line_has_exactly_one_entry(self):
         for line in LINES_3:
-            covered = sum(line.startswith(p) for p, _ in ENTRIES_3)
-            assert covered == (0 if line.startswith(LATER_3) else 1), line
+            assert sum(line.startswith(p) for p, _ in ENTRIES_3) == 1, line
         for prefix, _ in ENTRIES_3:
-            assert sum(line.startswith(prefix) for line in LINES_3) == 1, prefix
-        for prefix in LATER_3:
             assert sum(line.startswith(prefix) for line in LINES_3) == 1, prefix
 
     def test_a_missing_or_skipped_e2e_test_is_caught(self, tmp_path, monkeypatch):
@@ -865,9 +868,7 @@ def test_phase_2_line(line):
         check_cover(ref)
 
 
-@pytest.mark.parametrize(
-    "line", [line for line in LINES_3 if not line.startswith(LATER_3)], ids=_id
-)
+@pytest.mark.parametrize("line", LINES_3, ids=_id)
 def test_phase_3_line(line):
     [proof] = [proof for prefix, proof in ENTRIES_3 if line.startswith(prefix)]
     for ref in proof:

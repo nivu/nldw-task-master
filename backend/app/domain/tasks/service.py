@@ -16,6 +16,11 @@ Delegation (phase 2, contracts §2): every write records who set the
 assignee (`assigned_by`) and when the assignee took it up (`accepted_at`),
 and, when the actor has phase 2 switched on, enqueues the messages of
 FR-TASK-DEL-01 and -05 (`services/tasks/notices`); an import sends none.
+
+Recurrence (phase 3, FR-TASK-RRULE-01 to -04): completing or cancelling a
+recurring task inserts its next occurrence in the same `task_apply` call
+that closes it and sets its `recurrence_spawned`, so reopening and closing
+it again creates no other; removing the recurrence ends the series.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.api.deps import CurrentUser
-from app.domain.tasks import delegation, rollout, rules, visibility
+from app.domain.tasks import delegation, recurrence, rollout, rules, visibility
 from app.domain.tasks.errors import TaskRefused
 from app.schemas.tasks import TaskCreate, TaskLinkIn, TaskPatch
 from app.services.crm import notifications
@@ -418,9 +423,11 @@ def _after_write(
     *,
     links: list[dict[str, Any]] | None = None,
     assigned: str | None = None,
+    spawned: dict[str, Any] | None = None,
 ) -> dict:
-    """A CRM task keeps the CRM's flags and its bell notice (as today); the
-    task is returned as the actor now sees it."""
+    """A CRM task keeps the CRM's flags and its bell notice (as today), and so
+    does the next occurrence a write `spawned`; the task is returned as the
+    actor now sees it."""
     ws_id = row.get("workspace_id")
     if ws_id is not None:
         targets = [
@@ -428,7 +435,7 @@ def _after_write(
             for lk in (task.crm_links if links is None else links)
             if lk["record_type"] != "tva_project"
         ]
-        crm_records.reflag(ws_id, "task", [row], links=targets)
+        crm_records.reflag(ws_id, "task", [row, *([spawned] if spawned else [])], links=targets)
         if assigned is not None:
             notifications.quietly(
                 notifications.assigned(
@@ -444,6 +451,18 @@ def _after_write(
 
 def _write(actor: TaskActor, op: dict[str, Any]) -> dict[str, Any]:
     return store.apply(actor.as_rpc(), [op])[0]["row"]
+
+
+def _next_occurrence(
+    actor: TaskActor, task: _Loaded, after: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """FR-TASK-RRULE-02, -03; TP-18 — the ops that insert the next occurrence
+    of a recurring task this write closes (`recurrence.next_occurrence_ops`);
+    422 when its rule has no next date."""
+    try:
+        return recurrence.next_occurrence_ops(task.row, after, task.links, _today(actor))
+    except ValueError as exc:
+        raise TaskRefused(422, str(exc)) from None
 
 
 def _accepting_ops(actor: TaskActor, task: _Loaded) -> list[dict[str, Any]]:
@@ -467,6 +486,10 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
     sent = set(patch.model_fields_set) - {"expect_updated_at"}
     task = _load(actor, task_id)
     _may_change(task, sent)
+    if "recurrence" in sent:
+        why = rollout.refusal(task.me.tasks_level, 3)
+        if why:
+            raise TaskRefused(403, why)
     data = patch.model_dump(include=sent)
     cleared = [name for name in _REQUIRED if name in data and data[name] is None]
     if cleared:
@@ -484,6 +507,11 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
     if "tags" in values:
         try:
             values["tags"] = rules.normalise_tags(values["tags"])
+        except ValueError as exc:
+            raise TaskRefused(422, str(exc)) from None
+    if values.get("recurrence") is not None:
+        try:
+            values["recurrence"] = recurrence.normalise(values["recurrence"])
         except ValueError as exc:
             raise TaskRefused(422, str(exc)) from None
     # Waiting on is one label (data-model §2): a person picked names it, free
@@ -527,6 +555,15 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
         raise TaskRefused(422, WAITING)
     if after.get("status") in rules.OPEN and not after.get("bucket"):
         values["bucket"] = rules.default_bucket(after.get("due_on"), _today(actor))
+    # FR-TASK-RRULE-01: a recurring task has a due date the rule has a next
+    # date after; the first occurrence names the series.
+    if "recurrence" in values or "due_on" in values:
+        try:
+            recurrence.check(after.get("recurrence"), after.get("due_on"))
+        except ValueError as exc:
+            raise TaskRefused(422, str(exc)) from None
+    if values.get("recurrence") and not row.get("series_id"):
+        values["series_id"] = task_id
 
     changes = {k: v for k, v in values.items() if row.get(k) != v}
     if not changes:
@@ -537,13 +574,18 @@ def update_task(actor: TaskActor, task_id: str, patch: TaskPatch) -> dict:
         changes.update(delegation.assignment(changes["assignee_id"], actor.user.id))
     else:
         changes.update(delegation.accepting(row, actor.user.id, _now().isoformat()))
+    following = _next_occurrence(actor, task, {**row, **changes})
+    if following:
+        changes["recurrence_spawned"] = True
     op: dict[str, Any] = {"op": "update", "table": "tasks", "id": task_id, "values": changes}
     if patch.expect_updated_at is not None:
         op["expect_updated_at"] = patch.expect_updated_at.isoformat()
-    written = _write(actor, op)
+    result = store._apply_closing(actor.as_rpc(), [op], following, moves_due="due_on" in changes)
+    written = result[0]["row"]
     _notices(actor, task.me, row, written)
     assigned = changes.get("assignee_id")
-    return _after_write(actor, task, written, assigned=assigned)
+    spawned = result[1]["row"] if following else None
+    return _after_write(actor, task, written, assigned=assigned, spawned=spawned)
 
 
 def complete_task(actor: TaskActor, task_id: str) -> dict:
@@ -555,9 +597,17 @@ def complete_task(actor: TaskActor, task_id: str) -> dict:
         return present.present(task.me, [task.row], today=_today(actor))[0]
     values = rules.status_values("done", task.row["status"], _now())
     values.update(delegation.accepting(task.row, actor.user.id, _now().isoformat()))
-    written = _write(actor, {"op": "update", "table": "tasks", "id": task_id, "values": values})
+    following = _next_occurrence(actor, task, {**task.row, **values})
+    if following:
+        values["recurrence_spawned"] = True
+    result = store._apply_closing(
+        actor.as_rpc(),
+        [{"op": "update", "table": "tasks", "id": task_id, "values": values}],
+        following,
+    )
+    written = result[0]["row"]
     _notices(actor, task.me, task.row, written)
-    return _after_write(actor, task, written)
+    return _after_write(actor, task, written, spawned=result[1]["row"] if following else None)
 
 
 def reopen_task(actor: TaskActor, task_id: str) -> dict:

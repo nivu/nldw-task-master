@@ -1,6 +1,6 @@
 ---
 title: Your tasks
-summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, handing work over, Waiting on, Assigned by me, the morning brief, the Life OS import and Claude's task tools.
+summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, handing work over, Waiting on, Assigned by me, the morning brief, suggestions on Log a day, recurring tasks and starter templates, the Life OS import and Claude's task tools.
 order: 11
 ---
 
@@ -173,6 +173,59 @@ A **TVA project's page** (Analytics, then the project) lists the project's
 tasks you may see, with **Add task**, which links the new task to that
 project. On a **CRM record**, a task in the Tasks tab opens in the same task
 panel as My Tasks.
+
+## Suggestions on Log a day
+
+These parts come with the third stage of tasks; if you do not see them yet,
+it has not been switched on for you. People who use only the CRM do not log
+time, so they never see suggestions.
+
+When you open **Log a day**, the tasks assigned to you that you completed
+that day (India time) are offered as **suggestions**, each with its project
+when it is linked to a confirmed, unarchived project. Tasks brought in from
+the Life OS sheet are never suggested, and a day you cannot log (a future
+day, or one past the edit window) has none.
+
+- **Add** puts the task on the day you are editing and saves nothing: a
+  project task joins that project's line, a task with no project asks you to
+  pick a project or activity, and its title is added to the line's note
+  (500 characters at most). Hours start at zero; a line still at zero hours
+  is not saved. **Save day** is the only thing that writes, with every
+  usual rule.
+- **Ignore** hides a suggestion on this screen only. A suggestion whose title
+  is already in a note that day shows as added. Nothing about adding or
+  ignoring is kept.
+- Notes are seen by your lead, managers and admins; Log a day says so.
+  Suggestions never appear in anyone else's view of your week.
+
+## Recurring tasks
+
+Also part of the third stage. In a task's panel, **Repeats** picks how a task
+comes back:
+
+| Choice | Means |
+|---|---|
+| **Daily** | every day |
+| **Weekly on chosen days** | the days you tick, such as Monday and Thursday |
+| **Monthly on a day** | that day each month; a shorter month uses its last day (the 31st falls on 30 April and 28 February) |
+| **Yearly on the due date** | that day and month each year; 29 February falls on the 28th outside a leap year |
+
+A recurring task needs a due date. When you **complete or cancel** it, its
+next occurrence appears: the same title, notes, priority, tags, assignee and
+links, due on the next date after this one, Open, in the bucket its due date
+gives it. Each occurrence makes its next one only once: reopening it and
+completing it again makes no other. To stop a series, set **Repeats** to
+**Does not repeat** on the latest occurrence.
+
+**Starter templates.** Under the Mine view's settings, each template adds
+one recurring task to your own list, only when you choose it:
+
+| Template | Repeats |
+|---|---|
+| Follow up unpaid invoices | every month on the 5th |
+| Review the sales pipeline | every week on Monday |
+| Check this month's payroll | every month on the 25th |
+| GST and statutory dates | not available until the owner supplies the list of dates |
 
 ## Moving from the Life OS sheet
 

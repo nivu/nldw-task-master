@@ -25,6 +25,12 @@ dependencies = [
     # library (plan §2.1). Already locked through mcp; direct for the same
     # reason as python-multipart.
     "pyjwt[crypto]",
+    # Spec 008 recurring tasks (FR-TASK-RRULE-06, T9): `dateutil.rrule`
+    # computes a task's next occurrence (weekdays, month ends, leap years),
+    # well past the constitution's 50-line threshold (plan §2.1). Already
+    # locked through supabase and celery; direct, so their upgrade cannot
+    # silently remove it.
+    "python-dateutil",
 ]
 
 [tool.setuptools]

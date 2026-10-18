@@ -8,7 +8,9 @@ of `task_apply` (049), the deferred workspace check (047) and
 functions are covered by `tests/db/`. S2a adds 052's comments (insert and
 soft delete only, the workspace of their task) and the delegation messages'
 sent markers. S2b reads the tasks a person created (Assigned by me, the
-brief's nudges).
+brief's nudges). S3b adds 053: a recurring task has a due date, a series has
+one live occurrence per due date (`tasks_series_due`), and only a series'
+next occurrence names its creator.
 
 `FakeCrmStore.install` installs one beside itself, so a CRM route that
 presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
@@ -31,6 +33,7 @@ from typing import Any
 from crm_fake import (
     DEFAULTS,
     PEOPLE,
+    CheckViolation,
     FakeCrmStore,
     _at,
     _now,
@@ -57,7 +60,7 @@ def public_task_store_names() -> list[str]:
 
 
 def _refuse(code: str, message: str) -> Exception:
-    return store.refusal_for(code, message)
+    return store._refusal(code, message)
 
 
 class FakeTaskStore:
@@ -412,6 +415,8 @@ class FakeTaskStore:
                 row = self.rows[op["table"]].get(result["id"])
                 if row is not None:
                     self.crm._check_rows(op["table"], row)
+                    if op["table"] == "tasks":
+                        self._recurrence_check(row)
                     result["row"] = dict(row)
             self.crm.workspace_check(touched_tasks(ops, done))
             return done
@@ -450,6 +455,23 @@ class FakeTaskStore:
         ):
             raise _refuse("CRM22", "A subtask cannot have subtasks.")
 
+    def _recurrence_check(self, row: dict[str, Any]) -> None:
+        """053 `tasks_recurrence_due` and `tasks_series_due`."""
+        if row.get("recurrence") and not row.get("due_on"):
+            raise CheckViolation(f"tasks violates tasks_recurrence_due: {row}")
+        series = row.get("series_id")
+        if series and not row.get("deleted_at"):
+            if any(
+                t["id"] != row["id"]
+                and t.get("series_id") == series
+                and str(t.get("due_on")) == str(row.get("due_on"))
+                and not t.get("deleted_at")
+                for t in self.rows["tasks"].values()
+            ):
+                raise _refuse(
+                    "23505", 'duplicate key value violates unique constraint "tasks_series_due"'
+                )
+
     @staticmethod
     def _import_run_defaults() -> dict[str, Any]:
         """051's column defaults; `now()` is the service's clock, which the
@@ -486,11 +508,22 @@ class FakeTaskStore:
             for k, v in (op.get("values") or {}).items()
         }
         for k in ("id", "created_at", "created_by"):
-            if k in values:
+            # 053: a tasks insert may name its series' creator (checked below).
+            if k in values and not (
+                k == "created_by" and table == "tasks" and op["op"] == "insert"
+            ):
                 raise _refuse("CRM22", f"{k} cannot be set here.")
         who = actor.get("user_id")
         rows = self.rows[table]
         if op["op"] == "insert":
+            series = values.get("series_id")
+            if "created_by" in values and not any(
+                series is not None
+                and t.get("series_id") == series
+                and t.get("created_by") == values["created_by"]
+                for t in self.rows["tasks"].values()
+            ):
+                raise _refuse("CRM22", "created_by cannot be set here.")
             row = {
                 "id": str(uuid.uuid4()),
                 "workspace_id": None,

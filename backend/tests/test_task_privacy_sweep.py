@@ -20,7 +20,8 @@ waiting on Wasim, one handed back to her by Farah, and a deleted one; the
 private and the shared one carry a comment of hers (S2a). Phase 2 is on for
 the cast, so the comment routes answer them too, and so do the views, the
 project panel and the brief (S2b), where the shared task is Chitra's
-"nudge?". Each of the ten account kinds of FR-TASK-VIS-06 — a TVA admin,
+"nudge?". Phase 3 is on as well, so the starter templates answer them (S3b).
+Each of the ten account kinds of FR-TASK-VIS-06 — a TVA admin,
 a manager, the owner, the creator's TVA lead, a CRM workspace Admin, a
 Viewer, a `crm_only` account, the former assignee, the Waiting-on person
 and a removed workspace member — calls every fixture; no answer carries a
@@ -169,10 +170,11 @@ class Sweep:
     def __init__(self, monkeypatch) -> None:
         w = self.w = TaskWorld(monkeypatch)
         # S2a: phase 2 on for everyone who has phase 1, so the comment and
-        # delegation routes answer the ten accounts with 404, not 403.
+        # delegation routes answer the ten accounts with 404, not 403; S3b:
+        # phase 3, so the starter templates answer them too.
         for person in w.fake.profiles.values():
             if person.get("tasks_level") == 1:
-                person["tasks_level"] = 2
+                person["tasks_level"] = 3
         self.private = w.add(
             "creator",
             title="Zqxpriv dentist",
@@ -294,6 +296,10 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
         _http(s, who, "PATCH", f"{TASKS}/settings", json={"nudge_days": 5})
     ],
     ("GET", f"{TASKS}/brief"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/brief")],
+    ("POST", f"{TASKS}/templates/{{key}}"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/templates/{key}")
+        for key in ("pipeline_review", "statutory_dates")
+    ],
     ("GET", f"{TASKS}/project/{{project_id}}"): lambda s, who: [
         _http(s, who, "GET", f"{TASKS}/project/{s.w.lumen['id']}", params=p)
         for p in ({}, {"include_closed": True})

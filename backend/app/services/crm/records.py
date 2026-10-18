@@ -30,6 +30,7 @@ from app.domain.calendar import today_in_company_tz
 from app.domain.crm import campaigns as campaign_rules
 from app.domain.crm import dedupe, objects, pipeline
 from app.domain.tasks import delegation as task_delegation
+from app.domain.tasks import recurrence as task_recurrence
 from app.domain.tasks import rollout as task_rollout
 from app.domain.tasks import rules as task_rules
 from app.domain.tasks import visibility as task_visibility
@@ -1614,6 +1615,12 @@ def _task_or_note_values(
         _status(values, existing)
         _bucket(ws.ctx, values, existing)
         _task_extras(ws, values, existing)
+        if existing is not None and "due_on" in values:
+            # 008 FR-TASK-RRULE-01: a recurring task keeps a due date.
+            try:
+                task_recurrence.check(existing.get("recurrence"), values["due_on"])
+            except ValueError as exc:
+                raise CrmRefused(422, str(exc)) from None
     else:
         after = {**(existing or {}), **values}
         if after.get("kind", "note") != "note" and not after.get("occurred_on"):
@@ -1688,6 +1695,42 @@ def _about(ws_id: str, links: list[dict[str, Any]]) -> dict[str, str] | None:
     return {**first, "name": name or ""}
 
 
+def _next_task(
+    ctx: Any, row: dict[str, Any], after: dict[str, Any], links: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """008 FR-TASK-RRULE-02, -03; TP-18 — closing a recurring task here
+    inserts its next occurrence, exactly as My Tasks does; 422 when its rule
+    has no next date."""
+    today = task_rules.day_of(datetime.now(UTC), ctx.user.profile.get("timezone"))
+    try:
+        return task_recurrence.next_occurrence_ops(row, after, links, today)
+    except ValueError as exc:
+        raise CrmRefused(422, str(exc)) from None
+
+
+def _write_task(
+    ctx: Any,
+    ops: list[dict[str, Any]],
+    following: list[dict[str, Any]],
+    *,
+    moves_due: bool = False,
+) -> list[dict[str, Any]]:
+    """A task write. One that inserts a next occurrence (`_next_task`) goes
+    through `task_apply`, as My Tasks' does, so the next occurrence keeps the
+    series' creator and its project link; its new links name the workspace,
+    which `crm_apply` would have set."""
+    if not following:
+        return store.apply(actor(ctx), ops)
+    ops = [
+        {**op, "values": {**op["values"], "workspace_id": ctx.workspace_id}}
+        if op["table"] == LINKS_OF["task"] and op["op"] == "insert"
+        else op
+        for op in ops
+    ]
+    who = {"user_id": ctx.user.id, "kind": "user", "channel": ctx.channel}
+    return task_store._apply_closing(who, ops, following, moves_due=moves_due)
+
+
 def _may_change_task(ctx: Any, row: dict[str, Any], sent: set[str]) -> None:
     """Q-57 — a Viewer changes only the status of a task assigned to them."""
     if ctx.may("edit_records"):
@@ -1759,6 +1802,26 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
         changes.update(task_delegation.assignment(changes["assignee_id"], ctx.user.id))
     elif kind == "task":
         changes.update(task_delegation.accepting(row, ctx.user.id, datetime.now(UTC).isoformat()))
+    following: list[dict[str, Any]] = []
+    if kind == "task" and row.get("recurrence"):
+        # 008 FR-TASK-RRULE-02: the next occurrence takes the links the task
+        # has after this change.
+        task_links = task_store.list_links([record_id])
+        if links is not None:
+            pairs = {(lk["record_type"], lk["record_id"]) for lk in task_links}
+            task_links = [
+                lk
+                for lk in task_links
+                if lk["record_type"] == "tva_project"
+                or (lk["record_type"], lk["record_id"]) in links
+            ] + [
+                {"record_type": t, "record_id": i, "workspace_id": ctx.workspace_id}
+                for t, i in links
+                if (t, i) not in pairs
+            ]
+        following = _next_task(ctx, row, {**row, **changes}, task_links)
+        if following:
+            changes["recurrence_spawned"] = True
     main = {
         "op": "update",
         "table": KINDS[kind].table,
@@ -1767,8 +1830,9 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     }
     if expect:
         main["expect_updated_at"] = expect
-    done = store.apply(actor(ctx), [main, *ops])
+    done = _write_task(ctx, [main, *ops], following, moves_due="due_on" in changes)
     after = done[0]["row"]
+    spawned = [done[1 + len(ops)]["row"]] if following else []
     # Read after the write: a failure falls back to the links read before it
     # and never fails the write.
     try:
@@ -1776,7 +1840,7 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     except Exception:
         flags.logger.exception('{"event": "crm_links_reread_failed", "kind": "%s"}', kind)
         now_links = current_links or []
-    reflag(ws.id, kind, [after], links=[*now_links, *(current_links or [])])
+    reflag(ws.id, kind, [after, *spawned], links=[*now_links, *(current_links or [])])
     if kind == "task":
         task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, after)
     if kind == "task" and "assignee_id" in changes:
@@ -1802,20 +1866,18 @@ def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
     if row["status"] == "done":
         return present_rows(ws, "task", [row])[0]
     now = datetime.now(UTC)
-    done = store.apply(
-        actor(ctx),
-        [
-            {
-                "op": "update",
-                "table": "tasks",
-                "id": task_id,
-                "values": {
-                    **task_rules.status_values("done", row["status"], now),
-                    **task_delegation.accepting(row, ctx.user.id, now.isoformat()),
-                },
-            }
-        ],
+    values = {
+        **task_rules.status_values("done", row["status"], now),
+        **task_delegation.accepting(row, ctx.user.id, now.isoformat()),
+    }
+    # 008 FR-TASK-RRULE-02: a recurring task's next occurrence, in the same write.
+    task_links = task_store.list_links([task_id]) if row.get("recurrence") else []
+    following = _next_task(ctx, row, {**row, **values}, task_links)
+    if following:
+        values["recurrence_spawned"] = True
+    done = _write_task(
+        ctx, [{"op": "update", "table": "tasks", "id": task_id, "values": values}], following
     )
     task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, done[0]["row"])
-    reflag(ws.id, "task", [done[0]["row"]])
+    reflag(ws.id, "task", [done[0]["row"], *([done[1]["row"]] if following else [])])
     return present_rows(ws, "task", [done[0]["row"]])[0]

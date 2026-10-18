@@ -86,6 +86,9 @@ class TaskPatch(BaseModel):
     waiting_on_id: UUID | None = None
     waiting_on_text: str | None = Field(default=None, max_length=200)
     category_id: UUID | None = None
+    # Phase 3 (FR-TASK-RRULE-01): an RRULE body of one of the four allowed
+    # forms (domain/tasks/recurrence); null ends the series (FR-TASK-RRULE-04).
+    recurrence: str | None = Field(default=None, max_length=200)
     expect_updated_at: datetime | None = None
 
 
@@ -138,6 +141,15 @@ class TaskCommentIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     body: str = Field(min_length=1, max_length=2_000)
+
+
+class TaskTemplateIn(BaseModel):
+    """Contracts §2 `POST /tasks/templates/{key}` — the day from which the
+    template's first occurrence falls due (the caller's today when absent)
+    (FR-TASK-RRULE-05)."""
+
+    model_config = ConfigDict(extra="forbid")
+    starts_on: date | None = None
 
 
 class TaskSettingsIn(BaseModel):

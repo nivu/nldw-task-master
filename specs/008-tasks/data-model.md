@@ -205,9 +205,14 @@ Changed by the person through `PATCH /tasks/settings`.
 Columns in §2.1. The next occurrence is a new `tasks` row inserted in the same
 `task_apply` call that sets the current one Done or Cancelled and
 `recurrence_spawned = true`; its links are copied in the same call; the unique
-`(series_id, due_on)` index refuses a second one in a race (CRM09 mapped to
-"This recurring task already has its next occurrence."). Removing
-`recurrence` from an occurrence ends the series (FR-TASK-RRULE-04).
+`(series_id, due_on)` index refuses a second one in a race (mapped to 409
+"This recurring task already has its next occurrence."). The same index
+refuses a due-date change or a restore onto the date of another live
+occurrence of the series (409 "Another occurrence of this recurring task is
+already due on that date."). Closing a task through the CRM (`POST
+/crm/tasks/{id}/complete`, `PATCH /crm/tasks/{id}`) inserts the next
+occurrence in the same way, through `task_apply`. Removing `recurrence` from
+an occurrence ends the series (FR-TASK-RRULE-04).
 
 ### 2.9 `voice_uploads` and the `task-voice` bucket — FR-TASK-VOICE (054)
 

@@ -62,9 +62,140 @@ import { cn } from "@/lib/utils";
  * someone else gave the reader, Hand back with a note for its assignee when
  * they are not its creator, and the task's comments, which anyone who may
  * see it reads and only their author deletes.
+ *
+ * With phase 3 on (`recurring`, FR-TASK-RRULE-01 to -04): Repeats, picked
+ * from daily, weekly on chosen days, monthly on a day or yearly (on the due
+ * date's day), saved as an RRULE body; a recurring task needs a due date,
+ * and Does not repeat ends the series.
  */
 
 const STATUSES: TaskStatus[] = ["open", "waiting", "done", "cancelled"];
+
+type Freq = "none" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
+
+const FREQ_LABEL: Record<Freq, string> = {
+  none: "Does not repeat",
+  DAILY: "Daily",
+  WEEKLY: "Weekly on chosen days",
+  MONTHLY: "Monthly on a day",
+  YEARLY: "Yearly on the due date",
+};
+
+const WEEKDAYS: [string, string][] = [
+  ["MO", "Mon"],
+  ["TU", "Tue"],
+  ["WE", "Wed"],
+  ["TH", "Thu"],
+  ["FR", "Fri"],
+  ["SA", "Sat"],
+  ["SU", "Sun"],
+];
+
+/** The parts of a stored rule, `{}` for none. */
+function ruleParts(rule: string | null): Record<string, string> {
+  if (!rule) return {};
+  return Object.fromEntries(rule.split(";").map((part) => part.split("=") as [string, string]));
+}
+
+/** The due date's weekday code, day of the month and month (or Monday, the 1st, January). */
+function dueParts(dueOn: string | null): { day: string; monthDay: number; month: number } {
+  if (!dueOn) return { day: "MO", monthDay: 1, month: 1 };
+  const [y, m, d] = dueOn.split("-").map(Number);
+  const weekday = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+  return { day: WEEKDAYS[weekday][0], monthDay: d, month: m };
+}
+
+function Repeats({
+  task,
+  disabled,
+  onSave,
+}: {
+  task: TaskOut;
+  disabled: boolean;
+  onSave: (recurrence: string | null) => void;
+}) {
+  const parts = ruleParts(task.recurrence);
+  const due = dueParts(task.due_on);
+  const [freq, setFreq] = useState<Freq>((parts.FREQ as Freq | undefined) ?? "none");
+  const [days, setDays] = useState<string[]>(parts.BYDAY ? parts.BYDAY.split(",") : [due.day]);
+  const [monthDay, setMonthDay] = useState(String(parts.BYMONTHDAY ?? due.monthDay));
+
+  const day = Number(monthDay);
+  let rule: string | null = null;
+  if (freq === "DAILY") rule = "FREQ=DAILY";
+  if (freq === "WEEKLY" && days.length > 0)
+    rule = `FREQ=WEEKLY;BYDAY=${WEEKDAYS.map(([code]) => code)
+      .filter((code) => days.includes(code))
+      .join(",")}`;
+  if (freq === "MONTHLY" && Number.isInteger(day) && day >= 1 && day <= 31)
+    rule = `FREQ=MONTHLY;BYMONTHDAY=${day}`;
+  if (freq === "YEARLY" && task.due_on) rule = `FREQ=YEARLY;BYMONTH=${due.month};BYMONTHDAY=${due.monthDay}`;
+  const complete = freq === "none" || rule !== null;
+  const needsDue = freq !== "none" && !task.due_on;
+
+  return (
+    <Field label="Repeats" htmlFor="task-repeats">
+      <select
+        id="task-repeats"
+        className={cn(SELECT_CLASS, "w-full")}
+        value={freq}
+        disabled={disabled}
+        onChange={(e) => setFreq(e.target.value as Freq)}
+      >
+        {(Object.keys(FREQ_LABEL) as Freq[]).map((f) => (
+          <option key={f} value={f}>
+            {FREQ_LABEL[f]}
+          </option>
+        ))}
+      </select>
+      {freq === "WEEKLY" && (
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Days of the week">
+          {WEEKDAYS.map(([code, name]) => (
+            <Button
+              key={code}
+              size="xs"
+              variant={days.includes(code) ? "default" : "outline"}
+              aria-pressed={days.includes(code)}
+              disabled={disabled}
+              onClick={() =>
+                setDays((now) => (now.includes(code) ? now.filter((d) => d !== code) : [...now, code]))
+              }
+            >
+              {name}
+            </Button>
+          ))}
+        </div>
+      )}
+      {freq === "MONTHLY" && (
+        <div className="flex items-center gap-2">
+          <Label htmlFor="task-repeats-day" className="text-xs text-muted-foreground">
+            Day of the month (1 to 31; a shorter month uses its last day)
+          </Label>
+          <Input
+            id="task-repeats-day"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={31}
+            className="h-8 w-20"
+            value={monthDay}
+            disabled={disabled}
+            onChange={(e) => setMonthDay(e.target.value)}
+          />
+        </div>
+      )}
+      {needsDue && <p className="text-xs text-muted-foreground">A recurring task needs a due date.</p>}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={disabled || !complete || needsDue || rule === task.recurrence}
+        onClick={() => onSave(rule)}
+      >
+        Save
+      </Button>
+    </Field>
+  );
+}
 
 function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
@@ -92,6 +223,7 @@ export function TaskPanel({
   projectsHref,
   meId = null,
   delegation = false,
+  recurring = false,
 }: {
   taskId: string | null;
   onOpenChange: (open: boolean) => void;
@@ -103,6 +235,8 @@ export function TaskPanel({
   meId?: string | null;
   /** Phase 2 is switched on for the reader. */
   delegation?: boolean;
+  /** Phase 3 is switched on for the reader. */
+  recurring?: boolean;
 }) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -387,6 +521,14 @@ export function TaskPanel({
                   </select>
                 </Field>
               </div>
+              {recurring && (
+                <Repeats
+                  key={`repeats-${task.updated_at}`}
+                  task={task}
+                  disabled={!edit || saving}
+                  onSave={(recurrence) => save({ recurrence })}
+                />
+              )}
               {(task.due_on || task.days_overdue > 0) && (
                 <p className="text-xs text-muted-foreground">
                   {task.due_on && `Due ${dueText(task.due_on)}`}

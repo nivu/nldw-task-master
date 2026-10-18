@@ -24,6 +24,7 @@ from postgrest.exceptions import APIError
 
 from app.services import settings_store
 from app.services import supabase as db
+from app.services.crm import CrmRefused
 from app.services.crm.store import _literal, refusal_for
 
 logger = logging.getLogger("nldw-task-master")
@@ -46,12 +47,45 @@ _TASK_TABLES = ("tasks", "crm_tasks")
 _LINK_TABLES = ("task_links", "crm_task_links")
 
 
+#: 053 (data-model §2.8): a second next occurrence of one due date, in a race.
+SERIES_TAKEN = "This recurring task already has its next occurrence."
+#: 053: an edit or restore onto the due date of another live occurrence.
+SERIES_DATE_TAKEN = "Another occurrence of this recurring task is already due on that date."
+
+
+def _refusal(code: str | None, message: str | None) -> CrmRefused | None:
+    """The refusal a database error stands for, as the CRM maps it, with
+    053's `tasks_series_due` as 409 (FR-TASK-RRULE-03); None for a fault."""
+    if code == "23505" and "tasks_series_due" in (message or ""):
+        return CrmRefused(409, SERIES_DATE_TAKEN)
+    return refusal_for(code, message)
+
+
+def _apply_closing(
+    actor: dict[str, Any],
+    ops: list[dict[str, Any]],
+    following: list[dict[str, Any]],
+    *,
+    moves_due: bool = False,
+) -> list[dict[str, Any]]:
+    """`apply()` for a write that may close a recurring task and insert its
+    next occurrence (`following`, FR-TASK-RRULE-02). A `tasks_series_due`
+    clash the closing write's own due date did not cause is a next
+    occurrence made meanwhile (FR-TASK-RRULE-03)."""
+    try:
+        return apply(actor, [*ops, *following])
+    except CrmRefused as exc:
+        if following and not moves_due and exc.detail == SERIES_DATE_TAKEN:
+            raise CrmRefused(409, SERIES_TAKEN) from None
+        raise
+
+
 def rpc(fn: str, params: dict[str, Any]) -> Any:
-    """Call a task database function, mapping its refusals as the CRM does."""
+    """Call a task database function, mapping its refusals (`_refusal`)."""
     try:
         return db.supabase.rpc(fn, params).execute().data
     except APIError as exc:
-        refused = refusal_for(exc.code, exc.message)
+        refused = _refusal(exc.code, exc.message)
         if refused is not None:
             raise refused from None
         logger.error('{"event": "task_rpc_failed", "fn": "%s", "code": "%s"}', fn, exc.code)
