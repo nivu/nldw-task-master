@@ -198,3 +198,40 @@ export interface QuickAddPreview {
   /** Non-empty: Save stays disabled (FR-TASK-ADD-02). */
   questions: QuickAddQuestion[];
 }
+
+/** POST /tasks/import/dry-run — the Life OS import (FR-TASK-IMP-01 to -04). */
+export interface LifeOsCounts {
+  rows: number;
+  open: number;
+  waiting: number;
+  done: number;
+  cancelled: number;
+  skipped: number;
+  existing: number;
+  repeated: number;
+}
+
+export interface LifeOsOwner {
+  value: string;
+  proposed_email: string | null;
+  proposed_name: string | null;
+  mapped: boolean;
+}
+
+export interface LifeOsDryRun {
+  run_id: string;
+  counts: LifeOsCounts;
+  owners: LifeOsOwner[];
+  unmapped: { owners: string[]; status: string[]; priority: string[] };
+  owners_without_tasks: string[];
+  ambiguous_dates: { row: number; value: string; read_as: string }[];
+  waiting_as_life_os: number;
+  /** Non-empty: the real run is refused. */
+  blocking: string[];
+}
+
+/** POST /tasks/import/{run_id}/apply. */
+export interface LifeOsApplied {
+  run_id: string;
+  counts: { created: number; existing: number; repeated: number; skipped: number };
+}

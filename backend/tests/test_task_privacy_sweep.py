@@ -220,6 +220,8 @@ def _each(s: Sweep, who: str, method: str, suffix: str, **kw) -> list[Answer]:
 
 
 LABS = {"workspace": "labs"}
+#: A Life OS file for the import routes: a row of the caller's own.
+ZQX_CSV = b"Task,Status,Owner\nZqx import row,Open,Chitra Creator\n"
 
 FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     # -- every task route -------------------------------------------------
@@ -244,6 +246,18 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
         _http(s, who, "GET", f"{TASKS}/linkable", params={"q": "zqx"})
     ],
     ("GET", f"{TASKS}/trash"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/trash")],
+    ("POST", f"{TASKS}/import/dry-run"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/import/dry-run", files={"file": ("t.csv", ZQX_CSV)})
+    ],
+    ("POST", f"{TASKS}/import/{{run_id}}/apply"): lambda s, who: [
+        _http(
+            s,
+            who,
+            "POST",
+            f"{TASKS}/import/{uuid.uuid4()}/apply",
+            files={"file": ("t.csv", ZQX_CSV)},
+        )
+    ],
     ("GET", f"{TASKS}/{{id}}"): lambda s, who: _each(s, who, "GET", ""),
     ("PATCH", f"{TASKS}/{{id}}"): lambda s, who: _each(
         s, who, "PATCH", "", json={"priority": "low"}

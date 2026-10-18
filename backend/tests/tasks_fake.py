@@ -39,7 +39,7 @@ from app.domain.tasks import service
 from app.services.tasks import store
 
 #: 049: the tables `task_apply` writes; the later ones arrive in 051-055.
-TASK_TABLES = ("tasks", "task_links")
+TASK_TABLES = ("tasks", "task_links", "task_import_runs")
 
 
 def public_task_store_names() -> list[str]:
@@ -64,6 +64,8 @@ class FakeTaskStore:
         self.applied: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         # Every task_purge_expired call: (actor, before).
         self.purges: list[tuple[dict[str, Any], str]] = []
+        # 051: the Life OS import's run records, beside the CRM's tables.
+        self.rows.setdefault("task_import_runs", {})
 
     @property
     def rows(self) -> dict[str, dict[str, dict[str, Any]]]:
@@ -206,6 +208,25 @@ class FakeTaskStore:
         ]
         return sorted(rows, key=lambda r: (r["deleted_at"], r["id"]), reverse=True)
 
+    def existing_import_keys(self, keys: list[str]) -> set[str]:
+        wanted = set(keys)
+        return {
+            t["source_ref"]
+            for t in self.rows["tasks"].values()
+            if t.get("source") == "import" and t.get("source_ref") in wanted
+        }
+
+    def get_import_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.rows["task_import_runs"].get(run_id)
+        return dict(row) if row else None
+
+    def latest_import_run_id(self, uploader_id: str) -> str | None:
+        """The newest is the last inserted: the tests' clock is fixed, so
+        every run's `created_at` is the same."""
+        runs = self.rows["task_import_runs"].values()
+        mine = [r["id"] for r in runs if r["uploader_id"] == uploader_id]
+        return mine[-1] if mine else None
+
     def active_profiles(self) -> list[dict[str, Any]]:
         ids = list(self.crm.profiles) or list(PEOPLE)
         return [p for p in self.get_profiles(ids) if p["is_active"]]
@@ -323,6 +344,9 @@ class FakeTaskStore:
             raise
 
     def _allowed(self, actor: dict[str, Any], table: str, subject: dict[str, Any]) -> bool:
+        if table == "task_import_runs":
+            # 049: the actor is the run's uploader.
+            return subject.get("uploader_id") == actor.get("user_id")
         task = subject if table == "tasks" else self.rows["tasks"].get(subject.get("task_id"))
         if task is None:
             return False
@@ -350,6 +374,29 @@ class FakeTaskStore:
         ):
             raise _refuse("CRM22", "A subtask cannot have subtasks.")
 
+    @staticmethod
+    def _import_run_defaults() -> dict[str, Any]:
+        """051's column defaults; `now()` is the service's clock, which the
+        tests fix."""
+        return {
+            "status": "dry_run",
+            "report": {},
+            "dry_run_at": service._now().isoformat(),
+            "applied_at": None,
+        }
+
+    def _lifeos_key_check(self, row: dict[str, Any]) -> None:
+        """047 `tasks_lifeos_key`: a Life OS key is unique, in the Trash or not."""
+        ref = row.get("source_ref") or ""
+        if row.get("source") == "import" and ref.startswith("lifeos:"):
+            if any(
+                t["id"] != row["id"] and t.get("source") == "import" and t.get("source_ref") == ref
+                for t in self.rows["tasks"].values()
+            ):
+                raise _refuse(
+                    "23505", 'duplicate key value violates unique constraint "tasks_lifeos_key"'
+                )
+
     def _one(self, actor: dict[str, Any], op: dict[str, Any], refs: dict[str, str]) -> dict:
         table = op.get("table")
         if table not in TASK_TABLES:
@@ -374,12 +421,14 @@ class FakeTaskStore:
                 "updated_at": _now(),
                 **({"updated_by": who} if table == "tasks" else {}),
                 **DEFAULTS.get(table, {}),
+                **(self._import_run_defaults() if table == "task_import_runs" else {}),
                 **values,
             }
             if not self._allowed(actor, table, row):
                 raise _refuse("CRM04", "No such task.")
             if table == "tasks":
                 self._parent_check(row)
+                self._lifeos_key_check(row)
             self.crm._check_refs(table, row)
             self.crm._check_unique(table, row)
             rows[row["id"]] = row

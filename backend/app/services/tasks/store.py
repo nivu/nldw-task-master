@@ -37,6 +37,9 @@ RECORD_TABLES = {
 }
 _PROFILE_COLUMNS = "id, email, display_name, role, is_active, account_type, tasks_level, timezone"
 _ID_BATCH = 100
+#: A Life OS key is 71 characters, quoted and percent-encoded in the URL: 100
+#: of them pass the gateway's 8 KB request line (414), 40 stay well inside it.
+_KEY_BATCH = 40
 _PAGE = 1000
 #: The audit's names of a task's rows, before and after the rename (FR-TASK-CHG-07).
 _TASK_TABLES = ("tasks", "crm_tasks")
@@ -67,11 +70,13 @@ def purge_expired(actor: dict[str, Any], before: str) -> int:
     return int(rpc("task_purge_expired", {"p_actor": actor, "p_before": before}) or 0)
 
 
-def _in_batches(query_for, column: str, values: list[str]) -> list[dict[str, Any]]:
+def _in_batches(
+    query_for, column: str, values: list[str], batch: int = _ID_BATCH
+) -> list[dict[str, Any]]:
     wanted = sorted(set(values))
     rows: list[dict[str, Any]] = []
-    for i in range(0, len(wanted), _ID_BATCH):
-        rows += query_for().in_(column, wanted[i : i + _ID_BATCH]).execute().data or []
+    for i in range(0, len(wanted), batch):
+        rows += query_for().in_(column, wanted[i : i + batch]).execute().data or []
     return rows
 
 
@@ -254,6 +259,41 @@ def deleted_personal_tasks(user_id: str) -> list[dict[str, Any]]:
         or []
     )
     return sorted(rows, key=lambda r: (r["deleted_at"], r["id"]), reverse=True)
+
+
+def existing_import_keys(keys: list[str]) -> set[str]:
+    """FR-TASK-IMP-05 — which of these Life OS keys a task already carries,
+    in the Trash or not (`tasks_lifeos_key` covers both)."""
+    if not keys:
+        return set()
+    rows = _in_batches(
+        lambda: db.supabase.table("tasks").select("source_ref").eq("source", "import"),
+        "source_ref",
+        keys,
+        _KEY_BATCH,
+    )
+    return {r["source_ref"] for r in rows}
+
+
+def get_import_run(run_id: str) -> dict[str, Any] | None:
+    """One Life OS import run (051); the caller checks its uploader."""
+    rows = db.supabase.table("task_import_runs").select("*").eq("id", run_id).execute().data
+    return rows[0] if rows else None
+
+
+def latest_import_run_id(uploader_id: str) -> str | None:
+    """The uploader's last dry run (051 `task_import_runs_recent`), which is
+    the only run the real run may use (FR-TASK-IMP-04)."""
+    rows = (
+        db.supabase.table("task_import_runs")
+        .select("id")
+        .eq("uploader_id", uploader_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0]["id"] if rows else None
 
 
 # ---------------------------------------------------------------------------

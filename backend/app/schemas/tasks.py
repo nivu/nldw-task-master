@@ -12,7 +12,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class TaskLinkIn(BaseModel):
@@ -113,3 +113,13 @@ class QuickAddIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=500)
     answers: QuickAddAnswers | None = None
+
+
+class LifeOsMapping(BaseModel):
+    """Contracts §1 `POST /tasks/import/dry-run` — the form field `mapping`:
+    the owner's edits to the proposed owner mapping, {Owner value: email or
+    null}. Only owners are editable: status and priority use the fixed
+    mapping, so any other key is refused (FR-TASK-IMP-04, Journey 4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+    owners: dict[str, EmailStr | None] = Field(default_factory=dict)

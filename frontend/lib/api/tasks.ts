@@ -6,8 +6,10 @@
  * Supabase directly (FR-TASK-LIST-08, FR-TASK-VIS-03).
  */
 
-import { backendFetch } from "@/lib/api/backend";
+import { backendFetch, upload } from "@/lib/api/backend";
 import type {
+  LifeOsApplied,
+  LifeOsDryRun,
   MyTasks,
   MyTasksFilters,
   QuickAddIn,
@@ -106,3 +108,25 @@ export const getTaskLinkable = (q: string) => call<TaskLinkable>(`/linkable${que
 
 export const previewQuickAdd = (input: QuickAddIn) =>
   call<QuickAddPreview>("/quick-add/preview", { method: "POST", ...body(input) });
+
+// ---------------------------------------------------------------------------
+// The Life OS import — owner only (FR-TASK-IMP-01). The CSV goes up as
+// multipart through the proxy, which carries uploads up to 4 MB.
+// ---------------------------------------------------------------------------
+
+export const dryRunLifeOs = async (file: File, owners?: Record<string, string | null>) => {
+  const form = new FormData();
+  form.set("file", file);
+  if (owners) form.set("mapping", JSON.stringify({ owners }));
+  return upload<LifeOsDryRun>("/api/v1/tasks/import/dry-run", form, await accessToken());
+};
+
+export const applyLifeOs = async (runId: string, file: File) => {
+  const form = new FormData();
+  form.set("file", file);
+  return upload<LifeOsApplied>(
+    `/api/v1/tasks/import/${encodeURIComponent(runId)}/apply`,
+    form,
+    await accessToken()
+  );
+};

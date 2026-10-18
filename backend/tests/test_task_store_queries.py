@@ -3,7 +3,8 @@
 
 The fake task store has no URL limit and no array syntax, so what only the
 request itself shows is checked here against a recording client: a link
-filter's ids go `_ID_BATCH` per request (a long URL fails with 414), and a
+filter's ids go `_ID_BATCH` per request and Life OS keys `_KEY_BATCH` (a long
+URL fails with 414), and a
 tag travels as a quoted array literal (a comma would split it). The real
 database answers are in tests/db/test_task_listing_db.py.
 """
@@ -50,6 +51,16 @@ def test_a_link_filter_reads_its_ids_in_batches(monkeypatch):
     store.assigned_tasks("me", ("done",), ids=ids, limit=21)
     sizes = [len(c[2]) for q in client.queries for c in q if c[:2] == ("in_", "id")]
     assert sizes == [100, 100, 50]
+
+
+def test_life_os_keys_are_read_in_smaller_batches(monkeypatch):
+    """A Life OS key is 71 characters: 100 of them make an 8.3 KB URL (414)."""
+    client = Client()
+    monkeypatch.setattr(db, "supabase", client)
+    keys = [f"lifeos:{n:064x}" for n in range(150)]
+    store.existing_import_keys(keys)
+    sizes = [len(c[2]) for q in client.queries for c in q if c[:2] == ("in_", "source_ref")]
+    assert sizes == [40, 40, 40, 30]
 
 
 def test_a_tag_is_one_quoted_array_element(monkeypatch):

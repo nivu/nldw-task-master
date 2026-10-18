@@ -13,9 +13,10 @@ come before `/tasks/{id}`.
 
 from __future__ import annotations
 
-from app.api.tasks import tasks
+from app.api.tasks import lifeos, tasks
 
 ROUTERS = [
+    lifeos.router,
     # Always last: its `/tasks/{id}` routes come after every fixed path.
     tasks.router,
 ]
