@@ -276,6 +276,14 @@ def crm(monkeypatch):
             "next_allowed_at": "2026-10-13T10:05:00+00:00",
         },
     )
+    # Spec 009 S4: contact recency, with phase 4 on in both workspaces;
+    # Academy's company and person are Recent.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True, "3": True, "4": True})
+    fake.set_contact_recency(
+        academy["id"], "crm_companies", [{"id": company["id"], "level": "recent"}]
+    )
+    fake.set_contact_recency(academy["id"], "crm_people", [{"id": person["id"], "level": "recent"}])
     made = {
         "companies": company,
         "people": person,
@@ -483,6 +491,15 @@ POST_READS = [
     ("/api/v1/crm/export/view", {"object": "companies"}),
     ("/api/v1/crm/export/view", {"object": "people"}),
     ("/api/v1/crm/export/view", {"object": "opportunities"}),
+]
+#: Spec 009 S4: a view filtered by contact recency.
+RECENT = {
+    "op": "and",
+    "items": [{"field": "contact_recency", "operator": "any_of", "value": ["recent"]}],
+}
+POST_READS += [
+    ("/api/v1/crm/query", {"object": obj, "spec": {"filters": RECENT}})
+    for obj in ("companies", "people")
 ]
 
 
@@ -737,3 +754,29 @@ class TestThroughEveryTool:
             with pytest.raises(server.ToolError) as refused:
                 asyncio.run(getattr(tools, name)(Ctx(OUTSIDER["id"]), **kwargs))
             assert str(refused.value) == "404: No such workspace.", name
+
+
+class TestContactRecency:
+    """Spec 009 FR-CRMAI-REL-02: the contact recency filter answers only the
+    caller's workspace, and the job reads only its own."""
+
+    def test_the_filter_finds_academys_own_in_academy(self, crm):
+        http, _, made = crm
+        r = http.post(
+            "/api/v1/crm/query",
+            params={"workspace": "academy"},
+            json={"object": "companies", "spec": {"filters": RECENT}},
+            headers=as_(OWNER["id"]),
+        )
+        assert [row["id"] for row in r.json()["rows"]] == [made["companies"]["id"]]
+
+    def test_labs_job_leaves_academy_alone(self, crm):
+        from app.services.crm import flags
+
+        _, fake, made = crm
+        labs = next(w for w in store.list_workspaces() if w["key"] == "labs")
+        flags.recompute_workspace(labs["id"], datetime(2026, 10, 14, 6, 30, tzinfo=UTC))
+        assert fake.rows["crm_companies"][made["companies"]["id"]]["contact_recency"] == "recent"
+        assert fake.rows["crm_companies"][made["_labs"]["company"]["id"]]["contact_recency"] == (
+            "lapsed"
+        )

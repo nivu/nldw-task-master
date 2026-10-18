@@ -82,6 +82,12 @@ const NOTE_KINDS: Choice[] = [
   { value: "whatsapp", label: "WhatsApp" },
   { value: "other", label: "Other" },
 ];
+/** 009 (067): contact recency, fixed labels (FR-CRMAI-REL-01, Q-21). */
+const CONTACT_RECENCY: Choice[] = [
+  { value: "recent", label: "Recent" },
+  { value: "fading", label: "Fading" },
+  { value: "lapsed", label: "Lapsed" },
+];
 
 /** `_v` in objects.py: option, person and relation fields group a list;
  *  money and numbers total. */
@@ -142,6 +148,12 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
+    // 009 (067): filter only (FR-CRMAI-REL-02).
+    v("contact_recency", "Contact recency", "fixed_select", {
+      sortable: false,
+      groupable: false,
+      fixed: CONTACT_RECENCY,
+    }),
   ],
   person: [
     v("name", "Name", "text"),
@@ -159,6 +171,12 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
+    // 009 (067): filter only (FR-CRMAI-REL-02).
+    v("contact_recency", "Contact recency", "fixed_select", {
+      sortable: false,
+      groupable: false,
+      fixed: CONTACT_RECENCY,
+    }),
   ],
   opportunity: [
     v("name", "Name", "text", E),
@@ -562,3 +580,9 @@ export function relationSearch(field: string, workspace: string): RelationSearch
 
 /** A native `<select>` that matches the inputs beside it. */
 export const NATIVE_SELECT = "h-8 rounded-md border border-input bg-transparent px-2 text-sm";
+
+/** 009: the fields a switched-off phase hides (FR-CRMAI-FLAG-03): contact
+ *  recency is phase 4's own filter (FR-CRMAI-REL-02). */
+export function withoutOffPhases(fields: ViewFieldMeta[], phases: CrmBootstrap["ai"]["phases"]): ViewFieldMeta[] {
+  return phases["4"] ? fields : fields.filter((f) => f.field !== "contact_recency");
+}

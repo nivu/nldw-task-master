@@ -425,11 +425,14 @@ filter a `fixed_select` column it does not know, 067 replaces
 S4 migration task reads the rebased `crm_query` first and decides (tasks T156).
 
 `crm_contact_facts(p_workspace uuid, p_now timestamptz) RETURNS jsonb`,
-`STABLE`: per company and person of the workspace, whether in the last 30 days
-there was an inbound counted email, an outbound counted email, a meeting note
-(kind `meeting`, not deleted, `occurred_on`), and whether any counted contact
-happened in the last 90 days, a company including its people's. Counted email:
-stored, not internal, not auto (FR-CRMAI-REL-01).
+`STABLE`: per live company and person of the workspace, the latest counted
+inbound email time, outbound email time and meeting note date (kind `meeting`,
+not deleted, `occurred_on` not after today) within the last 91 days, or null,
+a company including its people's. The pure `domain/crm/recency.level()` applies
+the 30- and 90-day edges in whole Asia/Kolkata days, and keeps email and
+meetings apart for "Meetings only" (FR-CRMAI-REL-03). Counted email: stored,
+not internal, not auto (FR-CRMAI-REL-01). (Amended in S4: the function returns
+times, not yes/no answers, so the edges are tested on the pure function.)
 
 ### 3.11 Facts for the rules (066)
 

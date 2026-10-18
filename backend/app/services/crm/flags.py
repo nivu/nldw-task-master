@@ -168,7 +168,7 @@ def recompute_workspace(workspace_id: str, now: datetime | None = None) -> dict[
         people.update(
             {p["id"]: p for p in store.flag_rows(workspace_id, "crm_people", ids=with_mail)}
         )
-    return _compute(
+    counts = _compute(
         workspace_id,
         deals=deals,
         companies=companies,
@@ -177,6 +177,7 @@ def recompute_workspace(workspace_id: str, now: datetime | None = None) -> dict[
         facts=facts,
         now=now,
     )
+    return {**counts, **recency_hook(workspace_id, now)}
 
 
 def recompute(
@@ -273,3 +274,17 @@ def stuck_on(workspace_id: str) -> bool:
     return notifications.automation_on(
         workspace_id, rule_defs.SWITCHES["R-2"]
     ) and ai_rules.phase_on(store.ai_setting(workspace_id), rule_defs.PHASE)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — Contact recency (FR-CRMAI-REL-01, -02)
+# ---------------------------------------------------------------------------
+
+
+def recency_hook(workspace_id: str, now: datetime) -> dict[str, int]:
+    """Contact recency is recomputed with the flags job, while phase 4 is on
+    (`services/crm/recency.py`); nothing, and no extra count, while it is
+    off."""
+    from app.services.crm import recency
+
+    return recency.recompute_workspace(workspace_id, now)

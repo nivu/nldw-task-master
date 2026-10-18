@@ -293,6 +293,29 @@ def _post_reads(made: dict) -> list[tuple[str, dict]]:
                 {"format": "csv", "content": "Name\nX\n", "object": "companies"},
             ),
         ]
+        # Spec 009 S4: the contact recency view field, a filter a Viewer
+        # may use (it is not an amount).
+        + [
+            (
+                "/api/v1/crm/query",
+                {
+                    "object": o,
+                    "spec": {
+                        "filters": {
+                            "op": "and",
+                            "items": [
+                                {
+                                    "field": "contact_recency",
+                                    "operator": "any_of",
+                                    "value": ["recent", "fading", "lapsed"],
+                                }
+                            ],
+                        }
+                    },
+                },
+            )
+            for o in ("company", "person")
+        ]
     )
 
 
@@ -470,3 +493,38 @@ class TestEveryReadTool:
 def test_the_denylist_has_its_aggregates():
     """The walk also finds a total's key, `sum_amount_in_inr` and the like."""
     assert "sum_amount_in_inr" in AGGREGATES and "max_budget" in AGGREGATES
+
+
+class TestContactRecency:
+    """Spec 009 FR-CRMAI-REL-02: the contact recency view field is not an
+    amount, so a Viewer may filter by it, and its answer carries none."""
+
+    @pytest.mark.parametrize("obj", ["company", "person"])
+    def test_a_viewer_filters_by_contact_recency(self, crm, obj):
+        http, _ = crm
+        r = http.post(
+            "/api/v1/crm/query",
+            params=LABS,
+            json={
+                "object": obj,
+                "spec": {
+                    "filters": {
+                        "op": "and",
+                        "items": [
+                            {"field": "contact_recency", "operator": "is_empty"},
+                        ],
+                    }
+                },
+            },
+            headers=as_(VIEWER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["rows"]
+        assert _walk(r.json()) == []
+
+    def test_it_is_not_an_amount(self, crm):
+        assert {
+            (f["object"], f["is_amount"])
+            for f in store.list_object_fields()
+            if f["field"] == "contact_recency"
+        } == {("company", False), ("person", False)}

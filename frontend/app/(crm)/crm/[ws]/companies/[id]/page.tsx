@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 
 import { AiFieldsPanel } from "@/components/crm/ai-fields-panel";
 import { useQuickActions } from "@/components/crm/command-menu";
+import { ContactRecencyChip } from "@/components/crm/contact-recency-chip";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import { EmailsTab } from "@/components/crm/emails-tab";
@@ -132,7 +133,8 @@ function companyGroups(
  * also the command menu's quick actions here. (009, phase 2) Its enriched
  * values sit under the header, each promotable by an Admin or Member
  * (FR-CRMAI-ENR-04); (phase 3) so do its AI fields, read-only, which an
- * Admin or Member may recompute (FR-CRMAI-FIELD-04, -05).
+ * Admin or Member may recompute (FR-CRMAI-FIELD-04, -05); (phase 4) its
+ * contact recency is a header chip (FR-CRMAI-REL-02).
  */
 export default function CompanyPage() {
   const { id } = useParams<{ id: string }>();
@@ -230,6 +232,9 @@ export default function CompanyPage() {
           <Chip key="owner" label="Owner" value={company.owner_name ?? "—"} />,
           ...(company.entity_labels.length
             ? [<Chip key="entity" label="Entity" value={company.entity_labels.join(", ")} />]
+            : []),
+          ...(page.contact_recency?.level
+            ? [<ContactRecencyChip key="recency" recency={page.contact_recency} />]
             : []),
         ]}
         actions={

@@ -817,6 +817,8 @@ export interface CrmRecordPage<T extends CrmRecord> {
   enrichment?: CrmEnrichment | null;
   /** 009 S3a, phase 3 on: a company's or deal's AI fields (FR-CRMAI-FIELD-05). */
   ai_fields?: CrmAiFieldValue[];
+  /** 009 S4, phase 4 on: a company's or person's contact recency (FR-CRMAI-REL-02). */
+  contact_recency?: CrmContactRecency;
 }
 
 export interface CrmPage<T> {
@@ -1846,4 +1848,19 @@ export interface CrmAiFieldValue {
 export interface CrmAiFieldRecompute {
   queued: boolean;
   next_allowed_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S4 — contact recency (009 contracts §1; FR-CRMAI-REL)
+// ---------------------------------------------------------------------------
+
+/** Derived, not AI (FR-CRMAI-REL-01, Q-21). */
+export type ContactRecencyLevel = "recent" | "fading" | "lapsed";
+
+/** A company's or person's `contact_recency` on its record read. The level is
+ *  null until the flags job first computes it (data-model §3.10). */
+export interface CrmContactRecency {
+  level: ContactRecencyLevel | null;
+  /** Gmail sync is off for the workspace: counted from meeting notes only (FR-CRMAI-REL-03). */
+  meetings_only: boolean;
 }

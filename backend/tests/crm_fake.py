@@ -380,6 +380,7 @@ MIGRATION_034 = MIGRATIONS / "034_crm_views.sql"
 MIGRATION_038 = MIGRATIONS / "038_crm_flags.sql"
 MIGRATION_041 = MIGRATIONS / "041_crm_campaigns.sql"
 MIGRATION_047 = MIGRATIONS / "047_tasks_shared_table.sql"
+MIGRATION_067 = MIGRATIONS / "067_crm_contact_recency.sql"
 _BOOL = {"true": True, "false": False}
 
 
@@ -389,6 +390,7 @@ def _read_034() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         + MIGRATION_038.read_text()
         + MIGRATION_041.read_text()
         + MIGRATION_047.read_text()
+        + MIGRATION_067.read_text()
     )
     field_rows = re.findall(
         r"\('(\w+)', '(\w+)', '(\w+)', '(\w+)', (true|false), (true|false), (true|false), "
@@ -489,6 +491,8 @@ class FakeCrmStore:
         self.queries: list[dict[str, Any]] = []
         # Every crm_set_flags call: (table, rows).
         self.flag_writes: list[tuple[str, int]] = []
+        # Spec 009: every crm_set_contact_recency call: (table, rows).
+        self.recency_writes: list[tuple[str, int]] = []
 
     # -- set-up helpers (not store names) -----------------------------------
 
@@ -4985,6 +4989,89 @@ class FakeCrmStore:
                 }
             )
         return sorted(found, key=lambda c: (_at(c["sent_at"]), c["mailbox_id"], c["thread_id"]))
+
+    # -- spec 009: contact recency (067) ----------------------------------------
+
+    def contact_facts(self, workspace_id: str, now: datetime) -> dict[str, Any]:
+        """067 crm_contact_facts: every live company and person with its
+        latest counted inbound and outbound email and latest meeting note in
+        the last 91 days, a company's including its live people's."""
+        today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+        since = now - timedelta(days=91)
+        contacts: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        for link in self._of("crm_email_links", workspace_id):
+            msg = self.rows["crm_email_messages"].get(link["message_id"])
+            if (
+                link["record_type"] not in ("company", "person")
+                or msg is None
+                or msg["is_internal"]
+                or msg["is_auto"]
+                or not since <= _at(msg["sent_at"]) <= now
+            ):
+                continue
+            key = "in" if msg["direction"] == "inbound" else "out"
+            contacts.setdefault((link["record_type"], link["record_id"]), []).append(
+                (key, msg["sent_at"])
+            )
+        for link in self._of("crm_note_links", workspace_id):
+            note = self.rows["crm_notes"].get(link["note_id"])
+            on = note and note.get("occurred_on")
+            if (
+                link["record_type"] not in ("company", "person")
+                or not on
+                or note.get("kind") != "meeting"
+                or note.get("deleted_at")
+                or not since.date() <= date.fromisoformat(str(on)) <= today
+            ):
+                continue
+            contacts.setdefault((link["record_type"], link["record_id"]), []).append(
+                ("meeting", str(on))
+            )
+
+        def latest(found: list[tuple[str, Any]]) -> dict[str, Any]:
+            out: dict[str, Any] = {"in": None, "out": None, "meeting": None}
+            for key, value in found:
+                rank = (lambda v: v) if key == "meeting" else _at
+                if out[key] is None or rank(value) > rank(out[key]):
+                    out[key] = value
+            return out
+
+        people = [p for p in self._of("crm_people", workspace_id) if not p.get("deleted_at")]
+        companies = [
+            c
+            for c in self._of("crm_companies", workspace_id)
+            if not c.get("deleted_at") and not c.get("merged_into_id")
+        ]
+        return {
+            "company": {
+                c["id"]: latest(
+                    contacts.get(("company", c["id"]), [])
+                    + [
+                        f
+                        for p in people
+                        if p.get("company_id") == c["id"]
+                        for f in contacts.get(("person", p["id"]), [])
+                    ]
+                )
+                for c in companies
+            },
+            "person": {p["id"]: latest(contacts.get(("person", p["id"]), [])) for p in people},
+        }
+
+    def set_contact_recency(self, workspace_id: str, table: str, rows: list[dict]) -> int:
+        """067 crm_set_contact_recency: only `contact_recency` changes; no
+        audit row, `updated_at` and `updated_by` untouched."""
+        assert table in ("crm_companies", "crm_people"), table
+        changed = 0
+        for r in rows:
+            row = self.rows[table].get(r["id"])
+            if row is None or row["workspace_id"] != workspace_id:
+                continue
+            if row.get("contact_recency") != r["level"]:
+                changed += 1
+                row["contact_recency"] = r["level"]
+        self.recency_writes.append((table, len(rows)))
+        return changed
 
 
 #: 064's failure reasons (FR-CRMAI-ENR-06, FR-CRMAI-LLM-03).

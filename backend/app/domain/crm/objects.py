@@ -521,6 +521,8 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("flag_level", "flag"),
         *_STAMPS,
         _POSITION,
+        # Spec 009 (067): contact recency, filter only (FR-CRMAI-REL-02).
+        _v("contact_recency", "fixed_select", sortable=False, groupable=False),
     ),
     "person": (
         _v("name", "text", column_sql="full_name"),
@@ -538,6 +540,8 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("flag_level", "flag"),
         *_STAMPS,
         _POSITION,
+        # Spec 009 (067): contact recency, filter only (FR-CRMAI-REL-02).
+        _v("contact_recency", "fixed_select", sortable=False, groupable=False),
     ),
     "opportunity": (
         _v("name", "text"),

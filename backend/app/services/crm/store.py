@@ -2510,3 +2510,35 @@ def no_reply_candidates(workspace_id: str, before: datetime) -> list[dict[str, A
         )
         or []
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — contact recency (009 data-model §3.10)
+#
+# Read through `crm_contact_facts` (ids, times and dates only) and written
+# only through `crm_set_contact_recency` (067): never `crm_apply`, so neither
+# `updated_at`, `updated_by` nor the audit moves (FR-CRMAI-REL-02).
+# ---------------------------------------------------------------------------
+
+
+def contact_facts(workspace_id: str, now: datetime) -> dict[str, Any]:
+    """067 `crm_contact_facts` — `{company|person: {id: {in, out, meeting}}}`
+    for every live company and person: the latest counted inbound and
+    outbound email and the latest meeting note in the last 91 days, a
+    company's including its people's, else None."""
+    return rpc("crm_contact_facts", {"p_workspace": workspace_id, "p_now": now.isoformat()}) or {}
+
+
+def set_contact_recency(workspace_id: str, table: str, rows: list[dict[str, Any]]) -> int:
+    """067 `crm_set_contact_recency` — stores `[{id, level}]`, in chunks;
+    returns how many rows' level changed."""
+    changed = 0
+    for i in range(0, len(rows), _PAGE):
+        changed += int(
+            rpc(
+                "crm_set_contact_recency",
+                {"p_workspace": workspace_id, "p_table": table, "p_rows": rows[i : i + _PAGE]},
+            )
+            or 0
+        )
+    return changed
