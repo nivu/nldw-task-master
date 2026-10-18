@@ -310,7 +310,7 @@ the 5,000-task target, write the living docs, and amend the specs 008 changes.
 **Done when.**
 - [ ] All gates
 - [ ] `test_task_acceptance.py` has one passing, unskipped test per phase-1 line of §12, except the two recorded opt-in lines named in T073
-- [ ] The 5k p95 figures are under 1 s and recorded in the commit message (the script run under the db lock in plan §8.1's one-invocation form)
+- [x] The 5k p95 figures are under 1 s and recorded in the commit message (the script run under the db lock in plan §8.1's one-invocation form)
 - [ ] `/help/tasks` renders; `docs/README.md` gained exactly one line
 - [ ] The owner has agreed the constitution amendment (or phase 1 is not raised above level 0 for anyone but him)
 

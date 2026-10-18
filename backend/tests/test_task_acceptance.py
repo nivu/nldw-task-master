@@ -38,7 +38,8 @@ unskipped test (T073):
   `TASKS_MIGRATION_CHECK=1` (S1a); its output is in the S1a commit message;
 - the 5,000-task speed line (NFR-TASK-01) by
   `scripts/simulations/tasks_load_5k.py`, run under the database lock with
-  the API up (S1e); its output is in the S1e commit message.
+  the API up; its output is in the commit message `RECORDED` names, and its
+  p95 figures are quoted there and checked against the bound.
 
 For those two this asserts the covering class or script exists and names
 where its recorded output is (`RECORDED`). A line that cites a recorded run
@@ -51,6 +52,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib.util
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -75,8 +77,9 @@ RECORDED = {
         '046-050, 31 passed, 1 skipped"'
     ),
     "../scripts/simulations/tasks_load_5k.py": (
-        "the commit message of 008 slice S1e: p95 of GET /tasks and POST /tasks "
-        "for one person with 5,000 tasks"
+        'the commit message of "Record the 5,000-task My Tasks timings (008 '
+        'NFR-TASK-01)": 5,000 tasks, n=40 each: "list p50 477 ms p95 619 ms; '
+        'add p50 16 ms p95 28 ms"'
     ),
 }
 
@@ -896,6 +899,14 @@ class TestTheLines:
             "The task status list in each workspace h",
         ]
         assert len(RECORDED_CLAUSES) == len(mixed)
+
+    def test_the_recorded_load_run_is_under_the_bound(self):
+        """NFR-TASK-01: the recorded run quotes a p95 for both calls, each
+        under one second; a description with no figures proves nothing."""
+        recorded = RECORDED["../scripts/simulations/tasks_load_5k.py"]
+        figures = dict(re.findall(r"(list|add) p50 \d+ ms p95 (\d+) ms", recorded))
+        assert set(figures) == {"list", "add"}, recorded
+        assert all(int(ms) < 1000 for ms in figures.values()), figures
 
     def test_the_load_script_measures_both_calls(self):
         script = (BACKEND / "scripts" / "simulations" / "tasks_load_5k.py").read_text()
