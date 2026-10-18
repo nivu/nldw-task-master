@@ -8,10 +8,12 @@ the routes, tools and the interface `009` calls in
 [`crm.md`](crm.md) first: tasks reuse the CRM's write path, audit trigger
 and guard, and this page only says what is different.
 
-Phase 1 is built: the shared table, personal and project tasks, privacy,
-My Tasks, quick add, the four `task_*` tools, the Life OS import and the
-per-person switch. Delegation, the morning brief, day-log suggestions,
-recurrence, voice and the inbox (phases 2 to 4) are not.
+All four phases are built: the shared table, personal and project tasks,
+privacy, My Tasks, quick add, the Life OS import and the per-person switch
+(phase 1); delegation, the views and the morning brief (phase 2); day-log
+suggestions and recurrence (phase 3); voice capture, the Ideas and Reading
+inbox and the weekly review (phase 4). Six task tools: `task_add`,
+`task_list`, `task_update`, `task_complete`, `task_brief` and `inbox_add`.
 
 ---
 
@@ -144,6 +146,55 @@ Each phase is switched on per person (C6, TP-11):
 
 CRM task behaviour never reads the level: the migration applied to everyone
 at once, and CRM tasks work for people with no phase switched on.
+
+## Phases 2 to 4
+
+Each later phase is a set of routes behind `TasksDep2`–`4` on the same
+write path; nothing below runs for someone below the phase.
+
+- **Delegation (2, `052`).** `tasks.assigned_by` and `accepted_at` make a
+  task "new" to its assignee until Accept. Hand back makes the creator the
+  assignee and keeps the note as a `hand_back` comment in `task_comments`
+  (written through `task_apply`, insert and soft delete only, carrying the
+  task's workspace when written). Assigning, completing and handing back
+  enqueue `tasks.send_notice` with ids only; `task_notice_sends` is claimed
+  `ON CONFLICT DO NOTHING` before sending, so a retried job sends nothing
+  twice.
+- **Views and the brief (2).** Waiting on, Assigned by me and a TVA project's
+  task panel are reads in `services/tasks/listing.py`, each row through the
+  viewer filter. `GET /tasks/brief` (and `task_brief`) adds each
+  workspace's sections from `services/crm/today.build`, read and never
+  recomputed. Nothing is pushed (TP-08).
+- **Day-log suggestions (3).** `timesheet_service.day_for` adds
+  `suggestions` for the caller's own loggable day only; accept and ignore
+  are screen state, and Save day is unchanged.
+- **Recurrence (3, `053`).** Completing or cancelling a recurring task
+  inserts its next occurrence in the same `task_apply` call
+  (`domain/tasks/recurrence.py`, `python-dateutil`); the partial unique
+  index `tasks_series_due` refuses a second one in a race.
+- **Voice (4, `054`).** The audio sits in the private `task-voice` bucket
+  until the `tasks.transcribe_voice` worker has sent it to Groq, and is
+  deleted in a `finally`; `tasks.voice_sweep` (every 30 minutes) clears
+  audio and transcripts older than 23 h 30 min. The transcript lives only in
+  the caller's `voice_uploads` row, never in Celery's result backend or a
+  log, and is cleared when the last candidate is handled. Candidates are
+  split by fixed rules (`domain/tasks/voice_split.py`) and marked handled
+  by `voice_candidate_mark`, one conditional update, so a candidate is
+  confirmed once. A task candidate goes through `create_task` with source
+  `voice`; an inbox candidate becomes an inbox item.
+- **Inbox (4, `055`).** `inbox_items` belongs to its owner alone, admins
+  included: `services/tasks/inbox.py` answers 404 for anyone else's item,
+  and `task_apply` re-checks the owner. Make it a task builds the task from
+  the item, any fields sent replacing only what they name, and creates it
+  through `create_task` with the item's `processed_at` and `task_id` (with
+  its `updated_at` as read) in the same `task_apply` call: both land or
+  neither does.
+  `task_id` is `ON DELETE SET NULL`; deleting the owner's profile removes
+  the items, audited as the system by `048`'s `crm_audit_row`.
+- **Weekly review (4, `055`).** `GET /tasks/review` is computed on read
+  (`domain/tasks/review.py`): shown on the caller's Monday in their own zone
+  unless `profiles.tasks_review_dismissed_week` holds this week's Monday.
+  No job sends it.
 
 ## The 009 interface
 

@@ -9,6 +9,9 @@
 import { backendFetch, upload } from "@/lib/api/backend";
 import type {
   AssignedByMeView,
+  InboxIn,
+  InboxItem,
+  InboxMadeTask,
   LifeOsApplied,
   LifeOsDryRun,
   MyTasks,
@@ -26,6 +29,7 @@ import type {
   TaskOut,
   TaskPatch,
   TaskPerson,
+  TaskReview,
   TaskSettings,
   TaskTemplate,
   TrashedTask,
@@ -194,11 +198,37 @@ export const uploadVoiceNote = async (file: File) => {
 
 export const getVoiceNote = (uploadId: string) => call<VoiceNote>(`/voice/${encodeURIComponent(uploadId)}`);
 
-export const confirmVoiceCandidate = (uploadId: string, index: number, draft?: TaskIn) =>
-  call<TaskOut>(`/voice/${encodeURIComponent(uploadId)}/confirm`, {
+/** A task candidate saves a task; an inbox candidate an inbox item. */
+export const confirmVoiceCandidate = (uploadId: string, index: number, draft?: TaskIn | InboxIn) =>
+  call<TaskOut | InboxItem>(`/voice/${encodeURIComponent(uploadId)}/confirm`, {
     method: "POST",
     ...body(draft ? { index, draft } : { index }),
   });
 
 export const dropVoiceCandidate = (uploadId: string, index: number) =>
   call<{ handled: true }>(`/voice/${encodeURIComponent(uploadId)}/drop`, { method: "POST", ...body({ index }) });
+
+// ---------------------------------------------------------------------------
+// The Ideas and Reading inbox and the weekly review, phase 4
+// (FR-TASK-INBOX-01, -02, FR-TASK-REVIEW-01)
+// ---------------------------------------------------------------------------
+
+export const getInbox = () => call<InboxItem[]>("/inbox");
+
+export const addInboxItem = (input: InboxIn) =>
+  call<InboxItem>("/inbox", { method: "POST", ...body(input) });
+
+/** With `task`, the task is made from those fields; without, from the item. */
+export const makeTaskFromInbox = (id: string, task?: TaskIn) =>
+  call<InboxMadeTask>(`/inbox/${encodeURIComponent(id)}/make-task`, {
+    method: "POST",
+    ...(task ? body(task) : {}),
+  });
+
+export const archiveInboxItem = (id: string) =>
+  call<InboxItem>(`/inbox/${encodeURIComponent(id)}/archive`, { method: "POST" });
+
+export const getTaskReview = () => call<TaskReview>("/review");
+
+export const dismissTaskReview = () =>
+  call<{ dismissed_week: string }>("/review/dismiss", { method: "POST" });

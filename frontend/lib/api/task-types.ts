@@ -335,3 +335,48 @@ export interface VoiceNote {
   candidates: VoiceCandidate[];
   error: string | null;
 }
+
+/** The Ideas and Reading inbox, phase 4 (FR-TASK-INBOX-01, -02): an item
+ *  as returned, private to its owner. */
+export type InboxKind = "idea" | "link" | "note";
+
+export interface InboxItem {
+  id: string;
+  kind: InboxKind;
+  kind_label: string;
+  title: string;
+  url: string | null;
+  notes: string | null;
+  tags: string[];
+  created_at: string;
+  processed_at: string | null;
+  archived: boolean;
+  /** The task it became. */
+  task_id: string | null;
+}
+
+/** POST /tasks/inbox and `inbox_add`. */
+export interface InboxIn {
+  kind: InboxKind;
+  title: string;
+  url?: string | null;
+  notes?: string | null;
+  tags?: string[];
+}
+
+/** POST /tasks/inbox/{id}/make-task. */
+export interface InboxMadeTask {
+  item: InboxItem;
+  task: TaskOut;
+}
+
+/** GET /tasks/review — the weekly review panel (FR-TASK-REVIEW-01). */
+export interface TaskReview {
+  /** True on the reader's Monday unless dismissed for the week. */
+  show: boolean;
+  week_start: string;
+  this_week: TaskOut[];
+  this_month: TaskOut[];
+  waiting_over_7_days: WaitingTask[];
+  inbox: InboxItem[];
+}

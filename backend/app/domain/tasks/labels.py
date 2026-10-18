@@ -31,3 +31,5 @@ SOURCE: Final = {
     "rule": "Rule",
     "import": "Import",
 }
+#: FR-TASK-INBOX-01 — an inbox item's kind (data-model §2.10).
+INBOX_KIND: Final = {"idea": "Idea", "link": "Link", "note": "Note"}

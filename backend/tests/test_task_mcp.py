@@ -22,6 +22,10 @@ Acceptance criteria (spec §12, phase 1):
 
 Phase 2: `task_brief` returns what `GET /tasks/brief` does
 (test_task_brief.py) and is refused below level 2 — TestPhaseTwo.
+
+Phase 4 (S4b): `inbox_add` (FR-TASK-INBOX-03) adds to the caller's own
+inbox, which nobody else sees, and is refused below level 4 —
+TestPhaseFour. Six task tools in all.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from app.mcp import server
 from app.mcp import tasks as tools
 from app.mcp.server import ToolError
 
-#: Contracts §5 — the tools of the phases built (S1b: 4, S2b: 5) and their
+#: Contracts §5 — the tools of the phases built (S1b: 4, S2b: 5, S4b: 6) and their
 #: caller lines.
 CALLER_LINES = {
     "task_add": "ANYONE WITH MY TASKS SWITCHED ON. CONFIRM FIRST. Adds a task. With no links "
@@ -55,8 +59,10 @@ CALLER_LINES = {
     "task_brief": "ANYONE WITH PHASE 2 OF TASKS SWITCHED ON. Your morning brief: today's and "
     "overdue tasks, waiting items due a nudge, and the CRM Today sections of each workspace "
     "you belong to.",
+    "inbox_add": "ANYONE WITH PHASE 4 OF TASKS SWITCHED ON. CONFIRM FIRST. Adds an idea, link "
+    "or note to your private inbox.",
 }
-WRITES = {"task_add", "task_update", "task_complete"}
+WRITES = {"task_add", "task_update", "task_complete", "inbox_add"}
 
 
 class Ctx:
@@ -81,6 +87,7 @@ class TestTheTools:
     def test_exactly_the_task_tools(self):
         names = {n for n in _tools() if n.startswith("task_") or n == "inbox_add"}
         assert names == set(CALLER_LINES)
+        assert len(names) == 6
 
     def test_caller_line_and_confirm(self):
         tools_ = _tools()
@@ -127,6 +134,7 @@ class TestTheTools:
             ),
             ("task_list", {"assigned": "by_me"}, "GET", "/tasks"),
             ("task_brief", {}, "GET", "/tasks/brief"),
+            ("inbox_add", {"kind": "idea", "title": "x"}, "POST", "/tasks/inbox"),
         ],
     )
     def test_one_api_call_each(self, monkeypatch, name, args, method, path):
@@ -303,3 +311,40 @@ class TestPhaseTwo:
         world.fake.profiles[ID["member"]]["tasks_level"] = 1
         with pytest.raises(ToolError, match="Tasks are not switched on for you yet."):
             asyncio.run(getattr(tools, name)(Ctx("member"), **args))
+
+
+class TestPhaseFour:
+    """Contracts §5 row 6 (S4b); FR-TASK-INBOX-01, -03."""
+
+    @pytest.fixture
+    def world(self, monkeypatch) -> TaskWorld:
+        w = TaskWorld(monkeypatch)
+        for person in w.fake.profiles.values():
+            if person.get("tasks_level") == 1:
+                person["tasks_level"] = 4
+        return w
+
+    def test_inbox_add_adds_to_your_own_inbox(self, world):
+        added = asyncio.run(
+            tools.inbox_add(
+                Ctx("member"), "link", "Agent evals", url="https://example.com/a", tags=["ai"]
+            )
+        )
+        assert (added["kind"], added["title"], added["url"], added["tags"]) == (
+            "link",
+            "Agent evals",
+            "https://example.com/a",
+            ["ai"],
+        )
+        assert [i["id"] for i in world.call("member", "GET", "/inbox").json()] == [added["id"]]
+        assert world.call("owner", "GET", "/inbox").json() == []
+        assert world.fake.tasks.applied[-1][0]["channel"] == "mcp"
+
+    def test_a_bad_link_is_refused(self, world):
+        with pytest.raises(ToolError, match="^422"):
+            asyncio.run(tools.inbox_add(Ctx("member"), "link", "x", url="ftp://example.com"))
+
+    def test_level_3_is_refused(self, world):
+        world.fake.profiles[ID["member"]]["tasks_level"] = 3
+        with pytest.raises(ToolError, match="Tasks are not switched on for you yet."):
+            asyncio.run(tools.inbox_add(Ctx("member"), "idea", "x"))

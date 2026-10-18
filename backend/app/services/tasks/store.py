@@ -444,6 +444,46 @@ def set_nudge_days(user_id: str, days: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# The inbox and the weekly review — FR-TASK-INBOX, FR-TASK-REVIEW (055)
+# ---------------------------------------------------------------------------
+
+
+def get_inbox_item(item_id: str) -> dict[str, Any] | None:
+    """One inbox item, processed or not; the caller checks its owner."""
+    rows = db.supabase.table("inbox_items").select("*").eq("id", item_id).execute().data
+    return rows[0] if rows else None
+
+
+def unprocessed_inbox(owner_id: str) -> list[dict[str, Any]]:
+    """The owner's unprocessed inbox items, newest first
+    (`inbox_items_unprocessed`)."""
+    rows = (
+        db.supabase.table("inbox_items")
+        .select("*")
+        .eq("owner_id", owner_id)
+        .is_("processed_at", "null")
+        .execute()
+        .data
+        or []
+    )
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: datetime.fromisoformat(str(r["created_at"])), reverse=True)
+    return rows
+
+
+def set_review_dismissed(user_id: str, week: str) -> dict[str, Any]:
+    """FR-TASK-REVIEW-01 — the person's own
+    `profiles.tasks_review_dismissed_week` (055)."""
+    return (
+        db.supabase.table("profiles")
+        .update({"tasks_review_dismissed_week": week})
+        .eq("id", user_id)
+        .execute()
+        .data[0]
+    )
+
+
+# ---------------------------------------------------------------------------
 # People, memberships, projects and workspaces
 # ---------------------------------------------------------------------------
 

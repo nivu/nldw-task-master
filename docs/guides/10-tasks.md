@@ -1,6 +1,6 @@
 ---
 title: Your tasks
-summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, handing work over, Waiting on, Assigned by me, the morning brief, suggestions on Log a day, recurring tasks and starter templates, the Life OS import and Claude's task tools.
+summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, handing work over, Waiting on, Assigned by me, the morning brief, suggestions on Log a day, recurring tasks and starter templates, voice notes, the Ideas and Reading inbox, the weekly review, the Life OS import and Claude's task tools.
 order: 11
 ---
 
@@ -153,7 +153,8 @@ it has not been switched on for you.
 
 ## Waiting on, Assigned by me and the brief
 
-My Tasks has four views across the top:
+My Tasks has four views across the top, and a fifth, **Inbox**, with the
+fourth stage (below):
 
 | View | Shows |
 |---|---|
@@ -227,6 +228,44 @@ one recurring task to your own list, only when you choose it:
 | Check this month's payroll | every month on the 25th |
 | GST and statutory dates | not available until the owner supplies the list of dates |
 
+## Voice notes
+
+These parts come with the fourth stage of tasks. On the Mine view, **Record**
+a voice note (or upload an audio file of at most 4 MB). It is turned into
+text in the background, and a moment later you see what it heard, split into
+**candidates**: one per sentence, and again at "and" or "also". A candidate
+that starts with "idea" or "read", or that holds a link, is an inbox item;
+every other one is a task, with its due date and person read the same way
+quick add reads them.
+
+Nothing is saved until you act on each candidate: **Confirm** saves it as it
+is, **Edit** lets you change it first, **Drop** throws it away. A task
+candidate with a question (a date that has passed, a weekday that could mean
+two days) needs an answer or an edit first. Saved tasks say they came from
+a voice note. The recording is deleted as soon as it has been turned into
+text, and the text once every candidate is handled, or within a day either
+way.
+
+## The Ideas and Reading inbox
+
+The **Inbox** view holds your ideas, links and notes that are not tasks yet.
+Only you ever see your inbox; no admin can. Add one at the top of the view,
+confirm one from a voice note, or ask Claude to add it.
+
+- **Make it a task** turns an item into a private task with its title and
+  tags, and its link and notes as the task's notes. The item leaves the
+  inbox and remembers the task it became.
+- **Archive** puts it away without a task.
+
+## The weekly review
+
+On Mondays (in your own time zone) the Mine view opens with a **weekly
+review**: your This week and This month tasks, the tasks you have been
+waiting on for more than 7 days, and your unprocessed inbox items. Each has
+one button per section to move it there in one tap; an inbox item moved to
+a section becomes a task in it. **Dismiss for this week** hides the review
+until next Monday. It is only shown here; it is never sent to you.
+
 ## Moving from the Life OS sheet
 
 The portal owner can bring the tasks over from the Life OS sheet, at
@@ -258,9 +297,10 @@ your list:
 | `task_update` | changes a task's fields |
 | `task_complete` | marks a task done |
 | `task_brief` | your morning brief, the same as the Brief view |
+| `inbox_add` | adds an idea, link or note to your own inbox (fourth stage) |
 
 Claude tells you what it will change and waits for your yes before it adds or
-changes anything. It sees exactly what you see. The Life OS import is in the
-web app only.
+changes anything. It sees exactly what you see. The Life OS import, voice
+notes and the weekly review are in the web app only.
 
 Tasks never carry hours. Your day log stays the only record of time.

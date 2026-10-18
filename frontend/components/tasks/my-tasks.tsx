@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { TodayList } from "@/components/crm/today-list";
+import { Inbox } from "@/components/tasks/inbox";
 import { TASK_CREATED_EVENT } from "@/components/tasks/quick-add";
 import { TaskFilters } from "@/components/tasks/task-filters";
 import { TaskPanel } from "@/components/tasks/task-panel";
@@ -11,6 +12,7 @@ import { FOCUS_CLASS } from "@/components/tasks/task-row";
 import { TaskSections } from "@/components/tasks/task-sections";
 import { TaskSettings } from "@/components/tasks/task-settings";
 import { VoiceCapture } from "@/components/tasks/voice-capture";
+import { WeeklyReview } from "@/components/tasks/weekly-review";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   AssignedByMeView,
@@ -48,18 +50,23 @@ import { cn } from "@/lib/utils";
  * on (grouped by whom, with each task's age), Assigned by me (with assignee
  * and status) and the Brief (today, overdue, "nudge?" and each workspace's
  * CRM Today; read when opened, never sent) (FR-TASK-VIEW-01, -02,
- * FR-TASK-BRIEF-01 to -03).
+ * FR-TASK-BRIEF-01 to -03). With phase 4, a fifth view, the Inbox (the
+ * reader's own ideas, links and notes, FR-TASK-INBOX-02), and on the
+ * reader's Monday the page opens with the weekly review panel
+ * (FR-TASK-REVIEW-01).
  */
 
 const PAGE = 20;
 
-type View = "mine" | "waiting" | "assigned_by_me" | "brief";
+type View = "mine" | "waiting" | "assigned_by_me" | "brief" | "inbox";
 
-const VIEWS: { value: View; label: string }[] = [
-  { value: "mine", label: "Mine" },
-  { value: "waiting", label: "Waiting on" },
-  { value: "assigned_by_me", label: "Assigned by me" },
-  { value: "brief", label: "Brief" },
+/** Each view and the phase that shows it. */
+const VIEWS: { value: View; label: string; level: number }[] = [
+  { value: "mine", label: "Mine", level: 2 },
+  { value: "waiting", label: "Waiting on", level: 2 },
+  { value: "assigned_by_me", label: "Assigned by me", level: 2 },
+  { value: "brief", label: "Brief", level: 2 },
+  { value: "inbox", label: "Inbox", level: 4 },
 ];
 
 function days(n: number): string {
@@ -274,8 +281,9 @@ export function MyTasks({
   const router = useRouter();
   const pathname = usePathname();
   const asked = useSearchParams().get("view");
-  // The views are phase 2; below it, `?view=` is ignored.
-  const view: View = level >= 2 && VIEWS.some((v) => v.value === asked) ? (asked as View) : "mine";
+  // The views are phase 2 (the Inbox phase 4); below that, `?view=` is ignored.
+  const views = VIEWS.filter((v) => level >= v.level);
+  const view: View = views.some((v) => v.value === asked) ? (asked as View) : "mine";
 
   function choose(next: View) {
     router.replace(next === "mine" ? pathname : `${pathname}?view=${next}`);
@@ -361,7 +369,7 @@ export function MyTasks({
       {level >= 2 && (
         <Tabs value={view} onValueChange={(value) => choose(String(value) as View)}>
           <TabsList className="max-w-full overflow-x-auto">
-            {VIEWS.map((v) => (
+            {views.map((v) => (
               <TabsTrigger key={v.value} value={v.value}>
                 {v.label}
               </TabsTrigger>
@@ -372,6 +380,8 @@ export function MyTasks({
       {view === "waiting" && <WaitingOn version={version} onOpen={(task) => setOpen(task.id)} />}
       {view === "assigned_by_me" && <AssignedByMe version={version} onOpen={(task) => setOpen(task.id)} />}
       {view === "brief" && <Brief version={version} onOpen={(task) => setOpen(task.id)} meId={meId} />}
+      {view === "inbox" && <Inbox />}
+      {view === "mine" && level >= 4 && <WeeklyReview onChanged={() => setReloads((n) => n + 1)} />}
       {view === "mine" && <TaskFilters value={filters} onChange={setFilters} />}
       {view === "mine" && level >= 2 && <TaskSettings onAdded={() => setReloads((n) => n + 1)} />}
       {view === "mine" && level >= 4 && <VoiceCapture />}

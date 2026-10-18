@@ -13,7 +13,7 @@ come before `/tasks/{id}`.
 
 from __future__ import annotations
 
-from app.api.tasks import brief, comments, lifeos, tasks, templates, voice
+from app.api.tasks import brief, comments, inbox, lifeos, review, tasks, templates, voice
 
 ROUTERS = [
     lifeos.router,
@@ -21,6 +21,8 @@ ROUTERS = [
     comments.router,
     templates.router,
     voice.router,
+    inbox.router,
+    review.router,
     # Always last: its `/tasks/{id}` routes come after every fixed path.
     tasks.router,
 ]

@@ -201,6 +201,13 @@ def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
     audited with the actor's kind and channel, and returns it as `TaskOut`
     presented for the actor. Refuses with `TaskRefused`: 422 for a rule, 404
     for a record, project or parent the actor cannot reach; never 403."""
+    return create_task_with(actor, payload, [])
+
+
+def create_task_with(actor: TaskActor, payload: TaskCreate, also: list[dict[str, Any]]) -> dict:
+    """`create_task`, with `also` written in the same `task_apply` call after
+    the task and its links (they may name it as "$ref:task"): Make it a task
+    records the item's link this way (FR-TASK-INBOX-02)."""
     me = viewer.load(actor.user)
     now = _now()
     today = rules.day_of(now, actor.user.profile.get("timezone"))
@@ -344,6 +351,7 @@ def create_task(actor: TaskActor, payload: TaskCreate) -> dict:
                 },
             }
         )
+    ops += also
     row = store.apply(actor.as_rpc(), ops)[0]["row"]
     _notices(actor, me, None, row)
 

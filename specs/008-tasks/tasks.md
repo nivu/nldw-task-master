@@ -473,19 +473,19 @@ it, the Monday review panel, and the acceptance sweep for phases 2–4.
 
 **Migrations.** `055_task_inbox_review.sql` (data-model §2.10).
 
-- [ ] T120 Write `supabase/migrations/055_task_inbox_review.sql`
-- [ ] T121 [P] Create `backend/app/services/tasks/inbox.py` (owner-only; Make it a task through `create_task`; archive; also used by `services/tasks/voice.py`, whose confirm of an inbox candidate creates the inbox item from its draft in place of S4a's 422, completing Journey 4.10 and FR-TASK-VOICE-04; `frontend/components/tasks/voice-capture.tsx` shows Confirm on inbox candidates again) and `backend/app/domain/tasks/review.py` (Monday in the caller's zone; This week and This month items; waiting over 7 days; unprocessed inbox; dismissed week)
-- [ ] T122 Create `backend/app/api/tasks/inbox.py` and `backend/app/api/tasks/review.py` (contracts §2; `{id}` typed `UUID`) and register them in `ROUTERS` before the `tasks.py` router
-- [ ] T123 Modify `backend/app/mcp/tasks.py`: `inbox_add`
-- [ ] T124 [P] Create `frontend/components/tasks/inbox.tsx` and `frontend/components/tasks/weekly-review.tsx`; modify `frontend/components/tasks/my-tasks.tsx` (Inbox view; review panel on Mondays with one-tap bucket moves and Dismiss)
-- [ ] T125 [P] Create `backend/tests/test_task_inbox_routes.py` (owner-only, admins included; Make it a task links the two; a confirmed voice idea lands in the inbox, replacing `test_task_voice_routes.py`'s `test_the_idea_waits_for_the_inbox`; `/tasks/inbox` and `/tasks/review` reach their own handlers, not `/tasks/{id}`) and `backend/tests/db/test_task_inbox_db.py` (deleting a profile that owns inbox items succeeds, the cascade audited as the system) and `backend/tests/test_task_review.py` (fixed clock Monday/Tuesday; dismiss for the week; never sent)
-- [ ] T126 Extend `backend/tests/test_task_privacy_sweep.py` (inbox and voice routes, `inbox_add`; same scope as T050), `backend/tests/test_task_mcp.py` (six tools), and `backend/tests/test_task_acceptance.py` to every line of spec §12 phases 2–4
-- [ ] T127 [P] Modify `docs/guides/10-tasks.md` (voice, inbox, weekly review) and `docs/architecture/tasks.md` (phases 2–4)
+- [x] T120 Write `supabase/migrations/055_task_inbox_review.sql`
+- [x] T121 [P] Create `backend/app/services/tasks/inbox.py` (owner-only; Make it a task through `create_task`; archive; also used by `services/tasks/voice.py`, whose confirm of an inbox candidate creates the inbox item from its draft in place of S4a's 422, completing Journey 4.10 and FR-TASK-VOICE-04; `frontend/components/tasks/voice-capture.tsx` shows Confirm on inbox candidates again) and `backend/app/domain/tasks/review.py` (Monday in the caller's zone; This week and This month items; waiting over 7 days; unprocessed inbox; dismissed week). Also needed: `backend/app/services/tasks/review.py` (gathers the review's rows through the viewer filter and stores the dismissed week; plan §5.2 names no service for the review), `backend/app/services/tasks/store.py` (`get_inbox_item`, `unprocessed_inbox`, `set_review_dismissed`), `backend/app/schemas/tasks.py` (`InboxIn`; `VoiceConfirmIn.draft` also takes it) and `backend/app/domain/tasks/labels.py` (`INBOX_KIND`, the kind's label, contracts §0 fixed keys) and `backend/app/domain/tasks/service.py` (`create_task_with(actor, payload, also)`: `create_task` with extra ops written in the same `task_apply` call, so Make it a task creates the task and marks the item processed with its `task_id` in one transaction, and a stale or second click cannot leave a task the item does not record; `create_task` delegates to it and keeps its shape)
+- [x] T122 Create `backend/app/api/tasks/inbox.py` and `backend/app/api/tasks/review.py` (contracts §2; `{id}` typed `UUID`) and register them in `ROUTERS` before the `tasks.py` router
+- [x] T123 Modify `backend/app/mcp/tasks.py`: `inbox_add`
+- [x] T124 [P] Create `frontend/components/tasks/inbox.tsx` and `frontend/components/tasks/weekly-review.tsx`; modify `frontend/components/tasks/my-tasks.tsx` (Inbox view; review panel on Mondays with one-tap bucket moves and Dismiss). Also needed: `frontend/lib/api/tasks.ts` and `frontend/lib/api/task-types.ts` (the inbox and review calls and types)
+- [x] T125 [P] Create `backend/tests/test_task_inbox_routes.py` (owner-only, admins included; Make it a task links the two; a confirmed voice idea lands in the inbox, replacing `test_task_voice_routes.py`'s `test_the_idea_waits_for_the_inbox`; `/tasks/inbox` and `/tasks/review` reach their own handlers, not `/tasks/{id}`) and `backend/tests/db/test_task_inbox_db.py` (deleting a profile that owns inbox items succeeds, the cascade audited as the system) and `backend/tests/test_task_review.py` (fixed clock Monday/Tuesday; dismiss for the week; never sent). Also needed: `backend/tests/tasks_fake.py` (055's `inbox_items` in the fake `task_apply` and the three new store functions) and `backend/tests/test_task_routes.py` (route count 31 → 37)
+- [x] T126 Extend `backend/tests/test_task_privacy_sweep.py` (inbox and voice routes, `inbox_add`; same scope as T050), `backend/tests/test_task_mcp.py` (six tools), and `backend/tests/test_task_acceptance.py` to every line of spec §12 phases 2–4
+- [x] T127 [P] Modify `docs/guides/10-tasks.md` (voice, inbox, weekly review) and `docs/architecture/tasks.md` (phases 2–4)
 
 **Done when.**
-- [ ] All gates
-- [ ] `test_task_acceptance.py` has one passing, unskipped test per line of spec §12
-- [ ] The privacy sweep passes for every route and tool, with exactly six task tools registered
+- [x] All gates
+- [x] `test_task_acceptance.py` has one passing, unskipped test per line of spec §12
+- [x] The privacy sweep passes for every route and tool, with exactly six task tools registered
 
 ---
 

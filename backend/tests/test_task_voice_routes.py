@@ -216,14 +216,6 @@ class TestJourney:
         assert out["assignee"]["id"] == ID["user"] and out["kind"] == "private"
         assert _read(world, upload_id)["candidates"][0]["handled"] is True
 
-    def test_the_idea_waits_for_the_inbox(self, world, fake):
-        """S4b builds the inbox; until then an inbox candidate can only be
-        dropped."""
-        upload_id = _transcribed(world, fake)
-        r = world.call("user", "POST", f"/voice/{upload_id}/confirm", json={"index": 1})
-        assert _detail(r) == (422, voice.INBOX_NOT_YET)
-        assert _read(world, upload_id)["candidates"][1]["handled"] is False
-
 
 class TestNothingBeforeConfirm:
     def test_upload_transcription_and_reading_save_no_task(self, world, fake):

@@ -20,7 +20,10 @@ waiting on Wasim, one handed back to her by Farah, and a deleted one; the
 private and the shared one carry a comment of hers (S2a). Phase 2 is on for
 the cast, so the comment routes answer them too, and so do the views, the
 project panel and the brief (S2b), where the shared task is Chitra's
-"nudge?". Phase 3 is on as well, so the starter templates answer them (S3b).
+"nudge?". Phase 3 is on as well, so the starter templates answer them (S3b),
+and phase 4 (S4b): Chitra also holds an inbox item and a transcribed voice
+note, both hers alone (FR-TASK-INBOX-01, FR-TASK-VOICE-05), so the inbox,
+review and voice routes and `inbox_add` answer them too.
 Each of the ten account kinds of FR-TASK-VIS-06 — a TVA admin,
 a manager, the owner, the creator's TVA lead, a CRM workspace Admin, a
 Viewer, a `crm_only` account, the former assignee, the Waiting-on person
@@ -72,15 +75,17 @@ from crm_fake import as_
 from fastapi import APIRouter
 from fastapi.routing import APIRoute, iter_route_contexts
 from tasks_fake import ID, TASK_PEOPLE, TaskWorld
+from test_task_voice_routes import FakeVoice
 
 from app.main import app
 from app.mcp import crm as crm_tools
 from app.mcp import server
 from app.mcp import tasks as task_tools
 from app.mcp.server import ToolError
+from app.tasks import task_jobs
 
 TASKS = "/api/v1/tasks"
-MARKS = ("zqxpriv", "zqxshared", "zqxhanded", "zqxtrash")
+MARKS = ("zqxpriv", "zqxshared", "zqxhanded", "zqxtrash", "zqxinbox", "zqxvoice")
 #: FR-TASK-VIS-06's ten account kinds, by `tasks_fake.ID` key.
 TEN = (
     "outsider",  # a TVA admin
@@ -171,10 +176,12 @@ class Sweep:
         w = self.w = TaskWorld(monkeypatch)
         # S2a: phase 2 on for everyone who has phase 1, so the comment and
         # delegation routes answer the ten accounts with 404, not 403; S3b:
-        # phase 3, so the starter templates answer them too.
+        # phase 3, so the starter templates answer them too; S4b: phase 4,
+        # so the inbox, review and voice routes do.
         for person in w.fake.profiles.values():
             if person.get("tasks_level") == 1:
-                person["tasks_level"] = 3
+                person["tasks_level"] = 4
+        self.voice = FakeVoice(monkeypatch)
         self.private = w.add(
             "creator",
             title="Zqxpriv dentist",
@@ -204,6 +211,21 @@ class Sweep:
         del w.fake.rows["crm_memberships"][w.removed["id"]]
         self.targets = [self.private, self.shared, self.handed, self.trashed]
         self.ids = [t["id"] for t in self.targets]
+        # S4b: Chitra's inbox item and voice note.
+        r = w.call(
+            "creator",
+            "POST",
+            "/inbox",
+            json={"kind": "link", "title": "Zqxinbox read", "url": "https://zqxinbox.example"},
+        )
+        assert r.status_code == 201, r.text
+        self.inbox_id = r.json()["id"]
+        self.voice.transcript = "Zqxvoice call Kiran. Idea: zqxvoice webinar"
+        r = w.call("creator", "POST", "/voice", files={"file": ("v.webm", b"a", "audio/webm")})
+        assert r.status_code == 202, r.text
+        self.upload_id = r.json()["upload_id"]
+        task_jobs.transcribe_voice(self.upload_id)
+        self.private_ids = [self.inbox_id, self.upload_id]
 
     def _as(self, who: str, method: str, task: dict, **kwargs: Any) -> None:
         r = self.w.call(who, method, f"/{task['id']}", **kwargs)
@@ -211,6 +233,13 @@ class Sweep:
 
     def rows(self) -> dict[str, dict[str, Any]]:
         return {i: dict(self.w.tasks[i]) for i in self.ids}
+
+    def private_rows(self) -> list[dict[str, Any]]:
+        """Chitra's inbox item and voice note, as stored (S4b)."""
+        return [
+            copy.deepcopy(self.w.fake.rows["inbox_items"][self.inbox_id]),
+            copy.deepcopy(self.voice.rows[self.upload_id]),
+        ]
 
 
 #: One answer: (status or None for a tool, text, whether it must be a 404).
@@ -300,19 +329,36 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
         _http(s, who, "POST", f"{TASKS}/templates/{key}")
         for key in ("pipeline_review", "statutory_dates")
     ],
-    # S4a: phase 4 is off for the cast, so the voice routes refuse them;
-    # S4b's sweep extends these (T126).
+    # S4b (T126): Chitra's voice note and inbox item are hers alone.
     ("POST", f"{TASKS}/voice"): lambda s, who: [
         _http(s, who, "POST", f"{TASKS}/voice", files={"file": ("v.webm", b"zqx", "audio/webm")})
     ],
     ("GET", f"{TASKS}/voice/{{upload_id}}"): lambda s, who: [
-        _http(s, who, "GET", f"{TASKS}/voice/{uuid.uuid4()}")
+        _http(s, who, "GET", f"{TASKS}/voice/{i}", must_404=True)
+        for i in (s.upload_id, uuid.uuid4())
     ],
     ("POST", f"{TASKS}/voice/{{upload_id}}/confirm"): lambda s, who: [
-        _http(s, who, "POST", f"{TASKS}/voice/{uuid.uuid4()}/confirm", json={"index": 0})
+        _http(s, who, "POST", f"{TASKS}/voice/{s.upload_id}/confirm", json=body, must_404=True)
+        for body in ({"index": 0}, {"index": 1}, {"index": 0, "draft": {"title": "x"}})
     ],
     ("POST", f"{TASKS}/voice/{{upload_id}}/drop"): lambda s, who: [
-        _http(s, who, "POST", f"{TASKS}/voice/{uuid.uuid4()}/drop", json={"index": 0})
+        _http(s, who, "POST", f"{TASKS}/voice/{s.upload_id}/drop", json={"index": i}, must_404=True)
+        for i in (0, 1)
+    ],
+    ("GET", f"{TASKS}/inbox"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/inbox")],
+    ("POST", f"{TASKS}/inbox"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/inbox", json={"kind": "idea", "title": "x"})
+    ],
+    ("POST", f"{TASKS}/inbox/{{id}}/make-task"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/inbox/{s.inbox_id}/make-task", json=body, must_404=True)
+        for body in (None, {"title": "x"})
+    ],
+    ("POST", f"{TASKS}/inbox/{{id}}/archive"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/inbox/{s.inbox_id}/archive", must_404=True)
+    ],
+    ("GET", f"{TASKS}/review"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/review")],
+    ("POST", f"{TASKS}/review/dismiss"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/review/dismiss")
     ],
     ("GET", f"{TASKS}/project/{{project_id}}"): lambda s, who: [
         _http(s, who, "GET", f"{TASKS}/project/{s.w.lumen['id']}", params=p)
@@ -365,6 +411,7 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     ("tool", "task_complete"): lambda s, who: [
         _tool(task_tools.task_complete(Ctx(who), i)) for i in s.ids
     ],
+    ("tool", "inbox_add"): lambda s, who: [_tool(task_tools.inbox_add(Ctx(who), "idea", "x"))],
     # -- existing routes and tools that read tasks ------------------------
     ("GET", "/api/v1/crm/tasks"): lambda s, who: [
         _http(s, who, "GET", "/api/v1/crm/tasks", params={**LABS, **p})
@@ -493,18 +540,21 @@ def sweep(monkeypatch) -> Sweep:
 class TestTheTenAccounts:
     @pytest.mark.parametrize("who", TEN)
     def test_nothing_of_a_private_or_shared_task_reaches_them(self, sweep, who):
-        before = sweep.rows()
+        before, private = sweep.rows(), sweep.private_rows()
         leaks: list[str] = []
         for key, fixture in FIXTURES.items():
             for status, text, must_404 in fixture(sweep, who):
                 lowered = text.lower()
-                found = [m for m in MARKS if m in lowered] + [i for i in sweep.ids if i in text]
+                found = [m for m in MARKS if m in lowered] + [
+                    i for i in sweep.ids + sweep.private_ids if i in text
+                ]
                 if found:
                     leaks.append(f"{key}: {found}")
                 if must_404 and status != 404:
                     leaks.append(f"{key}: {status}")
         assert leaks == []
         assert sweep.rows() == before
+        assert sweep.private_rows() == private
 
     def test_the_sweep_would_see_a_leak(self, sweep):
         """The creator's own answers carry the markers, so a leak would be
@@ -516,6 +566,12 @@ class TestTheTenAccounts:
         assert "zqxshared" in FIXTURES[("GET", TASKS)](sweep, "assignee")[0][1].lower()
         [(_, brief, _)] = FIXTURES[("GET", f"{TASKS}/brief")](sweep, "creator")
         assert "zqxpriv" in brief.lower() and "zqxshared" in brief.lower()
+        [(_, inbox, _)] = FIXTURES[("GET", f"{TASKS}/inbox")](sweep, "creator")
+        assert "zqxinbox" in inbox.lower() and sweep.inbox_id in inbox
+        [(_, review, _)] = FIXTURES[("GET", f"{TASKS}/review")](sweep, "creator")
+        assert "zqxinbox" in review.lower()
+        r = sweep.w.call("creator", "GET", f"/voice/{sweep.upload_id}")
+        assert "zqxvoice" in r.text.lower()
 
 
 #: FR-TASK-VIS-06's two tasks: the attribute of `Sweep` and its marker.

@@ -27,8 +27,9 @@ The row is written directly with the service role, not through
 `audit_log`. Logs carry the upload id only, never the transcript or a
 candidate's text (NFR-TASK-04).
 
-Confirming an inbox candidate needs the Ideas and Reading inbox (S4b); until
-it exists the confirm is refused and the candidate stays to be dropped.
+Confirming an inbox candidate adds it to the caller's Ideas and Reading
+inbox (`services/tasks/inbox`), as drafted or as edited, completing Journey
+4.10 (FR-TASK-VOICE-04).
 """
 
 from __future__ import annotations
@@ -38,13 +39,15 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
+from pydantic import ValidationError
+
 from app.config import settings
 from app.domain.tasks import quick_add, rules, service, voice_split
 from app.domain.tasks.errors import TaskRefused
 from app.domain.tasks.service import TaskActor
-from app.schemas.tasks import TaskCreate, TaskIn
+from app.schemas.tasks import InboxIn, TaskCreate, TaskIn
 from app.services import supabase as db
-from app.services.tasks import groq, people
+from app.services.tasks import groq, inbox, people
 
 logger = logging.getLogger("nldw-task-master")
 
@@ -81,7 +84,8 @@ TOO_LONG: Final = (
     f"This candidate has a title over {MAX_TITLE} characters or more than "
     f"{rules.MAX_TAGS} tags; edit it before confirming it."
 )
-INBOX_NOT_YET: Final = "The Ideas and Reading inbox is not set up yet."
+NOT_A_TASK: Final = "This candidate is an inbox item; edit it with an inbox item's fields."
+NOT_AN_ITEM: Final = "This candidate is a task; edit it with a task's fields."
 FAILED: Final = "The voice note could not be transcribed. Try again, or type it."
 NOTHING_HEARD: Final = "No words were heard in the voice note."
 EXPIRED: Final = "The voice note expired before it was transcribed."
@@ -280,13 +284,42 @@ def _finish(upload_id: str) -> None:
         logger.info('{"event": "tasks_voice_done", "upload_id": "%s"}', upload_id)
 
 
-def confirm(actor: TaskActor, upload_id: str, index: int, draft: TaskIn | None) -> dict[str, Any]:
-    """FR-TASK-VOICE-04 — saves one task candidate, as drafted or as edited
-    (`draft`, the fields of `POST /tasks`), with source `voice`."""
+def _confirm_inbox(
+    actor: TaskActor, row: dict[str, Any], index: int, text: str, draft: InboxIn | None
+) -> dict[str, Any]:
+    """FR-TASK-VOICE-04 — adds one inbox candidate to the caller's inbox, as
+    drafted or as edited (`draft`, the fields of `POST /tasks/inbox`)."""
+    if draft is None:
+        today, zone = _today(actor)
+        drafted = voice_split.inbox_draft(text, today, people.people(actor), zone)
+        try:
+            draft = InboxIn(**drafted)
+        except ValidationError:
+            raise TaskRefused(422, TOO_LONG) from None
+    _claim(row["id"], index)
+    try:
+        item = inbox.add(actor, draft)
+    except BaseException:
+        mark_candidate(row["id"], index, False)
+        raise
+    _finish(row["id"])
+    return item
+
+
+def confirm(
+    actor: TaskActor, upload_id: str, index: int, draft: TaskIn | InboxIn | None
+) -> dict[str, Any]:
+    """FR-TASK-VOICE-04 — saves one candidate, as drafted or as edited: a
+    task candidate as a task (`draft`, the fields of `POST /tasks`) with
+    source `voice`, an inbox candidate as an inbox item."""
     row = _own(actor, upload_id)
     candidate = _candidate(row, index)
     if candidate["kind"] != "task":
-        raise TaskRefused(422, INBOX_NOT_YET)
+        if isinstance(draft, TaskIn):
+            raise TaskRefused(422, NOT_A_TASK)
+        return _confirm_inbox(actor, row, index, candidate["text"], draft)
+    if isinstance(draft, InboxIn):
+        raise TaskRefused(422, NOT_AN_ITEM)
     if draft is None:
         today, zone = _today(actor)
         parsed = voice_split.task_draft(candidate["text"], today, people.people(actor), zone)

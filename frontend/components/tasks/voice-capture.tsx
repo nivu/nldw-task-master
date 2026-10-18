@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, Square } from "lucide-react";
 
+import { INBOX_ADDED_EVENT } from "@/components/tasks/inbox";
 import { TASK_CREATED_EVENT } from "@/components/tasks/quick-add";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { VoiceCandidate, VoiceNote } from "@/lib/api/task-types";
+import type { InboxIn, TaskIn, VoiceCandidate, VoiceNote } from "@/lib/api/task-types";
 import { errorMessage } from "@/lib/api/portal";
 import { confirmVoiceCandidate, dropVoiceCandidate, getVoiceNote, uploadVoiceNote } from "@/lib/api/tasks";
 import { dueText } from "@/lib/tasks/labels";
@@ -26,10 +27,10 @@ type Edit = { title: string; due_on: string; assignee_id?: string };
  * at most 4 MB; it goes up through the proxy and is transcribed in the
  * background. The page asks for it every 2 seconds for at most a minute,
  * then shows its candidates, split by fixed rules: each task candidate with
- * its quick-add draft, each inbox candidate with its kind. Each task
- * candidate is confirmed with one tap, edited first, or dropped; an inbox
- * candidate can only be dropped until the inbox exists (S4b). Nothing is
- * saved before a confirm. A candidate with an open question (a date that has passed, an
+ * its quick-add draft, each inbox candidate with its kind. Each candidate is
+ * confirmed with one tap, edited first, or dropped: a task candidate becomes
+ * a task, an inbox candidate an item of the reader's Ideas and Reading inbox
+ * (S4b). Nothing is saved before a confirm. A candidate with an open question (a date that has passed, an
  * ambiguous weekday) is answered or edited before it can be confirmed.
  */
 export function VoiceCapture() {
@@ -138,25 +139,32 @@ export function VoiceCapture() {
     setActing(c.index);
     setError(null);
     try {
-      const task = await confirmVoiceCandidate(
-        uploadId,
-        c.index,
-        edit
-          ? {
-              title: edit.title,
-              due_on: edit.due_on || null,
-              ...(c.kind === "task" && c.draft
-                ? {
-                    tags: c.draft.tags,
-                    assignee_id: edit.assignee_id ?? c.draft.assignee.id,
-                    // The spoken bucket, unless the edit moved the date (the bucket follows it).
-                    ...(edit.due_on === (c.draft.due_on ?? "") ? { bucket: c.draft.bucket } : {}),
-                  }
-                : {}),
-            }
-          : undefined
+      let draft: TaskIn | InboxIn | undefined;
+      if (edit && c.kind === "task") {
+        draft = {
+          title: edit.title,
+          due_on: edit.due_on || null,
+          ...(c.draft
+            ? {
+                tags: c.draft.tags,
+                assignee_id: edit.assignee_id ?? c.draft.assignee.id,
+                // The spoken bucket, unless the edit moved the date (the bucket follows it).
+                ...(edit.due_on === (c.draft.due_on ?? "") ? { bucket: c.draft.bucket } : {}),
+              }
+            : {}),
+        };
+      } else if (edit && c.kind === "inbox") {
+        draft = {
+          kind: c.draft?.kind ?? "note",
+          title: edit.title,
+          url: c.draft?.url ?? null,
+          tags: c.draft?.tags ?? [],
+        };
+      }
+      const saved = await confirmVoiceCandidate(uploadId, c.index, draft);
+      window.dispatchEvent(
+        new CustomEvent(c.kind === "task" ? TASK_CREATED_EVENT : INBOX_ADDED_EVENT, { detail: saved })
       );
-      window.dispatchEvent(new CustomEvent(TASK_CREATED_EVENT, { detail: task }));
       handled(c.index);
     } catch (err) {
       setError(errorMessage(err));
@@ -316,17 +324,14 @@ export function VoiceCapture() {
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  {/* An inbox candidate is confirmed once the inbox exists (S4b); until then it can only be dropped. */}
-                  {c.kind === "task" && (
-                    <Button
-                      size="sm"
-                      onClick={() => confirm(c)}
-                      disabled={acting !== null || (!edit && questions.length > 0) || (edit && !edit.title.trim())}
-                    >
-                      Confirm
-                    </Button>
-                  )}
-                  {!edit && c.kind === "task" && (
+                  <Button
+                    size="sm"
+                    onClick={() => confirm(c)}
+                    disabled={acting !== null || (!edit && questions.length > 0) || (edit && !edit.title.trim())}
+                  >
+                    Confirm
+                  </Button>
+                  {!edit && (
                     <Button size="sm" variant="outline" onClick={() => startEdit(c)} disabled={acting !== null}>
                       Edit
                     </Button>

@@ -160,14 +160,28 @@ class TaskSettingsIn(BaseModel):
     nudge_days: int | None = Field(default=None, ge=1, le=30)
 
 
+class InboxIn(BaseModel):
+    """Contracts §2 `POST /tasks/inbox` and `inbox_add` — an idea, link or
+    note for the caller's own inbox (FR-TASK-INBOX-01, -03; data-model
+    §2.10)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    kind: Literal["idea", "link", "note"]
+    title: str = Field(min_length=1, max_length=200)
+    url: str | None = Field(default=None, max_length=2_000, pattern=r"^https?://\S+$")
+    notes: str | None = Field(default=None, max_length=20_000)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+
+
 class VoiceConfirmIn(BaseModel):
     """Contracts §2 `POST /tasks/voice/{upload_id}/confirm` — the candidate,
-    and its edited draft (the fields of `POST /tasks`) when it was edited
+    and its edited draft when it was edited: the fields of `POST /tasks` for
+    a task candidate, of `POST /tasks/inbox` for an inbox one
     (FR-TASK-VOICE-04)."""
 
     model_config = ConfigDict(extra="forbid")
     index: int = Field(ge=0)
-    draft: TaskIn | None = None
+    draft: TaskIn | InboxIn | None = None
 
 
 class VoiceDropIn(BaseModel):

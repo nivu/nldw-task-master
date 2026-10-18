@@ -10,7 +10,8 @@ soft delete only, the workspace of their task) and the delegation messages'
 sent markers. S2b reads the tasks a person created (Assigned by me, the
 brief's nudges). S3b adds 053: a recurring task has a due date, a series has
 one live occurrence per due date (`tasks_series_due`), and only a series'
-next occurrence names its creator.
+next occurrence names its creator. S4b adds 055: inbox items, written by
+their owner only, and the dismissed week of the review panel.
 
 `FakeCrmStore.install` installs one beside itself, so a CRM route that
 presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
@@ -47,7 +48,7 @@ from app.services import notify
 from app.services.tasks import notices, store
 
 #: 049: the tables `task_apply` writes; the later ones arrive in 051-055.
-TASK_TABLES = ("tasks", "task_links", "task_import_runs", "task_comments")
+TASK_TABLES = ("tasks", "task_links", "task_import_runs", "task_comments", "inbox_items")
 
 
 def public_task_store_names() -> list[str]:
@@ -77,6 +78,8 @@ class FakeTaskStore:
         # 052: comments (audited) and the messages' sent markers (a log).
         self.rows.setdefault("task_comments", {})
         self.rows.setdefault("task_notice_sends", {})
+        # 055: the inbox (audited).
+        self.rows.setdefault("inbox_items", {})
 
     @property
     def rows(self) -> dict[str, dict[str, dict[str, Any]]]:
@@ -299,6 +302,26 @@ class FakeTaskStore:
     def mark_notice_sent(self, notice_id: str, sent_at: str, channels: list[str]) -> None:
         self.rows["task_notice_sends"][notice_id].update(sent_at=sent_at, channels=channels)
 
+    def get_inbox_item(self, item_id: str) -> dict[str, Any] | None:
+        row = self.rows["inbox_items"].get(item_id)
+        return dict(row) if row else None
+
+    def unprocessed_inbox(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(r)
+            for r in self.rows["inbox_items"].values()
+            if r["owner_id"] == owner_id and r.get("processed_at") is None
+        ]
+        rows.sort(key=lambda r: r["id"])
+        rows.sort(key=lambda r: _at(r["created_at"]), reverse=True)
+        return rows
+
+    def set_review_dismissed(self, user_id: str, week: str) -> dict[str, Any]:
+        """055 `profiles.tasks_review_dismissed_week`, on the profiles the
+        client signs in."""
+        self.crm.profiles[user_id]["tasks_review_dismissed_week"] = week
+        return dict(self.crm.profiles[user_id])
+
     def set_nudge_days(self, user_id: str, days: int) -> dict[str, Any]:
         """052 `profiles.task_nudge_days`, on the profiles the client signs in."""
         if not 1 <= days <= 30:
@@ -428,6 +451,9 @@ class FakeTaskStore:
         if table == "task_import_runs":
             # 049: the actor is the run's uploader.
             return subject.get("uploader_id") == actor.get("user_id")
+        if table == "inbox_items":
+            # 049: the actor is the item's owner.
+            return subject.get("owner_id") == actor.get("user_id")
         task = subject if table == "tasks" else self.rows["tasks"].get(subject.get("task_id"))
         if task is None:
             return False
@@ -481,6 +507,18 @@ class FakeTaskStore:
             "report": {},
             "dry_run_at": service._now().isoformat(),
             "applied_at": None,
+        }
+
+    @staticmethod
+    def _inbox_defaults() -> dict[str, Any]:
+        """055's column defaults."""
+        return {
+            "url": None,
+            "notes": None,
+            "tags": [],
+            "processed_at": None,
+            "archived": False,
+            "task_id": None,
         }
 
     def _lifeos_key_check(self, row: dict[str, Any]) -> None:
@@ -538,8 +576,12 @@ class FakeTaskStore:
                     if table == "task_comments"
                     else {}
                 ),
+                **(self._inbox_defaults() if table == "inbox_items" else {}),
                 **values,
             }
+            if table == "inbox_items":
+                # 055: no creator column; the owner is the item's.
+                del row["created_by"]
             if not self._allowed(actor, table, row):
                 raise _refuse("CRM04", "No such task.")
             if table == "tasks":

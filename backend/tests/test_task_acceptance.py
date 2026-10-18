@@ -1,16 +1,18 @@
-"""Phases 1 to 3's acceptance criteria, one test each — spec 008 §12
-(phases 1 to 3); NFR-TASK-08; tasks T073, T098, T104, T111.
+"""Phases 1 to 4's acceptance criteria, one test each — spec 008 §12
+(phases 1 to 4); NFR-TASK-08; tasks T073, T098, T104, T111, T126.
 
 The lines are read from `specs/008-tasks/spec.md` §12 itself, from "Phase 1 —
-migration and CRM" to "Phase 2", from "Phase 2" to "Phase 3" and from
-"Phase 3" to "Phase 4", so each one is its own test here and a line added to
+migration and CRM" to "Phase 2", from "Phase 2" to "Phase 3", from "Phase 3"
+to "Phase 4" and from "Phase 4" to the end of §12, so each one is its own
+test here and a line added to
 or reworded in the spec fails `test_every_line_has_exactly_one_entry` until
 this file says how it is proved. Phase 2's lines are proved by named
 covering tests only. Phase 3's lines (S3a) are proved by named covering
 tests and, for what is screen state only (Accept, the merge, the warning;
 plan §5.9), by named tests of the local Playwright spec
 `frontend/e2e/day-log.spec.ts`, each asserted to exist and the spec to skip
-nothing; the recurrence line (S3b) by named covering tests.
+nothing; the recurrence line (S3b) by named covering tests. Phase 4's lines
+(S4a, S4b) are proved by named covering tests only.
 
 Each line is proved one of two ways:
 
@@ -135,6 +137,21 @@ def _phase_3_lines() -> list[str]:
 
 
 LINES_3 = _phase_3_lines()
+
+
+def _phase_4_lines() -> list[str]:
+    """Spec §12's phase-4 lines, in order, without their check boxes."""
+    text = SPEC.read_text()
+    start = text.index("\nPhase 4\n")
+    end = text.index("\n---", start)
+    return [
+        line.removeprefix("- [ ] ").removeprefix("- [x] ")
+        for line in text[start:end].splitlines()
+        if line.startswith(("- [ ] ", "- [x] "))
+    ]
+
+
+LINES_4 = _phase_4_lines()
 DAY_LOG_E2E = BACKEND.parent / "frontend" / "e2e" / "day-log.spec.ts"
 
 
@@ -700,6 +717,52 @@ ENTRIES_3: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+#: Phase 4 (S4a, S4b): (a prefix that starts exactly one spec line, its
+#: covering tests).
+ENTRIES_4: list[tuple[str, tuple[str, ...]]] = [
+    (
+        "A voice note becomes candidates shown for confirmation",
+        (
+            "test_task_voice_split.py",
+            "test_task_voice_routes.py::TestJourney",
+            "test_task_voice_routes.py::TestNothingBeforeConfirm",
+            "test_task_voice_routes.py::TestTheAudio",
+        ),
+    ),
+    (
+        "The sweep job deletes the audio and transcript of a failed transcription",
+        (
+            "test_task_voice_routes.py::TestTheSweep",
+            "db/test_task_voice_db.py::TestTheRow",
+        ),
+    ),
+    (
+        "The transcript is deleted when the last candidate is confirmed or dropped",
+        (
+            "test_task_voice_routes.py::TestTheTranscript",
+            "test_task_inbox_routes.py::TestFromAVoiceNote",
+        ),
+    ),
+    (
+        "Inbox items are visible only to their owner",
+        (
+            "test_task_inbox_routes.py::TestOwnerOnly",
+            "test_task_inbox_routes.py::TestMakeItATask",
+            "db/test_task_inbox_db.py::TestWrites",
+            "test_task_privacy_sweep.py::TestTheTenAccounts",
+        ),
+    ),
+    (
+        "The Monday review panel shows the listed items and can be dismissed",
+        (
+            "test_task_review.py::TestThePanel",
+            "test_task_review.py::TestDismiss",
+            "test_task_review.py::TestNeverSent",
+        ),
+    ),
+]
+
+
 def check_e2e(title: str) -> None:
     """A test of the local Playwright spec exists by `title`, and the spec
     skips, fixes or focuses nothing."""
@@ -745,6 +808,15 @@ class TestTheLines:
             assert sum(line.startswith(p) for p, _ in ENTRIES_3) == 1, line
         for prefix, _ in ENTRIES_3:
             assert sum(line.startswith(prefix) for line in LINES_3) == 1, prefix
+
+    def test_phase_4_has_its_lines(self):
+        assert len(LINES_4) == 5
+
+    def test_every_phase_4_line_has_exactly_one_entry(self):
+        for line in LINES_4:
+            assert sum(line.startswith(p) for p, _ in ENTRIES_4) == 1, line
+        for prefix, _ in ENTRIES_4:
+            assert sum(line.startswith(prefix) for line in LINES_4) == 1, prefix
 
     def test_a_missing_or_skipped_e2e_test_is_caught(self, tmp_path, monkeypatch):
         spec = tmp_path / "day-log.spec.ts"
@@ -875,5 +947,13 @@ def test_phase_3_line(line):
         if ref.startswith("e2e:"):
             check_e2e(ref.removeprefix("e2e:"))
             continue
+        assert ref not in RECORDED
+        check_cover(ref)
+
+
+@pytest.mark.parametrize("line", LINES_4, ids=_id)
+def test_phase_4_line(line):
+    [proof] = [proof for prefix, proof in ENTRIES_4 if line.startswith(prefix)]
+    for ref in proof:
         assert ref not in RECORDED
         check_cover(ref)
