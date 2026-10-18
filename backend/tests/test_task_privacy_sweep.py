@@ -22,11 +22,21 @@ the creator's TVA lead, a CRM workspace Admin, a Viewer, a `crm_only`
 account, the former assignee, the Waiting-on person and a removed workspace
 member — calls every fixture; no answer carries a marker string or one of
 the tasks' ids, every task route given one of their ids answers 404, and the
-tasks are unchanged afterwards.
+tasks are unchanged afterwards. `TestTheMatrix` then tries each of the ten
+against the private and the shared personal task one at a time (twenty
+cells), and checks that the cast really holds the ten kinds.
+
+FR-TASK-VIS-06's further proofs: a removed workspace member reads none of
+the workspace's CRM tasks they created or were assigned, through the task
+routes, the CRM routes or the tools; a task whose parent is private shows
+no parent id or title; and the private-era history of a task later linked
+to a CRM record reaches no workspace member through the task panel, the
+record and task timelines, the workspace audit or `crm_get`.
 
 Acceptance criteria (spec §12, phase 1 — privacy):
 - "FR-TASK-VIS-06 passes for every route and tool, and fails when a route or
-  tool is added without a fixture" — TestScope, TestTheTenAccounts.
+  tool is added without a fixture" — TestScope, TestTheTenAccounts,
+  TestTheMatrix.
 - "A CRM task is visible to every active workspace member and to no
   non-member, including its creator or assignee after removal from the
   workspace, and including leads, managers and admins outside the workspace
@@ -56,7 +66,7 @@ import pytest
 from crm_fake import as_
 from fastapi import APIRouter
 from fastapi.routing import APIRoute, iter_route_contexts
-from tasks_fake import ID, TaskWorld
+from tasks_fake import ID, TASK_PEOPLE, TaskWorld
 
 from app.main import app
 from app.mcp import crm as crm_tools
@@ -440,6 +450,60 @@ class TestTheTenAccounts:
         assert "zqxshared" in FIXTURES[("GET", TASKS)](sweep, "assignee")[0][1].lower()
 
 
+#: FR-TASK-VIS-06's two tasks: the attribute of `Sweep` and its marker.
+TARGETS = {"private": "zqxpriv", "shared": "zqxshared"}
+
+
+class TestTheMatrix:
+    @pytest.mark.parametrize("target", sorted(TARGETS))
+    @pytest.mark.parametrize("who", TEN)
+    def test_one_account_against_one_task(self, sweep, who, target):
+        """One cell of the matrix: every fixture, with only this task's id,
+        and only this task's marker looked for."""
+        task, mark = getattr(sweep, target), TARGETS[target]
+        sweep.ids = [task["id"]]
+        before = dict(sweep.w.tasks[task["id"]])
+        leaks: list[str] = []
+        for key, fixture in FIXTURES.items():
+            for status, text, must_404 in fixture(sweep, who):
+                if mark in text.lower() or task["id"] in text:
+                    leaks.append(f"{key}: found")
+                if must_404 and status != 404:
+                    leaks.append(f"{key}: {status}")
+        assert leaks == []
+        assert dict(sweep.w.tasks[task["id"]]) == before
+
+    def test_the_cast_is_the_ten_kinds(self, sweep):
+        """Each key of `TEN` is the account kind FR-TASK-VIS-06 names."""
+        w, people = sweep.w, {k: TASK_PEOPLE[ID[k]] for k in ID}
+        labs = {
+            m["user_id"]: m["role"]
+            for m in w.fake.rows["crm_memberships"].values()
+            if m["workspace_id"] == w.labs["id"]
+        }
+        assert people["outsider"]["role"] == "admin" and ID["outsider"] not in labs
+        assert people["manager"]["role"] == "manager"
+        assert people["owner"]["is_owner"] is True
+        assert people["creator"]["lead_id"] == ID["lead"]
+        assert labs[ID["labsadmin"]] == "admin"
+        assert labs[ID["viewer"]] == "viewer"
+        assert people["seller"]["account_type"] == "crm_only"
+        assert ID["removed"] not in labs and w.removed["user_id"] == ID["removed"]
+        shared, handed = w.tasks[sweep.shared["id"]], w.tasks[sweep.handed["id"]]
+        assert shared["waiting_on_id"] == ID["waiting"] and shared["status"] == "waiting"
+        for task in (shared, handed):
+            assert task["assignee_id"] != ID["former"]
+            assert any(
+                (r.get("before") or {}).get("assignee_id") == ID["former"]
+                for r in w.fake.audit
+                if r["target_table"] == "tasks" and r["target_id"] == task["id"]
+            )
+        assert handed["assignee_id"] == handed["created_by"] == ID["creator"]
+        private = w.tasks[sweep.private["id"]]
+        assert private["assignee_id"] == private["created_by"] and not private["workspace_id"]
+        assert shared["assignee_id"] != shared["created_by"] and not shared["workspace_id"]
+
+
 # ---------------------------------------------------------------------------
 # FR-TASK-VIS-06's further proofs and FR-TASK-VIS-07
 # ---------------------------------------------------------------------------
@@ -461,6 +525,20 @@ class TestCrmLinksWin:
             assert r.status_code == 404
         listed = w.call("removed", "GET", "").json()
         assert all(not v for v in listed["sections"].values())
+        answers = [
+            w.http.get("/api/v1/crm/tasks", params=LABS, headers=as_(ID["removed"])).text,
+            w.http.get(
+                "/api/v1/crm/search", params={**LABS, "q": "Given"}, headers=as_(ID["removed"])
+            ).text,
+            _tool(task_tools.task_list(Ctx("removed")))[1],
+            _tool(crm_tools.crm_list(Ctx("removed"), "task", workspace="labs"))[1],
+            *[
+                _tool(crm_tools.crm_get(Ctx("removed"), "task", t["id"], workspace="labs"))[1]
+                for t in (made, given)
+            ],
+        ]
+        for text in answers:
+            assert made["id"] not in text and given["id"] not in text
         assert w.call("member", "GET", f"/{made['id']}").status_code == 200
 
     def test_no_one_outside_the_workspace_sees_a_crm_task_with_a_project(self, monkeypatch):
@@ -556,3 +634,11 @@ class TestParentAndHistory:
                 f"/api/v1/crm/companies/{w.acme['id']}/timeline", params=LABS, headers=as_(ID[who])
             )
             assert "zqxera" not in timeline.text.lower(), who
+            own = w.http.get(
+                f"/api/v1/crm/tasks/{task['id']}/timeline", params=LABS, headers=as_(ID[who])
+            )
+            assert own.status_code == 200 and "zqxera" not in own.text.lower(), who
+            got = _tool(crm_tools.crm_get(Ctx(who), "task", task["id"], workspace="labs"))[1]
+            assert "zqxera" not in got.lower(), who
+        audit = w.http.get("/api/v1/crm/audit", params=LABS, headers=as_(ID["labsadmin"]))
+        assert audit.status_code == 200 and "zqxera" not in audit.text.lower()

@@ -75,15 +75,24 @@ class TestCoverage:
     def test_the_crm_exception_is_the_specs(self):
         """FR-MCP-01 as amended by `007` FR-CRM-CHG-07: the test above leaves
         out every `/api/v1/crm/` operation by prefix, and exactly what the
-        amended text exempts."""
+        amended text exempts. Amended again by `008` FR-TASK-CHG-03: the
+        `/api/v1/tasks` operations, covered by the `task_*` and `inbox_add`
+        tools."""
         from pathlib import Path
 
         spec = Path(__file__).resolve().parents[2] / "specs" / "004-mcp" / "spec.md"
         [row] = [line for line in spec.read_text().splitlines() if line.startswith("| FR-MCP-01 |")]
         assert "except CRM routes, which are covered by the `crm_*` tools of `007`" in row
+        assert (
+            "and task routes, which are covered by the `task_*` and `inbox_add` tools of `008`"
+            " FR-TASK-MCP-01 (the Life OS import is web-only, TP-10)"
+        ) in row
         crm_operations = {op for op in _operations() if op[1].startswith("/api/v1/crm/")}
         assert crm_operations and not crm_operations & EXCLUDED
         assert {t.name for t in _tools() if t.name.startswith("crm_")}
+        task_operations = {op for op in _operations() if op[1].startswith("/api/v1/tasks")}
+        assert task_operations and not task_operations & EXCLUDED
+        assert {t.name for t in _tools() if t.name.startswith("task_")}
 
     def test_every_tool_is_described_and_annotated(self):
         for tool in _tools():

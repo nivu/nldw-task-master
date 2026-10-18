@@ -477,6 +477,61 @@ repository and read the old CRM. At cutover, repoint them at this portal's
 `crm_*` tools (a morning `crm_today` per workspace) or retire them (spec
 D16). The Twenty import itself is Settings → Import, dry run first.
 
+## 7. Tasks (spec 008)
+
+Tasks ship in the same image, services and frontend. The CRM's task table
+becomes the shared `tasks` table, so this release changes how every CRM task
+is stored; read [`docs/architecture/tasks.md`](../architecture/tasks.md)
+first. Release in a quiet hour.
+
+### First release (phase 1)
+
+1. **Report the linkless CRM tasks first.** Migration `046` moves every live
+   CRM task that has no linked record into its workspace Trash before the
+   rename (spec §8.2). Count them in the Supabase SQL editor before
+   `db push`, and report the number to the owner:
+
+   ```sql
+   SELECT count(*) FROM crm_tasks t
+   WHERE t.deleted_at IS NULL
+     AND NOT EXISTS (SELECT 1 FROM crm_task_links l WHERE l.task_id = t.id);
+   ```
+
+   `046` prints the same count as a NOTICE when it runs.
+2. **Migrations `046`–`051` and `056`** with `npx supabase db push`, as every
+   release: `046` the linkless clean-up, `047` the rename, new statuses and
+   fields, `048` the CRM functions on the new names, `049` the task write
+   path, `050` the phase level (everyone starts at 0), `051` the Life OS
+   import's run records, `056` the lock on link removal. `047` and `048`
+   must apply in the same push: between them, CRM task writes fail.
+3. **`api`, `worker` and `beat` from the same commit**, after the
+   migrations. Tasks add the Celery task `tasks.purge_deleted` and its beat
+   entry (01:20 IST daily); a worker left on an older commit drops it.
+4. **Netlify**, with `--skip-functions-cache`.
+5. **Check**, signed in as the owner: CRM Today, a deal's Tasks tab and the
+   CRM Tasks page show the same tasks as before, with To do and In progress
+   now Open. Nothing of My Tasks shows yet for anyone.
+
+### Raising levels, person by person
+
+Every phase is off for everyone until switched on (C6). A person's level `n`
+switches on phases 1 to `n`; a person with no level of their own has the
+global default, which starts at 0.
+
+1. The constitution amendment (spec §15.1) is agreed before phase 1 goes to
+   anyone but the owner.
+2. A TVA admin raises the owner first: Admin → People → **Tasks** → 1, or
+   `update_user` with `changes: {"tasks_level": 1}`. Each change is audited.
+3. Then the core team, one person at a time, the same way. A person who is
+   assigned a personal task needs level 1 first ("*Name* does not have My
+   Tasks yet.").
+4. Only when everyone should have it, raise the default with `update_setting`
+   (`tasks_default_level`). Setting a person back to **Default** makes them
+   follow it again.
+
+CRM task behaviour never depends on the level: CRM tasks work for everyone
+from the release on.
+
 ## Releasing a change
 
 Every release, in this order:
