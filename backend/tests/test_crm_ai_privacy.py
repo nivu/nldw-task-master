@@ -17,23 +17,32 @@ through the real enqueue path so their Celery payloads are inspected too.
 S3b adds a marker in the body of the outbound email R-1 follows up: the
 draft task's Celery payload holds ids only, no body is read, and a draft
 that fails with a marker in its exception leaves only the fixed sentence.
+S5 (T168) completes the test over every job: the AI fields job, fed in
+turn by each source job's stored output (summaries, meeting notes, enriched
+values), on success and on invalid output; and the R-1 draft made from a
+summary the summaries job wrote from an email with quoted-history and
+signature markers, on success and on invalid output.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 
 import pytest
 from crm_ai_fakes import INVALID, CapturedCelery, FakeClaude
+from test_crm_ai_fields_job import ANSWERS as FIELD_ANSWERS
+from test_crm_ai_fields_job import ByField
 from test_crm_enrichment_job import ANSWER as ENRICHED
 from test_crm_enrichment_job import Sites
 from test_crm_followup_rules import DRAFT, Rules
+from test_crm_followup_rules import NOW as RULES_NOW
 from test_crm_meetings_job import ANSWER as MEETING_ANSWER
 from test_crm_meetings_job import PRIYA, Calls
 from test_crm_summaries_job import ANSWER, Mail
 
-from app.services.crm import ai, enrichment
+from app.services.crm import ai, ai_fields, enrichment
 from app.tasks import crm_ai
 
 QUOTED = "ZQXQUOTEDHISTORY"
@@ -255,3 +264,116 @@ class TestFollowUpDraft:
         assert sentence in caplog.text
         found = _everything(rules, caplog, result)
         assert FAILURE not in found and OUTREACH not in found
+
+
+# ---------------------------------------------------------------------------
+# S5 — every job (T168): the AI fields job fed by each source, and the R-1
+# draft fed by a summary of a marked email, on success and on invalid output
+# ---------------------------------------------------------------------------
+
+AT = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+#: Each source job: the phase it needs, how it runs, the text of its own
+#: output the AI fields prompt must carry, and what must reach no column.
+SOURCES = {
+    "mail": ("1", "Priya asked for a pilot plan.", (*MARKERS, "Could you send the pilot plan")),
+    "calls": ("2", "Priya asked for a pilot plan.", (TRANSCRIPT, FIREFLIES_SUMMARY)),
+    "sites": ("2", "Acme makes precision machine tools.", (WEB_PAGE, WEB_ABOUT, "Code ZQX")),
+}
+
+
+def _source(name: str, made) -> dict:
+    """The source job, answered well, so its output is stored."""
+    if name == "mail":
+        made.answer(ANSWER)
+        return crm_ai._summaries()
+    if name == "calls":
+        made.answer(MEETING_ANSWER)
+        return crm_ai._meetings()
+    made.answer(ENRICHED)
+    return _enrich(made)
+
+
+class TestAiFields:
+    """The AI fields job reads only what the other jobs stored (summaries,
+    meeting notes, enriched values), so no marker can reach its prompt, its
+    values, its logs or its run, whether its answer fits or not."""
+
+    @pytest.mark.parametrize("source", sorted(SOURCES))
+    @pytest.mark.parametrize("valid", [True, False], ids=["ok", "invalid"])
+    def test_privacy_no_source_marker_reaches_the_ai_fields_job(
+        self, request, monkeypatch, caplog, source, valid
+    ):
+        made = request.getfixturevalue(source)
+        phase, derived, markers = SOURCES[source]
+        made.fake.set_ai(made.labs, budget_usd=10, phases={phase: True, "3": True})
+        made.fake.seed_ai_fields(made.labs)
+        monkeypatch.setattr(ai_fields, "_now", lambda: AT)
+        first = _source(source, made)
+        claude = ByField(
+            FIELD_ANSWERS if valid else {name: INVALID for name in FIELD_ANSWERS}
+        ).install(monkeypatch)
+        result = crm_ai._ai_fields(AT)
+        counts = result["runs"]["labs"]["counts"]
+        if valid:
+            assert counts["computed"] >= 2 and counts["failed_items"] == 0, counts
+        else:
+            assert counts["computed"] == 0 and counts["failed_items"] >= 2, counts
+        prompts = "\n".join(claude.prompts)
+        assert derived in prompts
+        found = _everything(made, caplog, [first, result])
+        for marker in markers:
+            assert marker not in prompts, marker
+            assert marker not in found, marker
+
+    def test_privacy_the_ai_fields_task_stores_no_result_and_takes_no_text(self, mail):
+        assert crm_ai.compute_ai_fields.ignore_result is True
+        mail.fake.set_ai(mail.labs, budget_usd=10, phases={"1": True, "3": True})
+        mail.fake.seed_ai_fields(mail.labs)
+        _source("mail", mail)
+        ByField(FIELD_ANSWERS).install(mail.monkeypatch)
+        crm_ai.compute_ai_fields()
+        assert mail.celery.sent == []
+
+
+@pytest.fixture
+def chain(monkeypatch, caplog):
+    """R-1 with no stored summary yet: the outbound message's text holds a
+    quoted history and a signature marker, and the summaries job writes the
+    summary the draft is made from."""
+    caplog.set_level(logging.DEBUG)
+    made = Rules(monkeypatch)
+    made.message("g1")
+    made.gmail.texts["g1"] = (
+        f"Here is the pilot plan.\n\nBest regards,\nDeepika {SIGNED}\nNunnari Labs\n\n"
+        "On Mon, 5 Oct 2026 at 10:00, Priya <priya@acme.in> wrote:\n"
+        f"> Our earlier ask {QUOTED} stands."
+    )
+    return made
+
+
+class TestFollowUpDraftEveryWay:
+    """FR-CRMAI-RULE-02 with NFR-CRMAI-01: the draft is made from a summary
+    the job wrote from a marked email, and fails cleanly on invalid output."""
+
+    @pytest.mark.parametrize("answers", [(DRAFT,), (INVALID, INVALID)], ids=["ok", "invalid"])
+    def test_privacy_no_email_marker_reaches_the_draft(self, chain, caplog, answers):
+        chain.claude = FakeClaude(ANSWER).install(chain.monkeypatch)
+        summarised = crm_ai._summaries(RULES_NOW)
+        assert summarised["runs"]["labs"]["counts"]["summarised"] == 1, summarised
+        [summary_prompt] = chain.claude.prompts
+        assert "Here is the pilot plan." in summary_prompt
+        assert QUOTED not in summary_prompt and SIGNED not in summary_prompt
+        chain.automations()
+        chain.claude = FakeClaude(*answers).install(chain.monkeypatch)
+        result = chain.drafts()
+        assert result["counts"]["drafted" if len(answers) == 1 else "failed_items"] == 1, result
+        [prompt] = chain.claude.prompts[:1]
+        assert "Priya asked for a pilot plan." in prompt
+        [run] = chain.runs("followup_drafts")
+        assert run.get("error") is None
+        found = _everything(chain, caplog, [summarised, result])
+        for marker in (QUOTED, SIGNED):
+            assert marker not in "\n".join(chain.claude.prompts), marker
+            assert marker not in found, marker
+        assert "Here is the pilot plan." not in found
+        assert len(chain.items("R-1")) == (1 if len(answers) == 1 else 0)

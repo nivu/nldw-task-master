@@ -21,7 +21,9 @@ logged, queued or put in an error. A thread that fails (the call, the
 schema, Gmail, a message stored meanwhile, the database) is counted in `failed_items` and
 stays pending for the next tick; the run itself is not failed
 (FR-CRMAI-JOB-01). A thread with no new message is not pending, so a second
-run makes no call and changes nothing (FR-CRMAI-SUM-09).
+run makes no call and changes nothing (FR-CRMAI-SUM-09). The run takes no
+more threads once its share of the task's time is spent (`jobs.out_of_time`,
+FR-CRMAI-JOB-01, amended in S5).
 
 **Reading**: a record's latest summaries (`for_record`), a thread's summary
 on the Emails tab (`for_threads`) and by its thread key (`by_key`). While
@@ -95,15 +97,18 @@ def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     roles = {m["user_id"]: m["role"] for m in members}
     active = {pid for pid, p in profiles.items() if p.get("is_active", False)}
     for thread in pending:
+        if jobs.out_of_time():
+            # The task's time is spent; the rest stay pending for the next tick.
+            break
         mailbox = mailboxes.get(thread["mailbox_id"])
         if mailbox is None:
             continue
         counts["threads"] += 1
         try:
             made = _summarise(workspace, thread, mailbox, team, roles, active, now)
-        except jobs.Skipped:
-            # The budget or a switch stops the whole run.
-            raise
+        except jobs.Skipped as skipped:
+            # The budget or a switch stops the whole run, which keeps its counts.
+            raise jobs.Skipped(skipped.reason, counts) from None
         except Exception as exc:  # noqa: BLE001 - one thread never fails the run
             # The thread stays pending; only the kind of failure is logged
             # (a database error's text can hold the row, FR-CRMAI-JOB-03).

@@ -112,7 +112,7 @@ running.
 | **Testing** | pytest with in-memory fakes (`tests/crm_fake.py` extended), fake Claude, Fireflies, Gmail and web transports (`httpx.MockTransport`), fixed clocks; `@pytest.mark.db` tests against local Supabase |
 | **Target platform** | Railway: api, worker, beat, `worker-crm-sync` (step zero), new `worker-crm-ai`; Netlify; Supabase `ap-south-1` |
 | **Performance goals** | NFR-CRMAI-05: a summary within one 15-minute cycle of the message being stored; a meeting note within 30 minutes of the transcript being ready |
-| **Constraints** | `worker-crm-ai` runs one task at a time; Celery `task_time_limit = 600`; enrichment at most 10 companies a minute per workspace, 5 pages × 1 MB × 10 s per company (Q-31); one model call in flight caps budget overshoot |
+| **Constraints** | `worker-crm-ai` runs one task at a time; Celery `task_time_limit = 600` (amended in S5: every AI task that loops over workspaces shares `jobs.AI_TASK_SECONDS = 400` between them, and `meetings` fetches at most 20 a workspace a tick); enrichment at most 10 companies a minute per workspace, 5 pages × 1 MB × 10 s per company (Q-31); one model call in flight caps budget overshoot |
 | **Scale/scope** | 2 workspaces, ~20 users, ~10k companies each; 5 new periodic jobs; 3 new MCP tools (21 `crm_*` in all) |
 
 ### 2.1 Dependencies (NFR-CRMAI-08, Q-42)

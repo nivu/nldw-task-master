@@ -41,7 +41,7 @@ lists the fields `009` passes.
 | `GET /crm/notes/{id}` and timelines | A meeting note written by the job carries `ai` provenance and `source_ref`; the body is rendered as plain text | MEET-05 |
 | `GET /crm/{object}/{id}/emails` | Each thread gains `thread_key` and, when phase 1 is on and one exists, `summary: {summary, asks, commitments: [{text, owner_name, due_on}], sentiment, ai}` | SUM-08 |
 | `GET /crm/{object}/{id}/timeline` | An entry written under an approved suggestion carries `suggestion_id` and `approved_suggestion: true`; the UI says "approved AI suggestion" | REV-05 |
-| `GET /crm/jobs`, `GET /crm/tva-admin/jobs`, `GET /health/jobs` | List the new jobs (`summaries`, `meetings`, `enrichment`, `ai_fields`, `review_expiry`); `automations` is labelled "Automations". `counts` hold item counts only | JOB-01, LLM-10 |
+| `GET /crm/jobs`, `GET /crm/tva-admin/jobs`, `GET /health/jobs` | List the new jobs (`summaries`, `meetings`, `enrichment`, `ai_fields`, `review_expiry`, and `followup_drafts`, D-4; amended in S5: `GET /crm/jobs?job=` accepts each of them); `automations` is labelled "Automations". `counts` hold item counts only | JOB-01, LLM-10 |
 | `GET /crm/export/workspace` | Objects gain `email_summaries`, `review_items`, `enrichment`, `ai_fields`, `ai_field_values`; never AI usage | CHG-11 |
 | `POST /crm/query` | `contact_recency` filterable on companies and people (`eq`, `in`), not sortable or groupable (from S4) | REL-02 |
 | `GET /crm/dashboard` | `flags` gains kind `stuck_in_stage` ("Stuck in stage") while R-2 is on (from S3b). The optional Deal outlook column (FR-CRMAI-FIELD-05 "may") is not built | RULE-03 |

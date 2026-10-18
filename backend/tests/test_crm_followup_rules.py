@@ -17,8 +17,9 @@ fields and rules" (rules):
 - with phase 3 off and every rule switch on: no item, no Stuck in stage
   flag, no notice; with phase 1 off, or Gmail not live, R-1 makes nothing
   while R-3 and R-4 still run;
-- a draft that fails or is budget-skipped shows in the `followup_drafts`
-  run;
+- a draft that fails, in its call or its save, or is budget-skipped shows
+  in the `followup_drafts` run, with the drafts done before a stop; a run
+  out of time leaves the rest owed (amended in S5);
 - no rule sends an email or changes a record: only items are written.
 
 The clock is fixed at 2026-10-18 06:30 UTC, noon in Chennai. Every job runs
@@ -28,19 +29,21 @@ on `tests/crm_fake.py` with `FakeClaude`, `FakeGmailText` and
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from crm_ai_fakes import FAIL, CapturedCelery, FakeClaude, FakeGmailText
+from crm_ai_fakes import FAIL, CapturedCelery, FakeClaude, FakeGmailText, SlowCalls
 from crm_fake import DEFAULTS, MEMBER, OWNER, SELLER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
+from postgrest.exceptions import APIError
 
 from app.config import settings as config
 from app.domain.crm import ai_rules
 from app.domain.crm import flags as flag_rules
 from app.domain.crm import followups as rules
-from app.services.crm import followups, jobs, notifications
+from app.services.crm import followups, jobs, notifications, store
 from app.tasks import crm as tasks
 
 API = "/api/v1/crm"
@@ -688,10 +691,100 @@ class TestTheDraftRun:
         made.summary()
         made.automations()
         made.fake.set_ai(made.labs, budget_usd=0, phases={"1": True, "3": True})
-        assert made.drafts() == {"outcome": "skipped", "counts": {"skipped": "AI budget reached"}}
+        # The run keeps what it had counted when the budget stopped it.
+        assert made.drafts() == {
+            "outcome": "skipped",
+            "counts": {
+                "drafted": 0,
+                "failed_items": 0,
+                "no_summary": 0,
+                "skipped": "AI budget reached",
+            },
+        }
         assert made.claude.calls == []
         [run] = made.runs("followup_drafts")
         assert run["outcome"] == "skipped"
+
+    def test_rules_a_failed_save_is_one_failed_draft_and_names_no_draft(
+        self, made, monkeypatch, caplog
+    ):
+        # Amended in S5: the save is inside the per-draft guard.
+        made.message("g1")
+        made.message("g2", thread="t2")
+        made.summary()
+        made.summary("t2")
+        made.automations()
+        made.claude = FakeClaude(default=DRAFT).install(made.monkeypatch)
+        saved = store.review_upsert
+        refused: list[str] = []
+
+        def refuse_the_first(actor, items):
+            if not refused:
+                refused.append(items[0]["source_key"])
+                raise APIError(
+                    {
+                        "message": "new row violates check constraint",
+                        "code": "23514",
+                        "hint": None,
+                        "details": f"Failing row contains (ZQXDRAFTMARKER {DRAFT['draft']})",
+                    }
+                )
+            return saved(actor, items)
+
+        monkeypatch.setattr(store, "review_upsert", refuse_the_first)
+        caplog.set_level(logging.DEBUG)
+        assert made.drafts() == {
+            "outcome": "ok",
+            "counts": {"drafted": 1, "failed_items": 1, "no_summary": 0},
+        }
+        assert [i["source_key"] for i in made.items("R-1")] != refused
+        assert len(made.items("R-1")) == 1
+        [run] = made.runs("followup_drafts")
+        assert run["outcome"] == "ok" and run["error"] is None
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert "ZQXDRAFTMARKER" not in logged and "pilot plan reached" not in logged
+        assert all(
+            "ZQXDRAFTMARKER" not in str(r.get("error") or "")
+            for r in made.fake.rows["crm_job_runs"].values()
+        )
+
+    def test_rules_a_budget_stop_part_way_keeps_the_drafts_done(self, made):
+        made.message("g1")
+        made.message("g2", thread="t2")
+        made.summary()
+        made.summary("t2")
+        made.automations()
+        # The first call costs 18 USD, past the 1 USD budget: the second waits.
+        made.fake.set_ai(made.labs, budget_usd=1, phases={"1": True, "3": True})
+        made.claude = FakeClaude(
+            default=DRAFT, input_tokens=1_000_000, output_tokens=1_000_000
+        ).install(made.monkeypatch)
+        assert made.drafts() == {
+            "outcome": "skipped",
+            "counts": {
+                "drafted": 1,
+                "failed_items": 0,
+                "no_summary": 0,
+                "skipped": "AI budget reached",
+            },
+        }
+        assert len(made.items("R-1")) == 1
+
+    def test_rules_out_of_time_the_rest_are_owed_next_tick(self, made):
+        # Amended in S5 (FR-CRMAI-JOB-01): each call takes 450 s, past the
+        # task's 400.
+        made.message("g1")
+        made.message("g2", thread="t2")
+        made.summary()
+        made.summary("t2")
+        made.automations()
+        made.claude = FakeClaude(default=DRAFT).install(made.monkeypatch)
+        SlowCalls(450).install(made.monkeypatch)
+        assert made.drafts()["counts"] == {"drafted": 1, "failed_items": 0, "no_summary": 0}
+        assert len(made.claude.calls) == 1
+        made.automations(NOW + timedelta(minutes=30))
+        assert made.drafts(NOW + timedelta(minutes=30))["counts"]["drafted"] == 1
+        assert len(made.items("R-1")) == 2
 
     def test_rules_switched_off_meanwhile_is_skipped(self, made):
         made.message("g1")

@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from crm_ai_fakes import INVALID, FakeClaude
+from crm_ai_fakes import INVALID, FakeClaude, SlowCalls
 from crm_fake import MEMBER, OWNER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 from test_crm_summaries_job import ANSWER as SUMMARY_ANSWER
@@ -358,3 +358,34 @@ class TestMarking:
         ai_fields.mark_dirty(
             fields.labs["id"], [{"record_type": "company", "record_id": fields.acme["id"]}], NOW
         )
+
+
+class TestTheTaskTimeLimit:
+    """FR-CRMAI-JOB-01 (amended in S5): no more calls once the run's share
+    of the task's time is spent, and a budget stop keeps its counts."""
+
+    def test_ai_fields_out_of_time_the_rest_wait_for_the_next_tick(self, fields):
+        # Labs runs second, until the task's 400 s; each call takes 450 s.
+        SlowCalls(450).install(fields.monkeypatch)
+        run = fields.tick()
+        assert run["outcome"] == "ok"
+        assert run["counts"]["computed"] == 1
+        assert len(fields.claude.calls) == 1
+        fields.answer(ANSWERS)
+        assert fields.tick()["counts"]["computed"] == 3
+
+    def test_ai_fields_a_budget_stop_part_way_keeps_the_counts(self, fields):
+        # The first call costs 18 USD, past the 1 USD budget.
+        fields.fake.set_ai(fields.labs, budget_usd=1, phases={"3": True})
+        claude = fields.answer(ANSWERS)
+        claude.input_tokens = claude.output_tokens = 1_000_000
+        run = fields.tick()
+        assert run["outcome"] == "skipped"
+        assert run["counts"] == {
+            "records": 1,
+            "computed": 1,
+            "cleared": 0,
+            "waiting": 0,
+            "failed_items": 0,
+            "skipped": "AI budget reached",
+        }

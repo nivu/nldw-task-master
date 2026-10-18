@@ -1,6 +1,6 @@
 ---
 title: The sales CRM
-summary: For sellers — signing in, Today, records, the pipeline and what each stage needs, Drive links, and Claude.
+summary: For sellers — signing in, Today, records, the pipeline and what each stage needs, Drive links, AI summaries and markers, and Claude.
 order: 9
 ---
 
@@ -52,6 +52,9 @@ this order, what needs you:
 3. **Tasks for today** — overdue, due today, and anything you put in Today.
 4. **Clients gone silent** — open deals where the other side has not answered.
 5. **Loose ends** — nurturing companies with nothing planned.
+6. **To review** — how many AI suggestions are waiting for you, and the
+   three oldest. It shows only while your workspace uses the AI features or
+   you have something waiting (see *Review AI suggestions*).
 
 Each line opens its record. The two email sections say **Email sync is off**
 until your workspace's Gmail sync is switched on. "Today" is your own day, in
@@ -149,12 +152,58 @@ Files stay in Google Drive. On any record, **Add a Drive link** takes an
 `https://` address and a label; the CRM keeps the link, never the file.
 Whoever opens the link needs access to it in Drive.
 
+## AI summaries and the AI marker
+
+Your workspace's Admins can switch on AI features one phase at a time, so
+you may see some of these and not others. Wherever something was written by
+AI, it carries a small **AI** marker. Hover over it, or reach it with the
+Tab key, to see where it came from (an email thread, a meeting, the
+company's website, an AI field or a follow-up rule) and when it was made.
+
+AI never changes a record by itself. Anything it suggests changing, such as
+a deal's next step or a new task, waits for a person to approve it (see
+*Review AI suggestions*).
+
+- **Email summaries.** On a company, person or deal, a labelled email thread
+  has a **Summary** button. It opens a few plain sentences about the thread,
+  **Their asks**, **Our commitments** and the tone of the thread (positive,
+  neutral or a concern). The email itself is never kept; only the summary.
+  A new message on the thread replaces the summary.
+- **Meeting notes.** A client call recorded in Fireflies can arrive as a
+  meeting note on the company (and the deal, when there is just one): its
+  title, who attended, a short summary, decisions, action items and a link to
+  the recording. You can edit it like any note; once you do, AI no longer
+  updates it.
+- **From the website.** A company page can show details read from the
+  company's own website: industry, size, location, a one-line description,
+  LinkedIn and what they offer. They sit apart from the company's own fields.
+  Admins and Members can **Promote** a value into the field it belongs to;
+  that is an ordinary edit, made by you. Where the field already holds
+  something different, a suggestion goes to the Review Queue instead.
+- **AI fields.** Companies and deals can show a few AI fields, such as an
+  account brief or a deal outlook with its reason. They are read-only, appear
+  on the record page only, and never change a stage, a probability, a flag or
+  a colour. Admins and Members can press **Recompute** for a fresh value.
+- **Contact recency.** Companies and people show how recently we were in
+  touch: **Recent** (emails both ways, or a meeting note, in the last 30
+  days), **Fading** (some contact in the last 90 days) or **Lapsed**. It is
+  worked out from email and meeting notes, not by AI, and never changes the
+  company's Relationship status. You can filter company and person lists by
+  it. While email sync is off it says **Meetings only**.
+- **Stuck in stage.** If your workspace uses it, an open deal that has spent
+  too long in its stage gets a Stuck in stage flag, amber and then red, like
+  the other follow-up flags. You are told once when it first turns amber.
+
+AI text never contains amounts, so Viewers see summaries, meeting notes and
+AI fields like everyone else.
+
 ## Using the CRM from Claude
 
 If you have connected Claude to the portal (see *Connecting Claude*), it can
 work the CRM for you with the same access you have: run your morning
 review from Today, find and read records, add tasks and notes, set next
-steps, and move deals through the stages, including the handoff. It asks
+steps, and move deals through the stages, including the handoff. It can
+also read a thread's summary and work through your AI suggestions. It asks
 before it changes anything.
 
 If you belong to both workspaces, Claude reads from the one you used last,

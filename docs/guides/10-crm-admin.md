@@ -1,6 +1,6 @@
 ---
 title: Running a CRM workspace
-summary: For workspace admins — inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, automations and targets.
+summary: For workspace admins — inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, automations, targets, and the AI settings, AI fields, follow-up rules and Enrich selected.
 order: 10
 ---
 
@@ -125,7 +125,9 @@ labels, not Inbox or Sent). A colleague's or shared address is added by a TVA
 admin. A mailbox belongs to one workspace only.
 
 Only an email's subject, participants, direction and time are kept, never its
-body. Email from a person the CRM knows lands on them and their company; from
+body. With email summaries switched on (Settings → AI), the AI reads a
+labelled message's text in the background to write the thread's summary,
+and keeps only the summary. Email from a person the CRM knows lands on them and their company; from
 an unknown company's domain it can create the company and the person (an
 automation you can switch off).
 
@@ -161,4 +163,101 @@ red only where a target is set.
 
 **Settings → Jobs** shows the background jobs' recent runs. Three failures
 in a row alert the workspace's Admins once, and a job running late shows on
-Today for Admins.
+Today for Admins. The AI jobs (email summaries, meeting capture, company
+enrichment, AI fields, follow-up drafts and review expiry) appear here too.
+A run that did nothing on purpose says why: switched off, the AI budget
+reached, or the AI rates not set yet.
+
+## Settings → AI
+
+The AI features are switched on here, one phase at a time, and nothing runs
+until you have set a budget and switched a phase on. Only your workspace's
+Admins see this page.
+
+- **Monthly budget**, in US dollars. At zero, which is where every workspace
+  starts, no AI work runs. When this month's spend reaches the budget, AI
+  work stops for the rest of the month: the jobs say "AI budget reached", a
+  banner shows here and under Jobs, and the Admins get one notice. Raising
+  the budget, or the new month starting, lets the waiting work carry on;
+  nothing is done twice. Months run on India time.
+- **Spend this month**, in total and per job. It is an **estimate** worked
+  out from the amount of text processed, and the page says so. Spend is shown
+  to this workspace's Admins and nobody else, and never in Claude.
+- **Phases.**
+  1. **Email summaries** — summaries of labelled email threads, and the
+     Review Queue. Needs email sync to be on.
+  2. **Meetings and enrichment** — meeting notes from Fireflies, and company
+     details read from companies' own websites.
+  3. **AI fields and follow-up rules** (below).
+  4. **Contact recency** — how recently we were in touch with each company and
+     person.
+
+  Switching a phase off stops its jobs at their next run and hides what it
+  shows; what it already made is kept and comes back when it is switched on
+  again. Open suggestions stay in the Review Queue until they are decided or
+  expire.
+
+If the page says the AI rates are not set yet, no AI job runs whatever the
+budget and phases say; the rates are set on the server by the portal's
+owner.
+
+**Roll out Nunnari Labs first.** Switch phases on in Nunnari Labs, and in
+Nunnari Academy B2B only at least a week later, once the portal's owner has
+looked at what Labs produced.
+
+## AI fields
+
+**Settings → AI fields** lists the fields AI fills in on company and deal
+pages. Four come ready-made: an ICP fit (in Nunnari Labs only) and an account
+brief on companies; a deal outlook (On track, At risk or Stalled, with a
+reason) and, when the outlook is At risk or Stalled, what is blocking, on
+deals. Edit or switch off any of them.
+
+**Add field** to make your own: a name, whether it is for companies or deals,
+the prompt (what the AI should work out, from the record's fields, its email
+summaries, meeting notes and website details; never amounts), and the output:
+text, a single choice from options you list, or a number from 0 to 100.
+
+AI fields appear only on record pages, marked AI. They cannot be columns,
+filters or sorts in a list, and they never change a stage, a probability, a
+flag or a colour. They are worked out again when what they read changes, at
+most once an hour per record. They need phase 3 on.
+
+## Follow-up rules
+
+**Settings → Follow-up rules** has four rules, each with its own switch,
+all off to start with. They build on the follow-up flags you already have,
+and they need phase 3 on.
+
+- **R-1 No reply after outreach.** When our latest email to a person or
+  company has had no reply for the number of days you set, the AI drafts a
+  follow-up for the owner to review. The owner sends it from their own mail;
+  the CRM never sends email. Needs phase 1 on and email sync live.
+- **R-2 Stuck in stage.** An open deal turns amber, **Stuck in stage**, after
+  the number of days you set for its stage, and red at twice that. Its owner
+  is told once per stage. While on, the flag counts like any other in deal
+  health, Follow-ups owed and the dashboard; switched off, no deal has it.
+  The Stale deal flag is unchanged.
+- **R-3 Lead gone cold.** A company in Contacted or Nurturing with no activity
+  for the number of days you set gets a suggestion: move it to Nurturing or
+  Disqualified, or, from Nurturing, set a next touch.
+- **R-4 Campaign follow-through.** A campaign member who has been Engaged or
+  Meeting booked for more than a week, with no deal and no open task, gets a
+  suggestion to qualify it into a deal or close it out.
+
+Rules only ever suggest. Every suggestion waits in the Review Queue, and
+nothing is suggested for a person marked Do not contact.
+
+## Enrich selected
+
+With phase 2 on, a company created with a website (by hand, from Claude, by
+an import or from email sync) has its details read from that website in the
+background, and changing the website reads it again. Nothing typed by a
+person is ever overwritten: the details sit beside the company's own fields,
+marked AI, for someone to promote.
+
+To ask again, or for companies that were already there, open a **Companies**
+list, tick the rows, and choose **Enrich selected**. It is for Admins, in the
+web app only. Companies are worked through a few a minute in the background;
+each company page shows how its enrichment went, and a site that cannot be
+read says so.

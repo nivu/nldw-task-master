@@ -23,9 +23,10 @@ every 30 minutes), `run()`:
 job of its workspace (D-4): for each message still owed a follow-up, it
 writes a draft through `ai.call` from the thread's stored summary and the
 record's name, never a message body (FR-CRMAI-RULE-02), and stores the R-1
-item. A draft that fails is counted in `failed_items`; the budget or a
-switch skips the run, so every draft done, failed or skipped is in the job
-log (FR-CRMAI-JOB-01).
+item. A draft that fails, in the call or in its save, is counted in
+`failed_items`; the budget or a switch skips the run, keeping the counts so
+far, so every draft done, failed or skipped is in the job log; it takes no
+more drafts once the task's time is spent (FR-CRMAI-JOB-01, amended in S5).
 """
 
 from __future__ import annotations
@@ -187,7 +188,8 @@ def drafts(args: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
     wanted = {
         (m["mailbox_id"], m["thread_id"], m["gmail_message_id"]) for m in args.get("messages") or []
     }
-    return jobs.run(rules.JOB, workspace, lambda ws, at: _draft_all(ws, wanted, at), now)
+    with jobs.time_share(jobs.monotonic(), 0, 1, jobs.AI_TASK_SECONDS):
+        return jobs.run(rules.JOB, workspace, lambda ws, at: _draft_all(ws, wanted, at), now)
 
 
 def _draft_all(
@@ -211,6 +213,9 @@ def _draft_all(
         return counts
     roles, active = _team(ws_id)
     for trigger in owed:
+        if jobs.out_of_time():
+            # The task's time is spent; the rest are still owed next tick.
+            break
         summary = store.summary_by_thread(ws_id, trigger["mailbox_id"], [trigger["thread_id"]]).get(
             trigger["thread_id"]
         )
@@ -220,9 +225,12 @@ def _draft_all(
             continue
         try:
             item = _draft(workspace, trigger, summary, roles, active, now)
-        except jobs.Skipped:
-            # The budget or a switch stops the whole run.
-            raise
+            # Inside the guard: a failed save is one failed draft, and its
+            # error, which can hold the draft, goes nowhere.
+            review.upsert(ws_id, [item])
+        except jobs.Skipped as skipped:
+            # The budget or a switch stops the whole run, which keeps its counts.
+            raise jobs.Skipped(skipped.reason, counts) from None
         except Exception as exc:  # noqa: BLE001 - one draft never fails the run
             # Only the fixed sentence, or the kind of failure: a database
             # error's text can hold the row (FR-CRMAI-JOB-03).
@@ -233,7 +241,6 @@ def _draft_all(
                 exc if isinstance(exc, ai.SafeError) else type(exc).__name__,
             )
             continue
-        review.upsert(ws_id, [item])
         counts["drafted"] += 1
     return counts
 

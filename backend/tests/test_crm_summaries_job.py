@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from crm_ai_fakes import INVALID, FakeClaude, FakeGmailText
+from crm_ai_fakes import INVALID, FakeClaude, FakeGmailText, SlowCalls
 from crm_fake import MEMBER, OWNER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 from postgrest.exceptions import APIError
@@ -543,3 +543,48 @@ class TestPhaseSwitch:
         run = mail.tick()
         assert run["outcome"] == "skipped"
         assert claude.calls == []
+
+
+class TestTheTaskTimeLimit:
+    """FR-CRMAI-JOB-01 (amended in S5): the run takes no more threads once
+    its share of the task's time is spent, and keeps its counts when the
+    budget stops it part-way."""
+
+    def test_job_out_of_time_the_rest_stay_pending_and_every_workspace_runs(self, mail):
+        mail.message("g1")
+        mail.message("g2", thread="t2", sent_at="2026-10-16T10:00:00+00:00")
+        mail.answer(ANSWER, ANSWER)
+        # Labs runs second, until the task's 400 s; each call takes 450 s.
+        SlowCalls(450).install(mail.monkeypatch)
+        result = crm_ai._summaries(NOW)
+        assert result["runs"]["labs"] == {
+            "outcome": "ok",
+            "counts": {"threads": 1, "summarised": 1, "items": 2, "failed_items": 0},
+        }
+        assert "academy" in result["runs"]
+        assert len(mail.claude.calls) == 1
+        assert len(mail.rows("crm_email_summaries")) == 1
+        mail.answer(ANSWER)
+        assert mail.tick()["counts"]["summarised"] == 1
+        assert len(mail.rows("crm_email_summaries")) == 2
+
+    def test_job_a_budget_stop_part_way_keeps_the_counts(self, mail):
+        mail.message("g1")
+        mail.message("g2", thread="t2", sent_at="2026-10-16T10:00:00+00:00")
+        # The first call costs 18 USD, past the 1 USD budget: the second waits.
+        mail.fake.set_ai(mail.labs, budget_usd=1, phases={"1": True})
+        mail.claude = FakeClaude(
+            default=ANSWER, input_tokens=1_000_000, output_tokens=1_000_000
+        ).install(mail.monkeypatch)
+        run = mail.tick()
+        assert run == {
+            "outcome": "skipped",
+            "counts": {
+                "threads": 2,
+                "summarised": 1,
+                "items": 2,
+                "failed_items": 0,
+                "skipped": "AI budget reached",
+            },
+        }
+        assert len(mail.claude.calls) == 1

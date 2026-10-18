@@ -16,6 +16,9 @@ field added later is swept without anyone remembering to list it:
 - every amount field of every object, as a filter, a sort, a grouping and a
   total, is refused 422 for the Viewer, through the route and `crm_list`.
 - every READ tool, as the Viewer.
+- spec 009 FR-CRMAI-LLM-05, NFR-CRMAI-03, §15: with every AI job run on
+  the spec's money fixtures, every Viewer route and read tool again, for
+  none of the figures.
 
 The amount names are written out in `test_crm_redaction.py` and imported
 from there, never from production (plan §5.5).
@@ -28,7 +31,7 @@ import re
 from datetime import date
 
 import pytest
-from crm_fake import OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
+from crm_fake import MEMBER, OWNER, VIEWER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 from fastapi.routing import APIRoute, iter_route_contexts
 from test_crm_redaction import AGGREGATES, AMOUNTS, _walk
@@ -528,3 +531,289 @@ class TestContactRecency:
             for f in store.list_object_fields()
             if f["field"] == "contact_recency"
         } == {("company", False), ("person", False)}
+
+
+#: Spec 009 §15: "₹4.5L, 12 lakh, 1.2 Cr, $20k, AUD 15,000 and 'budget of
+#: 50k'", as a model might write them in every generated string.
+MONEY = "₹4.5L, 12 lakh, 1.2 Cr, $20k, AUD 15,000 and a budget of 50k"
+#: What would be left of them were any one not masked.
+FIGURES = ("4.5L", "12 lakh", "1.2 Cr", "20k", "15,000", "50k")
+
+
+def _figures(text: str) -> list[str]:
+    return [f for f in FIGURES if f in text]
+
+
+class Priced:
+    """Labs with every phase on and a budget, where each AI job has run with
+    a model answering the spec §15 money fixtures in every string it writes:
+    a thread summary and its items (summaries), a meeting note and its items
+    (meetings), Acme's enriched values (enrichment) and its and its deal's
+    AI field values and reasons (AI fields). Devansh is a Viewer; the items
+    are Deepika's. A task and a campaign so that every route resolves."""
+
+    def __init__(self, monkeypatch) -> None:
+        from crm_ai_fakes import FakeClaude, FakeFireflies, FakeWeb
+        from test_crm_ai_fields_job import ByField
+        from test_crm_summaries_job import NOW, Mail
+
+        from app.services.crm import ai_fields, enrichment
+        from app.tasks import crm_ai
+
+        mail = Mail(monkeypatch)
+        self.mail, self.fake, self.http, self.labs = mail, mail.fake, mail.http, mail.labs
+        self.fake.add_campaign_lists(self.labs)
+        self.fake.set_ai(
+            self.labs, budget_usd=10, phases={"1": True, "2": True, "3": True, "4": True}
+        )
+        self.fake.seed_ai_fields(self.labs)
+        monkeypatch.setattr(enrichment, "_now", lambda: NOW)
+        monkeypatch.setattr(ai_fields, "_now", lambda: NOW)
+        monkeypatch.setattr(deals, "today_in_company_tz", lambda: date(2026, 10, 18))
+        monkeypatch.setattr(view_service, "today_for", lambda user: date(2026, 10, 18))
+        monkeypatch.setattr(dashboard, "today_in_company_tz", lambda: date(2026, 10, 18))
+        monkeypatch.setattr(dashboard.capacity, "weekly", lambda start, end: [])
+        me = as_(OWNER["id"])
+
+        # Summaries (phase 1).
+        mail.message("g1", f"Priya: our budget is {MONEY}.")
+        mail.answer(
+            {
+                "summary": f"Priya named {MONEY}. Deepika will send a quote.",
+                "asks": [f"A quote of {MONEY}"],
+                "commitments": [
+                    {"text": f"Send the quote of {MONEY}", "owner": "1", "due_on": "2026-10-24"}
+                ],
+                "next_step": "Send the quote of $20k",
+                "next_step_on": "2026-10-24",
+                "sentiment": "neutral",
+            }
+        )
+        assert mail.tick()["outcome"] == "ok"
+
+        # Meetings (phase 2): Priya's address matches her to Acme.
+        r = self.http.patch(
+            f"/api/v1/crm/people/{mail.priya['id']}",
+            params=LABS,
+            json={"primary_email": "priya@acme.in"},
+            headers=me,
+        )
+        assert r.status_code == 200, r.text
+        FakeFireflies().install(monkeypatch).meeting(
+            "m1",
+            ["priya@acme.in", "deepika@nunnarilabs.com"],
+            sentences=[("Priya", f"Our budget is {MONEY}.")],
+        )
+        FakeClaude(
+            {
+                "summary": f"Priya named {MONEY}.",
+                "decisions": [f"Hold the fee at {MONEY}"],
+                "action_items": [
+                    {"text": f"Revise the quote to {MONEY}", "owner": "1", "due_on": "2026-10-24"}
+                ],
+                "next_step": "Send the revised quote of AUD 15,000",
+                "next_step_on": "2026-10-25",
+            }
+        ).install(monkeypatch)
+        assert crm_ai._meetings(NOW)["runs"]["labs"]["outcome"] == "ok"
+
+        # Enrichment (phase 2): a website queues Acme; one batch reads it.
+        queue: list[dict] = []
+        monkeypatch.setattr(enrichment, "enqueue", lambda args, countdown: queue.append(args))
+        monkeypatch.setattr(enrichment, "acquire_lock", lambda ws, token: True)
+        monkeypatch.setattr(enrichment, "extend_lock", lambda ws, token: None)
+        monkeypatch.setattr(enrichment, "release_lock", lambda ws, token: None)
+        FakeWeb().install(monkeypatch).site(
+            "acme.in", {"/": f"<html><body><p>Lathes from {MONEY}.</p></body></html>"}
+        )
+        r = self.http.patch(
+            f"/api/v1/crm/companies/{mail.acme['id']}",
+            params=LABS,
+            json={"website": {"primary": {"url": "https://acme.in"}}},
+            headers=me,
+        )
+        assert r.status_code == 200, r.text
+        FakeClaude(
+            default={
+                "industry": None,
+                "sub_industry": None,
+                "employee_band": None,
+                "city": None,
+                "country": None,
+                "description": f"Acme sells lathes at {MONEY}.",
+                "linkedin": None,
+                "products": ["Lathes at ₹4.5L", "Mills at $20k"],
+            }
+        ).install(monkeypatch)
+        crm_ai._enrichment(NOW)
+        while queue:
+            crm_ai.enrichment_batch(queue.pop(0))
+
+        # AI fields (phase 3).
+        ByField(
+            {
+                "ICP fit": {"value": "Factory Brain"},
+                "Account brief": {"value": f"Acme weighs {MONEY}."},
+                "Deal outlook": {"value": "At risk", "reason": f"Stuck on {MONEY}."},
+                "What is blocking": {"value": f"The budget of 50k and {MONEY}."},
+            }
+        ).install(monkeypatch)
+        assert crm_ai._ai_fields(NOW)["runs"]["labs"]["outcome"] == "ok"
+
+        task = self.http.post(
+            "/api/v1/crm/tasks",
+            params=LABS,
+            json={
+                "title": "Send deck",
+                "links": [{"record_type": "opportunity", "record_id": mail.pilot["id"]}],
+                "assignee_id": VIEWER["id"],
+                "due_on": "2026-10-18",
+            },
+            headers=me,
+        )
+        assert task.status_code == 201, task.text
+        campaign = self.http.post(
+            "/api/v1/crm/campaigns", params=LABS, json={"name": "Acme roundtable"}, headers=me
+        )
+        assert campaign.status_code == 201, campaign.text
+        [note] = [
+            n
+            for n in self.fake.rows["crm_notes"].values()
+            if n["workspace_id"] == self.labs["id"] and n.get("source_ref")
+        ]
+        self.made = {
+            "companies": mail.acme,
+            "people": mail.priya,
+            "opportunities": mail.pilot,
+            "tasks": task.json(),
+            "notes": note,
+            "campaigns": campaign.json(),
+            "thread": {"id": f"{mail.mailbox['id']}:t1"},
+        }
+
+    def stored(self) -> dict[str, list[str]]:
+        """Every generated string each job stored, by table."""
+        ws = self.labs["id"]
+
+        def of(table: str) -> list[dict]:
+            return [r for r in self.fake.rows[table].values() if r["workspace_id"] == ws]
+
+        return {
+            "crm_email_summaries": [str(r) for r in of("crm_email_summaries")],
+            "crm_notes": [r["body"] for r in of("crm_notes") if r.get("source_ref")],
+            "crm_review_items": [
+                str((r["suggestion"], r.get("current_values"))) for r in of("crm_review_items")
+            ],
+            "crm_company_enrichment": [str(r.get("values")) for r in of("crm_company_enrichment")],
+            "crm_ai_field_values": [
+                f"{r.get('value_text')} {r.get('reason')}" for r in of("crm_ai_field_values")
+            ],
+        }
+
+
+@pytest.fixture
+def priced(monkeypatch) -> Priced:
+    return Priced(monkeypatch)
+
+
+class TestTheMoneyFixtures:
+    """Spec 009 FR-CRMAI-LLM-05, NFR-CRMAI-03; spec §15 AC "With a fixture
+    email and transcript holding ₹4.5L, 12 lakh, 1.2 Cr, $20k, AUD 15,000 and
+    'budget of 50k', the Viewer routes and MCP responses for summaries,
+    meeting notes, review items, enriched values and AI fields contain none
+    of them": every Viewer route and read tool, over what each job wrote."""
+
+    def test_money_every_job_stored_masked_text(self, priced):
+        for table, texts in priced.stored().items():
+            assert texts, table
+            assert any("[amount]" in t for t in texts), (table, texts)
+            assert [t for t in texts if _figures(t)] == [], table
+
+    @pytest.mark.parametrize("path", GETS)
+    def test_money_every_get_as_a_viewer(self, priced, path):
+        params = {**LABS, "q": "acme"} if path.endswith("/search") else LABS
+        r = priced.http.get(_url(path, priced.made), params=params, headers=as_(VIEWER["id"]))
+        assert r.status_code in (200, 403, 404), (path, r.status_code, r.text)
+        assert _figures(r.text) == [], path
+
+    def test_money_every_post_read_as_a_viewer(self, priced):
+        for path, body in _post_reads(priced.made):
+            r = priced.http.post(path, params=LABS, json=body, headers=as_(VIEWER["id"]))
+            assert r.status_code in (200, 403), (path, body, r.status_code, r.text)
+            assert _figures(r.text) == [], (path, body)
+
+    def test_money_every_read_tool_as_a_viewer(self, priced):
+        for name, kwargs in _read_tools(priced.made):
+            if name != "crm_workspaces":
+                kwargs = {**kwargs, "workspace": "labs"}
+            answer = asyncio.run(getattr(tools, name)(Ctx(VIEWER["id"]), **kwargs))
+            assert _figures(str(answer)) == [], name
+
+    def test_money_the_viewer_is_shown_the_masked_text(self, priced):
+        """The sweep reads the generated text, not an empty answer."""
+        made, viewer = priced.made, as_(VIEWER["id"])
+        for path in (
+            f"/api/v1/crm/email-threads/{made['thread']['id']}/summary",
+            f"/api/v1/crm/notes/{made['notes']['id']}",
+            f"/api/v1/crm/companies/{made['companies']['id']}",
+            f"/api/v1/crm/opportunities/{made['opportunities']['id']}",
+        ):
+            r = priced.http.get(path, params=LABS, headers=viewer)
+            assert r.status_code == 200, (path, r.text)
+            assert "[amount]" in r.text, path
+        summary = asyncio.run(
+            tools.crm_thread_summary(
+                Ctx(VIEWER["id"]), thread_key=made["thread"]["id"], workspace="labs"
+            )
+        )
+        assert "[amount]" in str(summary)
+
+    def test_money_review_items_for_their_owner(self, priced):
+        """A Viewer has no queue (FR-CRMAI-REV-03); the items' owner reads
+        them masked, through the route and `crm_review_list`."""
+        r = priced.http.get("/api/v1/crm/review", params=LABS, headers=as_(MEMBER["id"]))
+        assert r.status_code == 200, r.text
+        assert r.json()["items"]
+        assert "[amount]" in r.text
+        assert _figures(r.text) == []
+        listed = asyncio.run(tools.crm_review_list(Ctx(MEMBER["id"]), workspace="labs"))
+        assert "[amount]" in str(listed)
+        assert _figures(str(listed)) == []
+
+    def test_money_the_check_finds_a_figure(self):
+        assert _figures(f"Priya named {MONEY}.") == list(FIGURES)
+
+
+class TestThe009Tools:
+    """Spec 009 FR-CRMAI-MCP-01, FR-CRMAI-REV-03: the three new tools as a
+    Viewer. The two reads are swept above; the decision is refused."""
+
+    def test_the_three_tools_are_registered(self):
+        names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert {"crm_review_list", "crm_review_decide", "crm_thread_summary"} <= names
+
+    def test_a_viewer_cannot_decide_an_item(self, priced):
+        [item, *_] = [
+            r
+            for r in priced.fake.rows["crm_review_items"].values()
+            if r["workspace_id"] == priced.labs["id"]
+        ]
+        before = {t: dict(rows) for t, rows in priced.fake.rows.items()}
+        with pytest.raises(server.ToolError) as refused:
+            asyncio.run(
+                tools.crm_review_decide(
+                    Ctx(VIEWER["id"]), item_id=item["id"], decision="approve", workspace="labs"
+                )
+            )
+        assert str(refused.value).startswith("403"), str(refused.value)
+        assert _figures(str(refused.value)) == []
+        assert {t: dict(rows) for t, rows in priced.fake.rows.items()} == before
+
+    def test_the_009_gets_are_swept(self):
+        assert {
+            "/api/v1/crm/ai",
+            "/api/v1/crm/ai-fields",
+            "/api/v1/crm/review",
+            "/api/v1/crm/email-threads/{thread_key}/summary",
+            "/api/v1/crm/jobs",
+        } <= set(GETS)

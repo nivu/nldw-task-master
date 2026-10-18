@@ -347,3 +347,27 @@ def fix_clock(monkeypatch, now: datetime, *modules: Any) -> None:
     """Sets each module's `_now()` to `now`."""
     for module in modules:
         monkeypatch.setattr(module, "_now", lambda: now)
+
+
+class SlowCalls:
+    """Every model call takes `seconds` on the elapsed-time clock
+    (`jobs.monotonic`), so a test can run an AI task out of its time
+    (FR-CRMAI-JOB-01, amended in S5). Install it after the `FakeClaude`
+    whose answers it passes on."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.now = 0.0
+
+    def install(self, monkeypatch) -> SlowCalls:
+        from app.services.crm import jobs
+
+        answer = claude.messages
+
+        def messages(**kwargs: Any) -> claude.Reply:
+            self.now += self.seconds
+            return answer(**kwargs)
+
+        monkeypatch.setattr(jobs, "monotonic", lambda: self.now)
+        monkeypatch.setattr(claude, "messages", messages)
+        return self

@@ -25,6 +25,10 @@ again. The cursor, the newest update seen, is kept in Redis
 a skipped run, so that meeting is polled again next tick. Re-polling is
 safe anyway: a note is unique per transcript and workspace.
 
+Each workspace's run fetches at most `BATCH` meetings, and none once its
+share of the task's time is spent (`jobs.time_share`, FR-CRMAI-JOB-01,
+amended in S5); the rest are left unfinished, so the cursor waits for them.
+
 The transcript lives only in this module's local variables: it is never
 stored, logged, queued or put in an error. A meeting that fails (the fetch,
 the call, the schema, the database) is counted in `failed_items` and the
@@ -50,6 +54,9 @@ logger = logging.getLogger("nldw-task-master")
 
 #: The poll cursor: a time, never content (plan §5.6).
 CURSOR_KEY: Final = "crm:fireflies:cursor"
+#: Meetings fetched per workspace per tick; the rest wait for the next
+#: (FR-CRMAI-JOB-01, amended in S5).
+BATCH: Final = 20
 
 
 def _now() -> datetime:
@@ -139,6 +146,7 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
     """One poll for every workspace, one `meetings` run per workspace:
     `{runs: {workspace key: {outcome, counts}}, failed: [workspace key]}`."""
     now = now or _now()
+    began = jobs.monotonic()
     workspaces = store.list_workspaces()
     on = {ws["id"]: ai_rules.phase_on(store.ai_setting(ws["id"]), rules.PHASE) for ws in workspaces}
     connected = fireflies.configured()
@@ -162,7 +170,7 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
             failed_step, poll_failed = "Fireflies match", type(exc).__name__
 
     runs: dict[str, Any] = {}
-    for ws in workspaces:
+    for index, ws in enumerate(workspaces):
 
         def work(workspace: dict[str, Any], at: datetime) -> dict[str, int]:
             ws_id = workspace["id"]
@@ -176,7 +184,8 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
                 raise ai.SafeError(failed_step, poll_failed)
             return run(workspace, placed[ws_id], several[ws_id], finished, at)
 
-        runs[ws["key"]] = jobs.run(rules.JOB, ws, work, now)
+        with jobs.time_share(began, index, len(workspaces), jobs.AI_TASK_SECONDS):
+            runs[ws["key"]] = jobs.run(rules.JOB, ws, work, now)
 
     if listed and poll_failed is None:
         moved = next_cursor(listed, finished, cursor)
@@ -227,17 +236,23 @@ def run(
     team = roster(members, profiles)
     roles = {m["user_id"]: m["role"] for m in members}
     active = {pid for pid, p in profiles.items() if p.get("is_active", False)}
+    fetched = 0
     for meeting, people in meetings:
         seen = noted.get(rules.source_ref(meeting["id"]))
         if seen and datetime.fromisoformat(seen) >= datetime.fromisoformat(meeting["updated_at"]):
             # FR-CRMAI-MEET-07: this version is noted already; nothing fetched.
             finished.add(meeting["id"])
             continue
+        if fetched >= BATCH or jobs.out_of_time():
+            # Not finished, so the cursor waits and the next tick takes it.
+            continue
+        fetched += 1
         try:
             made = _capture(workspace, meeting, people, team, roles, active, now)
-        except jobs.Skipped:
-            # The budget or a switch stops the whole run; the meeting waits.
-            raise
+        except jobs.Skipped as skipped:
+            # The budget or a switch stops the whole run, which keeps its
+            # counts; the meeting waits.
+            raise jobs.Skipped(skipped.reason, counts) from None
         except Exception as exc:  # noqa: BLE001 - one meeting never fails the run
             # The meeting stays pending; only the kind of failure is logged
             # (a database error's text can hold the row, FR-CRMAI-JOB-03).
@@ -266,7 +281,8 @@ def _capture(
 ) -> dict[str, Any]:
     ws_id = workspace["id"]
     # FR-CRMAI-MEET-02: the content only now, after the match, in memory.
-    content = fireflies.transcript(meeting["id"])
+    with fireflies.for_workspace(workspace["key"]):
+        content = fireflies.transcript(meeting["id"])
     output = ai.call(
         workspace,
         rules.JOB,

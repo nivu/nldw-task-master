@@ -294,12 +294,22 @@ class TestToReview:
         )
         [section] = [s for s in parts[0]["sections"] if s["key"] == "to_review"]
         assert section["heading"] == "To review"
+        assert section["count"] == 1
         assert [(i["record_type"], i["record_id"], i["detail"]) for i in section["items"]] == [
             ("review_item", item["id"], "Review Co")
         ]
         tasks._digests(KOLKATA_9)
         [mail] = _to(sent, MEMBER)
-        assert "To review" in mail.body and "Review Co" in mail.body
+        assert "To review (1):" in mail.body and "Review Co" in mail.body
+
+    def test_the_digest_says_how_many_wait_beside_the_three_oldest(self, crm):
+        _, fake, labs, _, sent = crm
+        for _ in range(5):
+            self._item(fake, labs, MEMBER)
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, MEMBER)
+        assert "To review (5):" in mail.body
+        assert mail.body.count("Review Co") == 3
 
     def test_a_viewers_digest_has_no_to_review(self, crm):
         _, fake, labs, _, sent = crm

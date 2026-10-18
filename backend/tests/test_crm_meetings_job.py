@@ -23,12 +23,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from crm_ai_fakes import INVALID, FakeClaude, FakeFireflies
+from crm_ai_fakes import INVALID, FakeClaude, FakeFireflies, SlowCalls
 from crm_fake import MEMBER, OWNER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 
 from app.config import settings as config
-from app.services.crm import jobs, notifications, store
+from app.services.crm import fireflies, jobs, meetings, notifications, store
 from app.tasks import crm_ai
 
 API = "/api/v1/crm"
@@ -452,3 +452,79 @@ class TestPhaseSwitch:
             "approved",
             "dismissed",
         ]
+
+
+class TestTheTaskTimeLimit:
+    """FR-CRMAI-JOB-01 (amended in S5): each workspace fetches at most
+    `meetings.BATCH` meetings a tick and none once its share of the task's
+    time is spent; the rest are not finished, so the cursor waits for them;
+    a budget stop keeps the run's counts."""
+
+    def test_job_at_most_a_batch_of_meetings_a_tick(self, calls, monkeypatch):
+        monkeypatch.setattr(meetings, "BATCH", 2)
+        for n in (1, 2, 3):
+            calls.fireflies.meeting(f"t{n}", [PRIYA], updated_at=f"2026-10-18T09:3{n}:00+00:00")
+        calls.claude = FakeClaude(default=ANSWER).install(monkeypatch)
+        runs = calls.tick()
+        assert runs["labs"]["counts"]["notes"] == 2
+        assert calls.fireflies.fetched == ["t1", "t2"]
+        assert calls.fireflies.cursor == "2026-10-18T09:32:00+00:00"
+        assert calls.tick()["labs"]["counts"]["notes"] == 1
+        assert calls.fireflies.fetched == ["t1", "t2", "t3"]
+        assert calls.fireflies.cursor == "2026-10-18T09:33:00+00:00"
+
+    def test_job_out_of_time_the_rest_wait_and_the_cursor_holds(self, calls, monkeypatch):
+        calls.fireflies.meeting("t1", [PRIYA], updated_at="2026-10-18T09:31:00+00:00")
+        calls.fireflies.meeting("t2", [PRIYA], updated_at="2026-10-18T09:32:00+00:00")
+        calls.answer(ANSWER, ANSWER)
+        # Labs runs second, until the task's 400 s; each call takes 450 s.
+        SlowCalls(450).install(monkeypatch)
+        runs = calls.tick()
+        assert runs["labs"]["outcome"] == "ok"
+        assert runs["labs"]["counts"]["notes"] == 1
+        assert runs["academy"]["outcome"] == "skipped"
+        assert calls.fireflies.fetched == ["t1"]
+        assert calls.fireflies.cursor == "2026-10-18T09:31:00+00:00"
+
+    def test_job_a_budget_stop_part_way_keeps_the_counts(self, calls, monkeypatch):
+        calls.fireflies.meeting("t1", [PRIYA], updated_at="2026-10-18T09:31:00+00:00")
+        calls.fireflies.meeting("t2", [PRIYA], updated_at="2026-10-18T09:32:00+00:00")
+        # The first call costs 18 USD, past the 1 USD budget.
+        calls.fake.set_ai(calls.labs, budget_usd=1, phases={"2": True})
+        calls.claude = FakeClaude(
+            default=ANSWER, input_tokens=1_000_000, output_tokens=1_000_000
+        ).install(monkeypatch)
+        runs = calls.tick()
+        assert runs["labs"] == {
+            "outcome": "skipped",
+            "counts": {
+                "meetings": 2,
+                "notes": 1,
+                "updated": 0,
+                "items": 3,
+                "skipped_multi_workspace": 0,
+                "failed_items": 0,
+                "skipped": "AI budget reached",
+            },
+        }
+        assert calls.fireflies.cursor == "2026-10-18T09:31:00+00:00"
+
+
+class TestTheCallLog:
+    """NFR-CRMAI-06 (amended in S5): a transcript fetch is logged with the
+    workspace it is for."""
+
+    def test_job_the_transcript_is_fetched_for_its_workspace(self, calls, monkeypatch):
+        calls.fireflies.meeting("t1", [PRIYA, US])
+        calls.answer(ANSWER)
+        fetch = fireflies.transcript
+        during: list[str] = []
+
+        def transcript(transcript_id):
+            during.append(fireflies._workspace.get())
+            return fetch(transcript_id)
+
+        monkeypatch.setattr(fireflies, "transcript", transcript)
+        calls.tick()
+        assert during == ["labs"]
+        assert fireflies._workspace.get() == "-"

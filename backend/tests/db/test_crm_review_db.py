@@ -20,7 +20,9 @@ Each test works in a workspace of its own.
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -511,3 +513,78 @@ class TestTheRecordLifecycle:
         assert [a["action"] for a in _audit(stack, clash["id"])] == ["review.expired"]
         assert _row(stack, survivors["id"])["status"] == "open"
         assert _row(stack, decided["id"])["record_id"] == gone
+
+
+#: Plan §6 rule 1, tasks T170: the three functions both 008 (048) and 009
+#: replace, with their argument lists.
+SHARED_FUNCTIONS = {
+    "crm_purge": "jsonb, jsonb",
+    "crm_merge_companies": "jsonb, jsonb",
+    "crm_audit_row": "",
+}
+_MIGRATIONS = Path(__file__).resolve().parents[3] / "supabase/migrations"
+
+
+def _bodies(name: str) -> dict[str, str]:
+    """Each migration's body of `name`, by file, comment lines left out."""
+    found = {}
+    for path in sorted(_MIGRATIONS.glob("*.sql")):
+        text = path.read_text()
+        head = re.search(rf"^CREATE OR REPLACE FUNCTION public\.{name}\(", text, re.M)
+        if head is None:
+            continue
+        tag = re.compile(r"^AS (\$\w*\$)", re.M).search(text, head.end())
+        end = text.index(tag.group(1), tag.end())
+        found[path.name] = _uncommented(text[tag.end() : end])
+    return found
+
+
+def _uncommented(body: str) -> str:
+    return "\n".join(line.split("--")[0] for line in body.splitlines())
+
+
+def _named(body: str, tables: set[str]) -> set[str]:
+    return {t for t in tables if re.search(rf"\b{t}\b", body)}
+
+
+class TestThe048BodiesAreKept:
+    """Plan §6 rule 1, risks table; tasks T170: every table 008's 048 body
+    of `crm_purge`, `crm_merge_companies` and `crm_audit_row` names is still
+    named in each 009 body that replaced it, and the live definition is the
+    last 009 body. A 009 copy made from a pre-048 body, or an edit that
+    dropped one of 008's tables, fails here."""
+
+    @pytest.fixture
+    def tables(self, stack) -> set[str]:
+        rows = stack.sql(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')"
+        )
+        return {r["relname"] for r in rows}
+
+    @pytest.mark.parametrize("name", sorted(SHARED_FUNCTIONS))
+    def test_every_009_body_names_every_table_048s_names(self, tables, name):
+        bodies = _bodies(name)
+        of_008 = _named(bodies["048_tasks_crm_functions.sql"], tables)
+        assert {"tasks", "task_links"} <= of_008, of_008
+        assert of_008, name
+        of_009 = {f: b for f, b in bodies.items() if 60 <= int(f[:3]) <= 79}
+        assert of_009, name
+        # 008 replaces none of the three after its 048 (plan §6 rule 1).
+        assert [f for f in bodies if 48 < int(f[:3]) < 60] == [], name
+        for file, body in of_009.items():
+            assert of_008 - _named(body, tables) == set(), (name, file)
+
+    @pytest.mark.parametrize("name", sorted(SHARED_FUNCTIONS))
+    def test_the_live_body_is_the_last_009_one(self, stack, tables, name):
+        bodies = _bodies(name)
+        last = max(bodies)
+        assert 60 <= int(last[:3]) <= 79, (name, last)
+        [row] = stack.sql(
+            "SELECT pg_get_functiondef("
+            f"{stack.q(f'public.{name}({SHARED_FUNCTIONS[name]})')}::regprocedure) AS d"
+        )
+        live = _uncommented(row["d"])
+        assert " ".join(bodies[last].split()) in " ".join(live.split()), (name, last)
+        of_008 = _named(bodies["048_tasks_crm_functions.sql"], tables)
+        assert of_008 - _named(live, tables) == set(), name

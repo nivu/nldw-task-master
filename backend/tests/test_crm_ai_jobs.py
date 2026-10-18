@@ -7,7 +7,9 @@ the step and the exception type, never its text, and is logged without a
 traceback; usage rows hold no text; `crm_ai.*` tasks go to the `crm-ai`
 queue; nothing under `app/api` imports the Claude client; a failing thread
 is counted in its run (`failed_items`), which is not failed; the new job
-names are listed once they have run.
+names are listed once they have run, and each can be chosen in Settings,
+Jobs. Amended in S5: an AI task's workspaces share `jobs.AI_TASK_SECONDS`,
+and a run stopped part-way keeps its counts.
 """
 
 from __future__ import annotations
@@ -261,3 +263,118 @@ class TestTheNewJobNames:
         assert {j["job"] for j in got["jobs"]} >= {"summaries", "review_expiry"}
         health = {j["job"] for j in http.get("/health/jobs").json()["jobs"]}
         assert {"summaries", "meetings", "enrichment", "ai_fields", "review_expiry"} <= health
+
+    def test_jobs_followup_drafts_can_be_chosen_in_settings_jobs(self, crm):
+        # Amended in S5: the Jobs tab offers every job it lists, and the
+        # route accepts each one (FR-CRMAI-CHG-07, D-4).
+        http, _, labs = crm
+        jobs.run("followup_drafts", labs, lambda ws, now: {"drafted": 1}, NOW)
+        jobs.run("summaries", labs, lambda ws, now: {"summarised": 1}, NOW)
+        r = http.get(
+            "/api/v1/crm/jobs?workspace=labs&job=followup_drafts", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200, r.text
+        got = r.json()
+        assert [(run["job"], run["counts"]) for run in got["runs"]] == [
+            ("followup_drafts", {"drafted": 1})
+        ]
+        offered = [j["job"] for j in got["jobs"]]
+        assert "followup_drafts" in offered
+        for name in offered:
+            r = http.get(f"/api/v1/crm/jobs?workspace=labs&job={name}", headers=as_(OWNER["id"]))
+            assert r.status_code == 200, (name, r.text)
+
+
+class TestTheTaskTimeLimit:
+    """FR-CRMAI-JOB-01 (amended in S5) — an AI task that runs every
+    workspace in turn shares `jobs.AI_TASK_SECONDS` between them, inside
+    Celery's 600-second limit, so every workspace still gets its run."""
+
+    def test_jobs_each_workspace_works_until_its_share_ends(self, monkeypatch):
+        clock = {"t": 0.0}
+        monkeypatch.setattr(jobs, "monotonic", lambda: clock["t"])
+        assert not jobs.out_of_time()
+        with jobs.time_share(0.0, 0, 2, 400):
+            clock["t"] = 199.0
+            assert not jobs.out_of_time()
+            clock["t"] = 200.0
+            assert jobs.out_of_time()
+        assert not jobs.out_of_time()
+        with jobs.time_share(0.0, 1, 2, 400):
+            assert not jobs.out_of_time()
+            clock["t"] = 400.0
+            assert jobs.out_of_time()
+
+    def test_jobs_a_slow_workspace_leaves_the_next_its_run(self, crm, monkeypatch):
+        _, fake, labs = crm
+        clock = {"t": 0.0}
+        monkeypatch.setattr(jobs, "monotonic", lambda: clock["t"])
+        taken: dict[str, int] = {}
+
+        def work(ws, now):
+            done = 0
+            for _ in range(10):
+                if jobs.out_of_time():
+                    break
+                clock["t"] += 150.0
+                done += 1
+            taken[ws["key"]] = done
+            return {"done": done}
+
+        result = jobs.crm_job("summaries", seconds=400)(work)(NOW)
+        order = list(result["runs"])
+        # The first workspace stops at its share (200 s), the second still
+        # runs and stops at the task's end (400 s), never at 600.
+        assert taken == {order[0]: 2, order[1]: 1}
+        assert clock["t"] < 600
+        rows = list(fake.rows["crm_job_runs"].values())
+        assert len(rows) == 2
+        assert {(r["outcome"], bool(r["finished_at"])) for r in rows} == {("ok", True)}
+
+    def test_jobs_the_ai_tasks_that_call_the_model_share_the_time(self, crm, monkeypatch):
+        from app.tasks import crm_ai
+
+        _, fake, labs = crm
+        clock = {"t": 0.0}
+        monkeypatch.setattr(jobs, "monotonic", lambda: clock["t"])
+        seen: list[bool] = []
+
+        def spent(workspace, now):
+            clock["t"] += 10_000.0
+            seen.append(jobs.out_of_time())
+            return {}
+
+        from app.services.crm import ai_fields, summaries
+
+        monkeypatch.setattr(summaries, "run", spent)
+        monkeypatch.setattr(ai_fields, "run", spent)
+        crm_ai._summaries(NOW)
+        crm_ai._ai_fields(NOW)
+        assert seen == [True, True, True, True]
+
+
+class TestAStopKeepsItsCounts:
+    """FR-CRMAI-JOB-01, D-4 (amended in S5) — a run the budget or a switch
+    stops part-way records what it had done beside the reason."""
+
+    def test_jobs_a_run_skipped_part_way_keeps_its_counts(self, crm):
+        _, fake, labs = crm
+
+        def work(ws, now):
+            raise jobs.Skipped("AI budget reached", {"drafted": 15, "failed_items": 2})
+
+        counts = {"drafted": 15, "failed_items": 2, "skipped": "AI budget reached"}
+        assert jobs.run("followup_drafts", labs, work, NOW) == {
+            "outcome": "skipped",
+            "counts": counts,
+        }
+        [run] = fake.rows["crm_job_runs"].values()
+        assert (run["outcome"], run["counts"]) == ("skipped", counts)
+
+    def test_jobs_a_skip_with_nothing_done_says_only_why(self, crm):
+        _, _, labs = crm
+
+        def work(ws, now):
+            raise jobs.Skipped("Switched off")
+
+        assert jobs.run("summaries", labs, work, NOW)["counts"] == {"skipped": "Switched off"}

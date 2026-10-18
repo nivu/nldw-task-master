@@ -18,8 +18,9 @@ in stage, FR-CRMAI-FIELD-03) are hashed, and the value is computed through
 for recompute, at most once an hour per record; what changes inside the
 hour is marked (`dirty_at`) and recomputed once at its end (Q-38). What is
 blocking is computed only while Deal outlook is At risk or Stalled, else its
-value is cleared without a call. At most `BATCH` model calls a run; the rest
-wait for the next tick. A record that fails is counted in `failed_items` and
+value is cleared without a call. At most `BATCH` model calls a run, and none once
+its share of the task's time is spent (`jobs.out_of_time`, FR-CRMAI-JOB-01,
+amended in S5); the rest wait for the next tick. A record that fails is counted in `failed_items` and
 keeps its old value (FR-CRMAI-JOB-01). The values are written to their own
 table, never to the record, and feed no stage, probability, flag, colour or
 automation (FR-CRMAI-FIELD-05).
@@ -306,14 +307,15 @@ def _record(
                 current[field["key"]] = {**row, "dirty_at": now.isoformat()}
             counts["waiting"] += 1
             continue
-        if budget["calls"] >= BATCH:
+        if budget["calls"] >= BATCH or jobs.out_of_time():
+            # The rest wait for the next tick.
             continue
         budget["calls"] += 1
         try:
             written = _compute(workspace, field, facts, depends, new_hash, base_row, now)
-        except jobs.Skipped:
-            # The budget or a switch stops the whole run.
-            raise
+        except jobs.Skipped as skipped:
+            # The budget or a switch stops the whole run, which keeps its counts.
+            raise jobs.Skipped(skipped.reason, counts) from None
         except Exception as exc:  # noqa: BLE001 - one record never fails the run
             # The old value stays; only the kind of failure is logged (a
             # database error's text can hold the row, FR-CRMAI-JOB-03).

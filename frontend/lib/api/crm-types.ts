@@ -1207,7 +1207,13 @@ export type CrmJobName =
   | "digests"
   | "reminders"
   | "trash_purge"
-  | "automations";
+  | "automations"
+  | "summaries"
+  | "meetings"
+  | "enrichment"
+  | "ai_fields"
+  | "review_expiry"
+  | "followup_drafts";
 
 /** A job more than twice its interval late (FR-CRM-JOB-03). */
 export interface StaleJob {

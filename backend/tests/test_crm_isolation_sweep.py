@@ -780,3 +780,138 @@ class TestContactRecency:
         assert fake.rows["crm_companies"][made["_labs"]["company"]["id"]]["contact_recency"] == (
             "lapsed"
         )
+
+
+class TestThe009Surface:
+    """Spec 009 FR-CRMAI-REV-01, -03, FR-CRMAI-SUM-08, FR-CRMAI-ENR-02,
+    FR-CRMAI-FIELD-01, -06, FR-CRMAI-REL-02, FR-CRMAI-LLM-08, FR-CRMAI-JOB-01,
+    FR-CRMAI-MCP-01; NFR-CRMAI-02: every route and tool 009 added is in the
+    sweeps above, and what they answer for Labs counts and lists nothing of
+    Academy's queue, job log or AI spend."""
+
+    def test_the_009_id_routes_are_swept(self):
+        assert {
+            ("GET", "/api/v1/crm/email-threads/{thread_key}/summary"),
+            ("POST", "/api/v1/crm/review/{item_id}/approve"),
+            ("POST", "/api/v1/crm/review/{item_id}/dismiss"),
+            ("PATCH", "/api/v1/crm/ai-fields/{field_id}"),
+            ("POST", "/api/v1/crm/companies/{record_id}/ai-fields/recompute"),
+            ("POST", "/api/v1/crm/opportunities/{record_id}/ai-fields/recompute"),
+        } <= set(ID_ROUTES)
+
+    def test_the_009_open_reads_are_swept(self):
+        assert {
+            "/api/v1/crm/ai",
+            "/api/v1/crm/ai-fields",
+            "/api/v1/crm/review",
+            "/api/v1/crm/jobs",
+        } <= set(OPEN_READS)
+
+    def test_the_contact_recency_filter_is_swept(self):
+        assert {
+            o
+            for p, b in POST_READS
+            if b.get("spec", {}).get("filters") == RECENT
+            for o in [b["object"]]
+        } == {"companies", "people"}
+
+    def test_the_three_tools_are_swept(self, crm):
+        _, _, made = crm
+        named = {n for n, _ in _tool_calls(made)} | {n for n, _ in TOOL_READS}
+        assert {"crm_review_list", "crm_review_decide", "crm_thread_summary"} <= named
+
+    @pytest.mark.parametrize("scope", ["mine", "all"])
+    @pytest.mark.parametrize("status", ["open", "decided"])
+    def test_the_review_queue_every_scope_and_status(self, crm, scope, status):
+        http, fake, made = crm
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        for state in ("open", "decided"):
+            fake.add_review_item(
+                academy,
+                type="next_step_change",
+                record_type="opportunity",
+                record_id=made["opportunities"]["id"],
+                owner_id=OWNER["id"],
+                status="approved" if state == "decided" else "open",
+                decided_at="2026-10-13T10:00:00+00:00" if state == "decided" else None,
+                decided_by=OWNER["id"] if state == "decided" else None,
+                suggestion={"next_step": f"Zqxacad {state}", "next_step_on": "2026-10-20"},
+                current_values={
+                    made["opportunities"]["id"]: {
+                        "next_step": "Zqxacad call",
+                        "next_step_on": "2026-10-14",
+                    }
+                },
+            )
+        r = http.get(
+            "/api/v1/crm/review",
+            params={**LABS, "scope": scope, "status": status},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["items"] == [] and r.json()["total"] == 0
+        assert _clean(r.text, made) == []
+        answer = asyncio.run(tools.crm_review_list(Ctx(OWNER["id"]), scope=scope, workspace="labs"))
+        assert _clean(str(answer), made) == []
+        boot = http.get("/api/v1/crm/bootstrap", params=LABS, headers=as_(OWNER["id"])).json()
+        assert boot["ai"]["open_review_count"] == 0
+        theirs = http.get(
+            "/api/v1/crm/review",
+            params={"workspace": "academy", "scope": scope, "status": status},
+            headers=as_(OWNER["id"]),
+        )
+        assert MARK in _clean(theirs.text, made)
+
+    @pytest.mark.parametrize(
+        "job", [None, "summaries", "meetings", "enrichment", "ai_fields", "review_expiry"]
+    )
+    def test_the_job_log_of_each_009_job(self, crm, job):
+        http, fake, made = crm
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        runs = {}
+        for name in ("summaries", "meetings", "enrichment", "ai_fields", "review_expiry"):
+            run = fake.start_job_run(name, academy["id"], datetime(2026, 10, 14, 6, 0, tzinfo=UTC))
+            fake.finish_job_run(
+                run["id"],
+                {
+                    "finished_at": "2026-10-14T06:01:00+00:00",
+                    "outcome": "failed",
+                    "error": "Zqxacad error",
+                    "error_public": "Zqxacad failed",
+                },
+            )
+            runs[f"run_{name}"] = run
+        params = {**LABS, **({"job": job} if job else {})}
+        r = http.get("/api/v1/crm/jobs", params=params, headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        assert _clean(r.text, {**made, **runs}) == []
+        mine = http.get(
+            "/api/v1/crm/jobs", params={"workspace": "academy"}, headers=as_(OWNER["id"])
+        )
+        assert MARK in _clean(mine.text, made)
+
+    def test_the_ai_spend_is_the_workspaces_own(self, crm, monkeypatch):
+        from app.api.crm import ai as ai_api
+
+        http, fake, _ = crm
+        monkeypatch.setattr(ai_api, "_now", lambda: datetime(2026, 10, 14, 6, 0, tzinfo=UTC))
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        fake.insert_ai_usage(
+            academy["id"],
+            {
+                "job": "summaries",
+                "model": "claude-sonnet-5-5",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cost_usd": "7.25",
+                "outcome": "ok",
+                "at": "2026-10-13T09:05:00+00:00",
+            },
+        )
+        labs = http.get("/api/v1/crm/ai", params=LABS, headers=as_(OWNER["id"])).json()
+        assert labs["spend"]["total_usd"] == "0.00"
+        assert set(labs["spend"]["by_job"].values()) == {"0.00"}
+        theirs = http.get(
+            "/api/v1/crm/ai", params={"workspace": "academy"}, headers=as_(OWNER["id"])
+        ).json()
+        assert theirs["spend"]["total_usd"] == "7.25"

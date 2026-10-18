@@ -5,7 +5,9 @@ Every task here is named `crm_ai.*`, so `app/worker.py` routes it to the
 `crm-ai` queue, served only by `worker-crm-ai` (concurrency 1). Each stores
 no result (`ignore_result=True`), and its arguments are ids at most, never
 text (FR-CRMAI-JOB-02). Each periodic job records one run per workspace
-through `@crm_job` (services/crm/jobs.py).
+through `@crm_job` (services/crm/jobs.py). A task that calls the model
+shares `jobs.AI_TASK_SECONDS` between its workspaces, so it ends inside
+Celery's 600-second limit (FR-CRMAI-JOB-01, amended in S5).
 
 | Task | Beat | Jobs it records |
 |---|---|---|
@@ -46,7 +48,7 @@ def review_expiry() -> dict:
     return result
 
 
-@jobs.crm_job("summaries")
+@jobs.crm_job("summaries", seconds=jobs.AI_TASK_SECONDS)
 def _summaries(workspace: dict, now: datetime) -> dict:
     """FR-CRMAI-SUM-01 to -12: the workspace's pending threads summarised,
     behind phase 1 and live Gmail sync."""
@@ -101,7 +103,7 @@ def enrichment_batch(args: dict) -> dict:
     return enrichment.batch(args)
 
 
-@jobs.crm_job("ai_fields")
+@jobs.crm_job("ai_fields", seconds=jobs.AI_TASK_SECONDS)
 def _ai_fields(workspace: dict, now: datetime) -> dict:
     """FR-CRMAI-FIELD-03 to -05: the workspace's AI field values computed
     where their inputs changed, at most once an hour per record, behind

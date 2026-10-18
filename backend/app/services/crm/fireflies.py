@@ -19,8 +19,10 @@ a bearer token:
 No vendor SDK, as the Gmail and Claude clients (Q-42). Timeouts: 5 s to
 connect, 30 s to read. The key (`FIREFLIES_API_KEY`) is set on
 `worker-crm-ai` only and this module refuses to run without it. Every call
-logs one JSON line with the operation, the status and the latency, never a
-title, an address or the content (NFR-CRMAI-06). No exception raised here
+logs one JSON line with the job (`meetings`, the only caller), the
+workspace a transcript is fetched for (`for_workspace`; `-` for the poll,
+which serves every workspace), the operation, the status and the latency,
+never a title, an address or the content (NFR-CRMAI-06, amended in S5). No exception raised here
 carries a response body, the query's variables or the key: messages name
 the operation and the status or the exception type only.
 
@@ -33,6 +35,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -47,6 +52,10 @@ TIMEOUT: Final = httpx.Timeout(30.0, connect=5.0)
 #: Transcripts asked for per page, and the most pages one poll reads.
 PAGE: Final = 50
 MAX_PAGES: Final = 10
+#: The one job that calls Fireflies (NFR-CRMAI-06).
+JOB: Final = "meetings"
+#: The workspace key the running call is for; "-" for the poll.
+_workspace: ContextVar[str] = ContextVar("crm_fireflies_workspace", default="-")
 #: How far before the cursor the list reaches, for transcripts updated after
 #: their meeting; the first poll reads this far back from now.
 LOOKBACK: Final = timedelta(days=7)
@@ -96,9 +105,22 @@ def configured() -> bool:
     return bool(secret and secret.get_secret_value().strip())
 
 
+@contextmanager
+def for_workspace(key: str) -> Iterator[None]:
+    """The calls made inside are logged with the workspace `key`."""
+    token = _workspace.set(key)
+    try:
+        yield
+    finally:
+        _workspace.reset(token)
+
+
 def _log(op: str, status: Any, started: float) -> None:
     logger.info(
-        '{"event": "crm_fireflies_call", "op": "%s", "status": "%s", "ms": %d}',
+        '{"event": "crm_fireflies_call", "job": "%s", "workspace": "%s", "op": "%s", '
+        '"status": "%s", "ms": %d}',
+        JOB,
+        _workspace.get(),
         op,
         status,
         int((time.monotonic() - started) * 1000),

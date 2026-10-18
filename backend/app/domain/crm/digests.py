@@ -120,14 +120,17 @@ def daily_section(
             if sees_amounts and item.get("record_type") == "opportunity" and amount is not None:
                 line["amount"] = inr(amount)
             items.append(line)
-        out.append(
-            {
-                "key": section["key"],
-                "heading": HEADINGS.get(section["key"], section["key"]),
-                "off_reason": section.get("off_reason"),
-                "items": items,
-            }
-        )
+        part = {
+            "key": section["key"],
+            "heading": HEADINGS.get(section["key"], section["key"]),
+            "off_reason": section.get("off_reason"),
+            "items": items,
+        }
+        if "count" in section:
+            # Spec 009 FR-CRMAI-REV-09: To review's count of open items,
+            # beside its three oldest.
+            part["count"] = section["count"]
+        out.append(part)
     return {"workspace": workspace["name"], "workspace_key": workspace["key"], "sections": out}
 
 
@@ -149,7 +152,8 @@ def daily_body(name: str, day: date, parts: list[dict[str, Any]], link: str) -> 
             if section.get("off_reason") or not section["items"]:
                 continue
             shown = True
-            lines.append(f"  {section['heading']}:")
+            count = f" ({section['count']})" if section.get("count") is not None else ""
+            lines.append(f"  {section['heading']}{count}:")
             for item in section["items"]:
                 text = f"    - {item['title']}"
                 if item.get("amount"):

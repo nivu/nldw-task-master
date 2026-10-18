@@ -64,14 +64,22 @@ tools, with the role you hold in each workspace:
 
 | Your role in the workspace | Claude can |
 |---|---|
-| Any (Admin, Member, Viewer) | list your workspaces (`crm_workspaces`), run Today (`crm_today`), search (`crm_search`), read any record (`crm_get`) and lists by filter or saved view (`crm_list`). A Viewer gets no amounts |
-| Admin or Member | create and update records (`crm_create`, `crm_update`), set a deal's next step (`crm_set_next_step`), add tasks and notes (`crm_add_task`, `crm_add_note`), move deals (`crm_move_stage`), do the Labs handoff (`crm_handoff`), merge companies (`crm_merge`), work campaign members (`crm_campaign_members`), complete tasks (`crm_complete_task`); a Viewer may complete a task assigned to them |
+| Any (Admin, Member, Viewer) | list your workspaces (`crm_workspaces`), run Today (`crm_today`), search (`crm_search`), read any record (`crm_get`) and lists by filter or saved view (`crm_list`), read an email thread's AI summary, asks and commitments (`crm_thread_summary`), and list your AI suggestions waiting for review (`crm_review_list`; an Admin can list the whole workspace's, a Viewer has none). A Viewer gets no amounts |
+| Admin or Member | create and update records (`crm_create`, `crm_update`), set a deal's next step (`crm_set_next_step`), add tasks and notes (`crm_add_task`, `crm_add_note`), move deals (`crm_move_stage`), do the Labs handoff (`crm_handoff`), merge companies (`crm_merge`), work campaign members (`crm_campaign_members`), complete tasks (`crm_complete_task`), approve, edit and approve, or dismiss an AI suggestion (`crm_review_decide`); a Viewer may complete a task assigned to them |
 | Admin, and Members for their own numbers | read the dashboard (`crm_dashboard`) |
 | Admin only | another member's Today, imports (`crm_import`) and running email sync now (`crm_run_email_sync`) |
 
 Linking a Labs deal to an existing TVA project also needs you to be a TVA
 manager or admin. Deleting records, settings, invitations, saved views and
-exports stay in the web app.
+exports stay in the web app, and so do the AI settings: budgets, phases, AI
+fields, follow-up rules and **Enrich selected**.
+
+**AI suggestions.** Nothing the CRM's AI suggests changes a record until a
+person approves it, and that holds through Claude too. Claude can show you
+your suggestions with `crm_review_list` and, after you say yes, decide one
+with `crm_review_decide`, exactly as the Review page would (see *Review AI
+suggestions*). Promoting a value read from a company's website is an
+ordinary update (`crm_update`).
 
 If you belong to more than one workspace, Claude reads from the one you used
 last, but every change must name its workspace, or it is refused with your

@@ -210,4 +210,18 @@ class TestTheKeyNeverShows:
         [line] = [r.getMessage() for r in caplog.records if "crm_fireflies_call" in r.getMessage()]
         event = json.loads(line)
         assert event["op"] == "list" and event["status"] == "200"
+        # NFR-CRMAI-06 (amended in S5): the job, and no workspace for the
+        # poll, which serves every workspace.
+        assert (event["job"], event["workspace"]) == ("meetings", "-")
         assert "ZQXBODYMARKER" not in line and KEY not in line and "acme" not in line
+
+    def test_fireflies_a_transcript_fetch_logs_its_job_and_workspace(self, transport, caplog):
+        _, answers = transport
+        answers.append(_ok({"transcript": {"id": "t1", "sentences": [], "summary": None}}))
+        caplog.set_level(logging.INFO)
+        with fireflies.for_workspace("labs"):
+            fireflies.transcript("t1")
+        [line] = [r.getMessage() for r in caplog.records if "crm_fireflies_call" in r.getMessage()]
+        event = json.loads(line)
+        assert (event["job"], event["workspace"], event["op"]) == ("meetings", "labs", "transcript")
+        assert isinstance(event["ms"], int)

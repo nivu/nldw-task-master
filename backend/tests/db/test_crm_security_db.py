@@ -18,7 +18,9 @@ without anyone remembering to list it:
 
 from __future__ import annotations
 
+import re
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -277,3 +279,105 @@ class TestTheBellNamesOnlyItsOwnWorkspace:
         with pytest.raises(stack.SqlError) as refused:
             stack.sql(moved)
         assert refused.value.code == "CRM04"
+
+
+#: 009's migrations (plan §6 rule 1: only 060–079 are 009's).
+MIGRATIONS = Path(__file__).resolve().parents[3] / "supabase/migrations"
+#: The 007 tables with no audit trigger, as 007 left the list.
+NOT_AUDITED_007 = {
+    "crm_stage_history",
+    "crm_import_runs",
+    "crm_job_runs",
+    "crm_notifications",
+    "crm_digest_sends",
+    "crm_email_messages",
+    "crm_email_links",
+    "crm_object_fields",
+}
+#: 009 data-model §5: the seven tables S1a–S3a add without the trigger.
+NOT_AUDITED_009 = {
+    "crm_ai_usage",
+    "crm_review_items",
+    "crm_review_item_deals",
+    "crm_email_summaries",
+    "crm_email_summary_links",
+    "crm_company_enrichment",
+    "crm_ai_field_values",
+}
+#: The only option array, 007's (029); 009 adds none (data-model §5).
+UUID_ARRAYS = {("crm_companies", "channel_ids")}
+
+
+def _009_sql() -> str:
+    """060–079's text with its comment lines left out."""
+    files = sorted(p for p in MIGRATIONS.glob("0[67]*.sql") if 60 <= int(p.name[:3]) <= 79)
+    assert [p.name[:3] for p in files][:8] == [f"0{n}" for n in range(60, 68)]
+    return "\n".join(
+        line
+        for p in files
+        for line in p.read_text().splitlines()
+        if not line.lstrip().startswith("--")
+    )
+
+
+class TestThe009Additions:
+    """Spec 009 data-model §5, NFR-CRMAI-02; tasks T170: the sweeps above
+    re-run over 060–067. `NOT_AUDITED` is exactly 007's list and the seven
+    tables of data-model §5; every table and function 009 creates is one
+    the sweeps see; and 009 makes no new `uuid[]` column."""
+
+    def test_not_audited_is_007s_and_the_seven(self):
+        assert NOT_AUDITED == NOT_AUDITED_007 | NOT_AUDITED_009
+        assert len(NOT_AUDITED_009) == 7 and not NOT_AUDITED_007 & NOT_AUDITED_009
+
+    def test_every_009_table_is_swept(self, stack):
+        made = set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)", _009_sql()))
+        assert made == NOT_AUDITED_009 | {"crm_ai_fields"}
+        rows = stack.sql(
+            "SELECT c.relname, c.relrowsecurity FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') "
+            f"AND c.relname IN ({', '.join(stack.q(t) for t in sorted(made))})"
+        )
+        assert {r["relname"]: r["relrowsecurity"] for r in rows} == {t: True for t in made}
+        for role in ("anon", "authenticated"):
+            for table in made:
+                [row] = stack.sql(
+                    "SELECT "
+                    + " OR ".join(
+                        f"has_table_privilege({stack.q(role)}, {stack.q('public.' + table)}, '{p}')"
+                        for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+                    )
+                    + " AS any"
+                )
+                assert row["any"] is False, (role, table)
+
+    def test_crm_ai_fields_carries_the_audit_trigger(self, stack):
+        rows = stack.sql(
+            "SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.crm_ai_fields'::regclass "
+            "AND tgfoid = 'public.crm_audit_row'::regproc AND NOT tgisinternal"
+        )
+        assert rows
+
+    def test_every_009_function_is_swept_and_revoked(self, stack):
+        names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _009_sql()))
+        assert len(names) > 15
+        # The CRM function sweep reads `crm_%`: every 009 function is one.
+        assert {n for n in names if not n.startswith("crm_")} == set()
+        rows = stack.sql(
+            "SELECT p.proname, "
+            "has_function_privilege('anon', p.oid, 'EXECUTE') AS anon, "
+            "has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            f"WHERE n.nspname = 'public' AND p.proname IN ({', '.join(stack.q(x) for x in sorted(names))})"
+        )
+        assert {r["proname"] for r in rows} == names
+        assert [r["proname"] for r in rows if r["anon"] or r["auth"]] == []
+
+    def test_no_new_uuid_array_column(self, stack):
+        rows = stack.sql(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND udt_name = '_uuid' "
+            "AND table_name IN (SELECT relname FROM pg_class WHERE relkind IN ('r', 'p'))"
+        )
+        assert {(r["table_name"], r["column_name"]) for r in rows} == UUID_ARRAYS
