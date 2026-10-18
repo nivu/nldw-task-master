@@ -185,6 +185,12 @@ AUTOMATIONS: Final = {
     "digests": "Daily and weekly digests",
     "task_reminders": "Task due reminders",
     "campaign_conversion": "Campaign conversion prompt",
+    # Spec 009 FR-CRMAI-RULE-01, FR-CRMAI-CHG-06: the follow-up rules R-1 to
+    # R-4, automations 11 to 14, seeded off (066). Each also needs phase 3.
+    "no_reply_draft": "No reply after outreach (draft a follow-up)",
+    "stuck_notice": "Stuck in stage (flag and notice)",
+    "lead_cold": "Lead gone cold",
+    "campaign_followthrough": "Campaign follow-through",
 }
 
 

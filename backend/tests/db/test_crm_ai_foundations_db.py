@@ -100,7 +100,9 @@ class TestTheSeed:
         assert _setting(stack, ws, "ai") == ai_rules.AI_OFF
         [created] = stack.sql(
             "SELECT actor_label, action FROM audit_log WHERE target_table = "
-            f"'crm_workspace_settings' AND workspace_id = {stack.q(ws)}"
+            f"'crm_workspace_settings' AND workspace_id = {stack.q(ws)} "
+            # 066 (S3b) seeds `automations` and `flag_thresholds` beside it.
+            "AND after ->> 'key' = 'ai'"
         )
         assert created == {"actor_label": "system", "action": "setting.created"}
 
@@ -240,7 +242,8 @@ class TestJobNamesAndNotifications:
     def test_foundations_a_job_not_yet_named_is_refused(self, stack, ws):
         with pytest.raises(stack.SqlError) as refused:
             stack.sql(
-                f"INSERT INTO crm_job_runs (job, workspace_id) VALUES ('followup_drafts', {stack.q(ws)})"
+                # `followup_drafts` is named by 066 (S3b); this name never is.
+                f"INSERT INTO crm_job_runs (job, workspace_id) VALUES ('not_a_job', {stack.q(ws)})"
             )
         assert refused.value.code == "23514"
 

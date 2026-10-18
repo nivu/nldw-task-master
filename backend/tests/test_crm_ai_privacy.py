@@ -14,6 +14,9 @@ Fireflies' own summary of it, and runs the meetings job the same two ways.
 S2b adds a marker in a company's web pages (its home page and its about
 page), and runs the enrichment job the same two ways, its batches sent
 through the real enqueue path so their Celery payloads are inspected too.
+S3b adds a marker in the body of the outbound email R-1 follows up: the
+draft task's Celery payload holds ids only, no body is read, and a draft
+that fails with a marker in its exception leaves only the fixed sentence.
 """
 
 from __future__ import annotations
@@ -22,14 +25,15 @@ import json
 import logging
 
 import pytest
-from crm_ai_fakes import INVALID, CapturedCelery
+from crm_ai_fakes import INVALID, CapturedCelery, FakeClaude
 from test_crm_enrichment_job import ANSWER as ENRICHED
 from test_crm_enrichment_job import Sites
+from test_crm_followup_rules import DRAFT, Rules
 from test_crm_meetings_job import ANSWER as MEETING_ANSWER
 from test_crm_meetings_job import PRIYA, Calls
 from test_crm_summaries_job import ANSWER, Mail
 
-from app.services.crm import enrichment
+from app.services.crm import ai, enrichment
 from app.tasks import crm_ai
 
 QUOTED = "ZQXQUOTEDHISTORY"
@@ -204,3 +208,50 @@ class TestWebPage:
         for sent in sites.celery.sent:
             [args] = sent["args"]
             assert set(args) == {"workspace_id", "run_id", "cutoff", "lock", "counts"}
+
+
+# ---------------------------------------------------------------------------
+# S3b — the R-1 draft (FR-CRMAI-RULE-02, FR-CRMAI-JOB-02, -03)
+# ---------------------------------------------------------------------------
+
+OUTREACH = "ZQXOUTREACHBODY"
+FAILURE = "ZQXFAILURETEXT"
+
+
+@pytest.fixture
+def rules(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    made = Rules(monkeypatch)
+    made.message("g1")
+    made.gmail.texts["g1"] = f"Here is the pilot plan. {OUTREACH}"
+    made.summary()
+    return made
+
+
+class TestFollowUpDraft:
+    def test_privacy_the_draft_task_takes_ids_and_reads_no_body(self, rules, caplog):
+        assert crm_ai.followup_draft.ignore_result is True
+        rules.automations()
+        [queued] = rules.celery.named("crm_ai.followup_draft")
+        [args] = queued["args"]
+        assert set(args) == {"workspace_id", "messages"}
+        assert [set(m) for m in args["messages"]] == [
+            {"mailbox_id", "thread_id", "gmail_message_id"}
+        ]
+        rules.claude = FakeClaude(DRAFT).install(rules.monkeypatch)
+        result = rules.drafts()
+        assert rules.gmail.reads == []
+        assert OUTREACH not in "\n".join(rules.claude.prompts)
+        assert OUTREACH not in _everything(rules, caplog, result)
+
+    def test_privacy_a_failed_draft_leaves_only_the_fixed_sentence(self, rules, caplog):
+        rules.automations()
+        rules.claude = FakeClaude(RuntimeError(f"boom {FAILURE}")).install(rules.monkeypatch)
+        result = rules.drafts()
+        assert result["counts"]["failed_items"] == 1
+        [run] = rules.runs("followup_drafts")
+        assert run["outcome"] == "ok" and run.get("error") is None
+        sentence = str(ai.SafeError("AI call", "RuntimeError"))
+        assert sentence in caplog.text
+        found = _everything(rules, caplog, result)
+        assert FAILURE not in found and OUTREACH not in found

@@ -34,7 +34,7 @@ from app.config import settings
 from app.domain.crm import dedupe
 from app.domain.crm import flags as flag_rules
 from app.domain.crm import today as today_rules
-from app.domain.crm.digests import long_date
+from app.domain.crm.digests import STAGE_LABELS, long_date
 from app.services import supabase as db
 from app.services.crm import CrmRefused, store
 from app.services.crm.context import workspaces_of
@@ -309,7 +309,8 @@ def stale_deal_notices(workspace: dict[str, Any], now: datetime) -> dict[str, in
     level and when the quiet began)."""
     ws_id = workspace["id"]
     admins = [m["user_id"] for m in store.list_members(ws_id) if m["role"] == "admin"]
-    rows = []
+    rows, bell_only = [], []
+    profiles, stuck_sent = _profiles(), _stuck_message_sent(ws_id)
     for deal in store.flag_rows(ws_id, "crm_opportunities", flagged_only=True):
         stale = next((f for f in deal.get("flags") or [] if f.get("kind") == "stale_deal"), None)
         if stale is None or deal.get("stage") not in flag_rules.OPEN_STAGES:
@@ -331,9 +332,16 @@ def stale_deal_notices(workspace: dict[str, Any], now: datetime) -> dict[str, in
                 f"{stale.get('detail') or 'Nothing has happened on it lately.'} "
                 f"Open it in {workspace['name']}."
             )
-            rows.append(row)
-    counts = send(rows, out_of_app=True, profiles=_profiles())
-    return {"stale_notices": counts["added"], "undeliverable": counts["undeliverable"]}
+            if user_id == deal["owner_id"] and stuck_sent(deal, stale, now, profiles):
+                bell_only.append(row)
+            else:
+                rows.append(row)
+    counts = send(rows, out_of_app=True, profiles=profiles)
+    quiet = send(bell_only)
+    return {
+        "stale_notices": counts["added"] + quiet["added"],
+        "undeliverable": counts["undeliverable"],
+    }
 
 
 def task_reminders(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
@@ -464,3 +472,117 @@ def budget_reached_notice(workspace: dict[str, Any], month: str) -> dict[str, in
         rows.append(row)
     counts = send(rows, out_of_app=True, profiles=_profiles())
     return {"added": counts["added"], "undeliverable": counts["undeliverable"]}
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — R-2 Stuck in stage (FR-CRMAI-RULE-04, -08, FR-CRMAI-CHG-08; Q-14)
+# ---------------------------------------------------------------------------
+
+
+def _stale_message_today(
+    stale: dict[str, Any] | None,
+    level: str,
+    t: dict[str, int],
+    day: date,
+    zone: str,
+    by: datetime | None = None,
+) -> bool:
+    """Whether the deal's Stale deal flag reached `level` today, which is
+    when its notice at that level, with its message, went (Q-14) — and, with
+    `by`, no later than `by` (the Stuck in stage flag turned amber), so that
+    whichever reached it first that day sends the one message."""
+    since = _at((stale or {}).get("since"))
+    if not stale or stale.get("level") != level or since is None:
+        return False
+    days = t["stale_red_days"] if level == "red" else t["stale_amber_days"]
+    reached = since + timedelta(days=days)
+    if by is not None and reached > by:
+        return False
+    return reached.astimezone(ZoneInfo(zone)).date() == day
+
+
+def stuck_in_stage_notices(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
+    """R-2's notice: a deal flagged Stuck in stage tells its owner, once per
+    deal per stage entry (the dedupe key names the stage and when it was
+    entered), in the bell and by message. When the deal's Stale deal notice
+    went at the same level the same day, the bell only: one message (Q-14).
+    A CRM-only owner gets the bell only until an SMTP sender exists."""
+    ws_id = workspace["id"]
+    found = next(
+        (s["value"] for s in store.list_settings(ws_id) if s["key"] == "flag_thresholds"), None
+    )
+    t = flag_rules.thresholds(found)
+    stale_on = automation_on(ws_id, "stale_notice")
+    profiles = _profiles()
+    with_message, bell_only = [], []
+    for deal in store.flag_rows(ws_id, "crm_opportunities", flagged_only=True):
+        flags = {f.get("kind"): f for f in deal.get("flags") or []}
+        stuck = flags.get("stuck_in_stage")
+        if stuck is None or deal.get("stage") not in flag_rules.OPEN_STAGES:
+            continue
+        if not deal.get("owner_id"):
+            continue
+        stage = STAGE_LABELS.get(deal["stage"], deal["stage"])
+        row = _row(
+            ws_id,
+            deal["owner_id"],
+            "stuck_in_stage",
+            f"Deal stuck in {stage}: “{deal['name']}”",
+            f"stuck:{deal['id']}:{deal['stage']}:{deal.get('stage_entered_at') or ''}",
+            "opportunity",
+            deal["id"],
+        )
+        row["body"] = (
+            f"{stuck.get('detail') or 'It has been in this stage a while.'} "
+            f"Open it in {workspace['name']}."
+        )
+        zone = (profiles.get(deal["owner_id"]) or {}).get("timezone") or today_rules.DEFAULT_ZONE
+        day = today_rules.day_of(now, zone)
+        amber = (_at(stuck.get("since")) or now) + timedelta(days=t[f"stuck_{deal['stage']}_days"])
+        if stale_on and _stale_message_today(
+            flags.get("stale_deal"), stuck["level"], t, day, zone, by=amber
+        ):
+            bell_only.append(row)
+        else:
+            with_message.append(row)
+    sent = send(with_message, out_of_app=True, profiles=profiles)
+    quiet = send(bell_only)
+    return {
+        "stuck_notices": sent["added"] + quiet["added"],
+        "stuck_undeliverable": sent["undeliverable"],
+    }
+
+
+def _stuck_message_sent(workspace_id: str) -> Any:
+    """Q-14, the reverse order: a check of whether a deal's Stuck in stage
+    notice, with its message, went to its owner today at the Stale deal
+    flag's level, before that flag reached it. The stuck notice goes once
+    per stage entry, when the deal first turns amber, and only while R-2's
+    notice is on; with R-2 off the check is always no. Reached at the same
+    moment, the Stale deal notice sends the message (stuck_in_stage_notices)."""
+    from app.services.crm import flags as flag_service
+
+    if not flag_service.stuck_on(workspace_id):
+        return lambda *_: False
+    found = next(
+        (s["value"] for s in store.list_settings(workspace_id) if s["key"] == "flag_thresholds"),
+        None,
+    )
+    t = flag_rules.thresholds(found)
+
+    def check(deal: dict[str, Any], stale: dict[str, Any], now: datetime, profiles: dict) -> bool:
+        stuck = next(
+            (f for f in deal.get("flags") or [] if f.get("kind") == "stuck_in_stage"), None
+        )
+        since, quiet = _at((stuck or {}).get("since")), _at(stale.get("since"))
+        if not stuck or stuck.get("level") != stale["level"] or since is None or quiet is None:
+            return False
+        level = stale["level"]
+        reached = quiet + timedelta(days=t[f"stale_{level}_days"])
+        amber = since + timedelta(days=t[f"stuck_{deal['stage']}_days"])
+        zone = (profiles.get(deal["owner_id"]) or {}).get("timezone") or today_rules.DEFAULT_ZONE
+        return amber < reached and amber.astimezone(ZoneInfo(zone)).date() == today_rules.day_of(
+            now, zone
+        )
+
+    return check

@@ -10,7 +10,10 @@ manual edit uses:
 - `next_step_change`: `deals.update`, as `PATCH /crm/opportunities/{id}`;
 - `enrichment_conflict`: `records.update`, as `PATCH /crm/companies/{id}`;
 - `deal_link`: the note's links, as `PATCH /crm/notes/{id}`;
-- `task_from_*`: `008`'s `create_task`, with only the fields of plan §5.4.
+- `task_from_*`: `008`'s `create_task`, with only the fields of plan §5.4;
+- `rule_suggestion`: R-3 `records.update` of the lead stage or next touch,
+  R-4 `campaigns.convert` or `campaigns.update_member`, R-1 nothing (the
+  draft is marked used).
 
 So every validation, permission check, pipeline rule, audit entry and
 optimistic lock of the manual path applies (FR-CRMAI-REV-04). The change is
@@ -43,10 +46,10 @@ from app.domain.crm import ai_rules
 from app.domain.crm import review as rules
 from app.domain.crm import today as today_rules
 from app.domain.tasks.service import TaskActor, create_task
-from app.schemas.crm import ReviewApproveIn, ReviewItemOut
+from app.schemas.crm import CampaignMemberUpdate, ConvertIn, ReviewApproveIn, ReviewItemOut
 from app.schemas.tasks import TaskCreate
 from app.services import supabase as db
-from app.services.crm import CrmRefused, deals, store
+from app.services.crm import CrmRefused, campaigns, deals, store
 from app.services.crm import records as base
 from app.services.crm.context import actor
 
@@ -64,8 +67,13 @@ EDITABLE = {
     "task_from_meeting": frozenset({"title", "due_on", "assignee_id", "notes"}),
     "deal_link": frozenset(),
     "enrichment_conflict": frozenset({"value"}),
-    "rule_suggestion": frozenset(),
+    # Spec 009 FR-CRMAI-RULE-07 (contracts §2.2.1): per option; an R-1
+    # draft is not sent back.
+    "rule_suggestion": frozenset({"to_stage", "next_touch_on", "new_opportunity"}),
 }
+#: A rule suggestion's refusals before the manual path's own.
+CHOOSE_OPTION = "Choose what to do with this suggestion."
+NEXT_TOUCH_DATE = "Choose the date of the next touch."
 
 
 def _now() -> datetime:
@@ -475,6 +483,97 @@ def _task(ctx: Any, item: dict[str, Any], body: ReviewApproveIn, target: dict) -
     return change
 
 
+def _option(item: dict[str, Any], body: ReviewApproveIn) -> str:
+    """The option chosen, or the only one; a choice it does not offer is
+    refused (contracts §2.2)."""
+    options = (item.get("suggestion") or {}).get("options") or []
+    chosen = body.option or (options[0] if len(options) == 1 else None)
+    if chosen not in options:
+        raise CrmRefused(422, CHOOSE_OPTION)
+    return chosen
+
+
+def _rule(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
+    """Spec 009 FR-CRMAI-RULE-07 — a rule suggestion goes through the manual
+    path, so pipeline rules apply: R-3 the company's lead stage or next
+    touch (`records.update`), R-4 the member's conversion or close-out
+    (`campaigns`), R-1 only marks the draft used. Staleness is the recorded
+    lead stage or member status (FR-CRMAI-REV-04)."""
+    edits = _edits(item, body)
+    suggestion = item.get("suggestion") or {}
+    option = _option(item, body)
+    recorded = item.get("current_values") or {}
+    rule = suggestion.get("rule")
+    if rule == "R-1":
+        if edits:
+            raise CrmRefused(422, f"{sorted(edits)[0]} cannot be edited on this suggestion.")
+        return lambda approver: ({"used": True}, {})
+    if rule == "R-3":
+        if option == "next_touch":
+            if not edits.get("next_touch_on"):
+                raise CrmRefused(422, NEXT_TOUCH_DATE)
+            field, value = "next_touch_on", edits["next_touch_on"]
+        else:
+            field, value = "lead_stage", edits.get("to_stage", option)
+            if value == "next_touch" or value not in suggestion.get("options", []):
+                raise CrmRefused(422, CHOOSE_OPTION)
+        was = {"lead_stage": recorded.get("lead_stage")}
+
+        def move(approver: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+            row = base.live(ctx.workspace_id, "company", item["record_id"])
+            if rules.stale_fields(was, row):
+                raise CrmRefused(409, rules.CHANGED)
+            try:
+                shown = base.update(
+                    approver,
+                    "company",
+                    item["record_id"],
+                    {field: value, "expect_updated_at": row["updated_at"]},
+                )
+            except CrmRefused as refused:
+                raise _locked(refused) from None
+            return {"field": field}, {"company": shown}
+
+        return move
+    if rule == "R-4" and item.get("member_id"):
+        member_id = item["member_id"]
+        was = {"status": recorded.get("member_status")}
+        new = edits.get("new_opportunity")
+        if option == "close_out" and new is not None:
+            raise CrmRefused(422, "new_opportunity cannot be edited on this suggestion.")
+        # Checked before the item is claimed, so a malformed edit leaves it open.
+        try:
+            conversion = ConvertIn(new=new or {})
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            raise CrmRefused(422, f"new_opportunity: {first.get('msg', 'not valid')}.") from None
+
+        def follow_through(approver: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+            row = campaigns._member(approver, member_id)
+            if rules.stale_fields(was, row):
+                raise CrmRefused(409, rules.CHANGED)
+            try:
+                if option == "qualify":
+                    done = campaigns.convert(approver, member_id, conversion)
+                    return (
+                        {"member_id": member_id, "opportunity_id": done["opportunity"]["id"]},
+                        {"member": done["member"], "opportunity": done["opportunity"]},
+                    )
+                shown = campaigns.update_member(
+                    approver,
+                    member_id,
+                    CampaignMemberUpdate(
+                        status="not_interested", expect_updated_at=row["updated_at"]
+                    ),
+                )
+            except CrmRefused as refused:
+                raise _locked(refused) from None
+            return {"member_id": member_id}, {"member": shown}
+
+        return follow_through
+    raise CrmRefused(422, rules.NOT_YET)
+
+
 def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
     """Contracts §2.2 `POST /crm/review/{id}/approve` — `{item, result}`.
 
@@ -492,6 +591,8 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
         change = _deal_link(ctx, item, body)
     elif kind in rules.TASK_SOURCES:
         change = _task(ctx, item, body, target)
+    elif kind == "rule_suggestion":
+        change = _rule(ctx, item, body)
     else:
         raise CrmRefused(422, rules.NOT_YET)
 

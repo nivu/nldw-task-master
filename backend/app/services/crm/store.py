@@ -2481,3 +2481,32 @@ def mark_ai_fields_dirty(
         if field_ids is not None:
             query = query.in_("field_id", sorted(set(field_ids)))
         query.execute()
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the follow-up rules' facts (009 data-model §3.11)
+#
+# Two read-only functions of 066, ids and times only.
+# ---------------------------------------------------------------------------
+
+
+def lead_activity(workspace_id: str, company_ids: list[str] | None) -> dict[str, Any]:
+    """066 `crm_lead_activity` — company id → the latest of its last contact,
+    linked notes and tasks, lead stage changes and its deals' activity, or
+    None (R-3, Q-15); for some live companies or (None) all of them."""
+    return (
+        rpc("crm_lead_activity", {"p_workspace": workspace_id, "p_company_ids": company_ids}) or {}
+    )
+
+
+def no_reply_candidates(workspace_id: str, before: datetime) -> list[dict[str, Any]]:
+    """066 `crm_no_reply_candidates` — outbound counted messages sent before
+    `before`, each the latest counted message of its thread with no later
+    inbound on any linked person or company: `[{mailbox_id, thread_id,
+    gmail_message_id, sent_at, people, companies}]` (R-1)."""
+    return (
+        rpc(
+            "crm_no_reply_candidates", {"p_workspace": workspace_id, "p_before": before.isoformat()}
+        )
+        or []
+    )

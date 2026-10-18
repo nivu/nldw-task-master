@@ -431,3 +431,95 @@ class TestRules:
 
     def test_month_start(self):
         assert rules.month_start("2026-10").isoformat() == "2026-10-01"
+
+
+class TestFollowUpRuleSettings:
+    """Spec 009 FR-CRMAI-RULE-01, contracts §1 — `automations` must carry
+    the four rule switches and `flag_thresholds` the six rule parameters,
+    whole days from 1 to 365; unknown or missing keys are refused as
+    before."""
+
+    THRESHOLDS = {
+        "reply_owed_red_hours": 24,
+        "reply_owed_amber_hours": 12,
+        "silent_red_days": 3,
+        "silent_amber_days": 2,
+        "close_amber_days": 7,
+        "stale_red_days": 21,
+        "stale_amber_days": 14,
+        "stuck_discovery_days": 14,
+        "stuck_qualification_days": 21,
+        "stuck_proposal_days": 14,
+        "stuck_negotiation_days": 21,
+        "no_reply_days": 5,
+        "lead_cold_days": 30,
+    }
+    SWITCHES = {
+        "email_records": True,
+        "stale_notice": True,
+        "digests": True,
+        "task_reminders": True,
+        "campaign_conversion": True,
+        "no_reply_draft": False,
+        "stuck_notice": False,
+        "lead_cold": False,
+        "campaign_followthrough": False,
+    }
+
+    def _patch(self, http, key, value):
+        return http.patch(
+            f"/api/v1/crm/settings/{key}{LABS}", json={"value": value}, headers=as_(OWNER["id"])
+        )
+
+    @pytest.fixture
+    def seeded(self, crm):
+        http, fake, labs, _ = crm
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="flag_thresholds",
+            value=dict(self.THRESHOLDS),
+        )
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="automations",
+            value=dict(self.SWITCHES),
+        )
+        return http
+
+    def test_settings_rules_every_key_saves(self, seeded):
+        assert self._patch(seeded, "flag_thresholds", self.THRESHOLDS).status_code == 200
+        assert self._patch(seeded, "automations", self.SWITCHES).status_code == 200
+
+    def test_settings_rules_the_007_keys_alone_are_refused(self, seeded):
+        old = {k: v for k, v in self.THRESHOLDS.items() if k in list(self.THRESHOLDS)[:7]}
+        r = self._patch(seeded, "flag_thresholds", old)
+        assert r.status_code == 422
+        assert r.json()["detail"].startswith("Flag thresholds need")
+        switches = {k: v for k, v in self.SWITCHES.items() if k in list(self.SWITCHES)[:5]}
+        r = self._patch(seeded, "automations", switches)
+        assert r.status_code == 422
+        assert r.json()["detail"].startswith("Automations need")
+
+    @pytest.mark.parametrize("days", [0, 366, 2.5, True, "14"])
+    def test_settings_rules_days_are_whole_from_1_to_365(self, seeded, days):
+        r = self._patch(seeded, "flag_thresholds", {**self.THRESHOLDS, "lead_cold_days": days})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "lead_cold_days must be a whole number of days from 1 to 365."
+
+    def test_settings_rules_the_edges_save(self, seeded):
+        value = {**self.THRESHOLDS, "no_reply_days": 1, "stuck_proposal_days": 365}
+        assert self._patch(seeded, "flag_thresholds", value).status_code == 200
+
+    def test_settings_rules_an_old_key_keeps_its_range(self):
+        """The 007 keys keep `0 ≤ v ≤ 365×24` and the amber/red pairs."""
+        value = {**self.THRESHOLDS, "close_amber_days": 0, "reply_owed_red_hours": 365 * 24}
+        assert rules.setting_refusal("flag_thresholds", value) is None
+        refusal = rules.setting_refusal("flag_thresholds", {**value, "silent_amber_days": 4})
+        assert refusal == "silent_amber_days cannot be more than silent_red_days."
+
+    def test_settings_rules_a_switch_is_on_or_off(self, seeded):
+        r = self._patch(seeded, "automations", {**self.SWITCHES, "lead_cold": "yes"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "Each automation is on (true) or off (false)."

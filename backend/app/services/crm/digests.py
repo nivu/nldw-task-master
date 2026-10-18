@@ -35,7 +35,7 @@ from typing import Any
 from app.config import settings
 from app.domain.crm import digests as rules
 from app.services import supabase as db
-from app.services.crm import jobs, notifications, store
+from app.services.crm import flags, jobs, notifications, store
 from app.services.crm import today as today_service
 
 logger = logging.getLogger("nldw-task-master")
@@ -122,7 +122,7 @@ def weekly(workspace: dict[str, Any], day: date, now: datetime) -> dict[str, Any
         until=day,
         moves=store.stage_moves_since(workspace["id"], now - timedelta(days=7)),
         closed=store.closed_since(workspace["id"], since.isoformat()),
-        flag_counts=store.flag_counts(workspace["id"]),
+        flag_counts={**store.flag_counts(workspace["id"]), **_kind_counts(workspace["id"])},
     )
 
 
@@ -178,3 +178,24 @@ def tick(_: Any, now: datetime) -> dict[str, int]:
         counts["failed"],
     )
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — Stuck in stage in the weekly digest (FR-CRMAI-RULE-03)
+# ---------------------------------------------------------------------------
+
+
+def _kind_counts(workspace_id: str) -> dict[str, dict[str, int]]:
+    """The deals flagged Stuck in stage, by level, while R-2 and phase 3 are
+    on; nothing otherwise, so the digest is as before."""
+    if not flags.stuck_on(workspace_id):
+        return {}
+    counts = {"red": 0, "amber": 0}
+    for deal in store.flag_rows(workspace_id, "crm_opportunities", flagged_only=True):
+        level = next(
+            (f.get("level") for f in deal.get("flags") or [] if f.get("kind") == "stuck_in_stage"),
+            None,
+        )
+        if level in counts:
+            counts[level] += 1
+    return {"stuck_in_stage": counts}

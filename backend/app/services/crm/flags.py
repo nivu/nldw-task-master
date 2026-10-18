@@ -25,10 +25,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from app.domain.crm import ai_rules
 from app.domain.crm import flags as rules
+from app.domain.crm import followups as rule_defs
 from app.domain.crm import today as today_rules
 from app.services import supabase as db
-from app.services.crm import store
+from app.services.crm import notifications, store
 
 logger = logging.getLogger("nldw-task-master")
 
@@ -87,6 +89,7 @@ def _compute(
     deals must be among `deals`."""
     t = _thresholds(workspace_id)
     zones = _zones()
+    stuck = stuck_on(workspace_id)
 
     def today(owner: str | None):
         return today_rules.day_of(now, zones.get(owner or "") or today_rules.DEFAULT_ZONE)
@@ -104,6 +107,7 @@ def _compute(
             t=t,
             last_activity=activity.get(deal["id"]),
             messages=_mail(facts, "opportunity", deal["id"]),
+            stuck=stuck,
         )
         deal_flags[deal["id"]] = {**deal, **out}
         computed["crm_opportunities"].append({"id": deal["id"], **out})
@@ -256,3 +260,16 @@ def after_write(
         )
     except Exception:
         logger.exception('{"event": "crm_flags_after_write_failed"}')
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — R-2 Stuck in stage (FR-CRMAI-RULE-03, FR-CRMAI-CHG-06, Q-29)
+# ---------------------------------------------------------------------------
+
+
+def stuck_on(workspace_id: str) -> bool:
+    """The Stuck in stage flag is computed only while R-2's switch and phase
+    3 are on; with either off it is absent and every level is as before."""
+    return notifications.automation_on(
+        workspace_id, rule_defs.SWITCHES["R-2"]
+    ) and ai_rules.phase_on(store.ai_setting(workspace_id), rule_defs.PHASE)

@@ -55,6 +55,9 @@ FLAG_OBJECTS: Final = {
     "crm_opportunities": "Deals",
     "tasks": "Tasks",
 }
+#: Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05: flag kinds the weekly digest
+#: also counts, when the service gives them (Stuck in stage, while R-2 is on).
+FLAG_KINDS: Final = {"stuck_in_stage": "Deals stuck in stage"}
 
 
 def local_day_due(now: datetime, zone: str | None) -> date | None:
@@ -216,6 +219,16 @@ def weekly_content(
             }
             for t in FLAG_OBJECTS
         ],
+        "flag_kinds": [
+            {
+                "kind": kind,
+                "label": label,
+                "red": flag_counts[kind].get("red", 0),
+                "amber": flag_counts[kind].get("amber", 0),
+            }
+            for kind, label in FLAG_KINDS.items()
+            if kind in flag_counts
+        ],
     }
 
 
@@ -232,5 +245,9 @@ def weekly_body(content: dict[str, Any], link: str) -> str:
     lines += [f"  - {d['name']}" for d in content["lost"]] or ["  - None."]
     lines += ["", "Follow-up and deal-health flags:"]
     lines += [f"  - {f['object']}: {f['red']} red, {f['amber']} amber" for f in content["flags"]]
+    lines += [
+        f"  - {k['label']}: {k['red']} red, {k['amber']} amber"
+        for k in content.get("flag_kinds") or []
+    ]
     lines += ["", f"Open the CRM: {link}"]
     return "\n".join(lines)

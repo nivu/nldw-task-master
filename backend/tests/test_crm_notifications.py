@@ -10,9 +10,20 @@ notifications, in the list, the count or the table.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from crm_fake import MEMBER, OUTSIDER, OWNER, SELLER, VIEWER, FakeCrmStore, as_, two_workspaces
+from crm_fake import (
+    DEFAULTS,
+    MEMBER,
+    OUTSIDER,
+    OWNER,
+    SELLER,
+    VIEWER,
+    FakeCrmStore,
+    as_,
+    two_workspaces,
+)
 from crm_fake import client as crm_client
 from test_crm_tva_lifecycle import (
     PEOPLE as ALL,
@@ -27,7 +38,9 @@ from test_crm_tva_lifecycle import (
     _move,
 )
 
+from app.config import settings
 from app.services.crm import deals, notifications
+from app.tasks import crm as tasks
 
 LABS = "?workspace=labs"
 ACADEMY = "?workspace=academy"
@@ -422,3 +435,188 @@ class TestRemovedMember:
         assert http.get(
             "/api/v1/crm/notifications/unread-count", headers=as_(VIEWER["id"])
         ).json() == {"count": 0}
+
+
+class TestStuckInStageNotice:
+    """Spec 009 FR-CRMAI-RULE-04, -08, FR-CRMAI-CHG-08; Q-14 — the owner gets
+    one bell notice and one message per deal per stage entry; with a Stale
+    deal notice at the same level the same day, one message; a CRM-only
+    owner, the bell only. The clock is 2026-10-14 06:30 UTC, noon in
+    Chennai."""
+
+    NOW = datetime(2026, 10, 14, 6, 30, tzinfo=UTC)
+
+    @pytest.fixture
+    def stuck(self, monkeypatch):
+        fake = FakeCrmStore().install(monkeypatch)
+        labs, _ = two_workspaces(fake)
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="automations",
+            value={"stale_notice": True, "stuck_notice": True},
+        )
+        fake.set_ai(labs, budget_usd=0, phases={"3": True})
+        crm_client(monkeypatch, fake=fake)
+        sent: list = []
+        monkeypatch.setattr(notifications, "deliver", lambda m: sent.append(m) or ["slack"])
+        monkeypatch.setattr(settings, "SMTP_HOST", "")
+        return fake, labs, sent
+
+    def _deal(self, fake, labs, *, days, owner=MEMBER, activity_days=None):
+        company = fake.add(
+            "crm_companies",
+            **{**DEFAULTS["crm_companies"], "workspace_id": labs["id"], "name": "Acme"},
+        )
+        entered = (self.NOW - timedelta(days=days)).isoformat()
+        deal = fake.add(
+            "crm_opportunities",
+            **{
+                **DEFAULTS["crm_opportunities"],
+                "workspace_id": labs["id"],
+                "name": "Acme pilot",
+                "company_id": company["id"],
+                "owner_id": owner["id"],
+                "stage": "proposal",
+                "probability": 50,
+                "next_step": "Call",
+                "next_step_on": "2026-11-30",
+                "created_at": entered,
+                "stage_entered_at": entered,
+            },
+        )
+        if activity_days is not None:
+            note = fake.add(
+                "crm_notes",
+                **{
+                    **DEFAULTS["crm_notes"],
+                    "workspace_id": labs["id"],
+                    "body": "Spoke",
+                    "created_at": (self.NOW - timedelta(days=activity_days)).isoformat(),
+                },
+            )
+            fake.add(
+                "crm_note_links",
+                workspace_id=labs["id"],
+                note_id=note["id"],
+                record_type="opportunity",
+                record_id=deal["id"],
+            )
+        return deal
+
+    def _run(self, now=None):
+        now = now or self.NOW
+        tasks._flags(now)
+        return tasks._automations(now)["runs"]["labs"]
+
+    def _messages(self, sent, word):
+        return [m for m in sent if word in m.subject]
+
+    def test_notice_once_per_stage_entry(self, stuck):
+        fake, labs, sent = stuck
+        deal = self._deal(fake, labs, days=15, activity_days=1)
+        self._run()
+        self._run(self.NOW + timedelta(hours=1))
+        [notice] = _bell(fake, "stuck_in_stage")
+        assert (notice["user_id"], notice["record_id"]) == (MEMBER["id"], deal["id"])
+        assert len(self._messages(sent, "stuck")) == 1
+        # Re-entering the stage is a new stage entry: a new notice.
+        fake.rows["crm_opportunities"][deal["id"]]["stage_entered_at"] = (
+            self.NOW - timedelta(days=14, hours=1)
+        ).isoformat()
+        self._run(self.NOW + timedelta(hours=2))
+        assert len(_bell(fake, "stuck_in_stage")) == 2
+
+    def test_notice_one_message_with_a_stale_notice_the_same_day(self, stuck):
+        fake, labs, sent = stuck
+        # Both turned amber an hour ago (Stale deal reads the stage entry).
+        self._deal(fake, labs, days=14 + 1 / 24)
+        self._run()
+        assert len(_bell(fake, "stale_deal")) == 1 and len(_bell(fake, "stuck_in_stage")) == 1
+        assert len(self._messages(sent, "stale")) == 1
+        assert self._messages(sent, "stuck") == []
+
+    def test_notice_a_message_when_the_stale_notice_was_another_day(self, stuck):
+        fake, labs, sent = stuck
+        row = next(
+            s for s in fake.rows["crm_workspace_settings"].values() if s["key"] == "automations"
+        )
+        row["value"] = {"stale_notice": True, "stuck_notice": False}
+        self._deal(fake, labs, days=16)
+        # Stale deal turned amber, and told its owner, two days ago.
+        self._run(self.NOW - timedelta(days=2))
+        assert len(self._messages(sent, "stale")) == 1
+        row["value"] = {"stale_notice": True, "stuck_notice": True}
+        self._run()
+        assert len(self._messages(sent, "stuck")) == 1
+        assert len(self._messages(sent, "stale")) == 1
+
+    def test_notice_a_crm_only_owner_gets_the_bell_only(self, stuck):
+        fake, labs, sent = stuck
+        self._deal(fake, labs, days=15, owner=SELLER, activity_days=1)
+        run = self._run()
+        [notice] = _bell(fake, "stuck_in_stage")
+        assert notice["user_id"] == SELLER["id"]
+        assert sent == [] and run["counts"]["stuck_undeliverable"] == 1
+
+    def test_notice_none_with_r2_off(self, stuck):
+        fake, labs, sent = stuck
+        row = next(
+            s for s in fake.rows["crm_workspace_settings"].values() if s["key"] == "automations"
+        )
+        row["value"] = {"stale_notice": True, "stuck_notice": False}
+        self._deal(fake, labs, days=15, activity_days=1)
+        self._run()
+        assert _bell(fake, "stuck_in_stage") == [] and sent == []
+
+
+class TestStaleNoticeAfterStuckNotice:
+    """Spec 009 FR-CRMAI-RULE-04; Q-14, the reverse order — the Stuck in
+    stage notice, with its message, went earlier today; when the deal's Stale
+    deal flag reaches the same level later the same day, the owner gets the
+    stale notice in the bell only: one message a day. On a different day,
+    both messages go."""
+
+    NOW = TestStuckInStageNotice.NOW
+
+    stuck = TestStuckInStageNotice.stuck
+    _deal = TestStuckInStageNotice._deal
+    _run = TestStuckInStageNotice._run
+    _messages = TestStuckInStageNotice._messages
+
+    def test_stale_notice_bell_only_after_a_stuck_message_the_same_day(self, stuck):
+        fake, labs, sent = stuck
+        # In the stage 14 days and 3 hours; last activity 14 days and 1 hour ago.
+        self._deal(fake, labs, days=14 + 3 / 24, activity_days=14 + 1 / 24)
+        # Two hours ago (10:00 in Chennai): stuck amber, not yet stale.
+        self._run(self.NOW - timedelta(hours=2))
+        assert len(_bell(fake, "stuck_in_stage")) == 1 and _bell(fake, "stale_deal") == []
+        assert len(self._messages(sent, "stuck")) == 1
+        # Now (noon the same day): stale amber, the bell only.
+        self._run()
+        [notice] = _bell(fake, "stale_deal")
+        assert notice["user_id"] == MEMBER["id"]
+        assert self._messages(sent, "stale") == []
+        assert len(self._messages(sent, "stuck")) == 1
+
+    def test_stale_notice_a_message_when_the_stuck_message_was_another_day(self, stuck):
+        fake, labs, sent = stuck
+        # In the stage 16 days; last activity 14 days and 1 hour ago.
+        self._deal(fake, labs, days=16, activity_days=14 + 1 / 24)
+        # Two days ago: stuck amber, its message; not yet stale.
+        self._run(self.NOW - timedelta(days=2))
+        assert len(self._messages(sent, "stuck")) == 1 and _bell(fake, "stale_deal") == []
+        # Today: stale amber, with its message.
+        self._run()
+        assert len(_bell(fake, "stale_deal")) == 1
+        assert len(self._messages(sent, "stale")) == 1
+        assert len(self._messages(sent, "stuck")) == 1
+
+    def test_stale_notice_one_message_when_both_turn_amber_between_runs(self, stuck):
+        fake, labs, sent = stuck
+        # Stuck amber three hours ago, stale amber an hour ago, one run now.
+        self._deal(fake, labs, days=14 + 3 / 24, activity_days=14 + 1 / 24)
+        self._run()
+        assert len(_bell(fake, "stale_deal")) == 1 and len(_bell(fake, "stuck_in_stage")) == 1
+        assert len(self._messages(sent, "stuck")) == 1
+        assert self._messages(sent, "stale") == []

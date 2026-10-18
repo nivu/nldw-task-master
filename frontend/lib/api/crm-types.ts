@@ -296,7 +296,9 @@ export interface CrmFlag {
     | "stale_deal"
     | "loose_end"
     | "task_overdue"
-    | "deal";
+    | "deal"
+    /** 009 FR-CRMAI-RULE-03: only while R-2 and phase 3 are on. */
+    | "stuck_in_stage";
   /** What the dot says on hover: "Reply owed", "Stale deal"… */
   label: string;
   level: "amber" | "red";
@@ -1274,6 +1276,13 @@ export interface FlagThresholds {
   close_amber_days: number;
   stale_red_days: number;
   stale_amber_days: number;
+  /** 009 FR-CRMAI-RULE-01: the rule parameters, whole days 1–365. */
+  stuck_discovery_days: number;
+  stuck_qualification_days: number;
+  stuck_proposal_days: number;
+  stuck_negotiation_days: number;
+  no_reply_days: number;
+  lead_cold_days: number;
 }
 
 /** `automations` — the switches of automations 2, 5, 6, 7 and 8 (FR-CRM-AUTO-02). */
@@ -1283,6 +1292,11 @@ export interface AutomationSwitches {
   digests: boolean;
   task_reminders: boolean;
   campaign_conversion: boolean;
+  /** 009 FR-CRMAI-RULE-01: R-1 to R-4, seeded off. */
+  no_reply_draft: boolean;
+  stuck_notice: boolean;
+  lead_cold: boolean;
+  campaign_followthrough: boolean;
 }
 
 // ---------------------------------------------------------------------------

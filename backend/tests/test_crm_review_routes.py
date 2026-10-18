@@ -712,3 +712,219 @@ class TestThroughClaude:
             tools.crm_review_decide(Ctx(ASHA["id"]), two["id"], "dismiss", workspace="labs")
         )
         assert two["status"] == "dismissed"
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 S3b — rule suggestions (FR-CRMAI-RULE-07, contracts §2.2)
+# ---------------------------------------------------------------------------
+
+
+class TestRuleSuggestions:
+    """Approving a follow-up rule's item goes through the manual path, so
+    pipeline rules apply (a deal still needs its next step): R-3 the lead
+    stage or the next touch, R-4 the conversion or the close-out, R-1 only
+    marks the draft used. Each change's audit row carries the item."""
+
+    def _rule(self, queue, rule, record_type, record, options, current, **extra) -> dict:
+        key = f"rule:{rule}:{extra.get('member_id') or record['id']}"
+        [made] = service.upsert(
+            queue.labs["id"],
+            [
+                {
+                    "type": "rule_suggestion",
+                    "owner_id": ASHA["id"],
+                    "record_type": record_type,
+                    "record_id": record["id"],
+                    "member_id": extra.get("member_id"),
+                    "suggestion": {"rule": rule, "options": options, **extra.get("more", {})},
+                    "current_values": current,
+                    "source_kind": "rule",
+                    "source_key": key,
+                    "source_version": "v1",
+                    "source_link": {"record_type": record_type, "record_id": record["id"]},
+                    "dedupe_key": rules.dedupe_key(
+                        "rule",
+                        key,
+                        "rule_suggestion",
+                        record_type,
+                        record["id"],
+                        member_id=extra.get("member_id"),
+                    ),
+                    "model": None,
+                    "generated_at": None,
+                    "deal_choices": [],
+                }
+            ],
+        )
+        return queue.item(made["id"])
+
+    def _cold(self, queue, stage="contacted"):
+        quiet = queue.post("companies", {"name": "Quiet Ltd", "owner_id": ASHA["id"]})
+        queue.patch("companies", quiet["id"], {"lead_stage": stage})
+        options = (
+            ["nurturing", "disqualified"]
+            if stage == "contacted"
+            else [
+                "disqualified",
+                "next_touch",
+            ]
+        )
+        return quiet, self._rule(queue, "R-3", "company", quiet, options, {"lead_stage": stage})
+
+    def _member(self, queue):
+        campaign = queue.fake.add(
+            "crm_campaigns",
+            workspace_id=queue.labs["id"],
+            name="Roundtable",
+            type_id=None,
+            status_id=None,
+            starts_on=None,
+            ends_on=None,
+            owner_id=ADMIN["id"],
+            budget=None,
+            budget_currency=None,
+            budget_in_inr=None,
+            budget_fx_rate=None,
+            twenty_id=None,
+            position=0,
+            deleted_at=None,
+            deleted_by=None,
+            deleted_group=None,
+        )
+        member = queue.fake.add(
+            "crm_campaign_members",
+            workspace_id=queue.labs["id"],
+            campaign_id=campaign["id"],
+            company_id=queue.acme["id"],
+            person_id=None,
+            status="engaged",
+            status_changed_at="2026-10-01T00:00:00+00:00",
+            last_touch_on=None,
+            notes=None,
+            converted_opportunity_id=None,
+            twenty_id=None,
+            position=0,
+            created_at="2026-09-01T00:00:00+00:00",
+            deleted_at=None,
+            deleted_by=None,
+            deleted_group=None,
+        )
+        item = self._rule(
+            queue,
+            "R-4",
+            "company",
+            queue.acme,
+            ["qualify", "close_out"],
+            {"member_status": "engaged"},
+            member_id=member["id"],
+        )
+        return member, item
+
+    def test_review_r3_moves_the_lead_stage_as_a_manual_edit(self, queue):
+        quiet, item = self._cold(queue)
+        r = queue.approve(item, {"option": "nurturing"})
+        assert r.status_code == 200, r.text
+        assert queue.fake.rows["crm_companies"][quiet["id"]]["lead_stage"] == "nurturing"
+        assert r.json()["item"]["status"] == "approved"
+        [row] = [
+            a
+            for a in queue.fake.audit
+            if a["target_id"] == quiet["id"] and a.get("suggestion_id") == item["id"]
+        ]
+        assert (row["action"], row["actor_id"]) == ("company.updated", ASHA["id"])
+        assert row["after"] == {"lead_stage": "nurturing"}
+
+    def test_review_r3_needs_a_choice_of_option(self, queue):
+        _, item = self._cold(queue)
+        r = queue.approve(item)
+        assert (r.status_code, r.json()["detail"]) == (422, service.CHOOSE_OPTION)
+        r = queue.approve(item, {"option": "customer"})
+        assert (r.status_code, r.json()["detail"]) == (422, service.CHOOSE_OPTION)
+
+    def test_review_r3_a_next_touch_needs_its_date(self, queue):
+        quiet, item = self._cold(queue, "nurturing")
+        r = queue.approve(item, {"option": "next_touch"})
+        assert (r.status_code, r.json()["detail"]) == (422, service.NEXT_TOUCH_DATE)
+        r = queue.approve(item, {"option": "next_touch", "edits": {"next_touch_on": "2026-11-02"}})
+        assert r.status_code == 200, r.text
+        stored = queue.fake.rows["crm_companies"][quiet["id"]]
+        assert (stored["next_touch_on"], stored["lead_stage"]) == ("2026-11-02", "nurturing")
+
+    def test_review_r3_a_changed_lead_stage_is_refused(self, queue):
+        quiet, item = self._cold(queue)
+        queue.patch("companies", quiet["id"], {"lead_stage": "nurturing"})
+        r = queue.approve(item, {"option": "disqualified"})
+        assert (r.status_code, r.json()["detail"]) == (409, rules.CHANGED)
+        assert queue.item(item["id"])["status"] == "open"
+
+    def test_review_r4_qualify_still_needs_a_next_step(self, queue):
+        member, item = self._member(queue)
+        r = queue.approve(
+            item, {"option": "qualify", "edits": {"new_opportunity": {"name": "Acme pilot 2"}}}
+        )
+        assert r.status_code == 422, r.text
+        assert "next step" in r.json()["detail"]
+        assert queue.item(item["id"])["status"] == "open"
+        assert queue.item(item["id"])["refusal"] == r.json()["detail"]
+        assert queue.fake.rows["crm_campaign_members"][member["id"]]["status"] == "engaged"
+
+    def test_review_r4_qualify_converts_the_member(self, queue):
+        member, item = self._member(queue)
+        new = {
+            "name": "Acme pilot 2",
+            "owner_id": ASHA["id"],
+            "next_step": "Send the proposal",
+            "next_step_on": "2026-10-28",
+        }
+        r = queue.approve(item, {"option": "qualify", "edits": {"new_opportunity": new}})
+        assert r.status_code == 200, r.text
+        stored = queue.fake.rows["crm_campaign_members"][member["id"]]
+        deal_id = r.json()["result"]["opportunity"]["id"]
+        assert (stored["status"], stored["converted_opportunity_id"]) == ("converted", deal_id)
+        assert queue.item(item["id"])["result"] == {
+            "member_id": member["id"],
+            "opportunity_id": deal_id,
+        }
+
+    def test_review_r4_close_out_is_not_interested(self, queue):
+        member, item = self._member(queue)
+        r = queue.approve(item, {"option": "close_out"})
+        assert r.status_code == 200, r.text
+        assert queue.fake.rows["crm_campaign_members"][member["id"]]["status"] == "not_interested"
+        assert any(
+            a["target_id"] == member["id"] and a.get("suggestion_id") == item["id"]
+            for a in queue.fake.audit
+        )
+
+    def test_review_r4_a_changed_status_is_refused(self, queue):
+        member, item = self._member(queue)
+        queue.fake.rows["crm_campaign_members"][member["id"]]["status"] = "meeting_booked"
+        r = queue.approve(item, {"option": "close_out"})
+        assert (r.status_code, r.json()["detail"]) == (409, rules.CHANGED)
+
+    def test_review_r1_marks_the_draft_used_and_changes_nothing(self, queue):
+        item = self._rule(
+            queue,
+            "R-1",
+            "person",
+            queue.priya,
+            ["mark_used"],
+            {},
+            more={"draft": "Hi Priya, a gentle nudge on the pilot plan."},
+        )
+        audit = len(queue.fake.audit)
+        r = queue.approve(item)
+        assert r.status_code == 200, r.text
+        assert queue.item(item["id"])["result"] == {"used": True}
+        assert [a["action"] for a in queue.fake.audit[audit:]] == ["review.approved"]
+        r = queue.approve(item)
+        assert r.status_code == 409
+
+    @pytest.mark.parametrize("new", ["x", ["Acme pilot 2"]])
+    def test_review_r4_a_malformed_new_opportunity_leaves_the_item_open(self, queue, new):
+        member, item = self._member(queue)
+        r = queue.approve(item, {"option": "qualify", "edits": {"new_opportunity": new}})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"].startswith("new_opportunity: ")
+        assert queue.item(item["id"])["status"] == "open"
+        assert queue.fake.rows["crm_campaign_members"][member["id"]]["status"] == "engaged"

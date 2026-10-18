@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
  * a screen reader) gives each flag's label and detail and when the flags were
  * last computed. The copy says "follow-up" for companies, people and tasks
  * and "deal health" for deals, never bare "health", which is TVA's project
- * health.
+ * health. Labels come from the server, so 009's "Stuck in stage" (FR-CRMAI-
+ * RULE-03, only while R-2 and phase 3 are on) shows like any other flag.
  */
 
 const LEVEL_TEXT: Record<FlagLevel, string> = { none: "No flag", amber: "Amber", red: "Red" };

@@ -45,7 +45,23 @@ DEFAULT_THRESHOLDS: Final = {
     "close_amber_days": 7,
     "stale_red_days": 21,
     "stale_amber_days": 14,
+    # Spec 009 FR-CRMAI-RULE-01: the follow-up rules' parameters, whole days.
+    "stuck_discovery_days": 14,
+    "stuck_qualification_days": 21,
+    "stuck_proposal_days": 14,
+    "stuck_negotiation_days": 21,
+    "no_reply_days": 5,
+    "lead_cold_days": 30,
 }
+#: Spec 009 FR-CRMAI-RULE-01: the rule parameters, each 1 to 365 days.
+RULE_DAYS: Final = (
+    "stuck_discovery_days",
+    "stuck_qualification_days",
+    "stuck_proposal_days",
+    "stuck_negotiation_days",
+    "no_reply_days",
+    "lead_cold_days",
+)
 
 #: The flags, by kind, with the label the dot shows on hover (FR-CRM-FLAG-05:
 #: "follow-up" or "deal health", never bare "health").
@@ -58,6 +74,8 @@ KINDS: Final = {
     "loose_end": "Loose end",
     "task_overdue": "Task overdue",
     "deal": "Deal health",
+    # Spec 009 FR-CRMAI-RULE-03: R-2, while its switch and phase 3 are on.
+    "stuck_in_stage": "Stuck in stage",
 }
 
 OPEN_STAGES: Final = ("discovery", "qualification", "proposal", "negotiation")
@@ -84,6 +102,14 @@ def thresholds_refusal(value: Any) -> str | None:
     missing = sorted(set(DEFAULT_THRESHOLDS) - set(value))
     if missing:
         return f"Flag thresholds need {', '.join(missing)}."
+    # Spec 009 FR-CRMAI-RULE-01: the rule parameters are whole days, 1 to 365.
+    days = [
+        k
+        for k in RULE_DAYS
+        if isinstance(value[k], bool) or not isinstance(value[k], int) or not 1 <= value[k] <= 365
+    ]
+    if days:
+        return f"{', '.join(days)} must be a whole number of days from 1 to 365."
     bad = sorted(
         k
         for k, v in value.items()
@@ -286,8 +312,10 @@ def for_deal(
     t: dict[str, int],
     last_activity: Any = None,
     messages: Iterable[dict[str, Any]] = (),
+    stuck: bool = False,
 ) -> dict[str, Any]:
-    """`{flag_level, flags}` of a deal. A closed or deleted deal has none."""
+    """`{flag_level, flags}` of a deal. A closed or deleted deal has none.
+    With `stuck` (spec 009 R-2 and phase 3 on), Stuck in stage counts too."""
     if deal.get("stage") not in OPEN_STAGES or deal.get("deleted_at"):
         return _done([])
     mails = list(messages)
@@ -300,6 +328,7 @@ def for_deal(
             next_step(deal, today),
             close_date(deal, today, t),
             stale_deal(deal, activity, now, t),
+            stuck_in_stage(deal, now, t) if stuck else None,
         ]
     )
 
@@ -353,3 +382,29 @@ def changed(row: dict[str, Any], computed: dict[str, Any]) -> bool:
         row.get("flag_level", "none") != computed["flag_level"]
         or (row.get("flags") or []) != computed["flags"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — R-2 Stuck in stage (FR-CRMAI-RULE-03, Q-14, Q-29)
+# ---------------------------------------------------------------------------
+
+
+def stuck_in_stage(deal: dict[str, Any], now: datetime, t: dict[str, int]) -> dict[str, Any] | None:
+    """Open deal: in its current stage for `stuck_<stage>_days` (amber) or
+    twice that (red), measured from when it entered the stage, whatever
+    happened since. Stale deal, which reads activity, is unchanged."""
+    stage = deal.get("stage")
+    if stage not in OPEN_STAGES:
+        return None
+    since = _at(deal.get("stage_entered_at")) or _at(deal.get("created_at"))
+    if since is None:
+        return None
+    limit = timedelta(days=t[f"stuck_{stage}_days"])
+    held = now - since
+    if held >= 2 * limit:
+        level = "red"
+    elif held >= limit:
+        level = "amber"
+    else:
+        return None
+    return _flag("stuck_in_stage", level, since, f"In this stage for {held.days} days.")

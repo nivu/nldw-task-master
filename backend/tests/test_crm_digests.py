@@ -308,3 +308,51 @@ class TestToReview:
         tasks._digests(KOLKATA_9)
         [mail] = _to(sent, VIEWER)
         assert "To review" not in mail.body
+
+
+class TestStuckInStageInTheWeekly:
+    """Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05 — the weekly digest counts
+    the deals stuck in stage while R-2 and phase 3 are on, and is as before
+    otherwise."""
+
+    def _stuck(self, fake, labs, level):
+        deal = _deal(fake, labs, f"Stuck {level}", OWNER, next_step_on="2026-11-01")
+        fake.rows["crm_opportunities"][deal["id"]].update(
+            flag_level=level, flags=[{"kind": "stuck_in_stage", "level": level}]
+        )
+
+    def _week(self, sent):
+        return next(m for m in sent if m.subject == "Nunnari Labs CRM week — 2026-10-12")
+
+    def test_digests_stuck_counted_while_r2_is_on(self, crm):
+        _, fake, labs, _, sent = crm
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="automations",
+            value={"stuck_notice": True},
+        )
+        fake.set_ai(labs, budget_usd=0, phases={"3": True})
+        self._stuck(fake, labs, "red")
+        self._stuck(fake, labs, "amber")
+        tasks._digests(MONDAY_9)
+        assert "  - Deals stuck in stage: 1 red, 1 amber" in self._week(sent).body
+
+    def test_digests_no_stuck_line_while_r2_is_off(self, crm):
+        _, fake, labs, _, sent = crm
+        self._stuck(fake, labs, "red")
+        tasks._digests(MONDAY_9)
+        assert "stuck in stage" not in self._week(sent).body
+
+    def test_digests_the_content_names_the_kind(self):
+        content = rules.weekly_content(
+            {"name": "Nunnari Labs", "key": "labs"},
+            since=date(2026, 10, 5),
+            until=date(2026, 10, 12),
+            moves=[],
+            closed=[],
+            flag_counts={"stuck_in_stage": {"red": 2, "amber": 0}},
+        )
+        assert content["flag_kinds"] == [
+            {"kind": "stuck_in_stage", "label": "Deals stuck in stage", "red": 2, "amber": 0}
+        ]

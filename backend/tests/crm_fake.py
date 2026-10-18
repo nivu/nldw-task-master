@@ -3458,6 +3458,9 @@ class FakeCrmStore:
             }
             if op["table"] == "crm_opportunities":
                 row.setdefault("stage_entered_at", row["created_at"])
+            # 066: DEFAULT now().
+            if op["table"] == "crm_campaign_members":
+                row.setdefault("status_changed_at", row["created_at"])
             self._check_refs(op["table"], row)
             self._check_unique(op["table"], row)
             table[row["id"]] = row
@@ -3523,6 +3526,11 @@ class FakeCrmStore:
         self._check_unique(op["table"], candidate)
         changed = {k for k, v in values.items() if row.get(k) != v} - {"updated_at", "updated_by"}
         before = {k: row.get(k) for k in changed}
+        # 066's crm_campaign_members_status_changed: only a status change
+        # moves it, on whichever path made it.
+        if op["table"] == "crm_campaign_members" and "status" in changed:
+            values = {**values, "status_changed_at": _now()}
+            changed.add("status_changed_at")
         row.update(values, updated_at=_now())
         if "updated_by" not in values:
             row["updated_by"] = actor["user_id"]
@@ -4850,6 +4858,133 @@ class FakeCrmStore:
                 and not v.get("dirty_at")
             ):
                 v["dirty_at"] = at.isoformat()
+
+    # -- spec 009: the follow-up rules' facts (066) ---------------------------
+
+    def lead_activity(self, workspace_id: str, company_ids: list[str] | None) -> dict[str, Any]:
+        """066 crm_lead_activity: company id → the latest of its last
+        contact, linked notes and tasks, lead stage changes and its deals'
+        activity (update, stage entry, history, linked notes and tasks)."""
+
+        def note_times(record_type: str, record_id: str) -> list[Any]:
+            out = []
+            for link in self.rows["crm_note_links"].values():
+                note = self.rows["crm_notes"].get(link["note_id"])
+                if (
+                    link["record_type"] == record_type
+                    and link["record_id"] == record_id
+                    and note
+                    and not note.get("deleted_at")
+                ):
+                    on = note.get("occurred_on")
+                    out.append(
+                        f"{on}T00:00:00+00:00"
+                        if note.get("kind", "note") != "note" and on
+                        else note.get("created_at")
+                    )
+            return out
+
+        def task_times(record_type: str, record_id: str) -> list[Any]:
+            out = []
+            for link in self.rows["task_links"].values():
+                task = self.rows["tasks"].get(link["task_id"])
+                if (
+                    link["record_type"] == record_type
+                    and link["record_id"] == record_id
+                    and task
+                    and not task.get("deleted_at")
+                ):
+                    out += [task.get("created_at"), task.get("completed_at")]
+            return out
+
+        found: dict[str, Any] = {}
+        for c in self._of("crm_companies", workspace_id):
+            if c.get("deleted_at") or (company_ids is not None and c["id"] not in company_ids):
+                continue
+            times = [c.get("last_contact_at")]
+            times += note_times("company", c["id"]) + task_times("company", c["id"])
+            times += [
+                a["at"]
+                for a in self.audit
+                if a["target_table"] == "crm_companies"
+                and a["target_id"] == c["id"]
+                and a["action"] == "company.updated"
+                and "lead_stage" in (a.get("after") or {})
+            ]
+            for d in self._of("crm_opportunities", workspace_id):
+                if d.get("company_id") != c["id"] or d.get("deleted_at"):
+                    continue
+                times += [d.get("updated_at"), d.get("stage_entered_at")]
+                times += [
+                    h["at"]
+                    for h in self.rows["crm_stage_history"].values()
+                    if h["opportunity_id"] == d["id"]
+                ]
+                times += note_times("opportunity", d["id"]) + task_times("opportunity", d["id"])
+            known = [_at(t) for t in times if t]
+            found[c["id"]] = max(known).isoformat() if known else None
+        return found
+
+    def no_reply_candidates(self, workspace_id: str, before: datetime) -> list[dict[str, Any]]:
+        """066 crm_no_reply_candidates: the latest counted message of each
+        thread, outbound, sent before `before`, with no later inbound on any
+        linked live person or company. Ids only."""
+        counted = [
+            m
+            for m in self._of("crm_email_messages", workspace_id)
+            if not m["is_internal"] and not m["is_auto"]
+        ]
+        threads: dict[tuple[str, str], dict[str, Any]] = {}
+        for m in counted:
+            key = (m["mailbox_id"], m["thread_id"])
+            best = threads.get(key)
+            if best is None or (_at(m["sent_at"]), m["gmail_message_id"]) > (
+                _at(best["sent_at"]),
+                best["gmail_message_id"],
+            ):
+                threads[key] = m
+        tables = {"company": "crm_companies", "person": "crm_people"}
+
+        def linked(message_id: str) -> list[tuple[str, str]]:
+            out = []
+            for link in self._of("crm_email_links", workspace_id):
+                row = (
+                    self.rows[tables[link["record_type"]]].get(link["record_id"])
+                    if (link["record_type"] in tables)
+                    else None
+                )
+                if link["message_id"] == message_id and row and not row.get("deleted_at"):
+                    out.append((link["record_type"], link["record_id"]))
+            return out
+
+        found = []
+        for m in threads.values():
+            if m["direction"] != "outbound" or _at(m["sent_at"]) >= before:
+                continue
+            records = linked(m["id"])
+            if not records:
+                continue
+            answered = any(
+                (link["record_type"], link["record_id"]) in records
+                and (later := self.rows["crm_email_messages"].get(link["message_id"]))
+                and later in counted
+                and later["direction"] == "inbound"
+                and _at(later["sent_at"]) > _at(m["sent_at"])
+                for link in self._of("crm_email_links", workspace_id)
+            )
+            if answered:
+                continue
+            found.append(
+                {
+                    "mailbox_id": m["mailbox_id"],
+                    "thread_id": m["thread_id"],
+                    "gmail_message_id": m["gmail_message_id"],
+                    "sent_at": m["sent_at"],
+                    "people": sorted(i for t, i in records if t == "person"),
+                    "companies": sorted(i for t, i in records if t == "company"),
+                }
+            )
+        return sorted(found, key=lambda c: (_at(c["sent_at"]), c["mailbox_id"], c["thread_id"]))
 
 
 #: 064's failure reasons (FR-CRMAI-ENR-06, FR-CRMAI-LLM-03).

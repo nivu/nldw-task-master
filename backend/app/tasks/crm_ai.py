@@ -15,6 +15,7 @@ through `@crm_job` (services/crm/jobs.py).
 | `crm_ai.enrichment` | every 15 minutes | starts `enrichment` (a run or a skip per workspace) |
 | `crm_ai.enrichment_batch` | enqueued, a minute apart | ends its workspace's `enrichment` run |
 | `crm_ai.ai_fields` | every 15 minutes | `ai_fields` |
+| `crm_ai.followup_draft` | enqueued by the `automations` job | `followup_drafts` (one run of its workspace) |
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import ai_fields, enrichment, jobs, meetings, review, summaries
+from app.services.crm import ai_fields, enrichment, followups, jobs, meetings, review, summaries
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -115,3 +116,14 @@ def compute_ai_fields() -> dict:
     result = _ai_fields(datetime.now(UTC))
     logger.info('{"event": "crm_ai_fields_done", "failed": %d}', len(result["failed"]))
     return result
+
+
+@celery_app.task(name="crm_ai.followup_draft", ignore_result=True)
+def followup_draft(args: dict) -> dict:
+    """FR-CRMAI-RULE-02: the R-1 drafts of one workspace, enqueued at most
+    once per workspace per `automations` tick with R-1 work. `args` holds
+    the workspace id and each message's mailbox, thread and Gmail ids, never
+    text. One `followup_drafts` run (D-4): drafts done, failed and skipped
+    are counted in the job log. Idempotent: a message that has an item is
+    not drafted again."""
+    return followups.drafts(args, datetime.now(UTC))

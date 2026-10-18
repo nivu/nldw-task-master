@@ -53,7 +53,8 @@ JOBS: Final = {
     # workspace; the pages it enqueues finish that run (FR-CRM-SYNC-04).
     "email_sync": Job("Email sync", timedelta(minutes=15)),
     "flags": Job("Follow-up flags", timedelta(minutes=30)),
-    "automations": Job("Stale-deal notices", timedelta(minutes=30)),
+    # Spec 009 FR-CRMAI-JOB-05: the stale-deal notice and the follow-up rules.
+    "automations": Job("Automations", timedelta(minutes=30)),
     "digests": Job("Digests", timedelta(minutes=15)),
     "reminders": Job("Task reminders", timedelta(minutes=15)),
     "trash_purge": Job("Trash purge", timedelta(days=1)),
@@ -63,6 +64,9 @@ JOBS: Final = {
     "enrichment": Job("Company enrichment", timedelta(minutes=15)),
     "ai_fields": Job("AI fields", timedelta(minutes=15)),
     "review_expiry": Job("Review expiry", timedelta(days=1)),
+    # Spec 009 FR-CRMAI-JOB-01, D-4: the R-1 drafts, enqueued by an
+    # `automations` tick with R-1 work.
+    "followup_drafts": Job("Follow-up drafts", timedelta(minutes=30)),
 }
 #: FR-CRM-JOB-02.
 STREAK: Final = 3

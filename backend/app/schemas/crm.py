@@ -1098,3 +1098,18 @@ class AiFieldPatch(BaseModel):
     prompt: str | None = Field(default=None, min_length=1, max_length=2000)
     options: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=100)
     enabled: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — follow-up rules (FR-CRMAI-RULE-02)
+# ---------------------------------------------------------------------------
+
+
+class FollowupDraftOutput(BaseModel):
+    """FR-CRMAI-RULE-02 — what the model must answer for one R-1 draft: the
+    body of a follow-up email, plain text, at most 2,000 characters
+    (data-model §3.2.1). The owner edits and sends it from their own mail."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft: str = Field(min_length=1, max_length=2000)

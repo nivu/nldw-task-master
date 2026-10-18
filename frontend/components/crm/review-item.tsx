@@ -144,13 +144,34 @@ function initialEdits(item: CrmReviewItem): Record<string, string> {
       };
     case "enrichment_conflict":
       return { value: text(s.value) };
+    case "rule_suggestion":
+      return {
+        next_touch_on: "",
+        name: item.target.name,
+        owner_id: item.owner?.id ?? "",
+        next_step: "",
+        next_step_on: "",
+      };
     default:
       return {};
   }
 }
 
 /** The edits as the route takes them: empty optional fields left out. */
-function editsPayload(item: CrmReviewItem, edits: Record<string, string>): Record<string, unknown> {
+function editsPayload(
+  item: CrmReviewItem,
+  edits: Record<string, string>,
+  option: string
+): Record<string, unknown> {
+  if (item.type === "rule_suggestion") {
+    if (option === "next_touch") return { next_touch_on: edits.next_touch_on };
+    if (option !== "qualify") return {};
+    const deal: Record<string, string> = {};
+    for (const key of ["name", "owner_id", "next_step", "next_step_on"]) {
+      if (edits[key]) deal[key] = edits[key];
+    }
+    return { new_opportunity: deal };
+  }
   if (item.type === "task_from_commitment" || item.type === "task_from_meeting") {
     const out: Record<string, unknown> = { title: edits.title };
     if (edits.due_on) out.due_on = edits.due_on;
@@ -161,8 +182,11 @@ function editsPayload(item: CrmReviewItem, edits: Record<string, string>): Recor
   return { ...edits };
 }
 
-/** Rule suggestions are edited from S3b; a deal link has nothing to edit. */
+/** A deal link has nothing to edit; a rule suggestion only by option. */
 const EDITABLE = new Set(["next_step_change", "task_from_commitment", "task_from_meeting", "enrichment_conflict"]);
+
+/** The rule options that need a date or the new deal's fields (FR-CRMAI-RULE-05, -06). */
+const RULE_EDITS = new Set(["next_touch", "qualify"]);
 
 export function ReviewItemCard({
   workspace,
@@ -201,6 +225,7 @@ export function ReviewItemCard({
   const targetHref = recordHref(workspace, item.target.record_type, item.target.record_id);
   const sourceHref = recordHref(workspace, item.source.link?.record_type, item.source.link?.record_id);
   const assignees = members.filter((m) => m.role !== "viewer");
+  const editable = EDITABLE.has(item.type) || (item.type === "rule_suggestion" && RULE_EDITS.has(option));
 
   async function approve(withEdits: boolean) {
     setBusy(true);
@@ -208,7 +233,7 @@ export function ReviewItemCard({
     const approval: ReviewApproveIn = {};
     if (item.deal_choices.length > 1) approval.deal_id = dealId;
     if (item.type === "rule_suggestion" && options.length > 1) approval.option = option;
-    if (withEdits) approval.edits = editsPayload(item, edits);
+    if (withEdits) approval.edits = editsPayload(item, edits, option);
     try {
       await approveCrmReview(workspace, item.id, approval);
       onDecided(`Approved: ${item.type_label}.`);
@@ -427,6 +452,59 @@ export function ReviewItemCard({
                 )}
               </div>
             )}
+            {item.type === "rule_suggestion" && option === "next_touch" && (
+              <div className="space-y-1.5">
+                <Label htmlFor={field("next_touch_on")}>Next touch</Label>
+                <Input
+                  id={field("next_touch_on")}
+                  type="date"
+                  className="max-w-[10rem]"
+                  value={edits.next_touch_on}
+                  onChange={set("next_touch_on")}
+                  required
+                />
+              </div>
+            )}
+            {item.type === "rule_suggestion" && option === "qualify" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={field("name")}>Deal name</Label>
+                  <Input id={field("name")} value={edits.name} onChange={set("name")} required />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={field("owner_id")}>Owner</Label>
+                  <select
+                    id={field("owner_id")}
+                    className="h-8 w-full max-w-md rounded-md border bg-background px-2 text-sm"
+                    value={edits.owner_id}
+                    onChange={set("owner_id")}
+                    required
+                  >
+                    <option value="">Choose the owner</option>
+                    {assignees.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step")}>Next step</Label>
+                    <Input id={field("next_step")} value={edits.next_step} onChange={set("next_step")} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step_on")}>By</Label>
+                    <Input
+                      id={field("next_step_on")}
+                      type="date"
+                      value={edits.next_step_on}
+                      onChange={set("next_step_on")}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button type="submit" size="sm" disabled={busy || needsDeal || needsOption}>
                 {busy ? "Saving…" : "Save and approve"}
@@ -449,7 +527,7 @@ export function ReviewItemCard({
             <Button size="sm" onClick={() => approve(false)} disabled={busy || needsDeal || needsOption}>
               Approve
             </Button>
-            {EDITABLE.has(item.type) && (
+            {editable && (
               <Button size="sm" variant="outline" onClick={() => setEditing(true)} disabled={busy}>
                 Edit and approve
               </Button>

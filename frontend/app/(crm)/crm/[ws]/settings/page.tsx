@@ -8,6 +8,7 @@ import { AiBudgetBanner } from "@/components/crm/ai-budget-banner";
 import { AiFieldsEditor } from "@/components/crm/ai-fields-editor";
 import { AiSettings } from "@/components/crm/ai-settings";
 import { AuditTable } from "@/components/crm/audit-table";
+import { FollowupRulesForm } from "@/components/crm/followup-rules-form";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
 import { InviteDialog } from "@/components/crm/invite-dialog";
 import { JobsTable } from "@/components/crm/jobs-table";
@@ -76,6 +77,7 @@ const TABS = [
   "jobs",
   "ai",
   "ai-fields",
+  "followup-rules",
   "audit",
 ];
 
@@ -85,8 +87,9 @@ const TABS = [
  * automation switches (FR-CRM-AUTO-02), the Gmail mailboxes and the sync
  * switch (FR-CRM-SYNC-01, -03), the job log (FR-CRM-JOB-01) and the
  * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02); from 009
- * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01)
- * and the AI field definitions (FR-CRMAI-FIELD-01).
+ * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01),
+ * the AI field definitions (FR-CRMAI-FIELD-01) and the follow-up rules
+ * (FR-CRMAI-RULE-01).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -129,6 +132,7 @@ export default function SettingsPage() {
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="ai-fields">AI fields</TabsTrigger>
+          <TabsTrigger value="followup-rules">Follow-up rules</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
         <TabsContent value="members" className="pt-4">
@@ -166,6 +170,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="ai-fields" className="pt-4">
           <AiFieldsTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="followup-rules" className="pt-4">
+          <FollowupRulesTab workspace={ws} />
         </TabsContent>
         <TabsContent value="audit" className="pt-4">
           <AuditTab workspace={ws} />
@@ -579,9 +586,13 @@ function ThresholdsTab({ workspace }: { workspace: string }) {
             event.preventDefault();
             setError(null);
             setSaved(false);
-            const value = Object.fromEntries(
-              THRESHOLDS.map(({ key }) => [key, Number(draft[key] ?? current[key] ?? 0)])
-            );
+            // Keys this tab does not show (009's rule parameters) are sent back as stored.
+            const value = {
+              ...current,
+              ...Object.fromEntries(
+                THRESHOLDS.map(({ key }) => [key, Number(draft[key] ?? current[key] ?? 0)])
+              ),
+            };
             try {
               await updateCrmSetting(workspace, "flag_thresholds", value);
               setDraft({});
@@ -797,6 +808,38 @@ function AiFieldsTab({ workspace }: { workspace: string }) {
       <CardContent className="space-y-3">
         <Problem message={error} />
         {data && <AiFieldsEditor workspace={workspace} fields={data} onChanged={reload} />}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 009 FR-CRMAI-RULE-01 — the four follow-up rules' switches and parameters. */
+function FollowupRulesTab({ workspace }: { workspace: string }) {
+  const { bootstrap } = useCrm();
+  const { data, error, reload } = useAsync(() => getCrmSettings(workspace), [workspace]);
+  const automations = (data?.settings.automations ?? null) as AutomationSwitches | null;
+  const thresholds = (data?.settings.flag_thresholds ?? null) as FlagThresholds | null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Follow-up rules</CardTitle>
+        <CardDescription>
+          Four rules that watch for follow-ups going missing, each with its own switch, all off to
+          start. Their suggestions wait in the Review Queue: no rule sends an email or changes a
+          record by itself.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        {automations && thresholds && (
+          <FollowupRulesForm
+            workspace={workspace}
+            automations={automations}
+            thresholds={thresholds}
+            phaseOn={bootstrap.ai.phases["3"]}
+            onChanged={reload}
+          />
+        )}
       </CardContent>
     </Card>
   );

@@ -57,6 +57,8 @@ FLAG_PANEL: Final = (
     ("stale_deal", "Stale deals"),
     ("loose_end", "Loose ends"),
 )
+#: Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05: counted while R-2 is on.
+STUCK_PANEL: Final = (("stuck_in_stage", "Stuck in stage"),)
 #: Of these two kinds only the red level is overdue; amber is "due soon".
 _OVERDUE_ONLY: Final = frozenset({"next_step", "close_date"})
 PERIOD_KINDS: Final = ("month", "quarter", "fy")
@@ -151,6 +153,9 @@ class Facts:
     stage_labels: dict[str, str] = field(default_factory=dict)
     #: The workspace's members: the activity panel's rows.
     members: list[str] = field(default_factory=list)
+    #: Spec 009 FR-CRMAI-RULE-03: R-2 and phase 3 are on, so the flags panel
+    #: counts Stuck in stage too.
+    stuck_in_stage: bool = False
 
 
 def money(value: Decimal | None) -> str | None:
@@ -485,11 +490,14 @@ def time_in_stage(deals: list[dict[str, Any]], facts: Facts, f: Filters) -> dict
     }
 
 
-def flag_counts(flagged: dict[str, list[dict[str, Any]]], f: Filters) -> list[dict[str, Any]]:
+def flag_counts(
+    flagged: dict[str, list[dict[str, Any]]], f: Filters, *, stuck: bool = False
+) -> list[dict[str, Any]]:
     """Follow-up and deal-health flags by kind, over the records the
     filters keep: how many records carry each, coloured by the worst level
     among them (green when none). Next step and close date count only when
-    overdue (red)."""
+    overdue (red). With `stuck` (spec 009 R-2 on), Stuck in stage too."""
+    panel = FLAG_PANEL + STUCK_PANEL if stuck else FLAG_PANEL
     worst: dict[str, str] = {}
     counts: dict[str, int] = {}
     for table, rows in flagged.items():
@@ -507,7 +515,7 @@ def flag_counts(flagged: dict[str, list[dict[str, Any]]], f: Filters) -> list[di
                 kind, level = flag.get("kind"), flag.get("level")
                 if kind in _OVERDUE_ONLY and level != "red":
                     continue
-                if kind in seen or kind not in dict(FLAG_PANEL):
+                if kind in seen or kind not in dict(panel):
                     continue
                 seen.add(kind)
                 counts[kind] = counts.get(kind, 0) + 1
@@ -522,7 +530,7 @@ def flag_counts(flagged: dict[str, list[dict[str, Any]]], f: Filters) -> list[di
             "value": counts.get(kind, 0),
             "colour": worst.get(kind, "green") if counts.get(kind) else "green",
         }
-        for kind, label in FLAG_PANEL
+        for kind, label in panel
     ]
 
 
@@ -678,7 +686,7 @@ def build(facts: Facts, f: Filters, *, has_entity: bool, academy: bool) -> dict[
         "won_lost_quarter": won_lost_quarter(deals, facts),
         "win_rate": win_rates(deals, facts, f, has_entity=has_entity),
         "time_in_stage": time_in_stage(deals, facts, f),
-        "flags": flag_counts(facts.flagged, f),
+        "flags": flag_counts(facts.flagged, f, stuck=facts.stuck_in_stage),
         "lead_funnel": lead_funnel(companies, facts),
         "pipeline_by_channel": pipeline_by(
             deals,
