@@ -206,6 +206,84 @@ def crm(monkeypatch):
         for m in fake.rows["crm_memberships"].values()
         if m["workspace_id"] == academy["id"] and m["user_id"] != OWNER["id"]
     )
+    # Spec 009 S1b: a Review Queue item.
+    review_item = fake.add_review_item(
+        academy,
+        type="next_step_change",
+        record_type="opportunity",
+        record_id=deal["id"],
+        suggestion={"next_step": "Zqxacad visit", "next_step_on": "2026-10-20"},
+        current_values={deal["id"]: {"next_step": "Zqxacad call", "next_step_on": "2026-10-14"}},
+        deal_choices=[deal["id"]],
+    )
+    # Spec 009 S1c: a thread summary, with phase 1 on in both workspaces.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True})
+    summary = fake.add(
+        "crm_email_summaries",
+        workspace_id=academy["id"],
+        mailbox_id=mailbox["id"],
+        thread_id="t-zqxacad",
+        summary="Zqxacad asked for an intake. We will reply.",
+        asks=[],
+        commitments=[],
+        next_step=None,
+        next_step_on=None,
+        sentiment="neutral",
+        watermark_message_id="g-zqxacad",
+        watermark_at="2026-10-13T09:00:00+00:00",
+        model="claude-sonnet-5-5",
+        generated_at="2026-10-13T09:05:00+00:00",
+        created_at="2026-10-13T09:05:00+00:00",
+    )
+    fake.add(
+        "crm_email_summary_links",
+        workspace_id=academy["id"],
+        summary_id=summary["id"],
+        record_type="company",
+        record_id=company["id"],
+    )
+    # Spec 009 S2b: the company's enrichment (queued by 064's trigger from
+    # its domain), done, with phase 2 on in both workspaces.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True})
+    fake.add_enrichment(
+        academy,
+        company,
+        website="https://zqxacad.edu/",
+        values={"description": "Zqxacad trains engineers.", "products": ["Zqxacad course"]},
+    )
+    # Spec 009 S3a: Academy's AI fields, with a value on its company and
+    # phase 3 on in both workspaces.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True, "3": True})
+    fake.seed_ai_fields(academy)
+    fake.seed_ai_fields(labs)
+    brief = fake.ai_field(academy, "account_brief")
+    fake.write_ai_field_value(
+        academy["id"],
+        {
+            "field_id": brief["id"],
+            "record_type": "company",
+            "record_id": company["id"],
+            "value_text": "Zqxacad trains engineers.",
+            "value_number": None,
+            "reason": None,
+            "inputs_hash": "sha256:zqxacad",
+            "model": "claude-sonnet-5-5",
+            "generated_at": "2026-10-13T09:05:00+00:00",
+            "dirty_at": None,
+            "next_allowed_at": "2026-10-13T10:05:00+00:00",
+        },
+    )
+    # Spec 009 S4: contact recency, with phase 4 on in both workspaces;
+    # Academy's company and person are Recent.
+    for ws in (academy, labs):
+        fake.set_ai(ws, phases={"1": True, "2": True, "3": True, "4": True})
+    fake.set_contact_recency(
+        academy["id"], "crm_companies", [{"id": company["id"], "level": "recent"}]
+    )
+    fake.set_contact_recency(academy["id"], "crm_people", [{"id": person["id"], "level": "recent"}])
     made = {
         "companies": company,
         "people": person,
@@ -222,6 +300,9 @@ def crm(monkeypatch):
         "option": option,
         "mailbox": mailbox,
         "membership": membership,
+        "review_item": review_item,
+        "thread": {"id": f"{mailbox['id']}:t-zqxacad"},
+        "ai_field": brief,
     }
     made_in_labs = {"company": labs_co}
     return http, fake, {**made, "_labs": made_in_labs}
@@ -250,6 +331,9 @@ def _value(param: str, path: str, made: dict) -> str:
             "run_id": "run",
             "mapping_id": "mapping",
             "mailbox_id": "mailbox",
+            "item_id": "review_item",
+            "thread_key": "thread",
+            "field_id": "ai_field",
         }[param]
     ]["id"]
 
@@ -273,6 +357,8 @@ def _body(method: str, path: str, made: dict) -> dict | None:
         "views/{view_id}": {"name": "X"},
         "imports/{run_id}/apply": {"format": "csv", "content": "Name\nX\n", "object": "companies"},
         "mailboxes/{mailbox_id}": {"labels": ["X"]},
+        "ai-fields/{field_id}": {"name": "X"},
+        "review/{item_id}/approve": {"version": 1},
     }
     if tail in bodies:
         return bodies[tail]
@@ -343,6 +429,19 @@ class TestIdsInTheBodyOrQuery:
         assert [f["id"] for f in r.json()["failed"]] == [made["companies"]["id"]]
         assert fake.rows["crm_companies"][made["companies"]["id"]].get("city") != "X"
 
+    def test_enrich_selected_with_another_workspaces_company(self, crm):
+        http, fake, made = crm
+        before = {k: dict(v) for k, v in fake.rows["crm_company_enrichment"].items()}
+        r = http.post(
+            "/api/v1/crm/enrichment/run",
+            params=LABS,
+            json={"company_ids": [made["companies"]["id"]]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == "No such company."
+        assert {k: dict(v) for k, v in fake.rows["crm_company_enrichment"].items()} == before
+
     def test_a_view_by_another_workspaces_id(self, crm):
         http, _, made = crm
         r = http.post(
@@ -393,6 +492,15 @@ POST_READS = [
     ("/api/v1/crm/export/view", {"object": "companies"}),
     ("/api/v1/crm/export/view", {"object": "people"}),
     ("/api/v1/crm/export/view", {"object": "opportunities"}),
+]
+#: Spec 009 S4: a view filtered by contact recency.
+RECENT = {
+    "op": "and",
+    "items": [{"field": "contact_recency", "operator": "any_of", "value": ["recent"]}],
+}
+POST_READS += [
+    ("/api/v1/crm/query", {"object": obj, "spec": {"filters": RECENT}})
+    for obj in ("companies", "people")
 ]
 
 
@@ -581,6 +689,11 @@ def _tool_calls(made: dict) -> list[tuple[str, dict]]:
             },
         ),
         (
+            "crm_review_decide",
+            {"item_id": made["review_item"]["id"], "decision": "approve", "version": 1},
+        ),
+        ("crm_thread_summary", {"thread_key": made["thread"]["id"]}),
+        (
             "crm_create",
             {
                 "record_type": "drive_link",
@@ -601,6 +714,7 @@ TOOL_READS = [
     ("crm_today", {"workspace": "labs"}),
     ("crm_search", {"query": MARK, "workspace": "labs"}),
     ("crm_dashboard", {"workspace": "labs"}),
+    ("crm_review_list", {"workspace": "labs"}),
 ] + [
     ("crm_list", {"object": obj, "workspace": "labs"})
     for obj in ("company", "person", "opportunity", "task", "note", "campaign", "campaign_member")
@@ -610,14 +724,14 @@ TOOL_READS = [
 class TestThroughEveryTool:
     def test_every_tool_is_swept(self, crm):
         _, _, made = crm
-        assert len(_tool_calls(made)) == 16  # the parametrize below
+        assert len(_tool_calls(made)) == 18  # the parametrize below
         named = {n for n, _ in _tool_calls(made)} | {n for n, _ in TOOL_READS}
         every = {t.name for t in asyncio.run(server.mcp.list_tools()) if t.name.startswith("crm_")}
         # crm_run_email_sync names no record and reads none: it is refused
         # in Academy's name below.
         assert every - named == {"crm_run_email_sync"}
 
-    @pytest.mark.parametrize("index", range(16))
+    @pytest.mark.parametrize("index", range(18))
     def test_a_tool_naming_an_academy_record_in_labs(self, crm, index):
         _, fake, made = crm
         name, kwargs = _tool_calls(made)[index]
@@ -644,3 +758,164 @@ class TestThroughEveryTool:
             with pytest.raises(server.ToolError) as refused:
                 asyncio.run(getattr(tools, name)(Ctx(OUTSIDER["id"]), **kwargs))
             assert str(refused.value) == "404: No such workspace.", name
+
+
+class TestContactRecency:
+    """Spec 009 FR-CRMAI-REL-02: the contact recency filter answers only the
+    caller's workspace, and the job reads only its own."""
+
+    def test_the_filter_finds_academys_own_in_academy(self, crm):
+        http, _, made = crm
+        r = http.post(
+            "/api/v1/crm/query",
+            params={"workspace": "academy"},
+            json={"object": "companies", "spec": {"filters": RECENT}},
+            headers=as_(OWNER["id"]),
+        )
+        assert [row["id"] for row in r.json()["rows"]] == [made["companies"]["id"]]
+
+    def test_labs_job_leaves_academy_alone(self, crm):
+        from app.services.crm import flags
+
+        _, fake, made = crm
+        labs = next(w for w in store.list_workspaces() if w["key"] == "labs")
+        flags.recompute_workspace(labs["id"], datetime(2026, 10, 14, 6, 30, tzinfo=UTC))
+        assert fake.rows["crm_companies"][made["companies"]["id"]]["contact_recency"] == "recent"
+        assert fake.rows["crm_companies"][made["_labs"]["company"]["id"]]["contact_recency"] == (
+            "lapsed"
+        )
+
+
+class TestThe009Surface:
+    """Spec 009 FR-CRMAI-REV-01, -03, FR-CRMAI-SUM-08, FR-CRMAI-ENR-02,
+    FR-CRMAI-FIELD-01, -06, FR-CRMAI-REL-02, FR-CRMAI-LLM-08, FR-CRMAI-JOB-01,
+    FR-CRMAI-MCP-01; NFR-CRMAI-02: every route and tool 009 added is in the
+    sweeps above, and what they answer for Labs counts and lists nothing of
+    Academy's queue, job log or AI spend."""
+
+    def test_the_009_id_routes_are_swept(self):
+        assert {
+            ("GET", "/api/v1/crm/email-threads/{thread_key}/summary"),
+            ("POST", "/api/v1/crm/review/{item_id}/approve"),
+            ("POST", "/api/v1/crm/review/{item_id}/dismiss"),
+            ("PATCH", "/api/v1/crm/ai-fields/{field_id}"),
+            ("POST", "/api/v1/crm/companies/{record_id}/ai-fields/recompute"),
+            ("POST", "/api/v1/crm/opportunities/{record_id}/ai-fields/recompute"),
+        } <= set(ID_ROUTES)
+
+    def test_the_009_open_reads_are_swept(self):
+        assert {
+            "/api/v1/crm/ai",
+            "/api/v1/crm/ai-fields",
+            "/api/v1/crm/review",
+            "/api/v1/crm/jobs",
+        } <= set(OPEN_READS)
+
+    def test_the_contact_recency_filter_is_swept(self):
+        assert {
+            o
+            for p, b in POST_READS
+            if b.get("spec", {}).get("filters") == RECENT
+            for o in [b["object"]]
+        } == {"companies", "people"}
+
+    def test_the_three_tools_are_swept(self, crm):
+        _, _, made = crm
+        named = {n for n, _ in _tool_calls(made)} | {n for n, _ in TOOL_READS}
+        assert {"crm_review_list", "crm_review_decide", "crm_thread_summary"} <= named
+
+    @pytest.mark.parametrize("scope", ["mine", "all"])
+    @pytest.mark.parametrize("status", ["open", "decided"])
+    def test_the_review_queue_every_scope_and_status(self, crm, scope, status):
+        http, fake, made = crm
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        for state in ("open", "decided"):
+            fake.add_review_item(
+                academy,
+                type="next_step_change",
+                record_type="opportunity",
+                record_id=made["opportunities"]["id"],
+                owner_id=OWNER["id"],
+                status="approved" if state == "decided" else "open",
+                decided_at="2026-10-13T10:00:00+00:00" if state == "decided" else None,
+                decided_by=OWNER["id"] if state == "decided" else None,
+                suggestion={"next_step": f"Zqxacad {state}", "next_step_on": "2026-10-20"},
+                current_values={
+                    made["opportunities"]["id"]: {
+                        "next_step": "Zqxacad call",
+                        "next_step_on": "2026-10-14",
+                    }
+                },
+            )
+        r = http.get(
+            "/api/v1/crm/review",
+            params={**LABS, "scope": scope, "status": status},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["items"] == [] and r.json()["total"] == 0
+        assert _clean(r.text, made) == []
+        answer = asyncio.run(tools.crm_review_list(Ctx(OWNER["id"]), scope=scope, workspace="labs"))
+        assert _clean(str(answer), made) == []
+        boot = http.get("/api/v1/crm/bootstrap", params=LABS, headers=as_(OWNER["id"])).json()
+        assert boot["ai"]["open_review_count"] == 0
+        theirs = http.get(
+            "/api/v1/crm/review",
+            params={"workspace": "academy", "scope": scope, "status": status},
+            headers=as_(OWNER["id"]),
+        )
+        assert MARK in _clean(theirs.text, made)
+
+    @pytest.mark.parametrize(
+        "job", [None, "summaries", "meetings", "enrichment", "ai_fields", "review_expiry"]
+    )
+    def test_the_job_log_of_each_009_job(self, crm, job):
+        http, fake, made = crm
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        runs = {}
+        for name in ("summaries", "meetings", "enrichment", "ai_fields", "review_expiry"):
+            run = fake.start_job_run(name, academy["id"], datetime(2026, 10, 14, 6, 0, tzinfo=UTC))
+            fake.finish_job_run(
+                run["id"],
+                {
+                    "finished_at": "2026-10-14T06:01:00+00:00",
+                    "outcome": "failed",
+                    "error": "Zqxacad error",
+                    "error_public": "Zqxacad failed",
+                },
+            )
+            runs[f"run_{name}"] = run
+        params = {**LABS, **({"job": job} if job else {})}
+        r = http.get("/api/v1/crm/jobs", params=params, headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        assert _clean(r.text, {**made, **runs}) == []
+        mine = http.get(
+            "/api/v1/crm/jobs", params={"workspace": "academy"}, headers=as_(OWNER["id"])
+        )
+        assert MARK in _clean(mine.text, made)
+
+    def test_the_ai_spend_is_the_workspaces_own(self, crm, monkeypatch):
+        from app.api.crm import ai as ai_api
+
+        http, fake, _ = crm
+        monkeypatch.setattr(ai_api, "_now", lambda: datetime(2026, 10, 14, 6, 0, tzinfo=UTC))
+        academy = next(w for w in store.list_workspaces() if w["key"] == "academy")
+        fake.insert_ai_usage(
+            academy["id"],
+            {
+                "job": "summaries",
+                "model": "claude-sonnet-5-5",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cost_usd": "7.25",
+                "outcome": "ok",
+                "at": "2026-10-13T09:05:00+00:00",
+            },
+        )
+        labs = http.get("/api/v1/crm/ai", params=LABS, headers=as_(OWNER["id"])).json()
+        assert labs["spend"]["total_usd"] == "0.00"
+        assert set(labs["spend"]["by_job"].values()) == {"0.00"}
+        theirs = http.get(
+            "/api/v1/crm/ai", params={"workspace": "academy"}, headers=as_(OWNER["id"])
+        ).json()
+        assert theirs["spend"]["total_usd"] == "7.25"

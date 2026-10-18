@@ -39,6 +39,7 @@ const PROTECTED_ROUTES = [
   "/admin",
   "/account",
   "/crm",
+  "/tasks",
   "/",
 ];
 

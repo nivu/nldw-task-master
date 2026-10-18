@@ -16,13 +16,22 @@ def actor(ctx: Any, kind: str = "user") -> dict[str, Any]:
 
     `channel` is the audit label `deps._authenticate` set: 'mcp' only for the
     in-process MCP bridge, else 'web' (Q-22). It decides nothing.
+
+    Spec 009 FR-CRMAI-REV-05: an approved suggestion's change also carries
+    `suggestion_id`, the item's id, which `crm_audit_row` writes on the audit
+    row. It is there only when the Review Queue set it on the context; every
+    other actor is unchanged.
     """
-    return {
+    out = {
         "user_id": ctx.user.id,
         "kind": kind,
         "channel": ctx.channel,
         "workspace_id": ctx.workspace["id"],
     }
+    suggestion_id = getattr(ctx, "suggestion_id", None)
+    if suggestion_id:
+        out["suggestion_id"] = suggestion_id
+    return out
 
 
 def workspaces_of(user_id: str) -> list[dict[str, Any]]:

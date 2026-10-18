@@ -557,6 +557,7 @@ function UserTable({
               <th className="p-3 font-medium">Approved by</th>
               <th className="p-3 font-medium">Location</th>
               <th className="p-3 font-medium">Logs time</th>
+              <th className="p-3 font-medium">Tasks</th>
               <th className="p-3 font-medium">Joined / Left</th>
               <th className="p-3 font-medium">CTC ({currency}/month)</th>
               {canGrantDashboard && <th className="p-3 font-medium">Dashboard access</th>}
@@ -645,6 +646,34 @@ function UserTable({
                     }}
                   />
                 </td>
+                <td className="p-3">
+                  {/* Spec 008 FR-TASK-ROLL-01, -02 — the person's tasks
+                      phase level (n switches on phases 1 to n), or the
+                      global default. CRM-only accounts too. */}
+                  <select
+                    aria-label={`Tasks level for ${user.display_name}`}
+                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    value={user.tasks_level ?? "default"}
+                    disabled={!user.is_active}
+                    onChange={async (e) => {
+                      try {
+                        await updateUser(user.id, {
+                          tasks_level: e.target.value === "default" ? "default" : Number(e.target.value),
+                        });
+                        onChanged();
+                      } catch (err) {
+                        onError(errorMessage(err));
+                      }
+                    }}
+                  >
+                    <option value="default">Default</option>
+                    {[0, 1, 2, 3, 4].map((level) => (
+                      <option key={level} value={level}>
+                        {level === 0 ? "0 (off)" : level}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="space-y-1 p-3">
                   {/* Spec 002 FR-ANALYTICS-08 — no time is expected outside
                       these. Editable after deactivation, which is usually
@@ -715,7 +744,7 @@ function UserTable({
               </tr>
               {ctcFor === user.id && (
                 <tr>
-                  <td colSpan={canGrantDashboard ? 9 : 8} className="bg-muted/40 p-3">
+                  <td colSpan={canGrantDashboard ? 10 : 9} className="bg-muted/40 p-3">
                     <CtcEditor user={user} currency={currency} onChanged={onChanged} onError={onError} />
                   </td>
                 </tr>

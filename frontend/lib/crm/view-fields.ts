@@ -58,12 +58,35 @@ const FLAG_LEVELS: Choice[] = [
   { value: "amber", label: "Amber" },
   { value: "red", label: "Red" },
 ];
+/** 008 (047): a task's priority and where it came from; fixed labels
+ *  (data-model §3.3). */
+const PRIORITIES: Choice[] = [
+  { value: "urgent", label: "Urgent" },
+  { value: "high", label: "High" },
+  { value: "normal", label: "Normal" },
+  { value: "low", label: "Low" },
+];
+const SOURCES: Choice[] = [
+  { value: "manual", label: "Manual" },
+  { value: "nldw", label: "NLDW" },
+  { value: "voice", label: "Voice" },
+  { value: "email_commitment", label: "Email commitment" },
+  { value: "meeting_action", label: "Meeting action" },
+  { value: "rule", label: "Rule" },
+  { value: "import", label: "Import" },
+];
 const NOTE_KINDS: Choice[] = [
   { value: "note", label: "Note" },
   { value: "call", label: "Call" },
   { value: "meeting", label: "Meeting" },
   { value: "whatsapp", label: "WhatsApp" },
   { value: "other", label: "Other" },
+];
+/** 009 (067): contact recency, fixed labels (FR-CRMAI-REL-01, Q-21). */
+const CONTACT_RECENCY: Choice[] = [
+  { value: "recent", label: "Recent" },
+  { value: "fading", label: "Fading" },
+  { value: "lapsed", label: "Lapsed" },
 ];
 
 /** `_v` in objects.py: option, person and relation fields group a list;
@@ -125,6 +148,12 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
+    // 009 (067): filter only (FR-CRMAI-REL-02).
+    v("contact_recency", "Contact recency", "fixed_select", {
+      sortable: false,
+      groupable: false,
+      fixed: CONTACT_RECENCY,
+    }),
   ],
   person: [
     v("name", "Name", "text"),
@@ -142,6 +171,12 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
     ...STAMPS,
     POSITION,
+    // 009 (067): filter only (FR-CRMAI-REL-02).
+    v("contact_recency", "Contact recency", "fixed_select", {
+      sortable: false,
+      groupable: false,
+      fixed: CONTACT_RECENCY,
+    }),
   ],
   opportunity: [
     v("name", "Name", "text", E),
@@ -190,14 +225,16 @@ export const VIEW_FIELDS: Record<ListKind, ViewFieldMeta[]> = {
   ],
   task: [
     v("title", "Title", "text", E),
-    v("body", "Body", "long_text", { sortable: false, ...E }),
+    v("body", "Notes", "long_text", { sortable: false, ...E }),
     v("status", "Status", "fixed_select", { listKey: "task.status", ...E }),
     v("due_on", "Due date", "date", E),
-    v("bucket", "Priority bucket", "fixed_select", { listKey: "task.bucket", ...E }),
+    v("bucket", "Bucket", "fixed_select", { listKey: "task.bucket", ...E }),
     v("category_id", "Category", "select", { listKey: "task.category", ...E }),
     v("assignee_id", "Assignee", "person", E),
     v("completed_at", "Completed", "datetime"),
     v("flag_level", "Follow-up", "flag", { fixed: FLAG_LEVELS }),
+    v("priority", "Priority", "fixed_select", { fixed: PRIORITIES, ...E }),
+    v("source", "Source", "fixed_select", { fixed: SOURCES }),
     ...STAMPS,
     POSITION,
   ],
@@ -543,3 +580,9 @@ export function relationSearch(field: string, workspace: string): RelationSearch
 
 /** A native `<select>` that matches the inputs beside it. */
 export const NATIVE_SELECT = "h-8 rounded-md border border-input bg-transparent px-2 text-sm";
+
+/** 009: the fields a switched-off phase hides (FR-CRMAI-FLAG-03): contact
+ *  recency is phase 4's own filter (FR-CRMAI-REL-02). */
+export function withoutOffPhases(fields: ViewFieldMeta[], phases: CrmBootstrap["ai"]["phases"]): ViewFieldMeta[] {
+  return phases["4"] ? fields : fields.filter((f) => f.field !== "contact_recency");
+}

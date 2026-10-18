@@ -135,3 +135,74 @@ celery_app.conf.beat_schedule = {
     # sync is off or unconfigured it records a skip and does nothing else.
     "crm-email-sync-tick": {"task": "crm.email_sync_tick", "schedule": crontab(minute="*/15")},
 }
+
+# ---------------------------------------------------------------------------
+# Spec 008 — tasks
+#
+# 008's own block, after 007's and before 009's (plan §5.8, §9 rule 3).
+# ---------------------------------------------------------------------------
+celery_app.conf.beat_schedule.update(
+    {
+        # FR-TASK-DATA-11, TP-12: tasks with no workspace deleted > 90 days ago.
+        "tasks-purge-deleted": {
+            "task": "tasks.purge_deleted",
+            "schedule": crontab(hour=1, minute=20),
+        },
+        # FR-TASK-VOICE-02, -05: voice audio and transcripts before 24 hours.
+        "tasks-voice-sweep": {
+            "task": "tasks.voice_sweep",
+            "schedule": crontab(minute="*/30"),
+        },
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the CRM intelligence layer, FR-CRMAI-JOB-04, Q-05, plan §5.1
+#
+# Every AI task (`crm_ai.*`) goes to its own queue, served only by the
+# `worker-crm-ai` service (`celery -A app.worker worker -Q crm-ai
+# --concurrency=1`), the one process that holds the Claude and Fireflies
+# keys. One task at a time, so budget overshoot is one call (FR-CRMAI-LLM-07)
+# and the Gmail sync lock is never held while a model call runs. The shared
+# worker runs no AI task. Beat entries are added with the jobs themselves.
+# ---------------------------------------------------------------------------
+CRM_AI_QUEUE = "crm-ai"
+celery_app.conf.task_routes = {
+    **celery_app.conf.task_routes,
+    "crm_ai.*": {"queue": CRM_AI_QUEUE},
+}
+celery_app.conf.beat_schedule.update(
+    {
+        # FR-CRMAI-REV-07: Review Queue items expire at 14 days and are
+        # tombstoned at 90, per workspace, daily.
+        "crm-ai-review-expiry": {
+            "task": "crm_ai.review_expiry",
+            "schedule": crontab(hour=1, minute=30),
+        },
+        # FR-CRMAI-SUM-02, NFR-CRMAI-05: labelled threads summarised within
+        # one sync cycle of a message being stored.
+        "crm-ai-summaries": {
+            "task": "crm_ai.summaries",
+            "schedule": crontab(minute="*/15"),
+        },
+        # FR-CRMAI-MEET-01, NFR-CRMAI-05: the Fireflies poll, a meeting note
+        # within 30 minutes of the transcript being ready.
+        "crm-ai-meetings": {
+            "task": "crm_ai.meetings",
+            "schedule": crontab(minute="*/15"),
+        },
+        # FR-CRMAI-ENR-07: queued companies enriched in the background, at
+        # most 10 a minute per workspace, by batches the tick starts.
+        "crm-ai-enrichment": {
+            "task": "crm_ai.enrichment",
+            "schedule": crontab(minute="*/15"),
+        },
+        # FR-CRMAI-FIELD-04: AI field values recomputed where their inputs
+        # changed, at most once an hour per record (Q-38).
+        "crm-ai-ai-fields": {
+            "task": "crm_ai.ai_fields",
+            "schedule": crontab(minute="*/15"),
+        },
+    }
+)

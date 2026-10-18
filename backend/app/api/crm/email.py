@@ -196,7 +196,9 @@ def _register(plural: str, kind: str) -> None:
         before: str | None = Query(default=None, max_length=40),
         limit: int = Query(default=25, ge=1, le=100),
     ) -> dict:
-        """FR-CRM-REC-03 — the record's threads; no bodies (Q-29)."""
+        """FR-CRM-REC-03 — the record's threads; no bodies (Q-29). Each has
+        its `thread_key` and, while phase 1 is on, its AI `summary` (spec 009
+        FR-CRMAI-SUM-08)."""
         return email_sync.threads(ctx, kind, record_id, before=before, limit=limit)
 
     router.add_api_route(

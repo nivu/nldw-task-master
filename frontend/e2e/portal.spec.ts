@@ -356,6 +356,16 @@ test.describe("the help guides", () => {
     await expect(page.locator("body")).not.toContainText(/Deepika|Devansh|Sriram|Vinita|Tarun/);
   });
 
+  // Spec 009 NFR-CRMAI-07, T176: the build drops the number from
+  // 12-crm-intelligence.md, and the guide names nobody and shows no cost.
+  test("include Review AI suggestions at /help/crm-intelligence", async ({ page }) => {
+    await page.goto("/help/crm-intelligence");
+    await expect(page.getByRole("heading", { name: "Review AI suggestions", level: 1 })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(/Deepika|Devansh|Sriram|Vinita|Tarun|Tamil|Ganesh/);
+    // innerText: the page's own scripts hold "$1"-style replacement strings.
+    await expect(page.locator("body")).not.toContainText(/\$\s?\d|USD\s?\d|₹/, { useInnerText: true });
+  });
+
   test("are reachable from the sign-in page", async ({ page }) => {
     await page.goto("/auth/login");
     await page.getByRole("link", { name: /How to use the portal/ }).click();

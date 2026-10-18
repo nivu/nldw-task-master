@@ -3,6 +3,7 @@
 import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { useState } from "react";
 
+import { ThreadSummary } from "@/components/crm/thread-summary";
 import { Button } from "@/components/ui/button";
 import { getCrmEmails } from "@/lib/api/crm";
 import type { CrmEmailThread } from "@/lib/api/crm-types";
@@ -17,6 +18,10 @@ import { useAsync } from "@/lib/use-async";
  * people's, a deal its company's and its contacts'. Subject, participants,
  * direction and date only; message bodies are never stored (Q-29), so the
  * thread is read in Gmail itself. Newest first, older ones on request.
+ *
+ * With 009 phase 1 on, a summarised thread's row expands to its AI summary
+ * (009 FR-CRMAI-SUM-08); the summary is generated, the email is still not
+ * stored.
  */
 export function EmailsTab({
   workspace,
@@ -111,6 +116,9 @@ export function EmailsTab({
               <p className="break-words text-xs">
                 {thread.participants.map((p) => p.name || p.email).join(", ")}
               </p>
+              {thread.summary && (
+                <ThreadSummary summary={thread.summary} subject={thread.subject} timeZone={timeZone} />
+              )}
             </li>
           );
         })}

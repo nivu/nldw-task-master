@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { FieldEditor, type Choice, type RelationSearch } from "@/components/crm/field-editor";
+import { useOpenTask } from "@/components/crm/record-page";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -26,7 +27,14 @@ import {
   searchPersonChoices,
   updateCrmRecord,
 } from "@/lib/api/crm";
-import type { CrmBootstrap, CrmLinkRef, CrmMember, CrmTask, TaskBucket } from "@/lib/api/crm-types";
+import type {
+  CrmBootstrap,
+  CrmLinkRef,
+  CrmMember,
+  CrmTask,
+  TaskBucket,
+  TaskPriority,
+} from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { formatDate, todayIn, type CrmTimezone } from "@/lib/crm/format";
 import { cn } from "@/lib/utils";
@@ -85,12 +93,15 @@ export function TaskList({
 }) {
   const [error, setError] = useState<string | null>(null);
   const member = bootstrap.role !== "viewer";
+  // 008 FR-TASK-VIEW-03: on a record page, a task opens in the shared panel.
+  const openTask = useOpenTask();
 
   async function toggle(task: CrmTask) {
     setError(null);
     try {
-      if (task.status === "done") {
-        await updateCrmRecord(workspace, "tasks", task.id, { status: "todo" }, task.updated_at);
+      if (task.status === "done" || task.status === "cancelled") {
+        // 008 FR-TASK-LIST-05: reopening goes back to Open.
+        await updateCrmRecord(workspace, "tasks", task.id, { status: "open" }, task.updated_at);
       } else {
         await completeCrmTask(workspace, task.id);
       }
@@ -111,20 +122,34 @@ export function TaskList({
       <ul className="divide-y rounded-md border">
         {tasks.map((task) => {
           const mine = task.assignee_id === bootstrap.me.id;
-          const overdue = task.status !== "done" && task.due_on && task.due_on < todayIn(bootstrap.me.timezone);
+          const closed = task.status === "done" || task.status === "cancelled";
+          const overdue = !closed && task.due_on && task.due_on < todayIn(bootstrap.me.timezone);
           return (
             <li key={task.id} className="flex items-start gap-3 p-2.5">
               <Checkbox
                 className="mt-0.5"
-                aria-label={task.status === "done" ? `Reopen ${task.title}` : `Mark ${task.title} done`}
-                checked={task.status === "done"}
+                aria-label={closed ? `Reopen ${task.title}` : `Mark ${task.title} done`}
+                checked={closed}
                 disabled={!member && !mine}
                 onCheckedChange={() => toggle(task)}
               />
               <div className="min-w-0 flex-1 space-y-0.5">
-                <p className={cn("text-sm", task.status === "done" && "text-muted-foreground line-through")}>
-                  {task.title}
-                </p>
+                {openTask ? (
+                  <button
+                    type="button"
+                    onClick={() => openTask(task.id, onChange)}
+                    className={cn(
+                      "block max-w-full text-left text-sm hover:underline",
+                      closed && "text-muted-foreground line-through"
+                    )}
+                  >
+                    {task.title}
+                  </button>
+                ) : (
+                  <p className={cn("text-sm", closed && "text-muted-foreground line-through")}>
+                    {task.title}
+                  </p>
+                )}
                 <p className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                   <span>{task.assignee_name ?? "—"}</span>
                   {task.due_on && (
@@ -132,7 +157,8 @@ export function TaskList({
                   )}
                   {task.bucket_label && <span>{task.bucket_label}</span>}
                   {task.category_label && <span>{task.category_label}</span>}
-                  {task.status === "in_progress" && <span>{task.status_label}</span>}
+                  {task.priority !== "normal" && <span>{task.priority_label}</span>}
+                  {(task.status === "waiting" || task.status === "cancelled") && <span>{task.status_label}</span>}
                 </p>
                 {showLinks && (
                   <div className="text-xs">
@@ -147,6 +173,14 @@ export function TaskList({
     </div>
   );
 }
+
+/** 008: a task's priority, Normal unless chosen (TQ-09). */
+const PRIORITIES: Choice[] = [
+  { value: "urgent", label: "Urgent" },
+  { value: "high", label: "High" },
+  { value: "normal", label: "Normal" },
+  { value: "low", label: "Low" },
+];
 
 const SEARCH: Record<Target, (workspace: string) => RelationSearch> = {
   company: (ws) => (q, after) => searchCompanyChoices(ws, q, after),
@@ -180,6 +214,7 @@ export function TaskDialog({
   const [category, setCategory] = useState<string>("");
   const [assignee, setAssignee] = useState<string | null>(bootstrap.me.id);
   const [body, setBody] = useState("");
+  const [priority, setPriority] = useState<string>("normal");
   const [targetType, setTargetType] = useState<Target>("company");
   const [target, setTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -201,6 +236,7 @@ export function TaskDialog({
       setCategory("");
       setAssignee(bootstrap.me.id);
       setBody("");
+      setPriority("normal");
       setTarget(null);
       setError(null);
     }
@@ -227,6 +263,7 @@ export function TaskDialog({
           ...(bucket ? { bucket: bucket as TaskBucket } : {}),
           ...(category ? { category_id: category } : {}),
           ...(body.trim() ? { body: body.trim() } : {}),
+          priority: priority as TaskPriority,
         },
         false
       );
@@ -324,8 +361,9 @@ export function TaskDialog({
               <Label htmlFor="task-due">Due date</Label>
               <Input id="task-due" type="date" value={dueOn} onChange={(e) => setDueOn(e.target.value)} />
             </div>
-            {pick("task-bucket", "Priority bucket", bucket, buckets, setBucket)}
+            {pick("task-bucket", "Bucket", bucket, buckets, setBucket)}
           </div>
+          {pick("task-priority", "Priority", priority, PRIORITIES, (v) => setPriority(v || "normal"), "Normal")}
           <div className="grid gap-2 sm:grid-cols-2">
             {pick(
               "task-assignee",
@@ -338,7 +376,7 @@ export function TaskDialog({
             {pick("task-category", "Category", category, categories, setCategory)}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="task-body">Details</Label>
+            <Label htmlFor="task-body">Notes</Label>
             <Textarea id="task-body" rows={3} maxLength={20000} value={body} onChange={(e) => setBody(e.target.value)} />
           </div>
           {error && (

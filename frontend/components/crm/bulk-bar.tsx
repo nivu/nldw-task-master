@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, ListPlus, Megaphone, Pencil, Trash2, UserRound, X } from "lucide-react";
+import { Download, Globe, ListPlus, Megaphone, Pencil, Trash2, UserRound, X } from "lucide-react";
 import { useState } from "react";
 
 import { cleanValue, FieldEditor } from "@/components/crm/field-editor";
@@ -15,8 +15,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { bulkCrm, exportCrmView, saveFile, searchCampaignChoices } from "@/lib/api/crm";
-import type { BulkAction, BulkResult, CrmBootstrap, CrmMember, ViewObjectKind } from "@/lib/api/crm-types";
+import { bulkCrm, exportCrmView, runCrmEnrichment, saveFile, searchCampaignChoices } from "@/lib/api/crm";
+import type {
+  BulkAction,
+  BulkResult,
+  CrmBootstrap,
+  CrmEnrichmentRun,
+  CrmMember,
+  ViewObjectKind,
+} from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import {
   editorSpec,
@@ -37,11 +44,13 @@ import {
  * pipeline rules, a Labs deal's TVA project, Do not contact), so some may
  * succeed and others not; the result names each one refused and why.
  * (1b, S11b) Export downloads the selected rows as CSV, with the list's
- * columns (FR-CRM-IO-04).
+ * columns (FR-CRM-IO-04). (009, phase 2) An Admin's **Enrich selected**
+ * queues the selected companies to be read from their own websites in the
+ * background (FR-CRMAI-ENR-01, -08); web only.
  */
 
 type Row = Record<string, unknown> & { id: string };
-type Mode = "set" | "owner" | "task" | "campaign" | "delete";
+type Mode = "set" | "owner" | "task" | "campaign" | "delete" | "enrich";
 
 const TITLES: Record<Mode, string> = {
   set: "Edit a field",
@@ -49,6 +58,7 @@ const TITLES: Record<Mode, string> = {
   task: "Add a task to each",
   campaign: "Add to campaign",
   delete: "Move to Trash",
+  enrich: "Enrich selected",
 };
 
 export function BulkBar({
@@ -85,6 +95,7 @@ export function BulkBar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkResult | null>(null);
+  const [enriched, setEnriched] = useState<CrmEnrichmentRun | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -100,6 +111,7 @@ export function BulkBar({
     setMode(next);
     setError(null);
     setResult(null);
+    setEnriched(null);
     if (next === "set" && meta) {
       setField(meta.field);
       setValue(editorValue(meta, {}));
@@ -113,9 +125,25 @@ export function BulkBar({
       if (result.failed.length === 0) onClear();
     }
     setResult(null);
+    // Enriching changes no row of the list.
+    if (enriched) onClear();
+    setEnriched(null);
+  }
+
+  async function enrich() {
+    setBusy(true);
+    setError(null);
+    try {
+      setEnriched(await runCrmEnrichment(bootstrap.workspace.key, selected));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function run() {
+    if (mode === "enrich") return enrich();
     let action: BulkAction;
     let values: Record<string, unknown> = {};
     if (mode === "set" && meta) {
@@ -167,6 +195,8 @@ export function BulkBar({
   if (count === 0) return null;
   const canTask = kind === "company" || kind === "person" || kind === "opportunity" || kind === "campaign";
   const canCampaign = kind === "company" || kind === "person";
+  // FR-CRMAI-ENR-01, -FLAG-03: Admins, while phase 2 is on.
+  const canEnrich = kind === "company" && bootstrap.role === "admin" && bootstrap.ai.phases["2"];
   const ready =
     mode === "owner"
       ? Boolean(owner)
@@ -204,6 +234,11 @@ export function BulkBar({
             <Megaphone /> Add to campaign
           </Button>
         )}
+        {canEnrich && (
+          <Button size="sm" variant="outline" onClick={() => open("enrich")}>
+            <Globe /> Enrich selected
+          </Button>
+        )}
         <Button size="sm" variant="outline" onClick={exportSelected} disabled={exporting}>
           <Download /> {exporting ? "Exporting…" : "Export"}
         </Button>
@@ -229,7 +264,15 @@ export function BulkBar({
             </DialogDescription>
           </DialogHeader>
 
-          {result ? (
+          {enriched ? (
+            <div className="space-y-1 text-sm" data-testid="enrich-result">
+              <p>{enriched.queued} queued to be read from their websites in the background.</p>
+              {enriched.skipped_no_website > 0 && <p>{enriched.skipped_no_website} have no website or domain.</p>}
+              {enriched.already_enriched > 0 && (
+                <p>{enriched.already_enriched} had already been enriched from the same website.</p>
+              )}
+            </div>
+          ) : result ? (
             <div className="space-y-2 text-sm" data-testid="bulk-result">
               <p>
                 {result.ok.length} done{result.failed.length ? `, ${result.failed.length} not changed:` : "."}
@@ -374,6 +417,12 @@ export function BulkBar({
                   </p>
                 </div>
               )}
+              {mode === "enrich" && (
+                <p className="text-sm">
+                  Each company with a website or domain is read from its own site in the background, at most 10 a
+                  minute. The values are shown on the company, marked AI; no field you entered is changed.
+                </p>
+              )}
               {mode === "delete" && (
                 <div className="space-y-2 text-sm">
                   <p>
@@ -401,7 +450,7 @@ export function BulkBar({
           )}
 
           <DialogFooter>
-            {result ? (
+            {result || enriched ? (
               <Button onClick={close}>Done</Button>
             ) : (
               <>
@@ -414,7 +463,13 @@ export function BulkBar({
                   variant={mode === "delete" ? "destructive" : "default"}
                   disabled={busy || !ready}
                 >
-                  {busy ? "Working…" : mode === "delete" ? `Delete ${count}` : `Apply to ${count}`}
+                  {busy
+                    ? "Working…"
+                    : mode === "delete"
+                      ? `Delete ${count}`
+                      : mode === "enrich"
+                        ? `Enrich ${count}`
+                        : `Apply to ${count}`}
                 </Button>
               </>
             )}

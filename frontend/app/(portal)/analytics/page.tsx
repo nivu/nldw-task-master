@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/components/portal/projects-panel";
 import { useYearFrame, YearFrameControl, type YearFrame } from "@/components/shared/year-frame";
+import { ProjectTasks } from "@/components/tasks/project-tasks";
 import { BarsByMonth, LinesByPerson, MoneyByMonth, ProgressBars, StackedByMonth } from "@/components/shared/charts";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -100,6 +101,9 @@ export default function AnalyticsPage() {
     current: CurrentWork[];
     financials: boolean;
     health: Record<string, "green" | "amber" | "red">;
+    /** Spec 008 FR-TASK-VIEW-03 — the project task panel is phase 2. */
+    tasksLevel: number;
+    meId: string;
   }>(async () => {
     const [projects, coverage, forecast, current, me] = await Promise.all([
       getAnalyticsProjects(),
@@ -114,7 +118,16 @@ export default function AnalyticsPage() {
     if (financials) {
       for (const h of await getProjectsHealth()) health[h.project_id] = h.overall;
     }
-    return { projects, coverage, forecast, current, financials, health };
+    return {
+      projects,
+      coverage,
+      forecast,
+      current,
+      financials,
+      health,
+      tasksLevel: me.tasks.level,
+      meId: me.id,
+    };
   }, []);
 
   if (error) {
@@ -152,6 +165,8 @@ export default function AnalyticsPage() {
               projectId={projectId}
               financials={data.financials}
               onBack={() => setProjectId(null)}
+              tasks={data.tasksLevel >= 2}
+              meId={data.meId}
             />
           ) : (
             <Card>
@@ -497,10 +512,16 @@ function ProjectDetail({
   projectId,
   financials,
   onBack,
+  tasks,
+  meId,
 }: {
   projectId: string;
   financials: boolean;
   onBack: () => void;
+  /** Spec 008 FR-TASK-VIEW-03, FR-TASK-ADD-05 — the project's task panel,
+   *  with Add task pre-linked, once phase 2 of tasks is on for the reader. */
+  tasks: boolean;
+  meId: string;
 }) {
   const { data, error } = useAsync<ProjectEffort>(() => getProjectEffort(projectId), [projectId]);
 
@@ -555,6 +576,8 @@ function ProjectDetail({
 
       {financials && <HealthBlock projectId={projectId} />}
       {financials && <ProjectMoney projectId={projectId} />}
+
+      {tasks && <ProjectTasks projectId={projectId} meId={meId} />}
 
       {data.phases.map((phase) => {
         const over = phase.over_by !== null && phase.over_by !== undefined;

@@ -9,7 +9,7 @@ three failures in a row alert the admins.
 | Task | Beat | Jobs it records |
 |---|---|---|
 | `crm.purge_trash` | 01:10 daily | `trash_purge` |
-| `crm.recompute_flags` | every 30 min | `flags`, then `automations` (stale-deal notices) |
+| `crm.recompute_flags` | every 30 min | `flags`, then `automations` (stale-deal notices, follow-up rules) |
 | `crm.digest_tick` | every 15 min | `digests` (no workspace), then `reminders` |
 | `crm.email_sync_tick` | every 15 min | `email_sync` (a run or a skip per workspace) |
 | `crm.email_sync_page` | enqueued, `crm_sync` queue | ends its workspace's `email_sync` run |
@@ -20,7 +20,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import digests, email_sync, flags, jobs, notifications, records
+from app.domain.crm.followups import SWITCHES as RULES
+from app.services.crm import digests, email_sync, flags, followups, jobs, notifications, records
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -51,7 +52,8 @@ def purge_trash() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Flags and the stale-deal notice — automations 4 and 5
+# Flags, the stale-deal notice and the follow-up rules — automations 4, 5
+# and 11 to 14 (spec 009 FR-CRMAI-CHG-06)
 # ---------------------------------------------------------------------------
 
 
@@ -62,19 +64,25 @@ def _flags(workspace: dict, now: datetime) -> dict:
 
 
 @jobs.crm_job("automations")
-def _stale_notices(workspace: dict, now: datetime) -> dict:
-    """Automation 5, behind its switch (FR-CRM-AUTO-02)."""
-    if not notifications.automation_on(workspace["id"], "stale_notice"):
-        raise jobs.Skipped("The stale-deal notice is switched off.")
-    return notifications.stale_deal_notices(workspace, now)
+def _automations(workspace: dict, now: datetime) -> dict:
+    """Automation 5 and the follow-up rules R-1 to R-4 (spec 009
+    FR-CRMAI-JOB-05), each behind its own switch (FR-CRM-AUTO-02); the run
+    is skipped only when all five are off."""
+    on = {rule: notifications.automation_on(workspace["id"], key) for rule, key in RULES.items()}
+    stale = notifications.automation_on(workspace["id"], "stale_notice")
+    if not stale and not any(on.values()):
+        followups.idle(workspace, now, followups.R1_OFF)
+        raise jobs.Skipped("The stale-deal notice and the follow-up rules are switched off.")
+    counts = notifications.stale_deal_notices(workspace, now) if stale else {}
+    return {**counts, **followups.run(workspace, now, on)}
 
 
 @celery_app.task(name="crm.recompute_flags")
 def recompute_flags() -> dict:
     """Every 30 minutes: every workspace's flags, then the stale-deal notices
-    they raise."""
+    they raise and the follow-up rules (spec 009)."""
     now = datetime.now(UTC)
-    return {"flags": _flags(now), "automations": _stale_notices(now)}
+    return {"flags": _flags(now), "automations": _automations(now)}
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,22 @@
 <!--
 Sync Impact Report
 ===================
-Version change: 1.1.0 -> 1.2.0 (MINOR - product scope widened to include the
+Version change: 1.2.0 -> 1.3.0 (MINOR - task keeping added to the Employee's
+  and Seller's journeys; the RLS rule worded as practised). Prepared
+  2026-10-18 for spec 008 (§15.1); in force only once the owner has agreed it.
+Modified principles: I. Security-First (the RLS bullet says what every table
+  since 010 does: RLS on, no policy, no browser grant, the backend deciding
+  who sees each row)
+Added sections: task-keeping paragraphs in The Employee's Journey and The
+  Seller's Journey
+Removed sections: None
+Templates requiring updates:
+  - plan-template.md: OK
+  - spec-template.md: OK
+  - tasks-template.md: OK
+Follow-up TODOs: none outstanding.
+
+Previous: 1.1.0 -> 1.2.0 (MINOR - product scope widened to include the
   sales CRM; CRM-only accounts and CRM workspaces allowed)
 Modified principles: I. Security-First (CRM-only account and workspace isolation
   rules added; RLS helper name corrected from current_role() to
@@ -81,6 +96,14 @@ Devansh marked the 1st as work from home and then went to the office anyway. At
 On the 2nd, the same attempt is refused — the day is closed. That boundary is
 what makes the record trustworthy.
 
+Deepika also keeps her own work in the portal. She types "send the draft to
+the client fri" into the box at the top of any page, sees it read as due
+Friday before she saves, and finds it under This week in her task list. A
+task she keeps for herself is seen by her and nobody else — not her lead, not
+an admin. A task about a project is seen by the people who run that project;
+a task never carries hours, and her day log stays the only record of her
+time.
+
 ### The Lead's Journey
 
 A lead opens the team view and sees today without navigating or filtering: who
@@ -118,6 +141,11 @@ Sanjeev runs the Academy's workspace and invites the Academy sales reps into
 it. None of them can see a Labs deal, and nothing Sanjeev does reaches a Labs
 record or a portal account outside the CRM.
 
+Tamil keeps the CRM's tasks and private reminders in one task list. A task on
+a deal is the same task on the deal, in Today and in that list: ticking it
+done in one place ticks it done everywhere, and every member of the workspace
+sees it, as every CRM task. A private reminder stays Tamil's alone.
+
 ---
 
 ## Core Principles
@@ -136,8 +164,14 @@ that includes aggregate or export views.
   intentionally unauthenticated but MUST be rate-limited and validated
 - Secrets MUST NOT appear in version control under any circumstances — use
   environment variables in all environments
-- Supabase Row Level Security (RLS) MUST be enabled on every table; any new
-  table MUST have its RLS policy defined in the same migration that creates it
+- Supabase Row Level Security (RLS) MUST be enabled on every table, in the
+  same migration that creates it. The browser reads and writes no data
+  through Supabase (§IV), so a new table carries no policy and no grant to
+  `anon` or `authenticated`, as every table since `010`; the backend, whose
+  service role bypasses RLS, decides who may see each row, and a private
+  record is guarded by one backend function and a test that tries every
+  route and tool. A table that is ever opened to the browser MUST have its
+  RLS policy defined in the migration that opens it
 - Role and reporting-line checks in RLS policies MUST go through the
   `SECURITY DEFINER` helper functions in `supabase/migrations/003_rls_helpers.sql`
   — `public.is_admin()`, `public.is_lead()`, `public.is_lead_of(uuid)`,
@@ -304,4 +338,4 @@ include a constitution check:
 
 ---
 
-**Version**: 1.2.0 | **Ratified**: 2026-09-04 | **Last Amended**: 2026-10-14
+**Version**: 1.3.0 | **Ratified**: 2026-09-04 | **Last Amended**: 2026-10-18

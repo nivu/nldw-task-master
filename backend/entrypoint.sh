@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 #
-# Container entrypoint. One image, four process types.
+# Container entrypoint. One image, five process types.
 #
 # The API, the Celery worker and the Celery beat scheduler all run the same
 # code and the same dependencies; only the command differs. Building three
@@ -20,6 +20,10 @@
 #                      FR-CRM-SYNC-04): the crm_sync queue, one task at a time.
 #                      The one service given GOOGLE_SERVICE_ACCOUNT_JSON; started
 #                      only once sync is switched on.
+#   worker_crm_ai      Celery worker for the CRM's AI jobs only (spec 009
+#                      FR-CRMAI-JOB-04): the crm-ai queue, one task at a time.
+#                      The one service given ANTHROPIC_API_KEY and
+#                      FIREFLIES_API_KEY.
 #
 # An unknown value fails loudly rather than defaulting to the API. A typo like
 # PROCESS_TYPE=beet must not produce a healthy-looking service that quietly
@@ -41,9 +45,12 @@ case "${PROCESS_TYPE:-api}" in
   worker_crm_sync)
     exec celery -A app.worker worker -Q crm_sync --concurrency=1 --loglevel=info
     ;;
+  worker_crm_ai)
+    exec celery -A app.worker worker -Q crm-ai --concurrency=1 --loglevel=info
+    ;;
   *)
     echo "entrypoint: unknown PROCESS_TYPE '${PROCESS_TYPE}'." >&2
-    echo "            Expected one of: api, worker, beat, worker_crm_sync." >&2
+    echo "            Expected one of: api, worker, beat, worker_crm_sync, worker_crm_ai." >&2
     exit 1
     ;;
 esac

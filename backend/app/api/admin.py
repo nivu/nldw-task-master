@@ -74,6 +74,9 @@ def list_users(admin: AdminDep) -> list[dict]:
             # Spec 007 FR-CRM-CHG-02 — CRM-only sellers are listed here, and
             # only here in TVA, so an admin can see and deactivate them.
             "account_type": row.get("account_type") or "staff",
+            # Spec 008 FR-TASK-ROLL-02 — the person's own tasks level, or null
+            # when they follow the global default.
+            "tasks_level": row.get("tasks_level"),
         }
         for row in db.list_profiles(include_crm_only=True)
     ]
@@ -232,10 +235,25 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminDep) -> dict:
     if "is_active" in changes and changes["is_active"] is not None:
         changes["deactivated_reason"] = None if changes["is_active"] else "admin"
 
+    # Spec 008 FR-TASK-ROLL-02 — "default" (or null) follows the global
+    # default. Allowed on a CRM-only account too (T6).
+    if "tasks_level" in changes and changes["tasks_level"] in ("default", None):
+        changes["tasks_level"] = None
+
     updated = db.update_profile(user_id, changes)
     # FR-DASH-03 — access changes get their own audit action, so who was let
     # in, by whom and when can be read without sifting every profile edit.
     access = {k: changes.pop(k) for k in ("dashboard_access",) if k in changes}
+    level = {k: changes.pop(k) for k in ("tasks_level",) if k in changes}
+    if level:
+        audit.record(
+            action="user.tasks_level",
+            target_table="profiles",
+            target_id=user_id,
+            actor_id=admin.id,
+            before={"tasks_level": existing.get("tasks_level")},
+            after=level,
+        )
     if access:
         audit.record(
             action="user.dashboard_access",
@@ -269,6 +287,7 @@ _USER_FIELDS = (
     "left_on",
     "dashboard_access",
     "is_owner",
+    "tasks_level",
 )
 
 
@@ -844,6 +863,12 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
                 422, "invoice_payment_terms_days must be a whole number of days from 0 to 365."
             )
         value = int(value)
+    if key == "tasks_default_level":
+        # `008` FR-TASK-ROLL-01, TP-11: the phase of tasks switched on for
+        # everyone without their own level, 0 (off) to 4.
+        if isinstance(value, bool) or not str(value).strip().isdigit() or int(value) > 4:
+            raise ProblemDetail(422, "tasks_default_level must be a whole number from 0 to 4.")
+        value = int(value)
 
     row = db.update_setting(key, value, admin.id)
     settings_store.invalidate()
@@ -862,7 +887,7 @@ def read_audit(admin: AdminDep, limit: int = Query(default=200, le=1000)) -> lis
     """NFR-06 — readable, and by construction not writable.
 
     Spec 007 FR-CRM-AUD-04: TVA rows only — a CRM row (one with a workspace)
-    is not shown here, to anyone. CRM-only actors are named too: a seller's
+    is not shown here, to anyone, nor a task row (spec 008 FR-TASK-VIS-05). CRM-only actors are named too: a seller's
     action must not show up as an unknown person, and a TVA change a deal
     move made for them reads "*Name* (via CRM deal)" (FR-CRM-TVA-03)."""
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}

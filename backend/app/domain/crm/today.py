@@ -96,13 +96,14 @@ def tasks(
     names: dict[str, list[str]] | None = None,
     opens: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Section 3 — open tasks in the Today bucket or due today or before.
+    """Section 3 — open or waiting tasks in the Today bucket or due today or
+    before (008 FR-TASK-CHG-05).
     Overdue first, then due today, then the Today bucket without a date
     (`names`: task id → the records it links to; `opens`: task id → the
     first of them, which a task line opens, having no page of its own)."""
     items = []
     for task in rows:
-        if task.get("status") == "done":
+        if task.get("status") not in ("open", "waiting"):
             continue
         due_on = task.get("due_on")
         overdue_or_today = due_on and date.fromisoformat(str(due_on)[:10]) <= today
@@ -207,3 +208,35 @@ def assemble(*, sync_on: bool, built: dict[str, list[dict[str, Any]]]) -> list[d
         else:
             sections.append({"key": key, "items": built.get(key, [])})
     return sections
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — To review, the sixth section (FR-CRMAI-REV-09, FR-CRMAI-CHG-03)
+# ---------------------------------------------------------------------------
+
+#: After the five of FR-CRM-TODAY-01; shown while the Review Queue is
+#: visible (FR-CRMAI-FLAG-04), never to a Viewer.
+TO_REVIEW: Final = "to_review"
+#: How many of the oldest items the section lists.
+TO_REVIEW_SHOWN: Final = 3
+
+
+def to_review(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """The count of the person's open Review Queue items and the three
+    oldest, each opening the queue. `items`: `{id, created_at, title,
+    detail}`."""
+    oldest = sorted(items, key=lambda i: (str(i["created_at"]), i["id"]))
+    return {
+        "key": TO_REVIEW,
+        "count": len(items),
+        "items": [
+            {
+                "record_type": "review_item",
+                "record_id": i["id"],
+                "title": i["title"],
+                "detail": i["detail"],
+                "created_at": i["created_at"],
+            }
+            for i in oldest[:TO_REVIEW_SHOWN]
+        ],
+    }

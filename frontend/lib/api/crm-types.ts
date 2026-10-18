@@ -84,6 +84,10 @@ export interface CrmBootstrap {
   unread: number;
   /** Late background jobs; Admins only, empty for everyone else (FR-CRM-JOB-03). */
   stale_jobs: StaleJob[];
+  /** 009: the phase switches and the Review Queue (FR-CRMAI-FLAG-03, -04). */
+  ai: CrmBootstrapAi;
+  /** 009: Admins only, whether this month's AI budget is reached (FR-CRMAI-LLM-08). */
+  ai_budget_reached?: boolean;
 }
 
 /** GET /crm/settings — Admin only. The allow-list is read-only here. */
@@ -292,7 +296,9 @@ export interface CrmFlag {
     | "stale_deal"
     | "loose_end"
     | "task_overdue"
-    | "deal";
+    | "deal"
+    /** 009 FR-CRMAI-RULE-03: only while R-2 and phase 3 are on. */
+    | "stuck_in_stage";
   /** What the dot says on hover: "Reply owed", "Stale deal"… */
   label: string;
   level: "amber" | "red";
@@ -448,8 +454,10 @@ export interface CrmLinkRef {
   name: string | null;
 }
 
-export type TaskStatus = "todo" | "in_progress" | "done";
+/** 008 FR-TASK-CHG-01, -10: open and waiting are open; done and cancelled closed. */
+export type TaskStatus = "open" | "waiting" | "done" | "cancelled";
 export type TaskBucket = "today" | "this_week" | "this_month" | "later";
+export type TaskPriority = "urgent" | "high" | "normal" | "low";
 
 /** Contracts §2.5.1 task — linked to at least one record (FR-CRM-TASK-01). */
 export interface CrmTask extends RecordStamps, RecordFlags {
@@ -467,6 +475,17 @@ export interface CrmTask extends RecordStamps, RecordFlags {
   assignee_id: string;
   assignee_name: string | null;
   completed_at: string | null;
+  /** 008 FR-TASK-CHG-01. */
+  priority: TaskPriority;
+  priority_label: string;
+  tags: string[];
+  source: string;
+  source_label: string;
+  /** FR-TASK-DATA-09: a parent the reader cannot see is `{private: true}`. */
+  parent: { id: string; title: string | null } | { private: true } | null;
+  waiting_on: { id: string | null; label: string | null } | null;
+  /** 008 FR-TASK-VIS-07: only when the reader can see the TVA project. */
+  project: { id: string; name: string } | null;
   links: CrmLinkRef[];
 }
 
@@ -482,6 +501,10 @@ export interface CrmNote extends RecordStamps {
   occurred_on: string | null;
   links: CrmLinkRef[];
   mentions: { id: string; name: string | null }[];
+  /** 009 FR-CRMAI-MEET-05: `fireflies:<transcript_id>` on a meeting note the job wrote. */
+  source_ref?: string | null;
+  /** 009 FR-CRMAI-MEET-05: set on a meeting note the job wrote; its body is plain text. */
+  ai_provenance?: CrmMeetingProvenance | null;
 }
 
 /** A deal's other contact and their Role in deal (spec §5.8). */
@@ -756,6 +779,11 @@ export interface CrmTimelineEntry {
   type: CrmTimelineType;
   summary: string;
   changes: { field: string; label: string; before: unknown; after: unknown }[];
+  /** 009 FR-CRMAI-REV-05: set when the change was an approved AI suggestion. */
+  suggestion_id?: string;
+  approved_suggestion?: boolean;
+  /** 009 FR-CRMAI-MEET-05: on a note entry for a meeting note the job wrote. */
+  ai?: AiProvenance | null;
 }
 
 /** GET /crm/{object}/{id} — the record page in one call. */
@@ -783,6 +811,14 @@ export interface CrmRecordPage<T extends CrmRecord> {
   merged_from?: { id: string; name: string };
   /** 1b: companies, people and deals — the latest email threads (S10). */
   emails?: CrmEmailThread[];
+  /** 009 S1c, phase 1 on: the latest 5 threads' summaries (FR-CRMAI-SUM-08). */
+  summaries?: CrmThreadSummary[];
+  /** 009 S2b, phase 2 on: a company's enriched values (FR-CRMAI-ENR-03, -04). */
+  enrichment?: CrmEnrichment | null;
+  /** 009 S3a, phase 3 on: a company's or deal's AI fields (FR-CRMAI-FIELD-05). */
+  ai_fields?: CrmAiFieldValue[];
+  /** 009 S4, phase 4 on: a company's or person's contact recency (FR-CRMAI-REL-02). */
+  contact_recency?: CrmContactRecency;
 }
 
 export interface CrmPage<T> {
@@ -1171,7 +1207,13 @@ export type CrmJobName =
   | "digests"
   | "reminders"
   | "trash_purge"
-  | "automations";
+  | "automations"
+  | "summaries"
+  | "meetings"
+  | "enrichment"
+  | "ai_fields"
+  | "review_expiry"
+  | "followup_drafts";
 
 /** A job more than twice its interval late (FR-CRM-JOB-03). */
 export interface StaleJob {
@@ -1242,6 +1284,13 @@ export interface FlagThresholds {
   close_amber_days: number;
   stale_red_days: number;
   stale_amber_days: number;
+  /** 009 FR-CRMAI-RULE-01: the rule parameters, whole days 1–365. */
+  stuck_discovery_days: number;
+  stuck_qualification_days: number;
+  stuck_proposal_days: number;
+  stuck_negotiation_days: number;
+  no_reply_days: number;
+  lead_cold_days: number;
 }
 
 /** `automations` — the switches of automations 2, 5, 6, 7 and 8 (FR-CRM-AUTO-02). */
@@ -1251,6 +1300,11 @@ export interface AutomationSwitches {
   digests: boolean;
   task_reminders: boolean;
   campaign_conversion: boolean;
+  /** 009 FR-CRMAI-RULE-01: R-1 to R-4, seeded off. */
+  no_reply_draft: boolean;
+  stuck_notice: boolean;
+  lead_cold: boolean;
+  campaign_followthrough: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +1321,10 @@ export interface CrmEmailThread {
   /** The synced mailbox it came from. */
   mailbox: string | null;
   messages: number;
+  /** 009 S1c: `<mailbox_id>:<gmail thread id>` (FR-CRMAI-MCP-01). */
+  thread_key: string;
+  /** 009 S1c: present while phase 1 is on and the thread has a summary. */
+  summary?: CrmThreadSummaryBody;
 }
 
 export interface CrmEmailThreads {
@@ -1503,4 +1561,316 @@ export interface CsvImportIn {
   mode?: CsvMode;
   actions?: Record<string, CsvMode>;
   fixup_next_step?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1a — the AI settings, spend and phase switches (009 contracts §1, §2.1)
+// ---------------------------------------------------------------------------
+
+/** The four phases: 1 summaries; 2 meetings and enrichment; 3 AI fields and
+ *  follow-up rules; 4 contact recency (FR-CRMAI-FLAG-01). */
+export type CrmAiPhase = "1" | "2" | "3" | "4";
+
+export type CrmAiPhases = Record<CrmAiPhase, boolean>;
+
+/** The `ai` setting, PATCH /crm/settings/ai (FR-CRMAI-FLAG-01, -LLM-07).
+ *  Budget in US dollars, 0 to 10000, at most two decimals. */
+export interface AiSettingsValue {
+  budget_usd: number;
+  phases: CrmAiPhases;
+}
+
+/** The AI jobs whose estimated spend Settings, AI shows. */
+export type CrmAiSpendJob = "summaries" | "meetings" | "enrichment" | "ai_fields" | "followup_drafts";
+
+/** GET /crm/ai — Admin only; the one route that returns spend (FR-CRMAI-LLM-09, -10).
+ *  Amounts are decimal strings in USD. */
+export interface CrmAiOverview {
+  /** YYYY-MM, an Asia/Kolkata calendar month. */
+  month: string;
+  budget_usd: string;
+  spend: { total_usd: string; by_job: Partial<Record<CrmAiSpendJob, string>> };
+  budget_reached: boolean;
+  phases: CrmAiPhases;
+  estimate_note: string;
+  /** False while either rate of the rate table is unset: every AI job is skipped (D-1). */
+  rates_configured: boolean;
+}
+
+/** Bootstrap `ai`, for every role; never the budget (FR-CRMAI-FLAG-03, -04). */
+export interface CrmBootstrapAi {
+  phases: CrmAiPhases;
+  review_visible: boolean;
+  open_review_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1b — the Review Queue and Today's To review (009 contracts §0, §1, §2.2)
+// ---------------------------------------------------------------------------
+
+/** Where an AI value came from (P-2). */
+export type AiSourceKind = "email_thread" | "meeting" | "enrichment" | "ai_field" | "rule";
+
+/** The provenance every AI value carries; the AI marker shows it (009 contracts §0). */
+export interface AiProvenance {
+  source_kind: AiSourceKind;
+  /** Null for a deterministic rule (R-2, R-3, R-4). */
+  model: string | null;
+  generated_at: string | null;
+  source?: { record_type: ViewObjectKind; record_id: string } | { thread_key: string } | null;
+}
+
+/** A meeting note's provenance (009 data-model §3.4); the transcript link is the only URL stored. */
+export interface CrmMeetingProvenance extends AiProvenance {
+  source_kind: "meeting";
+  transcript_updated_at: string | null;
+  transcript_url: string | null;
+}
+
+export type ReviewItemType =
+  | "next_step_change"
+  | "task_from_commitment"
+  | "task_from_meeting"
+  | "deal_link"
+  | "enrichment_conflict"
+  | "rule_suggestion";
+
+export type ReviewItemStatus = "open" | "approved" | "dismissed" | "expired";
+
+/** An open deal the suggestion may apply to (Q-07, FR-CRMAI-MEET-04). */
+export interface ReviewDealChoice {
+  id: string;
+  name: string;
+  next_step: string | null;
+  next_step_on: string | null;
+}
+
+/** One Review Queue item — 009 contracts §2.2.1 (FR-CRMAI-REV-01).
+ *  `suggestion` and `current` hold the type's fields (data-model §3.2.1);
+ *  every string in them is generated plain text. */
+export interface CrmReviewItem {
+  id: string;
+  type: ReviewItemType;
+  type_label: string;
+  status: ReviewItemStatus;
+  /** Counts each refresh of the suggestion; an approval sends it back. */
+  version: number;
+  /** Null: the item belongs to the workspace's Admins (FR-CRMAI-REV-02). */
+  owner: { id: string; name: string } | null;
+  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string };
+  deal_choices: ReviewDealChoice[];
+  suggestion: Record<string, unknown>;
+  current: Record<string, unknown>;
+  source: {
+    kind: "email_thread" | "meeting" | "enrichment" | "rule";
+    label: string;
+    link: { thread_key?: string; record_type?: ViewObjectKind; record_id?: string } | null;
+  };
+  ai: AiProvenance | null;
+  /** The last refusal of an approval; the item stays open (FR-CRMAI-REV-06). */
+  refusal: string | null;
+  created_at: string;
+  expires_on: string;
+  decided_at: string | null;
+  decided_by: { id: string; name: string | null } | null;
+}
+
+/** GET /crm/review — a Viewer gets no items. */
+export interface CrmReviewList {
+  items: CrmReviewItem[];
+  total: number;
+}
+
+/** GET /crm/review query: `all` and `decided` are an Admin's (D-3). */
+export interface ReviewListQuery {
+  scope?: "mine" | "all";
+  status?: "open" | "decided";
+  limit?: number;
+}
+
+/** POST /crm/review/{id}/approve. `version` is the item's as shown (a
+ *  refreshed suggestion is refused 409); `edits` is "Edit and approve". */
+export interface ReviewApproveIn {
+  version: number;
+  deal_id?: string;
+  option?: string;
+  edits?: Record<string, unknown>;
+}
+
+/** What approving produced, through the manual path. */
+export interface ReviewApproveResult {
+  item: CrmReviewItem;
+  result: {
+    opportunity?: CrmOpportunity;
+    company?: CrmCompany;
+    person?: CrmPerson;
+    member?: CrmCampaignMember;
+    task?: CrmTask;
+    note?: CrmNote;
+    used?: boolean;
+  };
+}
+
+/** One line of To review: an item, opening the queue. */
+export interface ToReviewItem {
+  record_type: "review_item";
+  record_id: string;
+  title: string;
+  detail: string;
+  created_at: string;
+}
+
+/** Today's sixth section (FR-CRMAI-REV-09): the count and the three oldest. */
+export interface ToReviewSection {
+  key: "to_review";
+  count: number;
+  items: ToReviewItem[];
+}
+
+// ---------------------------------------------------------------------------
+// 009 S1c — email thread summaries (009 contracts §1, §2.3; FR-CRMAI-SUM)
+// ---------------------------------------------------------------------------
+
+export type ThreadSentiment = "positive" | "neutral" | "concern";
+
+/** What Nunnari promised; the owner and date only when the thread stated them. */
+export interface ThreadCommitment {
+  text: string;
+  owner_name: string | null;
+  due_on: string | null;
+}
+
+/** A thread's summary as the Emails tab carries it. Every string is
+ *  generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmThreadSummaryBody {
+  summary: string;
+  asks: string[];
+  commitments: ThreadCommitment[];
+  sentiment: ThreadSentiment;
+  ai: AiProvenance;
+}
+
+/** GET /crm/email-threads/{thread_key}/summary, and each of a record's
+ *  `summaries`. */
+export interface CrmThreadSummary extends CrmThreadSummaryBody {
+  thread_key: string;
+  subject: string | null;
+  last_at: string;
+  next_step?: string | null;
+  next_step_on?: string | null;
+  links: { record_type: "company" | "person" | "opportunity"; record_id: string; name: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// 009 S2b — company enrichment (009 contracts §1, §2.4; FR-CRMAI-ENR)
+// ---------------------------------------------------------------------------
+
+export type EnrichmentStatus = "queued" | "done" | "failed";
+
+/** The main fields an enriched value promotes to (spec 009 §7.2). */
+export type EnrichmentField = "industry_id" | "size_id" | "city" | "country" | "description" | "linkedin";
+
+/** What was read from the company's own website (data-model §3.5). Every
+ *  string is generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmEnrichmentValues {
+  industry?: string | null;
+  sub_industry?: string | null;
+  employee_band?: string | null;
+  city?: string | null;
+  country?: string | null;
+  description?: string | null;
+  linkedin?: string | null;
+  products?: string[];
+}
+
+/** A company's `enrichment` on its record read (009 contracts §1). */
+export interface CrmEnrichment {
+  status: EnrichmentStatus;
+  /** Set when failed, from a fixed list (FR-CRMAI-ENR-06). */
+  failure_reason?: string | null;
+  values: CrmEnrichmentValues;
+  /** True where the main field is empty and the value may be promoted (FR-CRMAI-ENR-04). */
+  promotable: Partial<Record<EnrichmentField, boolean>>;
+  /** Open `enrichment_conflict` items, where the main field holds another value (FR-CRMAI-ENR-05). */
+  conflicts: string[];
+  ai: AiProvenance | null;
+}
+
+/** POST /crm/enrichment/run — **Enrich selected** (FR-CRMAI-ENR-01, -08). */
+export interface CrmEnrichmentRun {
+  queued: number;
+  skipped_no_website: number;
+  already_enriched: number;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S3a — AI fields (009 contracts §1, §2.5; FR-CRMAI-FIELD)
+// ---------------------------------------------------------------------------
+
+export type AiFieldRecordType = "company" | "opportunity";
+
+export type AiFieldOutputType = "text" | "single_select" | "number";
+
+/** GET /crm/ai-fields — one definition (FR-CRMAI-FIELD-01); Admins only. */
+export interface CrmAiField {
+  id: string;
+  key: string;
+  name: string;
+  record_type: AiFieldRecordType;
+  prompt: string;
+  output_type: AiFieldOutputType;
+  /** 2 to 12 for a single select; empty otherwise. */
+  options: string[];
+  enabled: boolean;
+}
+
+/** POST /crm/ai-fields. */
+export interface CrmAiFieldIn {
+  name: string;
+  record_type: AiFieldRecordType;
+  prompt: string;
+  output_type: AiFieldOutputType;
+  options?: string[];
+  enabled?: boolean;
+}
+
+/** PATCH /crm/ai-fields/{id}: record type and output type are fixed after create. */
+export interface CrmAiFieldPatch {
+  name?: string;
+  prompt?: string;
+  options?: string[];
+  enabled?: boolean;
+}
+
+/** One entry of a company's or deal's `ai_fields` on its record read (009 contracts §1).
+ *  Text and the reason are generated plain text (FR-CRMAI-LLM-04). */
+export interface CrmAiFieldValue {
+  key: string;
+  name: string;
+  output_type: AiFieldOutputType;
+  /** A number output is 0–100, shown on the record page only (Q-27). */
+  value: string | number | null;
+  reason?: string | null;
+  ai: AiProvenance | null;
+}
+
+/** POST /crm/{companies|opportunities}/{id}/ai-fields/recompute (Q-38). */
+export interface CrmAiFieldRecompute {
+  queued: boolean;
+  next_allowed_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 009 S4 — contact recency (009 contracts §1; FR-CRMAI-REL)
+// ---------------------------------------------------------------------------
+
+/** Derived, not AI (FR-CRMAI-REL-01, Q-21). */
+export type ContactRecencyLevel = "recent" | "fading" | "lapsed";
+
+/** A company's or person's `contact_recency` on its record read. The level is
+ *  null until the flags job first computes it (data-model §3.10). */
+export interface CrmContactRecency {
+  level: ContactRecencyLevel | null;
+  /** Gmail sync is off for the workspace: counted from meeting notes only (FR-CRMAI-REL-03). */
+  meetings_only: boolean;
 }

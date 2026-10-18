@@ -8,12 +8,13 @@ cross the wire as decimal strings, as everywhere in the portal.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, create_model, field_validator
 
 Timezone = Literal["Asia/Kolkata", "Australia/Sydney"]
 CrmRole = Literal["admin", "member", "viewer"]
@@ -447,13 +448,20 @@ class TaskFields(BaseModel):
 
     title: str | None = Field(default=None, max_length=200)
     body: str | None = Field(default=None, max_length=20_000)
-    status: Literal["todo", "in_progress", "done"] | None = None
+    # 008 FR-TASK-CHG-10: the new statuses; the old keys still read as Open (TP-05).
+    status: Literal["open", "waiting", "done", "cancelled", "todo", "in_progress"] | None = None
     due_on: date | None = None
     bucket: Literal["today", "this_week", "this_month", "later"] | None = None
     category_id: str | None = None
     category: str | None = Field(default=None, max_length=60)
     assignee_id: str | None = None
     links: list[TaskLinkIn] | None = Field(default=None, max_length=20)
+    # 008 FR-TASK-CHG-01.
+    priority: Literal["urgent", "high", "normal", "low"] | None = None
+    tags: list[str] | None = Field(default=None, max_length=10)
+    parent_id: str | None = None
+    waiting_on_id: str | None = None
+    waiting_on_text: str | None = Field(default=None, max_length=200)
 
 
 class TaskUpdate(TaskFields):
@@ -781,3 +789,332 @@ class ExportViewIn(BaseModel):
     view_id: str | None = Field(default=None, max_length=64)
     view: str | None = Field(default=None, min_length=1, max_length=80)
     ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the CRM intelligence layer (contracts §1, §2)
+# ---------------------------------------------------------------------------
+
+PhaseKey = Literal["1", "2", "3", "4"]
+
+
+class AiSettingsValue(BaseModel):
+    """FR-CRMAI-FLAG-01, -LLM-07 — the `ai` setting's value: the monthly budget
+    in US dollars and the four phase switches. `PATCH /crm/settings/ai`
+    checks it with `domain/crm/ai_rules.ai_refusal`, as every setting is
+    checked by its validator."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    budget_usd: Decimal = Field(ge=0, le=10000, decimal_places=2)
+    phases: dict[PhaseKey, bool]
+
+
+class AiSpendOut(BaseModel):
+    """Month-to-date estimated spend, in total and per job (FR-CRMAI-LLM-09)."""
+
+    total_usd: Decimal
+    by_job: dict[str, Decimal]
+
+
+class AiOverviewOut(BaseModel):
+    """`GET /crm/ai` — Settings, AI, for the workspace's Admins only
+    (FR-CRMAI-LLM-09, -10; D-1)."""
+
+    month: str
+    budget_usd: Decimal
+    spend: AiSpendOut
+    budget_reached: bool
+    phases: dict[PhaseKey, bool]
+    estimate_note: str
+    rates_configured: bool
+
+
+ReviewItemType = Literal[
+    "next_step_change",
+    "task_from_commitment",
+    "task_from_meeting",
+    "deal_link",
+    "enrichment_conflict",
+    "rule_suggestion",
+]
+ReviewStatus = Literal["open", "approved", "dismissed", "expired"]
+
+
+class ReviewListQuery(BaseModel):
+    """`GET /crm/review` — `scope=all` and `status=decided` are for workspace
+    Admins; no other filter (D-3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["mine", "all"] = "mine"
+    status: Literal["open", "decided"] = "open"
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class ReviewApproveIn(BaseModel):
+    """`POST /crm/review/{id}/approve` (contracts §2.2). `version` is the
+    item's `version` as it was shown: a refreshed item is not approved
+    (409). `deal_id` picks the deal when the item has several; `option` a
+    rule suggestion's choice; `edits` is "Edit and approve": the
+    suggestion's fields as the person changed them, which the manual path
+    then validates as a manual edit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+    deal_id: str | None = Field(default=None, max_length=64)
+    option: str | None = Field(default=None, max_length=40)
+    edits: dict[str, Any] | None = None
+
+
+class ReviewItemOut(BaseModel):
+    """One Review Queue item as the queue shows it (contracts §2.2.1)."""
+
+    id: str
+    type: ReviewItemType
+    type_label: str
+    status: ReviewStatus
+    #: Counts each refresh of the item; an approval sends it back (069).
+    version: int
+    owner: dict[str, Any] | None
+    target: dict[str, Any]
+    deal_choices: list[dict[str, Any]]
+    suggestion: dict[str, Any]
+    current: dict[str, Any]
+    source: dict[str, Any]
+    ai: dict[str, Any]
+    refusal: str | None
+    created_at: str
+    expires_on: date
+    decided_at: str | None
+    decided_by: dict[str, Any] | None
+
+
+#: FR-CRMAI-SUM-04 — a sentence ends at `.`, `!` or `?` before a space or
+#: the end of the text.
+_SENTENCE_END = re.compile(r"[.!?]+(?=\s|$)")
+
+
+class SummaryCommitment(BaseModel):
+    """What Nunnari promised on the thread: a paraphrase, its owner as the
+    number of a listed team member or "unknown" (FR-CRMAI-SUM-12), and its
+    date when one was stated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200)
+    owner: str = Field(max_length=40)
+    due_on: date | None
+
+
+class SummaryOutput(BaseModel):
+    """FR-CRMAI-SUM-04 — what the model must answer for a thread, validated
+    before anything is saved: 2 to 3 plain sentences, the other side's asks
+    and Nunnari's commitments as paraphrases of at most 200 characters, a
+    next step and date only when the thread implies one, and the sentiment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=600)
+    asks: list[str] = Field(max_length=10)
+    commitments: list[SummaryCommitment] = Field(max_length=10)
+    next_step: str | None = Field(max_length=500)
+    next_step_on: date | None
+    sentiment: Literal["positive", "neutral", "concern"]
+
+    @field_validator("summary")
+    @classmethod
+    def _two_or_three_sentences(cls, value: str) -> str:
+        value = value.strip()
+        if not 2 <= len(_SENTENCE_END.findall(value)) <= 3:
+            raise ValueError("a summary is 2 to 3 sentences")
+        return value
+
+    @field_validator("asks")
+    @classmethod
+    def _short_asks(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(a.strip()) <= 200 for a in value):
+            raise ValueError("an ask is 1 to 200 characters")
+        return [a.strip() for a in value]
+
+
+class ThreadSummaryOut(BaseModel):
+    """`GET /crm/email-threads/{thread_key}/summary` (contracts §2.3)."""
+
+    thread_key: str
+    subject: str | None
+    last_at: str | None
+    summary: str
+    asks: list[str]
+    commitments: list[dict[str, Any]]
+    next_step: str | None
+    next_step_on: date | None
+    sentiment: Literal["positive", "neutral", "concern"]
+    links: list[dict[str, Any]]
+    ai: dict[str, Any]
+
+
+class MeetingActionItem(BaseModel):
+    """An action item agreed in the meeting: a paraphrase, its owner as the
+    number of a listed team member or "unknown" (FR-CRMAI-SUM-12, applied by
+    FR-CRMAI-MEET-05), and its date when one was stated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200)
+    owner: str = Field(max_length=40)
+    due_on: date | None
+
+
+class MeetingOutput(BaseModel):
+    """FR-CRMAI-MEET-05, -06 — what the model must answer for a meeting,
+    validated before anything is saved: a summary of at most 5 lines, the
+    decisions and action items as paraphrases of at most 200 characters, and
+    a next step and date only when the meeting agreed one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=1000)
+    decisions: list[str] = Field(max_length=10)
+    action_items: list[MeetingActionItem] = Field(max_length=20)
+    next_step: str | None = Field(max_length=500)
+    next_step_on: date | None
+
+    @field_validator("summary")
+    @classmethod
+    def _five_lines(cls, value: str) -> str:
+        lines = [line.strip() for line in value.strip().splitlines() if line.strip()]
+        if not 1 <= len(lines) <= 5:
+            raise ValueError("a meeting summary is 1 to 5 lines")
+        return "\n".join(lines)
+
+    @field_validator("decisions")
+    @classmethod
+    def _short_decisions(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(d.strip()) <= 200 for d in value):
+            raise ValueError("a decision is 1 to 200 characters")
+        return [d.strip() for d in value]
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — company enrichment (contracts §2.4; FR-CRMAI-ENR)
+# ---------------------------------------------------------------------------
+
+
+class EnrichmentOutput(BaseModel):
+    """FR-CRMAI-ENR-03 — what the model must answer for a company's website,
+    validated before anything is saved: each value a short generated string,
+    or null when the pages do not say (nothing is guessed, FR-CRMAI-ENR-06);
+    the description at most 300 characters, at most eight products of 60."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    industry: str | None = Field(max_length=300)
+    sub_industry: str | None = Field(max_length=300)
+    employee_band: str | None = Field(max_length=300)
+    city: str | None = Field(max_length=100)
+    country: str | None = Field(max_length=100)
+    description: str | None = Field(max_length=300)
+    linkedin: str | None = Field(max_length=300)
+    products: list[str] = Field(max_length=8)
+
+    @field_validator("products")
+    @classmethod
+    def _short_products(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(p.strip()) <= 60 for p in value):
+            raise ValueError("a product is 1 to 60 characters")
+        return [p.strip() for p in value]
+
+
+class EnrichRunIn(BaseModel):
+    """`POST /crm/enrichment/run` — Enrich selected: the companies selected
+    on a company view (contracts §2.4; no view-wide run, D-3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI fields (contracts §2.5; FR-CRMAI-FIELD)
+# ---------------------------------------------------------------------------
+
+
+class AiFieldOutput(BaseModel):
+    """FR-CRMAI-FIELD-01 — what the model must answer for one AI field: its
+    `value`, shaped by the field (`for_field`), and for Deal outlook a
+    one-line `reason`. `domain/crm/ai_fields.stored` checks the lines of a
+    text answer before anything is saved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | int | None
+
+    @classmethod
+    def for_field(
+        cls,
+        output_type: str,
+        options: list[str] | tuple[str, ...] = (),
+        *,
+        with_reason: bool = False,
+    ) -> type[AiFieldOutput]:
+        """The output model of one field: one of its options, a whole
+        number from 0 to 100 (or null), or text of at most 600 characters
+        (or null); with a reason of at most 200 when the field gives one."""
+        if output_type == "single_select":
+            value: Any = (Literal[tuple(options)], ...)  # type: ignore[valid-type]
+        elif output_type == "number":
+            value = (int | None, Field(ge=0, le=100))
+        else:
+            value = (str | None, Field(max_length=600))
+        extra: dict[str, Any] = (
+            {"reason": (str, Field(min_length=1, max_length=200))} if with_reason else {}
+        )
+        return create_model(  # type: ignore[call-overload]
+            f"AiField{output_type.title().replace('_', '')}Output",
+            __base__=cls,
+            value=value,
+            **extra,
+        )
+
+
+class AiFieldIn(BaseModel):
+    """`POST /crm/ai-fields` (contracts §2.5): the spec's attributes only
+    (FR-CRMAI-FIELD-01, D-3). Options belong to a single select, 2 to 12."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=60)
+    record_type: Literal["company", "opportunity"]
+    prompt: str = Field(min_length=1, max_length=2000)
+    output_type: Literal["text", "single_select", "number"]
+    options: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=100)
+    enabled: bool = True
+
+
+class AiFieldPatch(BaseModel):
+    """`PATCH /crm/ai-fields/{id}`: name, prompt, options, enabled. The
+    record type and output type are fixed once the field exists (422)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    prompt: str | None = Field(default=None, min_length=1, max_length=2000)
+    options: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=100)
+    enabled: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — follow-up rules (FR-CRMAI-RULE-02)
+# ---------------------------------------------------------------------------
+
+
+class FollowupDraftOutput(BaseModel):
+    """FR-CRMAI-RULE-02 — what the model must answer for one R-1 draft: the
+    body of a follow-up email, plain text, at most 2,000 characters
+    (data-model §3.2.1). The owner edits and sends it from their own mail."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft: str = Field(min_length=1, max_length=2000)

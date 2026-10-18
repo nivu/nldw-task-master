@@ -26,7 +26,7 @@ from app.domain.crm import dashboard as rules
 from app.domain.crm import objects
 from app.schemas.crm import TargetIn
 from app.services import capacity
-from app.services.crm import CrmRefused, store
+from app.services.crm import CrmRefused, flags, store
 from app.services.crm import present as show
 from app.services.crm import records as base
 from app.services.crm.context import actor
@@ -125,6 +125,8 @@ def dashboard(
             if o["list_key"] == "opportunity.stage" and o.get("system_key")
         },
         members=sorted(ws.members),
+        # Spec 009 FR-CRMAI-RULE-03: Stuck in stage counted while R-2 is on.
+        stuck_in_stage=flags.stuck_on(ws_id),
     )
     # Deal flag rows carry no entity or channel; the panel filters by them.
     by_id = {d["id"]: d for d in deals}

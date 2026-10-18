@@ -85,7 +85,7 @@ class TestTasks:
                 422,
                 "A task must be linked to at least one record.",
             )
-        assert fake.rows["crm_tasks"] == {}
+        assert fake.rows["tasks"] == {}
 
     def test_created_with_its_links_and_the_caller_as_assignee(self, crm):
         http, _, _, made = crm
@@ -93,7 +93,7 @@ class TestTasks:
         assert r.status_code == 201, r.text
         body = r.json()
         assert (body["status"], body["assignee_id"], body["assignee_name"]) == (
-            "todo",
+            "open",
             MEMBER["id"],
             "Deepika",
         )
@@ -384,4 +384,4 @@ class TestTrash:
         http.delete(
             f"/api/v1/crm/people/{made['person']['id']}/permanent{LABS}", headers=as_(OWNER["id"])
         )
-        assert [lk["record_type"] for lk in fake.rows["crm_task_links"].values()] == ["company"]
+        assert [lk["record_type"] for lk in fake.rows["task_links"].values()] == ["company"]

@@ -850,7 +850,7 @@ class TestConvertAccount:
 def _crm_tables(stack) -> list[str]:
     rows = stack.sql(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
-        "AND tablename LIKE 'crm\\_%' ORDER BY 1"
+        "AND (tablename LIKE 'crm\\_%' OR tablename IN ('tasks', 'task_links')) ORDER BY 1"
     )
     return [r["tablename"] for r in rows]
 
@@ -863,6 +863,9 @@ class TestBrowserRoles:
             "crm_workspace_settings",
             "crm_select_options",
             "crm_fx_rates",
+            # 008 (047): the shared task tables.
+            "tasks",
+            "task_links",
         } <= set(_crm_tables(stack))
 
     def test_every_crm_table_has_rls_and_no_browser_grant(self, stack):

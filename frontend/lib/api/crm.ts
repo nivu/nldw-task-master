@@ -11,6 +11,7 @@
 import { backendFetch, download, upload } from "@/lib/api/backend";
 import type {
   AccountTypeResult,
+  AiSettingsValue,
   BulkAction,
   BulkResult,
   CampaignMembers,
@@ -24,8 +25,14 @@ import type {
   CrmCampaignMember,
   CrmAuditEntry,
   CrmAuditFilters,
+  CrmAiField,
+  CrmAiFieldIn,
+  CrmAiFieldPatch,
+  CrmAiFieldRecompute,
+  CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
+  CrmEnrichmentRun,
   CrmColor,
   CrmCompany,
   CrmContact,
@@ -53,6 +60,8 @@ import type {
   CrmQueryResult,
   CrmRecord,
   CrmRecordPage,
+  CrmReviewItem,
+  CrmReviewList,
   CrmRole,
   CrmSavedView,
   CrmSearchResult,
@@ -83,6 +92,9 @@ import type {
   OptionUpdate,
   ProjectCategory,
   QuerySpec,
+  ReviewApproveIn,
+  ReviewApproveResult,
+  ReviewListQuery,
   StageChanges,
   StageKey,
   StageMoveResult,
@@ -798,3 +810,61 @@ export function saveFile({ blob, filename }: { blob: Blob; filename: string }) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ---------------------------------------------------------------------------
+// 009 S1a — Settings, AI (009 contracts §2.1; FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01)
+// ---------------------------------------------------------------------------
+
+/** Month-to-date estimated spend, the budget and the phase switches; Admins only. */
+export const getCrmAi = (workspace: string) => call<CrmAiOverview>(`/ai${query(workspace)}`);
+
+/** Saves the budget and the phase switches together: the validator wants both keys. */
+export const setCrmAiSetting = (workspace: string, value: AiSettingsValue) =>
+  updateCrmSetting(workspace, "ai", value);
+
+// ---------------------------------------------------------------------------
+// 009 S1b — the Review Queue (009 contracts §2.2; FR-CRMAI-REV)
+// ---------------------------------------------------------------------------
+
+/** Items the person may see: their own, or (Admins) all and the decided ones. */
+export const listCrmReview = (workspace: string, filters: ReviewListQuery = {}) =>
+  call<CrmReviewList>(`/review${query(workspace, { ...filters })}`);
+
+/** Applies the suggestion through the same service a manual edit uses (FR-CRMAI-REV-04). */
+export const approveCrmReview = (workspace: string, id: string, approval: ReviewApproveIn) =>
+  call<ReviewApproveResult>(`/review/${id}/approve${query(workspace)}`, {
+    method: "POST",
+    ...body(approval),
+  });
+
+export const dismissCrmReview = (workspace: string, id: string) =>
+  call<{ item: CrmReviewItem }>(`/review/${id}/dismiss${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// 009 S2b — company enrichment (009 contracts §2.4; FR-CRMAI-ENR)
+// ---------------------------------------------------------------------------
+
+/** **Enrich selected**: Admins only, at most 500 companies; the work runs in the background. */
+export const runCrmEnrichment = (workspace: string, companyIds: string[]) =>
+  call<CrmEnrichmentRun>(`/enrichment/run${query(workspace)}`, {
+    method: "POST",
+    ...body({ company_ids: companyIds }),
+  });
+
+// ---------------------------------------------------------------------------
+// 009 S3a — AI fields (009 contracts §2.5; FR-CRMAI-FIELD)
+// ---------------------------------------------------------------------------
+
+/** The workspace's AI field definitions; Admins only (web only, FR-CRMAI-MCP-04). */
+export const listCrmAiFields = (workspace: string) => call<CrmAiField[]>(`/ai-fields${query(workspace)}`);
+
+export const createCrmAiField = (workspace: string, field: CrmAiFieldIn) =>
+  call<CrmAiField>(`/ai-fields${query(workspace)}`, { method: "POST", ...body(field) });
+
+/** There is no delete: a field is disabled, and its values stay hidden. */
+export const updateCrmAiField = (workspace: string, id: string, changes: CrmAiFieldPatch) =>
+  call<CrmAiField>(`/ai-fields/${id}${query(workspace)}`, { method: "PATCH", ...body(changes) });
+
+/** Admins and Members: now, or the trailing recompute when inside the hour (Q-38). */
+export const recomputeCrmAiFields = (workspace: string, object: "companies" | "opportunities", id: string) =>
+  call<CrmAiFieldRecompute>(`/${object}/${id}/ai-fields/recompute${query(workspace)}`, { method: "POST" });

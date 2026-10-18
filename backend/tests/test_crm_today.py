@@ -76,11 +76,11 @@ def _deal(fake, labs, company, name, next_step_on, owner=SELLER["id"], **values)
 
 
 def _task(fake, labs, title, *, assignee=SELLER["id"], links=(), **values):
-    task = _row(fake, "crm_tasks", labs, title=title, assignee_id=assignee, **values)
+    task = _row(fake, "tasks", labs, title=title, assignee_id=assignee, **values)
     for record_type, record in links:
         _row(
             fake,
-            "crm_task_links",
+            "task_links",
             labs,
             task_id=task["id"],
             record_type=record_type,
@@ -415,3 +415,72 @@ class TestPureRules:
     )
     def test_email_sync_switch(self, settings, on):
         assert rules.email_sync_on(settings) is on
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — To review, the sixth section (FR-CRMAI-REV-09, FR-CRMAI-FLAG-04,
+# FR-CRMAI-CHG-03; spec §15 "Today shows To review with the count and the
+# oldest items")
+# ---------------------------------------------------------------------------
+
+
+def _review_item(fake, labs, company, *, owner=SELLER["id"], created_at, key):
+    return fake.add_review_item(
+        labs,
+        type="enrichment_conflict",
+        source_kind="enrichment",
+        source_key=f"enrichment:{key}",
+        record_type="company",
+        record_id=company["id"],
+        owner_id=owner,
+        suggestion={"field": "city", "value": "Pune"},
+        created_at=created_at,
+    )
+
+
+class TestToReview:
+    def test_to_review_is_absent_while_the_queue_is_not_visible(self, crm):
+        http, *_ = crm
+        keys = [s["key"] for s in _today(http).json()["sections"]]
+        assert "to_review" not in keys
+
+    def test_to_review_shows_the_count_and_the_three_oldest(self, crm):
+        http, fake, labs, acme = crm
+        made = [
+            _review_item(fake, labs, acme, created_at=f"2026-10-0{day}T00:00:00+00:00", key=day)
+            for day in (4, 2, 3, 1)
+        ]
+        answer = _today(http).json()
+        assert [s["key"] for s in answer["sections"]][-1] == "to_review"
+        section = _section(answer, "to_review")
+        assert section["count"] == 4
+        assert [i["record_id"] for i in section["items"]] == [
+            made[3]["id"],
+            made[1]["id"],
+            made[2]["id"],
+        ]
+        assert {i["record_type"] for i in section["items"]} == {"review_item"}
+        assert section["items"][0]["detail"] == "Acme"
+
+    def test_to_review_is_absent_for_a_viewer(self, crm):
+        http, fake, labs, acme = crm
+        fake.set_ai(labs, phases={"1": True})
+        _review_item(fake, labs, acme, owner=None, created_at="2026-10-01T00:00:00+00:00", key=1)
+        keys = [s["key"] for s in _today(http, who=VIEWER["id"]).json()["sections"]]
+        assert "to_review" not in keys
+
+    def test_to_review_is_present_while_any_phase_is_on(self, crm):
+        http, fake, labs, _ = crm
+        fake.set_ai(labs, phases={"2": True})
+        section = _section(_today(http).json(), "to_review")
+        assert (section["count"], section["items"]) == (0, [])
+
+    def test_to_review_counts_only_the_persons_own(self, crm):
+        http, fake, labs, acme = crm
+        _review_item(
+            fake, labs, acme, owner=MEMBER["id"], created_at="2026-10-01T00:00:00+00:00", key=1
+        )
+        keys = [s["key"] for s in _today(http).json()["sections"]]
+        assert "to_review" not in keys
+        section = _section(_today(http, who=MEMBER["id"]).json(), "to_review")
+        assert section["count"] == 1

@@ -19,12 +19,16 @@ from crm_fake import client as crm_client
 
 from app.config import settings
 from app.domain.crm import settings as setting_rules
-from app.services.crm import flags, notifications
+from app.services.crm import flags, jobs, notifications
 from app.tasks import crm as tasks
 
 NOW = datetime(2026, 10, 14, 6, 30, tzinfo=UTC)
 LABS = "?workspace=labs"
 ON = {k: True for k in setting_rules.AUTOMATIONS}
+#: Spec 009: the follow-up rules' switches, off.
+RULES_OFF = dict.fromkeys(
+    ("no_reply_draft", "stuck_notice", "lead_cold", "campaign_followthrough"), False
+)
 
 
 @pytest.fixture
@@ -79,9 +83,9 @@ def _stale_deal(fake, ws, owner=MEMBER, days=15):
 
 def _task(fake, ws, title, due_on, assignee=MEMBER):
     return fake.add(
-        "crm_tasks",
+        "tasks",
         **{
-            **DEFAULTS["crm_tasks"],
+            **DEFAULTS["tasks"],
             "workspace_id": ws["id"],
             "title": title,
             "assignee_id": assignee["id"],
@@ -97,7 +101,7 @@ def _bell(fake, kind):
 def _recompute(monkeypatch, now=NOW):
     monkeypatch.setattr(flags, "_now", lambda: now)
     tasks._flags(now)
-    tasks._stale_notices(now)
+    tasks._automations(now)
 
 
 class TestStaleDealNotice:
@@ -138,7 +142,7 @@ class TestStaleDealNotice:
     def test_switched_off_nothing_and_skipped(self, crm, monkeypatch):
         _, fake, labs, academy, sent = crm
         _stale_deal(fake, labs)
-        _switch(fake, labs, stale_notice=False)
+        _switch(fake, labs, stale_notice=False, **RULES_OFF)
         _recompute(monkeypatch)
         assert _bell(fake, "stale_deal") == [] and sent == []
         runs = _runs(fake, "automations")
@@ -230,6 +234,11 @@ class TestSwitchesInSettings:
             "digests",
             "task_reminders",
             "campaign_conversion",
+            # Spec 009 FR-CRMAI-RULE-01: R-1 to R-4.
+            "no_reply_draft",
+            "stuck_notice",
+            "lead_cold",
+            "campaign_followthrough",
         }
 
     @pytest.mark.parametrize("unswitchable", ["closed_lost_tasks", "delivery_handoff", "flags"])
@@ -285,3 +294,67 @@ class TestSwitchesInSettings:
             headers=as_(OWNER["id"]),
         )
         assert r.status_code == 422
+
+
+class TestPerSwitchRuns:
+    """Spec 009 FR-CRMAI-JOB-05 — the `automations` job checks each of its
+    five switches on its own, and is `skipped` only when all five are off;
+    the follow-up rules also wait for phase 3."""
+
+    def _cold(self, fake, ws):
+        return fake.add(
+            "crm_companies",
+            **{
+                **DEFAULTS["crm_companies"],
+                "workspace_id": ws["id"],
+                "name": "Quiet",
+                "lead_stage": "contacted",
+                "owner_id": MEMBER["id"],
+                "created_at": (NOW - timedelta(days=60)).isoformat(),
+            },
+        )
+
+    def test_automations_skipped_only_when_all_five_are_off(self, crm):
+        _, fake, labs, academy, _ = crm
+        _switch(fake, labs, stale_notice=False, **RULES_OFF)
+        _switch(fake, academy, stale_notice=False, **{**RULES_OFF, "lead_cold": True})
+        tasks._automations(NOW)
+        runs = _runs(fake, "automations")
+        assert runs[labs["id"]]["outcome"] == "skipped"
+        assert runs[labs["id"]]["counts"] == {
+            "skipped": "The stale-deal notice and the follow-up rules are switched off."
+        }
+        assert runs[academy["id"]]["outcome"] == "ok"
+
+    def test_automations_the_stale_notice_alone(self, crm):
+        _, fake, labs, _, _ = crm
+        _switch(fake, labs, **RULES_OFF)
+        fake.set_ai(labs, budget_usd=10, phases={"3": True})
+        self._cold(fake, labs)
+        tasks._automations(NOW)
+        run = _runs(fake, "automations")[labs["id"]]
+        assert run["outcome"] == "ok"
+        assert set(run["counts"]) == {"stale_notices", "undeliverable"}
+        assert fake.rows["crm_review_items"] == {}
+
+    def test_automations_one_rule_alone(self, crm):
+        _, fake, labs, _, _ = crm
+        _switch(fake, labs, stale_notice=False, **{**RULES_OFF, "lead_cold": True})
+        fake.set_ai(labs, budget_usd=10, phases={"3": True})
+        self._cold(fake, labs)
+        tasks._automations(NOW)
+        run = _runs(fake, "automations")[labs["id"]]
+        assert (run["outcome"], run["counts"]) == ("ok", {"lead_cold_items": 1})
+
+    def test_automations_rules_wait_for_phase_3(self, crm):
+        _, fake, labs, _, _ = crm
+        _switch(fake, labs, stale_notice=False)
+        self._cold(fake, labs)
+        tasks._automations(NOW)
+        run = _runs(fake, "automations")[labs["id"]]
+        assert (run["outcome"], run["counts"]) == ("ok", {})
+        assert fake.rows["crm_review_items"] == {}
+
+    def test_automations_is_labelled_automations(self):
+        assert jobs.JOBS["automations"].label == "Automations"
+        assert jobs.JOBS["followup_drafts"].label == "Follow-up drafts"

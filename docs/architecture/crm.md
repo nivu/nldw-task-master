@@ -4,7 +4,11 @@ How the CRM works *today*. What it must do lives in
 [`specs/007-crm/spec.md`](../../specs/007-crm/spec.md), the tables and
 database functions in [`data-model.md`](../../specs/007-crm/data-model.md),
 the routes and tools in [`contracts/api.md`](../../specs/007-crm/contracts/api.md);
-why, and the rules it may not break, live in the constitution.
+why, and the rules it may not break, live in the constitution. The
+intelligence layer (summaries, the Review Queue, meetings, enrichment, AI
+fields, the follow-up rules, contact recency) is specified in
+[`specs/009-crm-intelligence/`](../../specs/009-crm-intelligence/spec.md)
+and described [below](#the-intelligence-layer).
 
 The CRM is a second application inside the portal: its own pages under
 `/crm`, its own routes under `/api/v1/crm/`, its own `crm_*` tables, and a
@@ -239,7 +243,8 @@ availability can be read off it.
 
 ## Background jobs and queues
 
-All on the existing Celery worker and beat, except Gmail pages:
+All on the existing Celery worker and beat, except Gmail pages and the AI
+jobs ([below](#worker-and-queue)):
 
 | Job | Schedule | Queue |
 |---|---|---|
@@ -260,21 +265,211 @@ messages use the portal's `notify.deliver` (Slack DM, email fallback).
 (`GOOGLE_SERVICE_ACCOUNT_JSON`) lives on `worker-crm-sync` only; the API,
 beat and the shared worker hold just the non-secret `CRM_GMAIL_CONFIGURED`
 flag. Only subjects, participants, direction and time are stored, never a
-message body.
+message body. The one reader of a message's text is the summariser on
+`worker-crm-ai` (below), which holds it in memory and stores none of it.
 
 ## The MCP tools
 
-Eighteen `crm_*` tools (`app/mcp/crm.py`): `crm_workspaces`, `crm_today`,
+Twenty-one `crm_*` tools (`app/mcp/crm.py`): `crm_workspaces`, `crm_today`,
 `crm_search`, `crm_get`, `crm_list`, `crm_create`, `crm_update`,
 `crm_move_stage`, `crm_handoff`, `crm_set_next_step`, `crm_add_task`,
 `crm_complete_task`, `crm_add_note`, `crm_merge`, `crm_import`,
-`crm_campaign_members`, `crm_dashboard`, `crm_run_email_sync`. Each is one
+`crm_campaign_members`, `crm_dashboard`, `crm_run_email_sync`, and spec
+009's `crm_review_list`, `crm_review_decide` and `crm_thread_summary`. Each is one
 route call. Each description opens with who may call it, in capitals; every
 write says CONFIRM FIRST and is annotated as a write (destructive for a
 stage move, the handoff and a merge). Every tool takes an optional
 `workspace`; the route applies D13. CRM routes are exempt from spec 004's
 "one tool per route" rule (FR-CRM-CHG-07); `tests/test_crm_mcp.py` holds the
 set to exactly these eighteen.
+
+## The intelligence layer
+
+Spec 009 teaches the CRM to read: labelled email threads and Fireflies
+meetings become short summaries and meeting notes, companies fill in a
+profile from their own website, Admin-defined AI fields describe companies
+and deals, and four follow-up rules point at work that needs doing. One rule
+runs through all of it: **AI suggests, a person approves.** Generated output
+is kept only in an AI-labelled place (a summary, an enriched value, an AI
+field value, a meeting note written by the sync actor) or as a Review Queue
+item; nothing generated ever changes a person-entered field, a stage, an
+owner, an amount, a next step or a task by itself, and nothing is sent to a
+client.
+
+### Worker and queue
+
+```
+beat ─▶ default queue ─▶ worker (shared)      crm.recompute_flags: flags (R-2's Stuck in stage,
+                                              contact recency) and automations (R-1, R-3, R-4
+                                              detection; R-1 enqueues crm_ai.followup_draft with ids)
+     └▶ crm-ai queue ─▶ worker-crm-ai          crm_ai.summaries, crm_ai.meetings, crm_ai.enrichment
+        (concurrency 1)                       (+ crm_ai.enrichment_batch), crm_ai.ai_fields   every 15 min
+                                              crm_ai.review_expiry                             01:30 daily
+                                              crm_ai.followup_draft                            enqueued
+```
+
+- Every model, Fireflies and full-message Gmail call runs on the
+  **`worker-crm-ai`** service (`PROCESS_TYPE=worker_crm_ai`, `celery -A
+  app.worker worker -Q crm-ai --concurrency=1`). `app/worker.py` routes
+  `crm_ai.*` to the `crm-ai` queue in its own block after `007`'s and
+  `008`'s. It is the only process holding `ANTHROPIC_API_KEY` and
+  `FIREFLIES_API_KEY`; the shared worker runs no AI task, and Gmail sync
+  pages stay alone on `worker-crm-sync`, so the sync lock is never held
+  during a model call.
+- One task at a time is deliberate: budget overshoot is bounded by the one
+  call in flight. Enrichment works in batches of at most ten companies that
+  chain sixty seconds apart, so summaries and meetings run between them.
+- Tasks carry only ids and workspace ids and store no result
+  (`ignore_result=True`), so no text reaches the broker or the result backend.
+- Each job writes one `crm_job_runs` row per workspace per tick under the
+  names `summaries`, `meetings`, `enrichment`, `ai_fields`, `review_expiry`
+  and `followup_drafts`, and appears in Settings → Jobs with the usual
+  failure alerts and lateness checks. One failing thread or company is a
+  count inside the run (`failed_items`), not a failed run. The `automations`
+  job (relabelled "Automations") checks each of its switches separately and
+  is `skipped` only when all are off.
+- Meetings are one task for both workspaces (one Fireflies poll), still
+  recording one run per workspace. Attendee emails are matched before any
+  transcript is fetched: no match, or a match in two workspaces, fetches
+  nothing and creates nothing (the run counts the second case as skipped).
+
+### The one call wrapper
+
+Every model call of every job goes through `services/crm/ai.py` `call()`;
+`services/crm/claude.py` is the raw-HTTP Messages client underneath (no
+vendor SDK, timeouts set, one structured JSON log line per call with status,
+latency and tokens, never content). In order, `call()`:
+
+1. refuses unless the job's phase is on in the workspace's `ai` setting
+   (skipped "Switched off");
+2. refuses unless both rate settings are set (skipped "AI rates are not
+   set");
+3. refuses once month-to-date estimated spend, by Asia/Kolkata calendar
+   month, reaches the workspace's budget (skipped "AI budget reached", with
+   one bell notice and one message to the workspace's Admins that month);
+   a budget of zero, the seed, means nothing runs;
+4. builds the prompt from fixed rules, the job's instruction and each input
+   as a quoted data block with an instruction never to follow it, phone
+   numbers removed and no amounts sent;
+5. makes one structured-output call and writes one `crm_ai_usage` row
+   (tokens, estimated cost, outcome; no text);
+6. validates the answer against the job's strict output model, asking once
+   more on an invalid answer; a second invalid answer fails the item with
+   one of four fixed reasons;
+7. masks every money figure and drops every link except the allowed kinds
+   in every string of the answer, so no job can forget to.
+
+Any other exception becomes `SafeError`, a fixed sentence naming the step and
+the exception type ("AI call failed: HTTPStatusError"), never `str(exc)`, a
+response body or a traceback.
+
+**Cost is workspace administration.** Spend lives only in `crm_ai_usage`,
+which only that workspace's Admins read (`GET /crm/ai`, Settings → AI).
+Job-run counts hold item counts only, so a TVA admin who sees job-run
+metadata never sees cost. The rates are configuration on `worker-crm-ai`
+(which estimates) and `api` (whose `GET /crm/ai` reports
+`rates_configured`).
+
+### No text at rest
+
+Email bodies, transcripts and web pages are read by a `worker-crm-ai` task
+into local variables, sent to the model and dropped. They never reach a
+table, Storage, a log line, the queue, the result backend, a job-run record,
+an audit row or an error message; only the validated, masked output is
+stored. `gmail.message_text()` is the one full-message read, called only by
+the summariser (pinned by a test), for only the messages `007` stored for
+the thread, with quoted history and signatures stripped before the prompt.
+`services/crm/web_fetch.py` refuses private, loopback and link-local hosts,
+connects to the address it checked, follows same-site redirects only
+(re-checking each hop) and reads at most five pages of at most 1 MB each.
+`tests/test_crm_ai_privacy.py` seeds a unique marker in each kind of text
+the jobs must not keep and finds it nowhere afterwards.
+
+### Where the output lives
+
+| Table | Holds |
+|---|---|
+| `crm_email_summaries`, `crm_email_summary_links` | one latest summary per mailbox and Gmail thread, its watermark, and its links to companies, people and every linked open deal |
+| `crm_review_items`, `crm_review_item_deals` | Review Queue items, their owner, the current value of each field they would replace, their dedupe key and status |
+| `crm_company_enrichment` | enriched values and status per company, apart from the person-entered fields |
+| `crm_ai_fields`, `crm_ai_field_values` | AI field definitions and their values, never on the record tables |
+| `crm_ai_usage` | the usage and cost log (not exported) |
+| `crm_notes` (existing) | Fireflies meeting notes, with a source reference and provenance |
+| `crm_companies`, `crm_people` (existing) | `contact_recency`, written by `crm_set_contact_recency` only, so it moves neither `updated_at` nor the audit |
+
+All new tables have RLS on and no browser grants, like every CRM table.
+Trash, restore, purge, merge and the workspace export follow the record:
+`crm_purge` and `crm_merge_companies` know the new tables.
+
+Every value carries its provenance (source kind, model, time, a link to the
+source), and the web app shows an **AI** marker that names it on hover and
+focus. Generated text is always rendered as plain text.
+
+### The approval path
+
+```
+POST /crm/review/{id}/approve ─▶ services/crm/review.approve
+   item visible to the caller (its owner, or a workspace Admin)?   else 404
+   crm_review_claim: open → approved                               lost race → 409
+   read the target now; a field the item would replace has moved?  release; 409 "changed"
+   the same service a manual edit uses (deals, records, campaigns),
+     with a copied context carrying suggestion_id                  every rule, lock and audit applies
+   or 008's create_task with TaskActor(suggestion_id=item id)      for task items
+   refused ─▶ crm_review_release(refusal), item open again;  ok ─▶ crm_review_release(result)
+```
+
+Items are created by the jobs through `crm_review_upsert` with a dedupe key
+(source, source key, type, target): a re-run never makes a second open
+item, and a dismissed or expired item is not made again from the same
+source. Each item has one owner, decided at creation; Members see their
+own, workspace Admins see all, Viewers have no queue, and an item owned by
+a Viewer, an inactive person or nobody known goes to the Admins. Staleness
+is checked per field, so email sync touching Last inbound does not refuse
+an approval. The audit row of an approved change names the approver and
+carries the item id in `audit_log.suggestion_id`, which `crm_audit_row`
+reads from `crm.actor`. Creating an item sends no notice: Today's **To
+review** section and the daily digest carry them. `review_expiry` expires
+items untouched for 14 days and, after 90 days, reduces decided items to a
+dedupe tombstone with no suggestion text.
+
+Approval is deliberately **not** one transaction: the manual services each
+commit their own, and the claim-then-release pair is what stops two
+approvals both going through (spec 009 plan CT-1).
+
+### Jobs, one line each
+
+| Job | Reads | Writes |
+|---|---|---|
+| `summaries` (phase 1, Gmail live) | threads whose latest stored qualifying message is newer than the summary's watermark; never the 90-day backfill | the summary, `next_step_change` and `task_from_commitment` items, in `crm_store_summary` |
+| `meetings` (phase 2) | Fireflies metadata, then the transcript only after a match in exactly one workspace | a `meeting` note (once per transcript; updated only until a person edits it), `task_from_meeting`, `next_step_change` and `deal_link` items, in `crm_store_meeting_note` |
+| `enrichment` (phase 2) | the company's own site, queued on create, on a website change or by **Enrich selected**; at most ten a minute per workspace | enriched values or a failure reason; an `enrichment_conflict` item where a filled field differs |
+| `ai_fields` (phase 3) | the record's own fields (no amounts), summaries, meeting notes, enriched values, next-step dates, time in stage; at most once an hour per record | `crm_ai_field_values` |
+| `followup_drafts` (phase 3, R-1) | a thread's stored summary and the record's fields, never a body | an R-1 `rule_suggestion` with a draft for the owner to send from their own mail |
+| `review_expiry` | open and decided items | expiries and tombstones |
+
+### Rules as flag extensions
+
+There is no rule engine. The four follow-up rules extend `007`'s flags and
+switchable automations: each has a flat switch in the `automations` setting
+(`no_reply_draft`, `stuck_notice`, `lead_cold`, `campaign_followthrough`)
+and whole-day parameters in `flag_thresholds`, all seeded off, and every
+rule also needs phase 3 on.
+
+- **R-1 No reply after outreach** builds on the reply facts of email sync:
+  the `automations` job finds the trigger and queues a draft on `crm-ai`.
+- **R-2 Stuck in stage** is a deterministic flag computed by the flags job
+  from the deal's stage entered time, with a per-stage limit; it counts like
+  any flag toward deal and company levels, Follow-ups owed and the
+  dashboard while switched on, and is absent while off. Its owner notice is
+  sent once per stage entry; a deal that also gets a Stale deal notice at
+  the same level the same day gets one message.
+- **R-3 Lead gone cold** and **R-4 Campaign follow-through** are detectors in
+  `domain/crm/followups.py` that create `rule_suggestion` items; approving
+  one goes through the manual path, so the pipeline rules still apply.
+
+Phase 4's **contact recency** is derived, not AI: computed in the flags job
+from stored email metadata and meeting notes, filterable in company and
+person views.
 
 ## Three things that are easy to get wrong
 

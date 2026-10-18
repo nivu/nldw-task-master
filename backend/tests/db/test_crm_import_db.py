@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 from supabase import create_client
 
+from app.domain.tasks.rules import default_bucket
 from app.services import supabase as db
 from app.services.crm import importer as service
 from app.services.crm import store
@@ -125,13 +126,18 @@ class TestUpsert:
             _company(owner, "c1"),
             {
                 "op": "upsert",
-                "table": "crm_tasks",
+                "table": "tasks",
                 "ref": "t",
-                "values": {"twenty_id": "t1", "title": "Call", "assignee_id": owner},
+                "values": {
+                    "twenty_id": "t1",
+                    "title": "Call",
+                    "assignee_id": owner,
+                    "bucket": "later",
+                },
             },
             {
                 "op": "insert",
-                "table": "crm_task_links",
+                "table": "task_links",
                 "values": {"task_id": "$ref:t", "record_type": "company", "record_id": "$ref:c-c1"},
             },
             {
@@ -292,7 +298,7 @@ class TestRealImporter:
 
         companies = self._rows(stack, ws, "crm_companies")
         deals = self._rows(stack, ws, "crm_opportunities")
-        tasks = self._rows(stack, ws, "crm_tasks")
+        tasks = self._rows(stack, ws, "tasks")
         assert set(companies) == {
             "c-acme",
             "c-globex",
@@ -319,7 +325,7 @@ class TestRealImporter:
         )
         assert {h["opportunity_id"] for h in history} == {d["id"] for d in deals.values()}
         links = stack.sql(
-            "SELECT record_type, record_id FROM crm_task_links "
+            "SELECT record_type, record_id FROM task_links "
             f"WHERE task_id = {stack.q(tasks['t-call-asha']['id'])}"
         )
         assert {(lk["record_type"], lk["record_id"]) for lk in links} == {
@@ -327,6 +333,14 @@ class TestRealImporter:
             ("opportunity", deals["o-acme-pilot"]["id"]),
         }
         assert tasks["t-globex-deck"]["status"] == "done"
+        # 008 FR-TASK-CHG-09, FR-TASK-DATA-08: Twenty's To do and In progress
+        # are Open, and an imported open task gets the default bucket.
+        opened = [t for t in tasks.values() if t["status"] == "open"]
+        assert opened
+        for t in opened:
+            assert t["bucket"] == default_bucket(t["due_on"], date(2026, 10, 15)), t["twenty_id"]
+        # 008 FR-TASK-DATA-12: import-sourced, as 047 marks the Twenty tasks.
+        assert {t["source"] for t in tasks.values()} == {"import"}
 
         before = stack.sql(
             f"SELECT max(id) AS n FROM audit_log WHERE workspace_id = {stack.q(ws)}"

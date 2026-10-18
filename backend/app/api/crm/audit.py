@@ -9,15 +9,18 @@ TVA audit (`GET /admin/audit`, FR-CRM-AUD-04).
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
 from app.api.crm.deps import CrmAdminDep
 from app.domain.audit import actor_name
+from app.domain.tasks import visibility as task_visibility
 from app.services import supabase as db
 from app.services.crm import store
+from app.services.crm.records import task_parents
+from app.services.tasks import viewer as task_viewer
 
 router = APIRouter(prefix="/crm", tags=["crm"])
 
@@ -75,6 +78,7 @@ def read_audit(
         before=before,
         limit=limit,
     )
+    rows = _task_rows_shown(ctx.user, rows)
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     return [
         {
@@ -91,3 +95,51 @@ def read_audit(
         }
         for row in rows
     ]
+
+
+def _task_rows_shown(user: Any, rows: list[dict]) -> list[dict]:
+    """008 FR-TASK-VIS-07, FR-TASK-DATA-09 — an Admin who cannot see a task's
+    TVA project gets no row of that project link (no id, no name), and a
+    task's parent they cannot see is left out of its before and after."""
+    tasks = [r for r in rows if r["target_table"] in ("tasks", "crm_tasks")]
+    links = [
+        r
+        for r in rows
+        if r["target_table"] == "task_links"
+        and ((r.get("after") or r.get("before") or {}).get("record_type") == "tva_project")
+    ]
+    if not tasks and not links:
+        return rows
+    me = task_viewer.load(user) if links else None
+    hidden = {
+        r["id"]
+        for r in links
+        if me is None
+        or not task_visibility.can_see_project(
+            me, (r.get("after") or r.get("before") or {}).get("record_id")
+        )
+    }
+    parents = task_parents(
+        user,
+        {(r.get(side) or {}).get("parent_id") or "" for r in tasks for side in ("before", "after")},
+    )
+    private = {pid for pid, shown in parents.items() if not shown or shown.get("private")}
+    out = []
+    for row in rows:
+        if row["id"] in hidden:
+            continue
+        if row["target_table"] in ("tasks", "crm_tasks") and private:
+            row = {
+                **row,
+                **{
+                    side: {
+                        k: v
+                        for k, v in row[side].items()
+                        if not (k == "parent_id" and v in private)
+                    }
+                    for side in ("before", "after")
+                    if isinstance(row.get(side), dict)
+                },
+            }
+        out.append(row)
+    return out

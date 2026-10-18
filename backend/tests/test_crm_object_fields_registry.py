@@ -69,3 +69,26 @@ class TestRegistry:
             if row["column_sql"] in derived:
                 continue
             assert row["column_sql"] == name, (kind, name)
+
+
+class TestContactRecency:
+    """Spec 009 FR-CRMAI-REL-02: 067's fixed rows, filter only, for
+    companies and people in every workspace."""
+
+    def test_the_rows_are_in_the_registry_filter_only(self):
+        database = _database()
+        for kind in ("company", "person"):
+            row = database[(kind, "contact_recency")]
+            assert {c: row[c] for c in COLUMNS} == {
+                "column_sql": "contact_recency",
+                "type": "fixed_select",
+                "is_amount": False,
+                "filterable": True,
+                "sortable": False,
+                "groupable": False,
+                "aggregatable": False,
+                "workspace_scope": "all",
+            }
+
+    def test_no_other_object_has_it(self):
+        assert {k for k, f in _database() if f == "contact_recency"} == {"company", "person"}

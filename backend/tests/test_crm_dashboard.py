@@ -678,3 +678,48 @@ class TestTargets:
         assert http.get(f"{API}/targets{LABS}", headers=as_(MEMBER["id"])).status_code == 403
         r = http.put(f"{API}/targets{LABS}", json=[], headers=as_(MEMBER["id"]))
         assert r.status_code == 403
+
+
+class TestStuckInStageOnTheDashboard:
+    """Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05, contracts §1 — `flags`
+    gains Stuck in stage while R-2 is on; off, the panel is as before."""
+
+    FLAGGED = {
+        "crm_opportunities": [
+            {"id": "d1", "owner_id": "u1", "flags": [{"kind": "stuck_in_stage", "level": "red"}]},
+            {"id": "d2", "owner_id": "u1", "flags": [{"kind": "stuck_in_stage", "level": "amber"}]},
+        ]
+    }
+
+    def test_dashboard_stuck_counted_while_r2_is_on(self):
+        panel = rules.flag_counts(self.FLAGGED, rules.Filters(), stuck=True)
+        assert panel[-1] == {
+            "kind": "stuck_in_stage",
+            "label": "Stuck in stage",
+            "value": 2,
+            "colour": "red",
+        }
+
+    def test_dashboard_stuck_absent_while_r2_is_off(self):
+        kinds = [f["kind"] for f in rules.flag_counts(self.FLAGGED, rules.Filters())]
+        assert "stuck_in_stage" not in kinds and len(kinds) == 6
+
+    @pytest.mark.parametrize(("r2", "shown"), [(True, True), (False, False)])
+    def test_dashboard_the_route_follows_the_switch(self, crm, r2, shown):
+        http, fake, labs, _, _ = crm
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="automations",
+            value={"stuck_notice": r2},
+        )
+        fake.set_ai(labs, budget_usd=0, phases={"3": True})
+        deal = next(iter(fake.rows["crm_opportunities"].values()))
+        deal.update(flag_level="amber", flags=[{"kind": "stuck_in_stage", "level": "amber"}])
+        flags = {f["kind"]: f for f in _get(http, OWNER["id"]).json()["flags"]}
+        assert ("stuck_in_stage" in flags) is shown
+        if shown:
+            assert (flags["stuck_in_stage"]["value"], flags["stuck_in_stage"]["colour"]) == (
+                1,
+                "amber",
+            )

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
@@ -75,6 +77,38 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     GOOGLE_SERVICE_ACCOUNT_JSON: SecretStr | None = None
     CRM_GMAIL_CONFIGURED: bool = False
+
+    # ------------------------------------------------------------------
+    # Spec 008 voice capture — FR-TASK-VOICE-02, plan §2.2, T10
+    #
+    # The Groq key is set on the `worker` service ONLY: it is the one process
+    # that transcribes. The API reads the non-secret TASKS_VOICE_CONFIGURED
+    # flag instead, which says the key exists there; `POST /tasks/voice`
+    # answers 503 while it is false. The key is never logged.
+    # ------------------------------------------------------------------
+    GROQ_API_KEY: SecretStr | None = None
+    TASKS_VOICE_CONFIGURED: bool = False
+
+    # ------------------------------------------------------------------
+    # Spec 009 CRM intelligence layer — FR-CRMAI-LLM-01, -07, NFR-CRMAI-04,
+    # plan §2.2
+    #
+    # ANTHROPIC_API_KEY (the Claude key) and FIREFLIES_API_KEY are set on the
+    # `worker-crm-ai` service ONLY: it is the one process that calls Claude
+    # and Fireflies. The API, beat and the other workers never hold them.
+    # Never logged, never in a Celery argument.
+    #
+    # The rate table (USD per million input and output tokens, spec §17.1)
+    # is not secret: it is set on `worker-crm-ai`, which estimates each call's
+    # cost, and on the API, whose GET /crm/ai reports whether it is set, once
+    # the owner confirms it. While either rate is unset, or 0 or less, every
+    # AI job is skipped "AI rates are not set" and GET /crm/ai reports
+    # rates_configured false (D-1, plan §11.1).
+    # ------------------------------------------------------------------
+    ANTHROPIC_API_KEY: SecretStr | None = None
+    FIREFLIES_API_KEY: SecretStr | None = None
+    CRM_AI_INPUT_USD_PER_MTOK: Decimal | None = None
+    CRM_AI_OUTPUT_USD_PER_MTOK: Decimal | None = None
 
     model_config = {
         "env_file": ".env",

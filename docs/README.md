@@ -29,6 +29,8 @@ User guides, also served in the portal at `/help`:
 | [`guides/08-connecting-claude.md`](guides/08-connecting-claude.md) | Using the portal from Claude through MCP, the CRM's `crm_*` tools by role included |
 | [`guides/09-crm.md`](guides/09-crm.md) | The sales CRM for sellers: signing in, Today, records, the pipeline and what each stage needs, Drive links, Claude |
 | [`guides/10-crm-admin.md`](guides/10-crm-admin.md) | Running a CRM workspace: inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, automations, targets |
+| [`guides/10-tasks.md`](guides/10-tasks.md) | Your tasks: My Tasks and its buckets, quick add and its questions, who sees what, CRM and project tasks, the Life OS import (owner), Claude's `task_*` tools |
+| [`guides/12-crm-intelligence.md`](guides/12-crm-intelligence.md) | Review AI suggestions: the CRM's Review Queue, what approving each suggestion does, who sees which, deciding them from Claude |
 
 ## Operations
 

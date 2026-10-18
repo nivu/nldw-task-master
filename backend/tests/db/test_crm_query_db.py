@@ -325,6 +325,71 @@ class TestAnswers:
         )
         assert names("company", "account_type_id", limit=1) == ["beta", "Alpha"]
 
+    def test_task_and_member_statuses_share_one_order(self, stack, owner):
+        """048 (data-model §5.4): one status array orders a task's statuses
+        (008 FR-TASK-CHG-11), then a campaign member's, kept in their order;
+        a task's priority ranks most urgent first."""
+        ws = _new_workspace(stack)
+        company = _company(stack, ws, owner, "Acme")
+        for title, status, priority in (
+            ("C", "cancelled", "low"),
+            ("W", "waiting", "urgent"),
+            ("D", "done", "normal"),
+            ("O", "open", "high"),
+        ):
+            values = {
+                "title": title,
+                "assignee_id": owner,
+                "status": status,
+                "priority": priority,
+                "bucket": "later",
+                "waiting_on_text": "Client" if status == "waiting" else None,
+                "completed_at": "2026-10-01T00:00:00Z" if status == "done" else None,
+            }
+            _apply(
+                stack,
+                _actor(ws, owner),
+                [
+                    {"op": "insert", "table": "tasks", "ref": "t", "values": values},
+                    {
+                        "op": "insert",
+                        "table": "task_links",
+                        "values": {
+                            "task_id": "$ref:t",
+                            "record_type": "company",
+                            "record_id": company,
+                        },
+                    },
+                ],
+            )
+
+        def titles(field, direction="asc"):
+            spec = {"sorts": [{"field": field, "dir": direction}], "limit": 10}
+            return [r["title"] for r in _query(stack, ws, "task", spec)["rows"]]
+
+        assert titles("status") == ["O", "W", "D", "C"]
+        assert titles("status", "desc") == ["C", "D", "W", "O"]
+        assert titles("priority") == ["W", "O", "D", "C"]
+
+        campaign = _insert(
+            stack, ws, owner, "crm_campaigns", {"name": "Webinar", "owner_id": owner}
+        )
+        for name, status in (("m3", "unsubscribed"), ("m1", "targeted"), ("m2", "engaged")):
+            _insert(
+                stack,
+                ws,
+                owner,
+                "crm_campaign_members",
+                {
+                    "campaign_id": campaign,
+                    "company_id": _company(stack, ws, owner, name),
+                    "status": status,
+                },
+            )
+        spec = {"sorts": [{"field": "status", "dir": "asc"}], "limit": 10}
+        rows = _query(stack, ws, "campaign_member", spec)["rows"]
+        assert [r["status"] for r in rows] == ["targeted", "engaged", "unsubscribed"]
+
     def test_a_day_on_a_datetime_is_the_persons_own_day(self, stack, owner):
         ws = _new_workspace(stack)
         # 23:30 IST on the 13th, and 00:30 IST on the 14th: both the 13th in UTC.
@@ -702,8 +767,8 @@ class TestSeededViewsThroughTheRoute:
         )
         tasks = {}
         for name, who, status, bucket in (
-            ("open-mine", owner, "todo", "today"),
-            ("open-theirs", someone, "todo", None),
+            ("open-mine", owner, "open", "today"),
+            ("open-theirs", someone, "open", "later"),
             ("done-mine", owner, "done", None),
         ):
             done = _apply(
@@ -712,7 +777,7 @@ class TestSeededViewsThroughTheRoute:
                 [
                     {
                         "op": "insert",
-                        "table": "crm_tasks",
+                        "table": "tasks",
                         "ref": "t",
                         "values": {
                             "title": f"{name} {tag}",
@@ -724,7 +789,7 @@ class TestSeededViewsThroughTheRoute:
                     },
                     {
                         "op": "insert",
-                        "table": "crm_task_links",
+                        "table": "task_links",
                         "values": {
                             "task_id": "$ref:t",
                             "record_type": "company",

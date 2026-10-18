@@ -92,6 +92,17 @@ ACCOUNT_LEVEL = frozenset(
         "find_mailbox_by_email",
         # An export's audit row (043), in the actor's workspace.
         "record_export",
+        # Spec 009 (061): the Review Queue's functions scope by the actor's
+        # workspace themselves.
+        "review_upsert",
+        "review_claim",
+        "review_release",
+        "review_expire",
+        "review_tombstone",
+        # Spec 009 (062): crm_store_summary scopes by the actor's workspace.
+        "store_summary",
+        # Spec 009 (063): crm_store_meeting_note scopes by the actor's workspace.
+        "store_meeting_note",
     }
 )
 
@@ -113,7 +124,7 @@ UNIQUE_MESSAGES = {
     "crm_company_domains_one_primary": "This company's domains changed meanwhile; reload.",
     "crm_people_workspace_email": "That email was just given to another person in this workspace.",
     "crm_opportunity_contacts_pair": "That person is already a contact on this deal.",
-    "crm_task_links_target": "The task is already linked to that record.",
+    "task_links_target": "The task is already linked to that record.",
     "crm_note_links_target": "The note is already linked to that record.",
     "crm_note_mentions_pair": "That member is already mentioned.",
     # FR-CRM-TVA-01 — one project per deal (032); 033 checks it first.
@@ -166,9 +177,11 @@ def rpc(fn: str, params: dict[str, Any]) -> Any:
 def apply(actor: dict[str, Any], ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Data-model §5.2 — every ordinary CRM write, in one transaction.
 
-    Returns one `{ref, id, row}` per op, in order.
+    Returns one `{ref, id, row}` per op, in order. A task the CRM creates
+    must link a record of the workspace (008 FR-TASK-CHG-01): the writer's
+    `p_task_needs_link`, always on here.
     """
-    return rpc("crm_apply", {"p_actor": actor, "p_ops": ops}) or []
+    return rpc("crm_apply", {"p_actor": actor, "p_ops": ops, "p_task_needs_link": True}) or []
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +455,8 @@ RECORD_TABLES = frozenset(
         "crm_people",
         "crm_drive_links",
         "crm_opportunities",
-        "crm_tasks",
+        # 008: the shared task table (FR-TASK-DATA-01).
+        "tasks",
         "crm_notes",
         # 041 (1b).
         "crm_campaigns",
@@ -455,13 +469,16 @@ _SEARCH = {
     "crm_people": ("first_name", "last_name", "primary_email"),
     "crm_drive_links": ("label",),
     "crm_opportunities": ("name",),
-    "crm_tasks": ("title",),
+    "tasks": ("title",),
     "crm_notes": ("body",),
     "crm_campaigns": ("name",),
     "crm_campaign_members": ("notes",),
 }
 #: The polymorphic link tables of tasks and notes, by their owner column.
-LINK_TABLES = {"crm_task_links": "task_id", "crm_note_links": "note_id"}
+LINK_TABLES = {"task_links": "task_id", "crm_note_links": "note_id"}
+#: 008 FR-TASK-CHG-07: audit rows written before the rename keep the old
+#: table names (append-only), so a timeline reads both.
+OLD_NAMES = {"tasks": "crm_tasks", "task_links": "crm_task_links"}
 
 
 def _table(table: str) -> str:
@@ -747,6 +764,10 @@ def link_project(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
     return rpc("crm_link_project", {"p_actor": actor, "p_plan": plan}) or {}
 
 
+def _with_old_name(table: str) -> tuple[str, ...]:
+    return (table, OLD_NAMES[table]) if table in OLD_NAMES else (table,)
+
+
 def list_timeline(
     workspace_id: str,
     table: str,
@@ -761,9 +782,13 @@ def list_timeline(
     its own; its Drive, task and note links' (by the record they name, so a
     purged link still shows); the rows of the Drive links, tasks and notes in
     `related` (table → ids); for a company, its domains'; and for a deal, its
-    contacts'."""
-    parts = [f"and(target_table.eq.{_table(table)},target_id.eq.{record_id})"]
-    for link_table in ("crm_drive_links", "crm_task_links", "crm_note_links"):
+    contacts'. Task history is read under the old and new table names
+    (008 FR-TASK-CHG-07)."""
+    parts = [
+        f"and(target_table.eq.{name},target_id.eq.{record_id})"
+        for name in _with_old_name(_table(table))
+    ]
+    for link_table in ("crm_drive_links", "crm_task_links", "task_links", "crm_note_links"):
         parts.append(
             f"and(target_table.eq.{link_table},"
             f"or(after->>record_id.eq.{record_id},before->>record_id.eq.{record_id}),"
@@ -771,7 +796,10 @@ def list_timeline(
         )
     for other, ids in (related or {}).items():
         if ids:
-            parts.append(f"and(target_table.eq.{_table(other)},target_id.in.({','.join(ids)}))")
+            parts += [
+                f"and(target_table.eq.{name},target_id.in.({','.join(ids)}))"
+                for name in _with_old_name(_table(other))
+            ]
     if table == "crm_companies":
         parts.append(
             "and(target_table.eq.crm_company_domains,"
@@ -895,14 +923,14 @@ def due_next_steps(workspace_id: str, owner_id: str, by: str) -> list[dict[str, 
 
 
 def tasks_for_today(workspace_id: str, assignee_id: str, by: str) -> list[dict[str, Any]]:
-    """Today §3 — a person's open tasks in the Today bucket or due on or
-    before `by`."""
+    """Today §3 — a person's open or waiting tasks in the Today bucket or due
+    on or before `by` (008 FR-TASK-CHG-05)."""
     return (
-        supabase.table("crm_tasks")
+        supabase.table("tasks")
         .select("id, title, status, due_on, bucket, assignee_id")
         .eq("workspace_id", workspace_id)
         .eq("assignee_id", assignee_id)
-        .neq("status", "done")
+        .in_("status", ["open", "waiting"])
         .is_("deleted_at", "null")
         .or_(f"bucket.eq.today,due_on.lte.{by}")
         .order("due_on", nullsfirst=False)
@@ -961,7 +989,7 @@ TWENTY_TABLES = frozenset(
         "crm_companies",
         "crm_people",
         "crm_opportunities",
-        "crm_tasks",
+        "tasks",
         "crm_notes",
         "crm_campaigns",
         "crm_campaign_members",
@@ -1314,7 +1342,7 @@ FLAG_COLUMNS = {
         "id, name, stage, company_id, owner_id, next_step_on, expected_close_on, "
         "stage_entered_at, created_at, deleted_at, flag_level, flags"
     ),
-    "crm_tasks": "id, title, status, due_on, assignee_id, deleted_at, flag_level, flags",
+    "tasks": "id, title, status, due_on, assignee_id, deleted_at, flag_level, flags",
 }
 #: Rows per page when a whole workspace is read.
 _PAGE = 1000
@@ -1331,7 +1359,8 @@ def flag_rows(
 ) -> list[dict[str, Any]]:
     """Live rows of a flagged table with what their flags read: some `ids`,
     a deal table's rows of some companies, or the whole workspace page by
-    page. `open_or_flagged` keeps deals in an open stage and open tasks, and
+    page. `open_or_flagged` keeps deals in an open stage and open or waiting
+    tasks, and
     any row that carries a flag still (so a closed one is cleared);
     `flagged_only` keeps flagged rows."""
     if table not in FLAG_COLUMNS:
@@ -1348,8 +1377,8 @@ def flag_rows(
             query = query.neq("flag_level", "none")
         if open_or_flagged and table == "crm_opportunities":
             query = query.or_(f"stage.in.({','.join(_OPEN_STAGES)}),flag_level.neq.none")
-        if open_or_flagged and table == "crm_tasks":
-            query = query.or_("status.neq.done,flag_level.neq.none")
+        if open_or_flagged and table == "tasks":
+            query = query.or_("status.in.(open,waiting),flag_level.neq.none")
         return query
 
     rows: list[dict[str, Any]] = []
@@ -1500,15 +1529,16 @@ def deal_amounts(workspace_id: str, ids: list[str]) -> dict[str, Any]:
 
 
 def tasks_due_by(workspace_id: str, by: str) -> list[dict[str, Any]]:
-    """Automation 7 — live open tasks due on or before `by`, page by page."""
+    """Automation 7 — live open or waiting tasks due on or before `by`, page
+    by page."""
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
         page = (
-            supabase.table("crm_tasks")
+            supabase.table("tasks")
             .select("id, title, status, due_on, assignee_id")
             .eq("workspace_id", workspace_id)
-            .neq("status", "done")
+            .in_("status", ["open", "waiting"])
             .is_("deleted_at", "null")
             .lte("due_on", by)
             .order("id")
@@ -1849,10 +1879,11 @@ def notes_between(workspace_id: str, since: str, until: str) -> list[dict[str, A
 
 
 def tasks_completed_between(workspace_id: str, since: str, until: str) -> list[dict[str, Any]]:
-    """Live tasks completed in [since, until), by assignee."""
+    """Live tasks completed in [since, until), by assignee. Only a Done task
+    has a completed time, so a cancelled one never counts (008 FR-TASK-CHG-04)."""
     return _every_page(
         lambda: (
-            supabase.table("crm_tasks")
+            supabase.table("tasks")
             .select("id, assignee_id, completed_at")
             .eq("workspace_id", workspace_id)
             .is_("deleted_at", "null")
@@ -1938,3 +1969,586 @@ def record_export(actor: dict[str, Any], detail: dict[str, Any]) -> None:
     """043 `crm_record_export` — an export's audit row (FR-CRM-IO-04): what
     was exported, never a value of it. Scoped by the actor's workspace."""
     rpc("crm_record_export", {"p_actor": actor, "p_detail": detail})
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI settings and the usage log (009 data-model §3.1, §3.7)
+#
+# The usage log is a log with no audit trigger and no record content
+# (tokens, estimated cost, outcome), so it is written directly, as the job
+# log is.
+# ---------------------------------------------------------------------------
+
+
+def ai_setting(workspace_id: str) -> dict[str, Any] | None:
+    """The workspace's `ai` setting value, or None for a workspace without
+    the row (which reads every phase off, FR-CRMAI-FLAG-02)."""
+    rows = (
+        supabase.table("crm_workspace_settings")
+        .select("value")
+        .eq("workspace_id", workspace_id)
+        .eq("key", "ai")
+        .execute()
+        .data
+    )
+    return rows[0]["value"] if rows else None
+
+
+def insert_ai_usage(workspace_id: str, row: dict[str, Any]) -> None:
+    """One model call in the AI usage log (FR-CRMAI-LLM-06): `{job, model,
+    input_tokens, output_tokens, cost_usd, outcome, at}`. No text."""
+    supabase.table("crm_ai_usage").insert({**row, "workspace_id": workspace_id}).execute()
+
+
+def ai_spend(workspace_id: str, since: datetime) -> dict[str, Any]:
+    """060 `crm_ai_spend` — estimated spend since `since` (the start of the
+    Asia/Kolkata month): `{total_usd, by_job: {job: usd}}`, decimal strings."""
+    return rpc("crm_ai_spend", {"p_workspace": workspace_id, "p_from": since.isoformat()}) or {
+        "total_usd": "0",
+        "by_job": {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the Review Queue (009 data-model §3.2, §3.2.3)
+#
+# Items are a log with explicit audit rows: they are read directly and
+# written only through the five functions of migration 061, which write the
+# audit rows of a decision themselves.
+# ---------------------------------------------------------------------------
+
+#: 061 `crm_review_claim`'s CRM09: another decision got there first.
+ALREADY_DECIDED = "This suggestion was already decided."
+#: 069 `crm_review_claim`'s CRM09: the item was refreshed since it was shown.
+SUGGESTION_CHANGED = "This suggestion changed; review it again."
+
+
+def list_review_items(
+    workspace_id: str,
+    *,
+    status: str = "open",
+    since: datetime | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """The workspace's items: `open` oldest first; `decided` (approved,
+    dismissed or expired, tombstones left out) decided at or after `since`,
+    newest first; `all` every item, tombstones included, in id order."""
+    query = supabase.table("crm_review_items").select("*").eq("workspace_id", workspace_id)
+    if status == "open":
+        query = query.eq("status", "open").order("created_at").order("id")
+    elif status == "decided":
+        query = query.neq("status", "open").is_("tombstoned_at", "null")
+        if since is not None:
+            query = query.gte("decided_at", since.isoformat())
+        query = query.order("decided_at", desc=True).order("id")
+    else:
+        query = query.order("id")
+    return query.limit(limit).execute().data or []
+
+
+def get_review_item(workspace_id: str, item_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_review_items")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("id", item_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def list_review_item_deals(workspace_id: str, item_ids: list[str]) -> list[dict[str, Any]]:
+    """The deal choices of these items (`crm_review_item_deals`)."""
+    found: list[dict[str, Any]] = []
+    for batch in text_batches(sorted(set(item_ids))):
+        found += (
+            supabase.table("crm_review_item_deals")
+            .select("item_id, opportunity_id")
+            .eq("workspace_id", workspace_id)
+            .in_("item_id", batch)
+            .execute()
+            .data
+            or []
+        )
+    return found
+
+
+def review_upsert(actor: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """061 `crm_review_upsert` — `[{id, created}]`; an item decided from the
+    same source version comes back `{id: None, created: False}`."""
+    return rpc("crm_review_upsert", {"p_actor": actor, "p_items": items}) or []
+
+
+def review_claim(
+    actor: dict[str, Any], item_id: str, status: str, *, revision: int | None = None
+) -> dict[str, Any]:
+    """061/069 `crm_review_claim` — the item, now `approved` or `dismissed`;
+    only one claim wins, the other is told it was already decided (409).
+    With `revision`, an open item at another revision is not claimed: it was
+    refreshed since it was shown (409)."""
+    params: dict[str, Any] = {"p_actor": actor, "p_item_id": item_id, "p_status": status}
+    if revision is not None:
+        params["p_expect_revision"] = revision
+    try:
+        return rpc("crm_review_claim", params)
+    except CrmRefused as refused:
+        if refused.status == 409:
+            detail = SUGGESTION_CHANGED if refused.detail == SUGGESTION_CHANGED else ALREADY_DECIDED
+            raise CrmRefused(409, detail) from None
+        raise
+
+
+def review_release(
+    actor: dict[str, Any], item_id: str, refusal: str | None, result: dict[str, Any] | None
+) -> None:
+    """061 `crm_review_release` — with a refusal the claimed item opens again
+    and shows it; without one it records what the approval produced."""
+    rpc(
+        "crm_review_release",
+        {"p_actor": actor, "p_item_id": item_id, "p_refusal": refusal, "p_result": result},
+    )
+
+
+def review_expire(actor: dict[str, Any], before: datetime) -> int:
+    """061 `crm_review_expire` — open items created before `before` expire."""
+    return int(rpc("crm_review_expire", {"p_actor": actor, "p_before": before.isoformat()}) or 0)
+
+
+def review_tombstone(actor: dict[str, Any], before: datetime) -> int:
+    """061 `crm_review_tombstone` — items decided before `before` lose their text."""
+    return int(rpc("crm_review_tombstone", {"p_actor": actor, "p_before": before.isoformat()}) or 0)
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — email thread summaries (009 data-model §3.3)
+#
+# Summaries and their links are a log: read directly, written only through
+# migration 062's `crm_store_summary`, and removed with their thread by
+# `crm_remove_emails`. No column holds email text.
+# ---------------------------------------------------------------------------
+
+_SUMMARY_COLUMNS = (
+    "id, workspace_id, mailbox_id, thread_id, summary, asks, commitments, next_step, "
+    "next_step_on, sentiment, watermark_message_id, watermark_at, model, generated_at, "
+    "created_at, updated_at"
+)
+
+
+def pending_threads(workspace_id: str, limit: int) -> list[dict[str, Any]]:
+    """062 `crm_pending_threads` — the threads due a summary, oldest first:
+    `[{mailbox_id, thread_id, message_ids, latest: {gmail_id, sent_at},
+    links: [{record_type, record_id}]}]`. Ids only."""
+    return rpc("crm_pending_threads", {"p_workspace": workspace_id, "p_limit": limit}) or []
+
+
+def store_summary(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """062 `crm_store_summary` — the summary, its links and its Review Queue
+    items in one transaction: `{id, items: [{id, created}]}`. A watermark
+    that is no longer the thread's latest message is CRM09 (409)."""
+    return rpc("crm_store_summary", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+def _with_links(workspace_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each summary with its `links`, `[{record_type, record_id}]`, and its
+    thread's `subject` and `last_at` (the latest stored message's, metadata
+    only)."""
+    if not rows:
+        return []
+    links = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summary_links")
+            .select("summary_id, record_type, record_id")
+            .eq("workspace_id", workspace_id)
+        ),
+        "summary_id",
+        [r["id"] for r in rows],
+    )
+    by_summary: dict[str, list[dict[str, Any]]] = {}
+    for link in links:
+        by_summary.setdefault(link["summary_id"], []).append(
+            {"record_type": link["record_type"], "record_id": link["record_id"]}
+        )
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for mailbox_id in sorted({r["mailbox_id"] for r in rows}):
+        messages = _in_batches(
+            lambda mailbox_id=mailbox_id: (
+                supabase.table("crm_email_messages")
+                .select("mailbox_id, thread_id, subject, sent_at")
+                .eq("workspace_id", workspace_id)
+                .eq("mailbox_id", mailbox_id)
+            ),
+            "thread_id",
+            [r["thread_id"] for r in rows if r["mailbox_id"] == mailbox_id],
+        )
+        for m in sorted(messages, key=lambda m: str(m["sent_at"])):
+            seen = latest.setdefault((m["mailbox_id"], m["thread_id"]), {"subject": None})
+            seen["last_at"] = m["sent_at"]
+            seen["subject"] = m.get("subject") or seen["subject"]
+    return [
+        {
+            **r,
+            "links": by_summary.get(r["id"], []),
+            "subject": latest.get((r["mailbox_id"], r["thread_id"]), {}).get("subject"),
+            "last_at": latest.get((r["mailbox_id"], r["thread_id"]), {}).get("last_at"),
+        }
+        for r in rows
+    ]
+
+
+def summaries_for(
+    workspace_id: str,
+    record_type: str | None = None,
+    record_id: str | None = None,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """The summaries linked to one record, latest first, with their links;
+    without a record, every summary of the workspace (the export)."""
+    if not (record_type and record_id):
+        ids = None
+    else:
+        ids = sorted(
+            {
+                r["summary_id"]
+                for r in (
+                    supabase.table("crm_email_summary_links")
+                    .select("summary_id")
+                    .eq("workspace_id", workspace_id)
+                    .eq("record_type", record_type)
+                    .eq("record_id", record_id)
+                    .execute()
+                    .data
+                    or []
+                )
+            }
+        )
+        if not ids:
+            return []
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summaries")
+            .select(_SUMMARY_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        ),
+        "id",
+        ids,
+    )
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: str(r["updated_at"]), reverse=True)
+    return _with_links(workspace_id, rows[:limit] if limit else rows)
+
+
+def summary_by_thread(
+    workspace_id: str, mailbox_id: str, thread_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The summaries of some threads of one mailbox, by Gmail thread id, with
+    their links."""
+    if not thread_ids:
+        return {}
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_email_summaries")
+            .select(_SUMMARY_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .eq("mailbox_id", mailbox_id)
+        ),
+        "thread_id",
+        thread_ids,
+    )
+    return {r["thread_id"]: r for r in _with_links(workspace_id, rows)}
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — meeting notes (009 data-model §3.4)
+#
+# A meeting note is an ordinary audited note of kind `meeting`, written only
+# through migration 063's `crm_store_meeting_note` as the `sync` actor. Its
+# people are matched with `people_by_emails` above, workspace by workspace.
+# No column holds transcript text.
+# ---------------------------------------------------------------------------
+
+
+def store_meeting_note(actor: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """063 `crm_store_meeting_note` — the note, its links and its Review Queue
+    items in one transaction: `{note_id, created, updated, items: [{id,
+    created}]}`, with `edited_by_person` when a person's edit stopped an
+    update (Q-41)."""
+    return rpc("crm_store_meeting_note", {"p_actor": actor, "p_plan": plan}) or {}
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — company enrichment (009 data-model §3.5)
+#
+# The enrichment table is a log with no audit trigger and no page text: 064's
+# trigger queues it inside the company's own write, and the worker and the
+# Admin's Enrich selected write it directly, as the usage log is written.
+# It never touches `crm_companies` (FR-CRMAI-ENR-06).
+# ---------------------------------------------------------------------------
+
+_ENRICHMENT_COLUMNS = (
+    "id, workspace_id, company_id, website, status, failure_reason, values, model, "
+    "generated_at, queued_at, requested_by, created_at"
+)
+
+
+def queued_enrichment(workspace_id: str, limit: int, *, before: datetime) -> list[dict[str, Any]]:
+    """The companies waiting to be enriched, queued at or before `before`,
+    oldest first; a company in the Trash waits where it is, so a restore
+    finds it still queued."""
+    out: list[dict[str, Any]] = []
+    after = 0
+    while len(out) < limit:
+        rows = (
+            supabase.table("crm_company_enrichment")
+            .select(_ENRICHMENT_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .eq("status", "queued")
+            .lte("queued_at", before.isoformat())
+            .order("queued_at")
+            .order("id")
+            .range(after, after + _ID_BATCH - 1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            break
+        after += len(rows)
+        live = {
+            r["id"]
+            for r in supabase.table("crm_companies")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .is_("deleted_at", "null")
+            .in_("id", sorted({r["company_id"] for r in rows}))
+            .execute()
+            .data
+            or []
+        }
+        out += [r for r in rows if r["company_id"] in live]
+    return out[:limit]
+
+
+def enrichment_for(workspace_id: str, company_ids: list[str] | None) -> list[dict[str, Any]]:
+    """The enrichment rows of these companies (None: every company of the
+    workspace, for the export), in company order."""
+    if company_ids == []:
+        return []
+    rows = _in_batches(
+        lambda: (
+            supabase.table("crm_company_enrichment")
+            .select(_ENRICHMENT_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        ),
+        "company_id",
+        company_ids,
+    )
+    return sorted(rows, key=lambda r: r["company_id"])
+
+
+def write_enrichment(
+    workspace_id: str, company_id: str, website: str, values: dict[str, Any]
+) -> bool:
+    """Records the outcome of one queued enrichment: `{status,
+    failure_reason, values, model, generated_at}`, or a later `queued_at`.
+    Only while the row is still queued for the same site: a website changed
+    meanwhile was queued again by 064's trigger, and its new site wins."""
+    rows = (
+        supabase.table("crm_company_enrichment")
+        .update(values)
+        .eq("workspace_id", workspace_id)
+        .eq("company_id", company_id)
+        .eq("website", website)
+        .eq("status", "queued")
+        .execute()
+        .data
+    )
+    return bool(rows)
+
+
+def requeue_enrichment(workspace_id: str, rows: list[dict[str, Any]], at: datetime) -> None:
+    """Enrich selected (FR-CRMAI-ENR-08): each `{company_id, website,
+    requested_by}` queued at `at`, again when already enriched."""
+    if not rows:
+        return
+    supabase.table("crm_company_enrichment").upsert(
+        [
+            {
+                **row,
+                "workspace_id": workspace_id,
+                "status": "queued",
+                "failure_reason": None,
+                "queued_at": at.isoformat(),
+            }
+            for row in rows
+        ],
+        on_conflict="workspace_id,company_id",
+    ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — AI fields (009 data-model §3.6)
+#
+# A field's definition is audited configuration, written through `apply` by
+# Admins (FR-CRMAI-FIELD-01). Its values are a log with no audit trigger and
+# no source text: the job and the recompute route write them directly, as
+# the enrichment table is written. Neither touches `crm_companies` or
+# `crm_opportunities` (FR-CRMAI-FIELD-05).
+# ---------------------------------------------------------------------------
+
+_AI_FIELD_COLUMNS = (
+    "id, workspace_id, key, name, record_type, prompt, output_type, options, max_lines, "
+    "depends_on, with_reason, enabled, position, created_at, updated_at"
+)
+_AI_VALUE_COLUMNS = (
+    "id, workspace_id, field_id, record_type, record_id, value_text, value_number, reason, "
+    "inputs_hash, model, generated_at, dirty_at, next_allowed_at"
+)
+
+
+def list_ai_fields(workspace_id: str) -> list[dict[str, Any]]:
+    """The workspace's AI fields, enabled or not, in their order."""
+    return (
+        supabase.table("crm_ai_fields")
+        .select(_AI_FIELD_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .order("position")
+        .order("name")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
+def get_ai_field(workspace_id: str, field_id: str) -> dict[str, Any] | None:
+    rows = (
+        supabase.table("crm_ai_fields")
+        .select(_AI_FIELD_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", field_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def ai_field_values(
+    workspace_id: str, record_type: str | None = None, record_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """The values of some records of one type; without a type, every value
+    of the workspace (the job and the export)."""
+    if record_ids == []:
+        return []
+
+    def query_for() -> Any:
+        query = (
+            supabase.table("crm_ai_field_values")
+            .select(_AI_VALUE_COLUMNS)
+            .eq("workspace_id", workspace_id)
+        )
+        if record_type is not None:
+            query = query.eq("record_type", record_type)
+        return query
+
+    if record_ids is None:
+        return _every_page(query_for)
+    return sorted(_in_batches(query_for, "record_id", record_ids), key=lambda r: r["id"])
+
+
+def write_ai_field_value(workspace_id: str, row: dict[str, Any]) -> None:
+    """One record's value of one field (`{field_id, record_type, record_id,
+    value_text, value_number, reason, inputs_hash, model, generated_at,
+    dirty_at, next_allowed_at}`), replacing the one before it."""
+    supabase.table("crm_ai_field_values").upsert(
+        {**row, "workspace_id": workspace_id}, on_conflict="field_id,record_id"
+    ).execute()
+
+
+def mark_ai_fields_dirty(
+    workspace_id: str,
+    record_type: str,
+    record_ids: list[str],
+    at: datetime,
+    *,
+    field_ids: list[str] | None = None,
+) -> None:
+    """Q-38 — these records' values (of these fields, or all) are due a
+    recompute once their hour is over; one already marked keeps its mark."""
+    if not record_ids or field_ids == []:
+        return
+    wanted = sorted(set(record_ids))
+    for i in range(0, len(wanted), _ID_BATCH):
+        query = (
+            supabase.table("crm_ai_field_values")
+            .update({"dirty_at": at.isoformat()})
+            .eq("workspace_id", workspace_id)
+            .eq("record_type", record_type)
+            .in_("record_id", wanted[i : i + _ID_BATCH])
+            .is_("dirty_at", "null")
+        )
+        if field_ids is not None:
+            query = query.in_("field_id", sorted(set(field_ids)))
+        query.execute()
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — the follow-up rules' facts (009 data-model §3.11)
+#
+# Two read-only functions of 066, ids and times only.
+# ---------------------------------------------------------------------------
+
+
+def lead_activity(workspace_id: str, company_ids: list[str] | None) -> dict[str, Any]:
+    """066 `crm_lead_activity` — company id → the latest of its last contact,
+    linked notes and tasks, lead stage changes and its deals' activity, or
+    None (R-3, Q-15); for some live companies or (None) all of them."""
+    return (
+        rpc("crm_lead_activity", {"p_workspace": workspace_id, "p_company_ids": company_ids}) or {}
+    )
+
+
+def no_reply_candidates(workspace_id: str, before: datetime) -> list[dict[str, Any]]:
+    """066 `crm_no_reply_candidates` — outbound counted messages sent before
+    `before`, each the latest counted message of its thread with no later
+    inbound on any linked person or company: `[{mailbox_id, thread_id,
+    gmail_message_id, sent_at, people, companies}]` (R-1)."""
+    return (
+        rpc(
+            "crm_no_reply_candidates", {"p_workspace": workspace_id, "p_before": before.isoformat()}
+        )
+        or []
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — contact recency (009 data-model §3.10)
+#
+# Read through `crm_contact_facts` (ids, times and dates only) and written
+# only through `crm_set_contact_recency` (067): never `crm_apply`, so neither
+# `updated_at`, `updated_by` nor the audit moves (FR-CRMAI-REL-02).
+# ---------------------------------------------------------------------------
+
+
+def contact_facts(workspace_id: str, now: datetime) -> dict[str, Any]:
+    """067 `crm_contact_facts` — `{company|person: {id: {in, out, meeting}}}`
+    for every live company and person: the latest counted inbound and
+    outbound email and the latest meeting note in the last 91 days, a
+    company's including its people's, else None."""
+    return rpc("crm_contact_facts", {"p_workspace": workspace_id, "p_now": now.isoformat()}) or {}
+
+
+def set_contact_recency(workspace_id: str, table: str, rows: list[dict[str, Any]]) -> int:
+    """067 `crm_set_contact_recency` — stores `[{id, level}]`, in chunks;
+    returns how many rows' level changed."""
+    changed = 0
+    for i in range(0, len(rows), _PAGE):
+        changed += int(
+            rpc(
+                "crm_set_contact_recency",
+                {"p_workspace": workspace_id, "p_table": table, "p_rows": rows[i : i + _PAGE]},
+            )
+            or 0
+        )
+    return changed

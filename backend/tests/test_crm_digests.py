@@ -258,3 +258,111 @@ class TestRoles:
         tasks._digests(KOLKATA_9)
         [mail] = _to(sent, MEMBER)
         assert "Nunnari Labs" in mail.body and "Nunnari Academy B2B" not in mail.body
+
+
+class TestToReview:
+    """Spec 009 FR-CRMAI-REV-09 (Q-35) — the daily digest carries Today's To
+    review section, with the role there."""
+
+    def _item(self, fake, ws, owner):
+        company = fake.add(
+            "crm_companies",
+            **{**DEFAULTS["crm_companies"], "workspace_id": ws["id"], "name": "Review Co"},
+        )
+        return fake.add_review_item(
+            ws,
+            type="enrichment_conflict",
+            source_kind="enrichment",
+            record_type="company",
+            record_id=company["id"],
+            owner_id=owner["id"] if owner else None,
+            suggestion={"field": "city", "value": "Pune"},
+        )
+
+    def test_the_digest_carries_to_review(self, crm):
+        _, fake, labs, _, sent = crm
+        item = self._item(fake, labs, MEMBER)
+        parts = digests.daily_parts(
+            {**MEMBER, "timezone": "Asia/Kolkata"},
+            [
+                m
+                for m in fake.list_all_memberships()
+                if m["user_id"] == MEMBER["id"] and m["workspace_id"] == labs["id"]
+            ],
+            {w["id"]: w for w in fake.list_workspaces()},
+            KOLKATA_9,
+        )
+        [section] = [s for s in parts[0]["sections"] if s["key"] == "to_review"]
+        assert section["heading"] == "To review"
+        assert section["count"] == 1
+        assert [(i["record_type"], i["record_id"], i["detail"]) for i in section["items"]] == [
+            ("review_item", item["id"], "Review Co")
+        ]
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, MEMBER)
+        assert "To review (1):" in mail.body and "Review Co" in mail.body
+
+    def test_the_digest_says_how_many_wait_beside_the_three_oldest(self, crm):
+        _, fake, labs, _, sent = crm
+        for _ in range(5):
+            self._item(fake, labs, MEMBER)
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, MEMBER)
+        assert "To review (5):" in mail.body
+        assert mail.body.count("Review Co") == 3
+
+    def test_a_viewers_digest_has_no_to_review(self, crm):
+        _, fake, labs, _, sent = crm
+        fake.set_ai(labs, phases={"1": True})
+        self._item(fake, labs, None)
+        tasks._digests(KOLKATA_9)
+        [mail] = _to(sent, VIEWER)
+        assert "To review" not in mail.body
+
+
+class TestStuckInStageInTheWeekly:
+    """Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05 — the weekly digest counts
+    the deals stuck in stage while R-2 and phase 3 are on, and is as before
+    otherwise."""
+
+    def _stuck(self, fake, labs, level):
+        deal = _deal(fake, labs, f"Stuck {level}", OWNER, next_step_on="2026-11-01")
+        fake.rows["crm_opportunities"][deal["id"]].update(
+            flag_level=level, flags=[{"kind": "stuck_in_stage", "level": level}]
+        )
+
+    def _week(self, sent):
+        return next(m for m in sent if m.subject == "Nunnari Labs CRM week — 2026-10-12")
+
+    def test_digests_stuck_counted_while_r2_is_on(self, crm):
+        _, fake, labs, _, sent = crm
+        fake.add(
+            "crm_workspace_settings",
+            workspace_id=labs["id"],
+            key="automations",
+            value={"stuck_notice": True},
+        )
+        fake.set_ai(labs, budget_usd=0, phases={"3": True})
+        self._stuck(fake, labs, "red")
+        self._stuck(fake, labs, "amber")
+        tasks._digests(MONDAY_9)
+        assert "  - Deals stuck in stage: 1 red, 1 amber" in self._week(sent).body
+
+    def test_digests_no_stuck_line_while_r2_is_off(self, crm):
+        _, fake, labs, _, sent = crm
+        self._stuck(fake, labs, "red")
+        tasks._digests(MONDAY_9)
+        assert "stuck in stage" not in self._week(sent).body
+
+    def test_digests_the_content_names_the_kind(self):
+        content = rules.weekly_content(
+            {"name": "Nunnari Labs", "key": "labs"},
+            since=date(2026, 10, 5),
+            until=date(2026, 10, 12),
+            moves=[],
+            closed=[],
+            flag_counts={"stuck_in_stage": {"red": 2, "amber": 0}},
+        )
+        assert content["flag_kinds"] == [
+            {"kind": "stuck_in_stage", "label": "Deals stuck in stage", "red": 2, "amber": 0}
+        ]

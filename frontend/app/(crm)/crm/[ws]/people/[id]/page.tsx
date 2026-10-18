@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 
 import { useQuickActions } from "@/components/crm/command-menu";
+import { ContactRecencyChip } from "@/components/crm/contact-recency-chip";
 import { DeleteCompanyDialog } from "@/components/crm/delete-company-dialog";
 import { DriveLinks } from "@/components/crm/drive-links";
 import { EmailsTab } from "@/components/crm/emails-tab";
@@ -83,7 +84,8 @@ function personGroups(members: CrmMember[], searchCompanies: RelationSearch, cur
 /**
  * A person — spec 007 FR-CRM-PER-01, FR-CRM-REC-01 to -04, FR-CRM-LINK-03,
  * FR-CRM-DEL-04. The deals they are on are in Related; Delete is also the
- * command menu's quick action here (FR-CRM-SRCH-02).
+ * command menu's quick action here (FR-CRM-SRCH-02). (009, phase 4) Their
+ * contact recency is a header chip (FR-CRMAI-REL-02).
  */
 export default function PersonPage() {
   const { id } = useParams<{ id: string }>();
@@ -147,6 +149,9 @@ export default function PersonPage() {
         chips={[
           <Chip key="owner" label="Owner" value={person.owner_name ?? "—"} />,
           ...(person.do_not_contact ? [<Chip key="dnc" label="Do not contact" value="Yes" />] : []),
+          ...(page.contact_recency?.level
+            ? [<ContactRecencyChip key="recency" recency={page.contact_recency} />]
+            : []),
         ]}
         actions={
           mayDelete && (
@@ -168,6 +173,7 @@ export default function PersonPage() {
             initial={page.timeline_head}
             timeZone={bootstrap.me.timezone}
             version={version}
+            summaries={page.summaries}
           />
         }
         files={

@@ -179,10 +179,10 @@ OPPORTUNITY: Final = (
 #: Spec §5.9. A task links to at least one record (FR-CRM-TASK-01).
 TASK: Final = (
     Field("title", "Title", "text", required=True, max_length=200),
-    Field("body", "Body", "long_text", sortable=False, max_length=20_000),
+    Field("body", "Notes", "long_text", sortable=False, max_length=20_000),
     Field("status", "Status", "select", list_key="task.status"),
     Field("due_on", "Due date", "date"),
-    Field("bucket", "Priority bucket", "select", list_key="task.bucket"),
+    Field("bucket", "Bucket", "select", list_key="task.bucket"),
     Field("category_id", "Category", "select", list_key="task.category"),
     Field("assignee_id", "Assignee", "relation", required=True),
     _system("completed_at", "Completed at"),
@@ -288,7 +288,7 @@ TABLES: Final = {
     "company": "crm_companies",
     "person": "crm_people",
     "opportunity": "crm_opportunities",
-    "task": "crm_tasks",
+    "task": "tasks",
     "note": "crm_notes",
     "drive_link": "crm_drive_links",
     "campaign": "crm_campaigns",
@@ -521,6 +521,8 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("flag_level", "flag"),
         *_STAMPS,
         _POSITION,
+        # Spec 009 (067): contact recency, filter only (FR-CRMAI-REL-02).
+        _v("contact_recency", "fixed_select", sortable=False, groupable=False),
     ),
     "person": (
         _v("name", "text", column_sql="full_name"),
@@ -538,6 +540,8 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("flag_level", "flag"),
         *_STAMPS,
         _POSITION,
+        # Spec 009 (067): contact recency, filter only (FR-CRMAI-REL-02).
+        _v("contact_recency", "fixed_select", sortable=False, groupable=False),
     ),
     "opportunity": (
         _v("name", "text"),
@@ -582,6 +586,9 @@ VIEW_FIELDS: Final[dict[str, tuple[ViewField, ...]]] = {
         _v("assignee_id", "person"),
         _v("completed_at", "datetime"),
         _v("flag_level", "flag"),
+        # 008 (047): owner decision of 18 October 2026, data-model §3.3.
+        _v("priority", "fixed_select"),
+        _v("source", "fixed_select"),
         *_STAMPS,
         _POSITION,
     ),

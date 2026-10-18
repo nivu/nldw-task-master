@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, Pencil, Star } from "lucide-react";
-import { useState } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 
 import {
   cleanValue,
@@ -12,12 +12,14 @@ import {
 } from "@/components/crm/field-editor";
 import { FlagChip } from "@/components/crm/flag-dot";
 import { useCrm } from "@/components/crm/shell";
+import { TaskPanel } from "@/components/tasks/task-panel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { addCrmFavourite, removeCrmFavourite } from "@/lib/api/crm";
 import type { RecordFlags, ViewObjectKind } from "@/lib/api/crm-types";
-import { errorMessage } from "@/lib/api/portal";
+import { errorMessage, getMe } from "@/lib/api/portal";
 import type { CrmTimezone } from "@/lib/crm/format";
+import { useAsync } from "@/lib/use-async";
 
 /**
  * The record page frame — spec 007 FR-CRM-REC-01 to -04, FR-CRM-UI-06.
@@ -29,7 +31,25 @@ import type { CrmTimezone } from "@/lib/crm/format";
  * stacks above the tabs. Companies, people and deals use it; campaigns reuse
  * it as they arrive. The Move stage action is a deal's, passed in `actions`.
  * A record can be pinned to the sidebar's favourites (FR-CRM-UI-02).
+ *
+ * Spec 008 FR-TASK-VIEW-03: with My Tasks switched on for the reader, a task
+ * in the Tasks tab opens in the shared task panel
+ * (`components/tasks/task-panel.tsx`), the one My Tasks uses; the tab's list
+ * asks for it through `useOpenTask`. Below phase 1 the tab is as `007` built
+ * it.
  */
+
+/** Opens a task of the Tasks tab in the shared task panel; `onChanged` runs
+ *  after a change there, so the tab reloads. */
+type OpenTask = (taskId: string, onChanged: () => void) => void;
+
+const OpenTaskContext = createContext<OpenTask | null>(null);
+
+/** Inside a record page's tabs, with tasks switched on: how to open a task
+ *  in the shared task panel. Null elsewhere. */
+export function useOpenTask(): OpenTask | null {
+  return useContext(OpenTaskContext);
+}
 
 export interface FieldGroup {
   title: string;
@@ -256,6 +276,15 @@ export function RecordPage({
   flags?: RecordFlags & { record_type: string };
 }) {
   const [tab, setTab] = useState("timeline");
+  const { bootstrap } = useCrm();
+  const me = useAsync(getMe, []);
+  const level = me.data?.tasks.level ?? 0;
+  const [openTask, setOpenTask] = useState<string | null>(null);
+  const afterChange = useRef<() => void>(() => {});
+  const opener: OpenTask = (taskId, onChanged) => {
+    afterChange.current = onChanged;
+    setOpenTask(taskId);
+  };
 
   return (
     <div className="space-y-4">
@@ -298,36 +327,48 @@ export function RecordPage({
           />
         </aside>
         <div className="min-w-0">
-          <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
-            <TabsList className="max-w-full overflow-x-auto">
-              <TabsTrigger value="timeline">Timeline</TabsTrigger>
-              <TabsTrigger value="tasks">Tasks</TabsTrigger>
-              <TabsTrigger value="notes">Notes</TabsTrigger>
-              <TabsTrigger value="files">Files</TabsTrigger>
-              {emails && <TabsTrigger value="emails">Emails</TabsTrigger>}
-              <TabsTrigger value="related">Related</TabsTrigger>
-            </TabsList>
-            <TabsContent value="timeline" className="pt-4">
-              {timeline}
-            </TabsContent>
-            <TabsContent value="tasks" className="pt-4">
-              {tasks ?? <p className="text-sm text-muted-foreground">No tasks on this record.</p>}
-            </TabsContent>
-            <TabsContent value="notes" className="pt-4">
-              {notes ?? <p className="text-sm text-muted-foreground">No notes on this record.</p>}
-            </TabsContent>
-            <TabsContent value="files" className="pt-4">
-              {files}
-            </TabsContent>
-            {emails && (
-              <TabsContent value="emails" className="pt-4">
-                {emails}
+          <OpenTaskContext.Provider value={level >= 1 ? opener : null}>
+            <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
+              <TabsList className="max-w-full overflow-x-auto">
+                <TabsTrigger value="timeline">Timeline</TabsTrigger>
+                <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                <TabsTrigger value="notes">Notes</TabsTrigger>
+                <TabsTrigger value="files">Files</TabsTrigger>
+                {emails && <TabsTrigger value="emails">Emails</TabsTrigger>}
+                <TabsTrigger value="related">Related</TabsTrigger>
+              </TabsList>
+              <TabsContent value="timeline" className="pt-4">
+                {timeline}
               </TabsContent>
-            )}
-            <TabsContent value="related" className="pt-4">
-              {related}
-            </TabsContent>
-          </Tabs>
+              <TabsContent value="tasks" className="pt-4">
+                {tasks ?? <p className="text-sm text-muted-foreground">No tasks on this record.</p>}
+              </TabsContent>
+              <TabsContent value="notes" className="pt-4">
+                {notes ?? <p className="text-sm text-muted-foreground">No notes on this record.</p>}
+              </TabsContent>
+              <TabsContent value="files" className="pt-4">
+                {files}
+              </TabsContent>
+              {emails && (
+                <TabsContent value="emails" className="pt-4">
+                  {emails}
+                </TabsContent>
+              )}
+              <TabsContent value="related" className="pt-4">
+                {related}
+              </TabsContent>
+            </Tabs>
+          </OpenTaskContext.Provider>
+          {level >= 1 && (
+            <TaskPanel
+              taskId={openTask}
+              onOpenChange={(o) => !o && setOpenTask(null)}
+              onChanged={() => afterChange.current()}
+              onOpenTask={setOpenTask}
+              meId={bootstrap.me.id}
+              delegation={level >= 2}
+            />
+          )}
         </div>
       </div>
     </div>

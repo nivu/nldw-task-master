@@ -392,12 +392,20 @@ def insert_audit(entry: dict[str, Any]) -> None:
     supabase.table("audit_log").insert(entry).execute()
 
 
+#: Spec 008 FR-TASK-VIS-05, FR-TASK-CHG-07: the task tables, whose rows
+#: never reach the TVA audit, with or without a workspace.
+TASK_AUDIT_TABLES = ("tasks", "task_links", "task_comments", "task_import_runs", "inbox_items")
+
+
 def list_audit(limit: int = 200, *, tva_only: bool = True) -> list[dict[str, Any]]:
     """Newest first. Spec 007 FR-CRM-AUD-04: CRM rows (those with a workspace)
-    are left out by default, for everyone, TVA admins included."""
+    are left out by default, for everyone, TVA admins included; and so are
+    task rows (spec 008 FR-TASK-VIS-05), which may have no workspace."""
     query = supabase.table("audit_log").select("*")
     if tva_only:
-        query = query.is_("workspace_id", "null")
+        query = query.is_("workspace_id", "null").filter(
+            "target_table", "not.in", f"({','.join(TASK_AUDIT_TABLES)})"
+        )
     return query.order("at", desc=True).limit(limit).execute().data or []
 
 

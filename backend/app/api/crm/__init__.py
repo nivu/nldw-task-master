@@ -11,12 +11,15 @@ The one exception is `tva_admin.py`, the TVA admin panel, which is TVA's
 from __future__ import annotations
 
 from app.api.crm import (
+    ai,
+    ai_fields,
     audit,
     campaigns,
     capacity,
     dashboard,
     deals,
     email,
+    enrichment,
     export,
     imports,
     jobs,
@@ -24,8 +27,10 @@ from app.api.crm import (
     merge,
     notifications,
     records,
+    review,
     search,
     settings,
+    summaries,
     today,
     tva_admin,
     views,
@@ -55,4 +60,11 @@ ROUTERS = [
     email.router,
     dashboard.router,
     export.router,
+    # Spec 009: Settings, AI; the Review Queue; thread summaries; Enrich
+    # selected; AI fields.
+    ai.router,
+    review.router,
+    summaries.router,
+    enrichment.router,
+    ai_fields.router,
 ]

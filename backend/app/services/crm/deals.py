@@ -329,16 +329,15 @@ def _plan(
         {
             link["task_id"]
             for link in store.list_links(
-                ws.id, "crm_task_links", record_type="opportunity", record_ids=[row["id"]]
+                ws.id, "task_links", record_type="opportunity", record_ids=[row["id"]]
             )
         }
     )
     open_tasks = (
         store.list_records(
             ws.id,
-            "crm_tasks",
-            any_of={"id": task_ids},
-            not_equal={"status": "done"},
+            "tasks",
+            any_of={"id": task_ids, "status": ["open", "waiting"]},
             limit=len(task_ids),
         )
         if task_ids
@@ -444,7 +443,7 @@ def _after_move(ctx: Any, ws: base.Workspace, done: dict[str, Any]) -> None:
         tasks = {
             lk["task_id"]
             for lk in store.list_links(
-                ws.id, "crm_task_links", record_type="opportunity", record_ids=[deal["id"]]
+                ws.id, "task_links", record_type="opportunity", record_ids=[deal["id"]]
             )
         }
     except Exception:

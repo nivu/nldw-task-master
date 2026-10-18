@@ -432,7 +432,7 @@ class TestClosedWon:
         assert r.status_code == 200, r.text
         [delivery] = [t for t in r.json()["tasks_created"] if t["title"].startswith("Delivery")]
         assert delivery["assignee"]["id"] == SRIRAM["id"]
-        task = fake.rows["crm_tasks"][delivery["id"]]
+        task = fake.rows["tasks"][delivery["id"]]
         category = fake.rows["crm_select_options"][task["category_id"]]
         assert category["system_key"] == "delivery_handoff"
 
@@ -442,7 +442,7 @@ class TestClosedWon:
         r = _handoff(http, deal["id"])
         [delivery] = [t for t in r.json()["tasks_created"] if t["title"].startswith("Delivery")]
         assert delivery["assignee"]["id"] == MEMBER["id"]  # the deal's owner
-        assert "Priya leads it" in fake.rows["crm_tasks"][delivery["id"]]["body"]
+        assert "Priya leads it" in fake.rows["tasks"][delivery["id"]]["body"]
 
     def test_skipping_to_won_creates_the_project_confirmed(self, crm):
         http, fake, *_ = crm

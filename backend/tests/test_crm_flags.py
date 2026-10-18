@@ -170,7 +170,7 @@ class TestTaskOverdue:
         ("on", "level"), [("2026-10-13", "red"), ("2026-10-14", "amber"), ("2026-10-15", "none")]
     )
     def test_the_edges(self, on, level):
-        assert _level(rules.task_overdue({"status": "todo", "due_on": on}, TODAY)) == level
+        assert _level(rules.task_overdue({"status": "open", "due_on": on}, TODAY)) == level
 
     def test_done_is_none(self):
         assert rules.task_overdue({"status": "done", "due_on": "2026-01-01"}, TODAY) is None
@@ -310,14 +310,14 @@ class TestStored:
         deal = _deal(fake, labs, acme, next_step_on="2026-10-10")
         quiet = _row(fake, "crm_companies", labs, name="Quiet", lead_stage="nurturing")
         task = _row(
-            fake, "crm_tasks", labs, title="Call", assignee_id=SELLER["id"], due_on="2026-10-14"
+            fake, "tasks", labs, title="Call", assignee_id=SELLER["id"], due_on="2026-10-14"
         )
         service.recompute_workspace(labs["id"], NOW)
         rows = fake.rows
         assert rows["crm_opportunities"][deal["id"]]["flag_level"] == "red"
         assert rows["crm_companies"][acme["id"]]["flag_level"] == "red"
         assert rows["crm_companies"][quiet["id"]]["flags"][0]["kind"] == "loose_end"
-        assert rows["crm_tasks"][task["id"]]["flag_level"] == "amber"
+        assert rows["tasks"][task["id"]]["flag_level"] == "amber"
         assert rows["crm_opportunities"][deal["id"]]["flags_computed_at"] == NOW.isoformat()
 
     def test_thresholds_come_from_settings(self, crm):
@@ -395,7 +395,7 @@ class TestAfterWrites:
             headers=as_(OWNER["id"]),
         )
         assert r.status_code == 201, r.text
-        assert fake.rows["crm_tasks"][r.json()["id"]]["flag_level"] == "red"
+        assert fake.rows["tasks"][r.json()["id"]]["flag_level"] == "red"
         page = http.get(f"/api/v1/crm/tasks/{r.json()['id']}{LABS}", headers=as_(OWNER["id"]))
         assert page.json()["record"]["flag_level"] == "red"
 
@@ -414,7 +414,7 @@ class TestAfterWrites:
             headers=as_(OWNER["id"]),
         ).json()
         http.post(f"/api/v1/crm/tasks/{task['id']}/complete{LABS}", headers=as_(OWNER["id"]))
-        assert fake.rows["crm_tasks"][task["id"]]["flag_level"] == "none"
+        assert fake.rows["tasks"][task["id"]]["flag_level"] == "none"
 
     def test_a_company_moved_to_nurturing_becomes_a_loose_end(self, crm):
         http, fake, labs = crm
@@ -459,3 +459,127 @@ class TestFollowUpsOwed:
         )
         assert r.status_code == 200, r.text
         assert [row["name"] for row in r.json()["rows"]] == ["Red", "Amber"]
+
+
+# ---------------------------------------------------------------------------
+# Spec 009 — R-2 Stuck in stage (FR-CRMAI-RULE-03, FR-CRMAI-CHG-05, -06; Q-29)
+# ---------------------------------------------------------------------------
+
+
+def _entered(days: float) -> dict:
+    at = (NOW - timedelta(days=days)).isoformat()
+    return {**OPEN, "stage_entered_at": at, "created_at": at}
+
+
+class TestStuckInStage:
+    """Amber at the stage's limit, red at twice it, from the stage entered
+    time whatever happened since; only while R-2 and phase 3 are on."""
+
+    @pytest.mark.parametrize(
+        ("days", "level"), [(13.9, "none"), (14, "amber"), (27.9, "amber"), (28, "red")]
+    )
+    def test_stuck_a_proposal_deal_at_14_and_28_days(self, days, level):
+        assert _level(rules.stuck_in_stage(_entered(days), NOW, T)) == level
+
+    def test_stuck_each_stage_has_its_limit(self):
+        deal = {**_entered(15), "stage": "qualification"}
+        assert rules.stuck_in_stage(deal, NOW, T) is None
+        assert _level(rules.stuck_in_stage(deal, NOW, {**T, "stuck_qualification_days": 10})) == (
+            "amber"
+        )
+
+    def test_stuck_a_closed_deal_has_none(self):
+        assert rules.stuck_in_stage({**_entered(90), "stage": "closed_won"}, NOW, T) is None
+
+    def test_stuck_activity_does_not_reset_it(self):
+        out = rules.for_deal(
+            _entered(15), now=NOW, today=TODAY, t=T, last_activity=NOW.isoformat(), stuck=True
+        )
+        assert [f["kind"] for f in out["flags"]] == ["stuck_in_stage"]
+        assert out["flags"][0]["label"] == "Stuck in stage"
+        assert out["flag_level"] == "amber"
+
+    def test_stuck_absent_unless_asked_for(self):
+        out = rules.for_deal(_entered(30), now=NOW, today=TODAY, t=T, last_activity=NOW)
+        assert out == {"flag_level": "none", "flags": []}
+
+    def test_stuck_the_rule_days_are_whole_from_1_to_365(self):
+        assert rules.thresholds_refusal({**T, "stuck_proposal_days": 0}) == (
+            "stuck_proposal_days must be a whole number of days from 1 to 365."
+        )
+        assert "from 1 to 365" in rules.thresholds_refusal({**T, "no_reply_days": 366})
+        missing = {k: v for k, v in T.items() if k != "lead_cold_days"}
+        assert rules.thresholds_refusal(missing) == "Flag thresholds need lead_cold_days."
+
+
+def _rules_on(fake, labs, *, r2: bool = True, phase3: bool = True) -> None:
+    _row(
+        fake,
+        "crm_workspace_settings",
+        labs,
+        key="automations",
+        value={"stale_notice": True, "stuck_notice": r2},
+    )
+    fake.set_ai(labs, budget_usd=10, phases={"3": phase3})
+
+
+class TestStuckStored:
+    """FR-CRMAI-RULE-03 — counted like any flag while R-2 and phase 3 are on:
+    the deal's level, its company's, and the seeded Follow-ups owed view."""
+
+    def _stuck_deal(self, fake, labs):
+        acme = _row(fake, "crm_companies", labs, name="Acme", lead_stage="deal_open")
+        old = (NOW - timedelta(days=15)).isoformat()
+        deal = _deal(fake, labs, acme, stage="proposal", stage_entered_at=old, created_at=old)
+        # Activity today: Stale deal stays quiet.
+        note = _row(fake, "crm_notes", labs, body="Spoke", created_at=NOW.isoformat())
+        _row(
+            fake,
+            "crm_note_links",
+            labs,
+            note_id=note["id"],
+            record_type="opportunity",
+            record_id=deal["id"],
+        )
+        return acme, deal
+
+    def test_stuck_counts_toward_the_levels_with_r2_on(self, crm):
+        http, fake, labs = crm
+        _rules_on(fake, labs)
+        acme, deal = self._stuck_deal(fake, labs)
+        service.recompute_workspace(labs["id"], NOW)
+        stored = fake.rows["crm_opportunities"][deal["id"]]
+        assert stored["flag_level"] == "amber"
+        assert [f["kind"] for f in stored["flags"]] == ["stuck_in_stage"]
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "amber"
+        r = http.post(
+            f"/api/v1/crm/query{LABS}",
+            json={"object": "companies", "view": "follow_ups_owed"},
+            headers=as_(OWNER["id"]),
+        )
+        assert [row["name"] for row in r.json()["rows"]] == ["Acme"]
+
+    @pytest.mark.parametrize(("r2", "phase3"), [(False, True), (True, False)])
+    def test_stuck_absent_with_r2_or_phase_3_off(self, crm, r2, phase3):
+        http, fake, labs = crm
+        _rules_on(fake, labs, r2=r2, phase3=phase3)
+        acme, deal = self._stuck_deal(fake, labs)
+        service.recompute_workspace(labs["id"], NOW)
+        assert fake.rows["crm_opportunities"][deal["id"]]["flag_level"] == "none"
+        assert fake.rows["crm_companies"][acme["id"]]["flag_level"] == "none"
+        r = http.post(
+            f"/api/v1/crm/query{LABS}",
+            json={"object": "companies", "view": "follow_ups_owed"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.json()["rows"] == []
+
+    def test_stuck_switching_r2_off_clears_it(self, crm):
+        _, fake, labs = crm
+        _rules_on(fake, labs)
+        _, deal = self._stuck_deal(fake, labs)
+        service.recompute_workspace(labs["id"], NOW)
+        assert fake.rows["crm_opportunities"][deal["id"]]["flag_level"] == "amber"
+        fake.set_ai(labs, budget_usd=10, phases={"3": False})
+        service.recompute_workspace(labs["id"], NOW)
+        assert fake.rows["crm_opportunities"][deal["id"]]["flags"] == []

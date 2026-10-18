@@ -21,9 +21,11 @@ from app.domain.calendar import (
     today_in_company_tz,
 )
 from app.domain.rules import OCCUPYING_STATES, is_locked
+from app.domain.tasks import rollout
 from app.services import balances
 from app.services import supabase as db
 from app.services.crm.context import workspaces_of
+from app.services.tasks import store as task_store
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -43,6 +45,9 @@ def whoami(user: AnyAccountDep) -> dict:
     They get a reduced shape: no role, lead or capabilities, since nothing in
     TVA is theirs to see. Everyone gets their CRM workspaces, so the TVA shell
     knows whether to show a CRM link (FR-CRM-UI-03).
+
+    Spec 008 FR-TASK-ROLL-01, -03 — everyone, `crm_only` included, gets their
+    effective tasks phase level, so both shells know what to show.
     """
     crm = {
         "workspaces": [
@@ -50,6 +55,7 @@ def whoami(user: AnyAccountDep) -> dict:
             for w in workspaces_of(user.id)
         ]
     }
+    tasks = {"level": rollout.level_for(user.profile, task_store.default_level())}
     if user.is_crm_only:
         return {
             "id": user.id,
@@ -57,6 +63,7 @@ def whoami(user: AnyAccountDep) -> dict:
             "display_name": user.display_name,
             "account_type": user.account_type,
             "crm": crm,
+            "tasks": tasks,
             "preferences": {
                 "timezone": user.profile.get("timezone") or "Asia/Kolkata",
                 "number_format": user.profile.get("number_format") or "indian_short",
@@ -70,6 +77,7 @@ def whoami(user: AnyAccountDep) -> dict:
         "lead_id": user.lead_id,
         "account_type": user.account_type,
         "crm": crm,
+        "tasks": tasks,
         "capabilities": {
             "team_view": user.is_lead,
             "admin_panel": user.is_admin,

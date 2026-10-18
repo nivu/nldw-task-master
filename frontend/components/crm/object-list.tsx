@@ -49,6 +49,7 @@ import {
   patchFor,
   TITLE_FIELD,
   type ViewFieldMeta,
+  withoutOffPhases,
 } from "@/lib/crm/view-fields";
 import { errorMessage } from "@/lib/api/portal";
 import { useAsync } from "@/lib/use-async";
@@ -185,8 +186,16 @@ function ObjectListView({
   // Fields: a Viewer filters on what the server will refuse with its own
   // sentence (FR-CRM-ACC-11), but is never shown or offered an amount to
   // see, sort or total.
-  const visibleFields = useMemo(() => fieldsFor(kind, { tvaLinked, viewer }), [kind, tvaLinked, viewer]);
-  const filterFields = useMemo(() => fieldsFor(kind, { tvaLinked, viewer: false }), [kind, tvaLinked]);
+  // 009: a switched-off phase's fields are hidden too (FR-CRMAI-FLAG-03).
+  const phases = bootstrap.ai.phases;
+  const visibleFields = useMemo(
+    () => withoutOffPhases(fieldsFor(kind, { tvaLinked, viewer }), phases),
+    [kind, tvaLinked, viewer, phases]
+  );
+  const filterFields = useMemo(
+    () => withoutOffPhases(fieldsFor(kind, { tvaLinked, viewer: false }), phases),
+    [kind, tvaLinked, phases]
+  );
   const kanbanFields = visibleFields.filter((f) => KANBAN_TYPES.includes(f.type) && f.groupable);
 
   const [viewsNonce, setViewsNonce] = useState(0);

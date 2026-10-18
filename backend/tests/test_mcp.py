@@ -55,25 +55,44 @@ class TestCoverage:
         Spec 007 FR-CRM-CHG-07 amends FR-MCP-01: CRM routes are covered by the
         `crm_*` tools (tests/test_crm_mcp.py), not one tool per route. Both
         sides are filtered, so TVA tools still equal TVA operations while
-        `crm_*` tools exist."""
-        tva_tools = [t for t in _tools() if not t.name.startswith("crm_")]
+        `crm_*` tools exist.
+
+        Spec 008 FR-TASK-CHG-03 amends it again: task routes are covered by
+        the `task_*` and `inbox_add` tools (tests/test_task_mcp.py), so both
+        are left out too, `/api/v1/tasks` operations by prefix."""
+        tva_tools = [
+            t
+            for t in _tools()
+            if not t.name.startswith(("crm_", "task_")) and t.name != "inbox_add"
+        ]
         tva_operations = {
-            op for op in _operations() - EXCLUDED if not op[1].startswith("/api/v1/crm/")
+            op
+            for op in _operations() - EXCLUDED
+            if not op[1].startswith(("/api/v1/crm/", "/api/v1/tasks"))
         }
         assert len(tva_tools) == len(tva_operations)
 
     def test_the_crm_exception_is_the_specs(self):
         """FR-MCP-01 as amended by `007` FR-CRM-CHG-07: the test above leaves
         out every `/api/v1/crm/` operation by prefix, and exactly what the
-        amended text exempts."""
+        amended text exempts. Amended again by `008` FR-TASK-CHG-03: the
+        `/api/v1/tasks` operations, covered by the `task_*` and `inbox_add`
+        tools."""
         from pathlib import Path
 
         spec = Path(__file__).resolve().parents[2] / "specs" / "004-mcp" / "spec.md"
         [row] = [line for line in spec.read_text().splitlines() if line.startswith("| FR-MCP-01 |")]
         assert "except CRM routes, which are covered by the `crm_*` tools of `007`" in row
+        assert (
+            "and task routes, which are covered by the `task_*` and `inbox_add` tools of `008`"
+            " FR-TASK-MCP-01 (the Life OS import is web-only, TP-10)"
+        ) in row
         crm_operations = {op for op in _operations() if op[1].startswith("/api/v1/crm/")}
         assert crm_operations and not crm_operations & EXCLUDED
         assert {t.name for t in _tools() if t.name.startswith("crm_")}
+        task_operations = {op for op in _operations() if op[1].startswith("/api/v1/tasks")}
+        assert task_operations and not task_operations & EXCLUDED
+        assert {t.name for t in _tools() if t.name.startswith("task_")}
 
     def test_every_tool_is_described_and_annotated(self):
         for tool in _tools():

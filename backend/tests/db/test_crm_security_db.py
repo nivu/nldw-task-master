@@ -18,7 +18,9 @@ without anyone remembering to list it:
 
 from __future__ import annotations
 
+import re
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -35,9 +37,26 @@ NOT_AUDITED = {
     "crm_email_messages",  # the email log (FR-CRM-SYNC-04)
     "crm_email_links",  # the email log's links
     "crm_object_fields",  # the field registry, written by migrations only
+    "crm_ai_usage",  # the AI usage log, cost per call, no text (009 FR-CRMAI-LLM-06)
+    "crm_review_items",  # the Review Queue; decisions audited by its own functions (009 Q-34)
+    "crm_review_item_deals",  # a Review Queue item's deal choices, ids only (009 Q-07)
+    "crm_email_summaries",  # AI thread summaries, rewritten each message, removable (009 Q-34)
+    "crm_email_summary_links",  # an email summary's links to its records (009 FR-CRMAI-SUM-05)
+    "crm_company_enrichment",  # AI values beside a company's fields, re-read often (009 ENR-06)
+    "crm_ai_field_values",  # AI field values, recomputed hourly at most (009 FR-CRMAI-FIELD-04)
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}
+#: 008 (047): the CRM's task tables, renamed and shared; every sweep below
+#: covers them as CRM tables.
+TASK_TABLES = "('tasks', 'task_links')"
+#: 008 (047, FR-TASK-DATA-09, -15): the two plain references among them, by
+#: design — a link's task and a subtask's parent, which may have no workspace.
+PLAIN_TASK_KEYS = {"task_links_task_id", "tasks_parent_id_fkey"}
+#: 008 (053, FR-TASK-RRULE-03): a recurring task's series key, the first
+#: occurrence's id, which stays the series' name after that task is purged;
+#: a key, not a reference.
+SERIES_KEYS = {("tasks", "series_id")}
 
 
 def _tables(stack, like: str = "%") -> list[str]:
@@ -112,7 +131,8 @@ class TestTheAuditTrigger:
     def test_every_record_and_config_table_has_it(self, stack):
         rows = stack.sql(
             "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname LIKE 'crm\\_%' "
+            "WHERE n.nspname = 'public' AND c.relkind = 'r' "
+            f"AND (c.relname LIKE 'crm\\_%' OR c.relname IN {TASK_TABLES}) "
             "AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid "
             "AND t.tgfoid = 'public.crm_audit_row'::regproc AND NOT t.tgisinternal)"
         )
@@ -141,8 +161,10 @@ class TestReferencesStayInTheWorkspace:
             "ON a.attrelid = con.confrelid AND a.attnum = k.n) AS refs, "
             "con.confrelid::regclass::text AS target "
             "FROM pg_constraint con WHERE con.contype = 'f' "
-            "AND con.conrelid::regclass::text LIKE 'crm\\_%' "
-            "AND con.confrelid::regclass::text LIKE 'crm\\_%'"
+            "AND (con.conrelid::regclass::text LIKE 'crm\\_%' "
+            f"OR con.conrelid::regclass::text IN {TASK_TABLES}) "
+            "AND (con.confrelid::regclass::text LIKE 'crm\\_%' "
+            f"OR con.confrelid::regclass::text IN {TASK_TABLES})"
         )
         assert len(rows) > 30
         loose = []
@@ -153,14 +175,16 @@ class TestReferencesStayInTheWorkspace:
                 continue
             if row["cols"][0] != "workspace_id" or row["refs"][0] != "workspace_id":
                 loose.append(row["conname"])
-        assert loose == []
+        assert set(loose) == PLAIN_TASK_KEYS
+        assert "task_links_task" in {r["conname"] for r in rows}
 
     def test_every_other_reference_carries_crm_check_refs(self, stack):
         """A uuid `*_id` column of a CRM table with no foreign key is a
         polymorphic reference; its table must carry the trigger."""
         rows = stack.sql(
             "SELECT c.table_name, c.column_name FROM information_schema.columns c "
-            "WHERE c.table_schema = 'public' AND c.table_name LIKE 'crm\\_%' "
+            "WHERE c.table_schema = 'public' "
+            f"AND (c.table_name LIKE 'crm\\_%' OR c.table_name IN {TASK_TABLES}) "
             "AND c.udt_name = 'uuid' AND c.column_name LIKE '%\\_id' "
             "AND c.column_name NOT IN ('id', 'workspace_id') "
             "AND NOT EXISTS (SELECT 1 FROM pg_constraint con JOIN pg_attribute a "
@@ -179,7 +203,8 @@ class TestReferencesStayInTheWorkspace:
         unchecked = [
             (r["table_name"], r["column_name"])
             for r in rows
-            if r["column_name"] not in POLYMORPHIC or r["table_name"] not in checked
+            if (r["table_name"], r["column_name"]) not in SERIES_KEYS
+            and (r["column_name"] not in POLYMORPHIC or r["table_name"] not in checked)
         ]
         assert unchecked == []
 
@@ -254,3 +279,105 @@ class TestTheBellNamesOnlyItsOwnWorkspace:
         with pytest.raises(stack.SqlError) as refused:
             stack.sql(moved)
         assert refused.value.code == "CRM04"
+
+
+#: 009's migrations (plan §6 rule 1: only 060–079 are 009's).
+MIGRATIONS = Path(__file__).resolve().parents[3] / "supabase/migrations"
+#: The 007 tables with no audit trigger, as 007 left the list.
+NOT_AUDITED_007 = {
+    "crm_stage_history",
+    "crm_import_runs",
+    "crm_job_runs",
+    "crm_notifications",
+    "crm_digest_sends",
+    "crm_email_messages",
+    "crm_email_links",
+    "crm_object_fields",
+}
+#: 009 data-model §5: the seven tables S1a–S3a add without the trigger.
+NOT_AUDITED_009 = {
+    "crm_ai_usage",
+    "crm_review_items",
+    "crm_review_item_deals",
+    "crm_email_summaries",
+    "crm_email_summary_links",
+    "crm_company_enrichment",
+    "crm_ai_field_values",
+}
+#: The only option array, 007's (029); 009 adds none (data-model §5).
+UUID_ARRAYS = {("crm_companies", "channel_ids")}
+
+
+def _009_sql() -> str:
+    """060–079's text with its comment lines left out."""
+    files = sorted(p for p in MIGRATIONS.glob("0[67]*.sql") if 60 <= int(p.name[:3]) <= 79)
+    assert [p.name[:3] for p in files][:8] == [f"0{n}" for n in range(60, 68)]
+    return "\n".join(
+        line
+        for p in files
+        for line in p.read_text().splitlines()
+        if not line.lstrip().startswith("--")
+    )
+
+
+class TestThe009Additions:
+    """Spec 009 data-model §5, NFR-CRMAI-02; tasks T170: the sweeps above
+    re-run over 060–067. `NOT_AUDITED` is exactly 007's list and the seven
+    tables of data-model §5; every table and function 009 creates is one
+    the sweeps see; and 009 makes no new `uuid[]` column."""
+
+    def test_not_audited_is_007s_and_the_seven(self):
+        assert NOT_AUDITED == NOT_AUDITED_007 | NOT_AUDITED_009
+        assert len(NOT_AUDITED_009) == 7 and not NOT_AUDITED_007 & NOT_AUDITED_009
+
+    def test_every_009_table_is_swept(self, stack):
+        made = set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)", _009_sql()))
+        assert made == NOT_AUDITED_009 | {"crm_ai_fields"}
+        rows = stack.sql(
+            "SELECT c.relname, c.relrowsecurity FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') "
+            f"AND c.relname IN ({', '.join(stack.q(t) for t in sorted(made))})"
+        )
+        assert {r["relname"]: r["relrowsecurity"] for r in rows} == {t: True for t in made}
+        for role in ("anon", "authenticated"):
+            for table in made:
+                [row] = stack.sql(
+                    "SELECT "
+                    + " OR ".join(
+                        f"has_table_privilege({stack.q(role)}, {stack.q('public.' + table)}, '{p}')"
+                        for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+                    )
+                    + " AS any"
+                )
+                assert row["any"] is False, (role, table)
+
+    def test_crm_ai_fields_carries_the_audit_trigger(self, stack):
+        rows = stack.sql(
+            "SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.crm_ai_fields'::regclass "
+            "AND tgfoid = 'public.crm_audit_row'::regproc AND NOT tgisinternal"
+        )
+        assert rows
+
+    def test_every_009_function_is_swept_and_revoked(self, stack):
+        names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _009_sql()))
+        assert len(names) > 15
+        # The CRM function sweep reads `crm_%`: every 009 function is one.
+        assert {n for n in names if not n.startswith("crm_")} == set()
+        rows = stack.sql(
+            "SELECT p.proname, "
+            "has_function_privilege('anon', p.oid, 'EXECUTE') AS anon, "
+            "has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            f"WHERE n.nspname = 'public' AND p.proname IN ({', '.join(stack.q(x) for x in sorted(names))})"
+        )
+        assert {r["proname"] for r in rows} == names
+        assert [r["proname"] for r in rows if r["anon"] or r["auth"]] == []
+
+    def test_no_new_uuid_array_column(self, stack):
+        rows = stack.sql(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND udt_name = '_uuid' "
+            "AND table_name IN (SELECT relname FROM pg_class WHERE relkind IN ('r', 'p'))"
+        )
+        assert {(r["table_name"], r["column_name"]) for r in rows} == UUID_ARRAYS

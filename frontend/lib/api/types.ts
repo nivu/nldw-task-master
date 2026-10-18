@@ -46,6 +46,9 @@ interface MeBase {
   display_name: string;
   /** Spec 007 — every account's CRM workspaces; empty until S1b adds them. */
   crm: { workspaces: MeCrmWorkspace[] };
+  /** Spec 008 FR-TASK-ROLL-01, -03 — the effective tasks phase level (0 = off,
+   *  1–4 cumulative), for staff and `crm_only` alike. */
+  tasks: { level: number };
 }
 
 export interface StaffMe extends MeBase {
@@ -260,6 +263,9 @@ export interface PortalUser {
    *  alone; `is_owner` is read-only everywhere (set by migration 022). */
   dashboard_access?: boolean;
   is_owner?: boolean;
+  /** Spec 008 FR-TASK-ROLL-02 — the person's own tasks level, or null when
+   *  they follow the global default. Only in the admin's user list. */
+  tasks_level?: number | null;
 }
 
 export interface Allowance {
@@ -383,6 +389,19 @@ export interface TimesheetDay {
   /** FR-TIME-12 — offered alongside projects, always. */
   activities: { id: Activity; name: string }[];
   total: string;
+  /** Spec 008 FR-TASK-LOG-01 — tasks finished that day; `[]` unless phase 3
+   *  is on and the day can be logged. */
+  suggestions: TaskSuggestion[];
+}
+
+/** Spec 008 FR-TASK-LOG-01, -05 — a task offered on Log a day. */
+export interface TaskSuggestion {
+  task_id: string;
+  title: string;
+  /** Only a confirmed, unarchived project. */
+  project: { id: string; name: string } | null;
+  /** The title is already in a note that day. */
+  added: boolean;
 }
 
 export interface TimesheetWeekDay {

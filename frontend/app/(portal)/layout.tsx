@@ -17,6 +17,7 @@ import {
   CircleHelp,
   Home,
   LayoutDashboard,
+  ListTodo,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -27,6 +28,7 @@ import { createClient } from "@/lib/supabase/client";
 import { getMe } from "@/lib/api/portal";
 import type { Me } from "@/lib/api/types";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
+import { QuickAdd } from "@/components/tasks/quick-add";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +43,10 @@ import { cn } from "@/lib/utils";
  * other TVA request fires) until it answers. A CRM-only seller is sent to
  * `/crm` and never sees this shell; a staff member with a CRM membership
  * gets a CRM link.
+ *
+ * Spec 008 FR-TASK-ADD-01, FR-TASK-LIST-08, FR-TASK-ROLL-03: with phase 1 of
+ * tasks switched on, a My Tasks link and the quick-add box (the desktop
+ * sidebar's header and the phone header); below it, nothing of tasks shows.
  */
 
 const COLLAPSED_KEY = "portal.sidebar.collapsed";
@@ -109,10 +115,13 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
   // Only the links this person can actually use. The server re-checks every
   // one of these routes regardless — hiding a link is tidiness, not security.
   const caps = me?.account_type === "staff" ? me.capabilities : undefined;
+  const tasksOn = (me?.tasks.level ?? 0) >= 1;
   const links = [
     { href: "/home", label: "Home", icon: Home, section: "mine", show: true },
     { href: "/calendar", label: "Calendar", icon: CalendarDays, section: "mine", show: true },
     { href: "/timesheet", label: "Time", icon: Clock, section: "mine", show: true },
+    // Spec 008 FR-TASK-LIST-08 — only with phase 1 switched on.
+    { href: "/tasks", label: "My Tasks", icon: ListTodo, section: "mine", show: tasksOn },
     { href: "/team", label: "Team", icon: Users, section: "team", show: caps?.team_view },
     { href: "/approvals", label: "Approvals", icon: CheckSquare, section: "team", show: caps?.team_view },
     { href: "/analytics", label: "Effort", icon: BarChart3, section: "team", show: caps?.team_view },
@@ -172,6 +181,14 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
           </Button>
         </div>
 
+        {tasksOn && (
+          <QuickAdd
+            className={collapsed ? "flex justify-center pb-3" : "px-3 pb-3"}
+            collapsed={collapsed}
+            onExpand={toggleCollapsed}
+          />
+        )}
+
         <nav className="flex-1 space-y-4 overflow-y-auto px-2">
           {SECTIONS.map(({ id, label }) => {
             const mine = links.filter((l) => l.section === id);
@@ -218,6 +235,8 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
           <Link href="/home" className="font-heading text-sm font-semibold">
             Nunnari Portal
           </Link>
+
+          {tasksOn && <QuickAdd className="min-w-0 flex-1" />}
 
           <div className="ml-auto flex items-center gap-1">
             <Button

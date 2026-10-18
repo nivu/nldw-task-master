@@ -1,0 +1,265 @@
+"""Task routes, phases 1 and 2 — spec 008 contracts §1, §2; FR-TASK-LIST-01
+to -07, FR-TASK-VIS-01 to -08, FR-TASK-DATA-05 to -13, FR-TASK-ROLL-03, -04,
+FR-TASK-DEL-02, -03, -06, FR-TASK-VIEW-01 to -03.
+
+HTTP only: each route takes its `TaskActor` from the phase guard
+(`TasksDep`, level 1; `TasksDep2` for phase 2) and hands the rest to `app.domain.tasks.service` (every
+write, and `create_task`, the 008/009 interface) or to `services/tasks`
+(reads). The same routes serve the web app and the `task_*` MCP tools.
+
+Route order (contracts §1): the fixed paths are declared before
+`/tasks/{id}`, and `{id}` and `{link_id}` are typed `UUID`, so a fixed
+segment such as `trash` is never read as an id.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Query
+
+from app.api.errors import ProblemDetail
+from app.api.tasks.deps import TasksDep, TasksDep2
+from app.domain.tasks import delegation, quick_add, rollout, rules, service
+from app.domain.tasks.service import TaskActor
+from app.schemas.tasks import (
+    QuickAddAnswers,
+    QuickAddIn,
+    TaskAudienceIn,
+    TaskCreate,
+    TaskIn,
+    TaskLinkIn,
+    TaskNoteIn,
+    TaskPatch,
+    TaskSettingsIn,
+)
+from app.services.tasks import listing, people, store, templates
+
+router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+LinkType = Literal["company", "person", "opportunity", "campaign", "tva_project"]
+Priority = Literal["urgent", "high", "normal", "low"]
+
+
+# ---------------------------------------------------------------------------
+# Fixed paths — before /tasks/{id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("")
+def list_tasks(
+    actor: TasksDep,
+    view: Literal["mine", "waiting", "assigned_by_me"] = "mine",
+    tag: str | None = None,
+    priority: Priority | None = None,
+    link_type: LinkType | None = None,
+    link_id: UUID | None = None,
+    q: str | None = None,
+    closed_limit: int = Query(default=20, ge=1, le=100),
+    closed_before: str | None = None,
+) -> dict[str, Any]:
+    """My Tasks: open and waiting tasks by section, and a page of closed ones.
+    Phase 2 adds `view=waiting` (grouped by whom they wait on) and
+    `view=assigned_by_me` (FR-TASK-VIEW-01, -02)."""
+    if view != "mine":
+        why = rollout.refusal(rollout.level_for(actor.user.profile, store.default_level()), 2)
+        if why:
+            raise ProblemDetail(403, why)
+        return listing.waiting(actor) if view == "waiting" else listing.assigned_by_me(actor)
+    return listing.my_tasks(
+        actor,
+        tag=tag,
+        priority=priority,
+        link_type=link_type,
+        link_id=str(link_id) if link_id else None,
+        q=q,
+        closed_limit=closed_limit,
+        closed_before=closed_before,
+    )
+
+
+@router.post("", status_code=201)
+def create(actor: TasksDep, body: TaskIn) -> dict[str, Any]:
+    """Adds a task through `create_task`; `source` follows the channel."""
+    fields = body.model_dump(exclude={"assignee"}, exclude_unset=True)
+    if body.assignee is not None:
+        if body.assignee_id is not None:
+            raise ProblemDetail(422, "Give the assignee once, by id or by name.")
+        fields["assignee_id"] = people.resolve(actor, body.assignee)
+    payload = TaskCreate(**fields, source="nldw" if actor.channel == "mcp" else "manual")
+    return service.create_task(actor, payload)
+
+
+@router.post("/audience")
+def audience(actor: TasksDep, body: TaskAudienceIn) -> dict[str, str]:
+    """Who will see a draft (FR-TASK-VIS-08)."""
+    return people.audience(actor, body)
+
+
+@router.post("/quick-add/preview")
+def quick_add_preview(actor: TasksDep, body: QuickAddIn) -> dict[str, Any]:
+    """The parsed draft of one line, who will see it and any questions;
+    writes nothing (FR-TASK-ADD-02 to -04). `today` is the caller's, in
+    their own zone (FR-TASK-CHG-06)."""
+    zone = actor.user.profile.get("timezone") or rules.DEFAULT_ZONE
+    today = rules.day_of(service._now(), zone)
+    offered = people.people(actor)
+    parsed = quick_add.parse(body.text, today, offered, zone)
+    answers = body.answers or QuickAddAnswers()
+    chosen = None
+    if answers.assignee_id is not None:
+        person = next((p for p in offered if p["id"] == str(answers.assignee_id)), None)
+        if person is None:
+            raise ProblemDetail(404, people.NO_SUCH_PERSON)
+        chosen = {"id": person["id"], "name": person["display_name"]}
+    parsed = quick_add.answer(parsed, today, due_on=answers.due_on, assignee=chosen)
+    assignee = parsed.assignee or {"id": actor.user.id, "name": actor.user.display_name}
+    seen = people.audience(actor, TaskAudienceIn(assignee_id=assignee["id"]))
+    return {
+        "draft": {
+            "title": parsed.title,
+            "due_on": parsed.due_on.isoformat() if parsed.due_on else None,
+            "due_weekday": quick_add.weekday_name(parsed.due_on) if parsed.due_on else None,
+            "bucket": parsed.bucket,
+            "tags": list(parsed.tags),
+            "assignee": assignee,
+            "links": [],
+        },
+        "visible_to": seen["visible_to"],
+        "questions": [
+            {
+                "kind": q.kind,
+                "prompt": q.prompt,
+                "options": [{"value": o.value, "label": o.label} for o in q.options],
+            }
+            for q in parsed.questions
+        ],
+    }
+
+
+@router.get("/people")
+def assignable(
+    actor: TasksDep,
+    q: str | None = None,
+    workspace_id: UUID | None = None,
+    project_id: UUID | None = None,
+) -> list[dict[str, Any]]:
+    """People the caller may assign for a draft."""
+    return people.people(
+        actor,
+        q=q,
+        workspace_id=str(workspace_id) if workspace_id else None,
+        project_id=str(project_id) if project_id else None,
+    )
+
+
+@router.get("/linkable")
+def linkable(actor: TasksDep, q: str = "") -> dict[str, Any]:
+    """CRM records and TVA projects the caller may link."""
+    return people.linkable(actor, q)
+
+
+@router.get("/trash")
+def trash(actor: TasksDep) -> list[dict[str, Any]]:
+    """The caller's deleted tasks with no workspace, with days left."""
+    return listing.trash(actor)
+
+
+def _settings(actor: TaskActor, profile: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "nudge_days": profile.get("task_nudge_days") or delegation.DEFAULT_NUDGE_DAYS
+    }
+    # Phase 3 lists the starter templates (FR-TASK-RRULE-05).
+    if rollout.level_for(actor.user.profile, store.default_level()) >= 3:
+        out["templates"] = templates.offered()
+    return out
+
+
+@router.get("/settings")
+def get_settings(actor: TasksDep2) -> dict[str, Any]:
+    """The caller's own task settings (FR-TASK-DEL-06); from phase 3 the
+    starter templates (FR-TASK-RRULE-05)."""
+    return _settings(actor, actor.user.profile)
+
+
+@router.patch("/settings")
+def update_settings(actor: TasksDep2, body: TaskSettingsIn) -> dict[str, Any]:
+    """Changes the caller's idle days before a waiting task is a "nudge?"
+    (1-30, FR-TASK-DEL-06)."""
+    if body.nudge_days is None:
+        return _settings(actor, actor.user.profile)
+    return _settings(actor, store.set_nudge_days(actor.user.id, body.nudge_days))
+
+
+@router.get("/project/{project_id}")
+def project_tasks(
+    actor: TasksDep2, project_id: UUID, include_closed: bool = False
+) -> dict[str, Any]:
+    """A TVA project's tasks the caller may see (FR-TASK-VIEW-03)."""
+    return listing.project_tasks(actor, str(project_id), include_closed=include_closed)
+
+
+# ---------------------------------------------------------------------------
+# One task — /tasks/{id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{id}")
+def get_task(actor: TasksDep, id: UUID) -> dict[str, Any]:
+    """The task, its subtasks and its history."""
+    return listing.detail(actor, str(id))
+
+
+@router.patch("/{id}")
+def update(actor: TasksDep, id: UUID, body: TaskPatch) -> dict[str, Any]:
+    """Changes the fields sent."""
+    return service.update_task(actor, str(id), body)
+
+
+@router.delete("/{id}")
+def delete(actor: TasksDep, id: UUID) -> dict[str, Any]:
+    """Moves the task to the Trash."""
+    return service.delete_task(actor, str(id))
+
+
+@router.post("/{id}/complete")
+def complete(actor: TasksDep, id: UUID) -> dict[str, Any]:
+    """Marks the task done."""
+    return service.complete_task(actor, str(id))
+
+
+@router.post("/{id}/reopen")
+def reopen(actor: TasksDep, id: UUID) -> dict[str, Any]:
+    """Back to Open."""
+    return service.reopen_task(actor, str(id))
+
+
+@router.post("/{id}/links")
+def add_link(actor: TasksDep, id: UUID, body: TaskLinkIn) -> dict[str, Any]:
+    """Links a CRM record or a TVA project."""
+    return service.add_link(actor, str(id), body)
+
+
+@router.delete("/{id}/links/{link_id}")
+def remove_link(actor: TasksDep, id: UUID, link_id: UUID) -> dict[str, Any]:
+    """Removes a link."""
+    return service.remove_link(actor, str(id), str(link_id))
+
+
+@router.post("/{id}/restore")
+def restore(actor: TasksDep, id: UUID) -> dict[str, Any]:
+    """Brings the task back from the Trash."""
+    return service.restore_task(actor, str(id))
+
+
+@router.post("/{id}/accept")
+def accept(actor: TasksDep2, id: UUID) -> dict[str, Any]:
+    """The assignee takes up a task someone else gave them (FR-TASK-DEL-02)."""
+    return service.accept_task(actor, str(id))
+
+
+@router.post("/{id}/hand-back")
+def hand_back(actor: TasksDep2, id: UUID, body: TaskNoteIn) -> dict[str, Any]:
+    """Gives the task back to its creator, with a note (FR-TASK-DEL-03)."""
+    return service.hand_back(actor, str(id), body.note)

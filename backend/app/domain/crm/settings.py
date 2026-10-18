@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final, Literal
 
-from app.domain.crm import flags
+from app.domain.crm import ai_rules, flags
 
 Scope = Literal["all", "tva_linked", "not_tva_linked"]
 
@@ -65,7 +65,7 @@ LISTS: Final[dict[str, ListSpec]] = {
     "company.lead_stage": ListSpec("Lead stage", fixed=True),
     "opportunity.stage": ListSpec("Stage", fixed=True),
     "task.status": ListSpec("Task status", fixed=True),
-    "task.bucket": ListSpec("Priority bucket", fixed=True),
+    "task.bucket": ListSpec("Bucket", fixed=True),
     "company.account_type": ListSpec("Account type"),
     "company.relationship_status": ListSpec("Relationship status"),
     "channel": ListSpec("Channel"),
@@ -185,6 +185,12 @@ AUTOMATIONS: Final = {
     "digests": "Daily and weekly digests",
     "task_reminders": "Task due reminders",
     "campaign_conversion": "Campaign conversion prompt",
+    # Spec 009 FR-CRMAI-RULE-01, FR-CRMAI-CHG-06: the follow-up rules R-1 to
+    # R-4, automations 11 to 14, seeded off (066). Each also needs phase 3.
+    "no_reply_draft": "No reply after outreach (draft a follow-up)",
+    "stuck_notice": "Stuck in stage (flag and notice)",
+    "lead_cold": "Lead gone cold",
+    "campaign_followthrough": "Campaign follow-through",
 }
 
 
@@ -221,6 +227,8 @@ VALIDATORS: Final = {
     "automations": automations_refusal,
     "email_sync": email_sync_refusal,
 }
+#: Spec 009 FR-CRMAI-FLAG-01: the phase switches and the AI budget.
+VALIDATORS["ai"] = ai_rules.ai_refusal
 
 
 def setting_refusal(key: str, value: Any) -> str | None:

@@ -66,9 +66,7 @@ def moves(ctx: Any, company_id: str) -> dict[str, int]:
             )
         ),
         "tasks": len(
-            store.list_links(
-                ws_id, "crm_task_links", record_type="company", record_ids=[company_id]
-            )
+            store.list_links(ws_id, "task_links", record_type="company", record_ids=[company_id])
         ),
         "notes": len(
             store.list_links(

@@ -93,6 +93,7 @@ quietly starting a second API where a scheduler was meant to be.
 | `beat` | `beat` | **The Q-04 nightly sweep.** Without it, pending bookings whose date has passed stay pending forever |
 | `redis` | — | Railway's Redis template. The broker |
 | `worker-crm-sync` | `worker_crm_sync` | The CRM's Gmail sync pages only (queue `crm_sync`, one at a time). **Not created until sync is switched on** — section 6 |
+| `worker-crm-ai` | `worker_crm_ai` | The CRM's AI jobs only (queue `crm-ai`, one at a time); the only service holding the Claude and Fireflies keys — section 8 |
 
 Deploy each from `backend/`, so the build context contains the Dockerfile's
 `COPY` sources:
@@ -477,6 +478,162 @@ repository and read the old CRM. At cutover, repoint them at this portal's
 `crm_*` tools (a morning `crm_today` per workspace) or retire them (spec
 D16). The Twenty import itself is Settings → Import, dry run first.
 
+## 7. Tasks (spec 008)
+
+Tasks ship in the same image, services and frontend. The CRM's task table
+becomes the shared `tasks` table, so this release changes how every CRM task
+is stored; read [`docs/architecture/tasks.md`](../architecture/tasks.md)
+first. Release in a quiet hour.
+
+### First release (phase 1)
+
+1. **Report the linkless CRM tasks first.** Migration `046` moves every live
+   CRM task that has no linked record into its workspace Trash before the
+   rename (spec §8.2). Count them in the Supabase SQL editor before
+   `db push`, and report the number to the owner:
+
+   ```sql
+   SELECT count(*) FROM crm_tasks t
+   WHERE t.deleted_at IS NULL
+     AND NOT EXISTS (SELECT 1 FROM crm_task_links l WHERE l.task_id = t.id);
+   ```
+
+   `046` prints the same count as a NOTICE when it runs.
+2. **Migrations `046`–`051` and `056`** with `npx supabase db push`, as every
+   release: `046` the linkless clean-up, `047` the rename, new statuses and
+   fields, `048` the CRM functions on the new names, `049` the task write
+   path, `050` the phase level (everyone starts at 0), `051` the Life OS
+   import's run records, `056` the lock on link removal. `047` and `048`
+   must apply in the same push: between them, CRM task writes fail.
+3. **`api`, `worker` and `beat` from the same commit**, after the
+   migrations. Tasks add the Celery task `tasks.purge_deleted` and its beat
+   entry (01:20 IST daily); a worker left on an older commit drops it.
+4. **Netlify**, with `--skip-functions-cache`.
+5. **Check**, signed in as the owner: CRM Today, a deal's Tasks tab and the
+   CRM Tasks page show the same tasks as before, with To do and In progress
+   now Open. Nothing of My Tasks shows yet for anyone.
+
+### Raising levels, person by person
+
+Every phase is off for everyone until switched on (C6). A person's level `n`
+switches on phases 1 to `n`; a person with no level of their own has the
+global default, which starts at 0.
+
+1. The constitution amendment (spec §15.1) is agreed before phase 1 goes to
+   anyone but the owner.
+2. A TVA admin raises the owner first: Admin → People → **Tasks** → 1, or
+   `update_user` with `changes: {"tasks_level": 1}`. Each change is audited.
+3. Then the core team, one person at a time, the same way. A person who is
+   assigned a personal task needs level 1 first ("*Name* does not have My
+   Tasks yet.").
+4. Only when everyone should have it, raise the default with `update_setting`
+   (`tasks_default_level`). Setting a person back to **Default** makes them
+   follow it again.
+
+CRM task behaviour never depends on the level: CRM tasks work for everyone
+from the release on.
+
+### Voice capture (phase 4)
+
+Migration `054` adds the `voice_uploads` table and the private Storage bucket
+`task-voice`. The worker transcribes each note with Groq (`whisper-large-v3`)
+through the Celery task `tasks.transcribe_voice`; the beat entry
+`tasks-voice-sweep` (every 30 minutes) deletes any audio or transcript before
+it is 24 hours old.
+
+| Variable | Service | Value |
+|---|---|---|
+| `GROQ_API_KEY` | `worker` **only** | The Groq API key, created by the owner (spec §15.1). Never on `api` or `beat`; never in Netlify; never logged |
+| `TASKS_VOICE_CONFIGURED` | `api` | `true` once the key is set on `worker`. A non-secret flag: while it is false, uploading a voice note answers "Voice capture is not set up yet." |
+
+Set the key on `worker` first and redeploy it, then set the flag on `api`.
+
+## 8. The CRM intelligence layer (spec 009)
+
+Email summaries, the Review Queue, meeting capture from Fireflies, company
+enrichment, AI fields, the follow-up rules and contact recency ship in the
+same image and frontend, plus one new Railway service. Read the
+"intelligence layer" section of
+[`docs/architecture/crm.md`](../architecture/crm.md#the-intelligence-layer)
+first. Nothing changes for anyone on release day: **every phase is off in
+every workspace, and the budget is zero, until a workspace Admin sets a
+budget and switches a phase on.**
+
+### First release
+
+1. **Migrations `060`–`068`** with `npx supabase db push`, **after every
+   `008` migration** (`046`–`059`, section 7) is applied; never in the same push
+   ahead of them, because several of them replace CRM functions
+   (`crm_audit_row`, `crm_purge`, `crm_merge_companies`, …) starting from
+   their `008` versions. They add the AI tables (RLS on, no browser
+   grants), the `ai` workspace setting (seeded with every phase off and a
+   zero budget), the new rule switches (seeded off) and their thresholds,
+   the new job names and the contact-recency columns.
+2. **Create `worker-crm-ai`** in the Railway project, from the same
+   repository and `backend/Dockerfile`, with `PROCESS_TYPE=worker_crm_ai`
+   (`celery -A app.worker worker -Q crm-ai --concurrency=1`) and the same
+   base variables as `worker` (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+   `REDIS_URL`, `FRONTEND_URL`). Concurrency 1 is deliberate: it bounds
+   budget overshoot to one call and keeps the Gmail sync lock free.
+
+   ```bash
+   cd backend && railway up . --path-as-root --service worker-crm-ai
+   ```
+
+   Without it, beat's AI ticks wait on the `crm-ai` queue and no AI job
+   runs at all.
+3. **`api`, `worker`, `beat`, `worker-crm-sync` (if it exists) and
+   `worker-crm-ai` from the same commit**, after the migrations. Beat gains
+   the AI ticks (summaries, meetings, enrichment and AI fields every 15
+   minutes; review expiry at 01:30 IST); the shared worker gains the R-1 to
+   R-4 checks in the automations job and only enqueues ids onto `crm-ai`.
+4. **Netlify**, with `--skip-functions-cache`. The new help guide is
+   `/help/crm-intelligence`.
+5. **Check**, signed in as a workspace Admin: Settings → AI shows a zero
+   budget, every phase off, and "The AI rates are not set yet" until the
+   rates are set (below); Settings → Jobs lists the AI jobs as skipped
+   "Switched off".
+
+### Settings, by service
+
+| Variable | Service | Value |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `worker-crm-ai` **only** | The Claude API key (secret). Never on `api`, `worker` or `beat`; never in Netlify |
+| `FIREFLIES_API_KEY` | `worker-crm-ai` **only** | The Fireflies API key (secret). It sees only the meetings of the Fireflies account it belongs to; record which account that is |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | `worker-crm-ai`, as well as `worker-crm-sync` | The same service-account key as sync (section 6), for the summariser's read of stored messages. Needed only for email summaries and R-1 |
+| `CRM_GMAIL_CONFIGURED` | `worker-crm-ai`, as well as `api`, `beat` and `worker` | `true` once the key above is set. The summariser treats email sync as off without it |
+| `CRM_AI_INPUT_USD_PER_MTOK`, `CRM_AI_OUTPUT_USD_PER_MTOK` | `worker-crm-ai` **and `api`** | The rate table the owner confirms (US dollars per million input and output tokens). Not secret. `worker-crm-ai` uses them to estimate each call's cost; `api` needs them too, or `GET /crm/ai` reports `rates_configured: false` and Settings → AI keeps saying the rates are not set |
+
+While either rate is unset, every AI job is recorded `skipped` "AI rates are
+not set", whatever the budget and phases say. While `ANTHROPIC_API_KEY` is
+unset, an AI job that does run fails its items with a fixed reason and no
+model call is made. The model is fixed in code (`claude-sonnet-5-5`); confirm
+the key can use it before switching phase 1 on.
+
+None of these keys is logged or reaches the browser. After setting them,
+redeploy the services whose variables changed, from the same commit.
+
+### Release order and switching on
+
+1. Migrations, then the services, then Netlify (above).
+2. Owner: set the secrets and rates above.
+3. Phase 1 (email summaries and R-1) also needs Gmail sync live (section 6,
+   "Switching Gmail sync on"). Phase 2, and rules R-2 to R-4 of phase 3, do
+   not read Gmail and can run before it.
+4. **Nunnari Labs first.** A Labs Admin sets a monthly budget under
+   Settings → AI and switches phases on one at a time. Check Settings → Jobs
+   after the next tick: each AI job should be `ok`, not `skipped` or
+   `failed`.
+5. **Nunnari Academy B2B at least one week later**, after the owner has
+   reviewed what Labs produced (spec 009 FR-CRMAI-FLAG-05). This is an
+   operating rule; nothing in the code enforces it.
+
+To stop all AI work at once in a workspace, an Admin switches its phases off
+or sets the budget to zero. To stop it everywhere, stop `worker-crm-ai`: the
+ticks then wait on the queue, and AI jobs that have run before show as late
+under Settings → Jobs and on `/health/jobs`. Stored summaries, notes and
+values are kept either way.
+
 ## Releasing a change
 
 Every release, in this order:
@@ -486,7 +643,7 @@ Every release, in this order:
    ahead of its migration, creating a person fails and editing one returns an
    error after the change was saved.
 2. **`api`, `worker` and `beat` from the same commit** — and `worker-crm-sync`
-   too, once it exists. A worker left on the old commit drops any new Celery
+   and `worker-crm-ai` too, once they exist. A worker left on the old commit drops any new Celery
    task the api sends it, silently.
 3. **Netlify**, with `--skip-functions-cache` (section 3), so the server
    function picks up `next.config.ts` (security headers included).

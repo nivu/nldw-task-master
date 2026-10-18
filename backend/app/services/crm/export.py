@@ -28,7 +28,15 @@ from typing import Any
 from app.domain.crm import csv_io, objects
 from app.domain.crm import views as view_rules
 from app.schemas.crm import ExportViewIn, QueryIn
-from app.services.crm import CrmRefused, store, views
+from app.services.crm import (
+    CrmRefused,
+    ai_fields,
+    enrichment,
+    review,
+    store,
+    summaries,
+    views,
+)
 from app.services.crm import present as show
 from app.services.crm import records as base
 from app.services.crm.context import actor
@@ -51,6 +59,28 @@ WORKSPACE_OBJECTS = {
     "campaigns": "campaign",
     "campaign_members": "campaign_member",
     "drive_links": "drive_link",
+    # Spec 009 FR-CRMAI-CHG-11: the Review Queue's items, read by their own
+    # reader (`services/crm/review.export_rows`), not as records.
+    "review_items": "review_item",
+    # Spec 009 FR-CRMAI-CHG-11: email thread summaries with their links
+    # (`services/crm/summaries.export_rows`).
+    "email_summaries": "email_summary",
+    # Spec 009 FR-CRMAI-CHG-11: company enrichment
+    # (`services/crm/enrichment.export_rows`).
+    "enrichment": "enrichment",
+    # Spec 009 FR-CRMAI-CHG-11: AI field definitions and values
+    # (`services/crm/ai_fields.export_fields`, `export_values`).
+    "ai_fields": "ai_field",
+    "ai_field_values": "ai_field_value",
+}
+#: Spec 009: the AI objects of the export, which are not record kinds, and
+#: their tables (for the export's audit row).
+AI_TABLES = {
+    "review_item": "crm_review_items",
+    "email_summary": "crm_email_summaries",
+    "enrichment": "crm_company_enrichment",
+    "ai_field": "crm_ai_fields",
+    "ai_field_value": "crm_ai_field_values",
 }
 
 
@@ -158,6 +188,16 @@ def _all_rows(ctx: Any, ws: base.Workspace, kind: str) -> list[dict[str, Any]]:
     """Every live record of one object, in id order, presented as the
     record routes present it (a Viewer never gets here), `PRESENT_BATCH`
     rows at a time."""
+    if kind == "review_item":
+        return review.export_rows(ctx.workspace_id)
+    if kind == "email_summary":
+        return summaries.export_rows(ctx.workspace_id)
+    if kind == "enrichment":
+        return enrichment.export_rows(ctx.workspace_id)
+    if kind == "ai_field":
+        return ai_fields.export_fields(ctx.workspace_id)
+    if kind == "ai_field_value":
+        return ai_fields.export_values(ctx.workspace_id)
     rows = store.every_record(ctx.workspace_id, objects.TABLES[kind])
     if kind == "drive_link":
         return [show.drive_link(r, ws.facts) for r in rows]
@@ -206,7 +246,7 @@ def workspace_json(ctx: Any, object_name: str | None) -> tuple[str, bytes]:
         {
             "kind": "workspace",
             "object": one,
-            "table": objects.TABLES[WORKSPACE_OBJECTS[one]] if one else None,
+            "table": {**objects.TABLES, **AI_TABLES}[WORKSPACE_OBJECTS[one]] if one else None,
             "rows": counts,
             "bytes": len(data),
         },

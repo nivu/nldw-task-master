@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
+import { AiFieldsPanel } from "@/components/crm/ai-fields-panel";
 import { AmountText } from "@/components/crm/amount-field";
 import { useQuickActions } from "@/components/crm/command-menu";
 import { ContactsPanel } from "@/components/crm/contacts-panel";
@@ -160,7 +161,9 @@ function dealGroups(bootstrap: CrmBootstrap, members: CrmMember[], deal: CrmOppo
  * phase dates for every role; Closed Won goes through the handoff; a Labs
  * admin may Link TVA project on a deal at Proposal or later that has none
  * (FR-CRM-TVA-18). Move stage, Link TVA project and Delete are also the
- * command menu's quick actions here (FR-CRM-SRCH-02).
+ * command menu's quick actions here (FR-CRM-SRCH-02). (009, phase 3) Its AI
+ * fields sit under the header, read-only, and an Admin or Member may
+ * recompute them (FR-CRMAI-FIELD-04, -05).
  */
 export default function OpportunityPage() {
   const { id } = useParams<{ id: string }>();
@@ -262,6 +265,18 @@ export default function OpportunityPage() {
             {deal.company_name}
           </Link>
         }
+        notice={
+          page.ai_fields && (
+            <AiFieldsPanel
+              workspace={ws}
+              object="opportunities"
+              recordId={deal.id}
+              fields={page.ai_fields}
+              canEdit={canEdit}
+              timeZone={bootstrap.me.timezone}
+            />
+          )
+        }
         flags={deal}
         chips={[
           <Chip key="stage" label="Stage" value={deal.stage_label} />,
@@ -353,6 +368,7 @@ export default function OpportunityPage() {
             initial={page.timeline_head}
             timeZone={bootstrap.me.timezone}
             version={version}
+            summaries={page.summaries}
           />
         }
         tasks={

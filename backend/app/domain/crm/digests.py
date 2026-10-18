@@ -38,6 +38,8 @@ HEADINGS: Final = {
     "tasks": "Tasks for today",
     "silent_clients": "Clients gone silent",
     "loose_ends": "Loose ends",
+    # Spec 009 FR-CRMAI-REV-09: Today's sixth section.
+    "to_review": "To review",
 }
 STAGE_LABELS: Final = {
     "discovery": "Discovery",
@@ -51,8 +53,11 @@ FLAG_OBJECTS: Final = {
     "crm_companies": "Companies",
     "crm_people": "People",
     "crm_opportunities": "Deals",
-    "crm_tasks": "Tasks",
+    "tasks": "Tasks",
 }
+#: Spec 009 FR-CRMAI-RULE-03, FR-CRMAI-CHG-05: flag kinds the weekly digest
+#: also counts, when the service gives them (Stuck in stage, while R-2 is on).
+FLAG_KINDS: Final = {"stuck_in_stage": "Deals stuck in stage"}
 
 
 def local_day_due(now: datetime, zone: str | None) -> date | None:
@@ -115,14 +120,17 @@ def daily_section(
             if sees_amounts and item.get("record_type") == "opportunity" and amount is not None:
                 line["amount"] = inr(amount)
             items.append(line)
-        out.append(
-            {
-                "key": section["key"],
-                "heading": HEADINGS.get(section["key"], section["key"]),
-                "off_reason": section.get("off_reason"),
-                "items": items,
-            }
-        )
+        part = {
+            "key": section["key"],
+            "heading": HEADINGS.get(section["key"], section["key"]),
+            "off_reason": section.get("off_reason"),
+            "items": items,
+        }
+        if "count" in section:
+            # Spec 009 FR-CRMAI-REV-09: To review's count of open items,
+            # beside its three oldest.
+            part["count"] = section["count"]
+        out.append(part)
     return {"workspace": workspace["name"], "workspace_key": workspace["key"], "sections": out}
 
 
@@ -144,7 +152,8 @@ def daily_body(name: str, day: date, parts: list[dict[str, Any]], link: str) -> 
             if section.get("off_reason") or not section["items"]:
                 continue
             shown = True
-            lines.append(f"  {section['heading']}:")
+            count = f" ({section['count']})" if section.get("count") is not None else ""
+            lines.append(f"  {section['heading']}{count}:")
             for item in section["items"]:
                 text = f"    - {item['title']}"
                 if item.get("amount"):
@@ -214,6 +223,16 @@ def weekly_content(
             }
             for t in FLAG_OBJECTS
         ],
+        "flag_kinds": [
+            {
+                "kind": kind,
+                "label": label,
+                "red": flag_counts[kind].get("red", 0),
+                "amber": flag_counts[kind].get("amber", 0),
+            }
+            for kind, label in FLAG_KINDS.items()
+            if kind in flag_counts
+        ],
     }
 
 
@@ -230,5 +249,9 @@ def weekly_body(content: dict[str, Any], link: str) -> str:
     lines += [f"  - {d['name']}" for d in content["lost"]] or ["  - None."]
     lines += ["", "Follow-up and deal-health flags:"]
     lines += [f"  - {f['object']}: {f['red']} red, {f['amber']} amber" for f in content["flags"]]
+    lines += [
+        f"  - {k['label']}: {k['red']} red, {k['amber']} amber"
+        for k in content.get("flag_kinds") or []
+    ]
     lines += ["", f"Open the CRM: {link}"]
     return "\n".join(lines)

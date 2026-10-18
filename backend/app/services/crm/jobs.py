@@ -17,6 +17,14 @@ failed, its error. `@crm_job(name)` wraps the work of one workspace:
   streak, the workspace's Admins in the bell and by message, and TVA admins
   by message (FR-CRM-JOB-02).
 
+An AI task that runs every workspace in turn shares `AI_TASK_SECONDS`
+between them (`crm_job(..., seconds=)`, `time_share`): each workspace's
+work stops taking items once `out_of_time()`, so the task ends inside
+Celery's 600-second limit and every workspace gets its run that tick
+(spec 009 FR-CRMAI-JOB-01, amended in S5). A run that stops part-way, on
+the clock, the budget or a switch, keeps the counts it had (`Skipped`
+carries them).
+
 A stopped scheduler cannot alert about itself, so staleness is checked on
 read (FR-CRM-JOB-03): `stale()` names every job whose last run started more
 than twice its interval ago. It feeds the CRM's start-up call and Today for
@@ -29,7 +37,10 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -53,21 +64,64 @@ JOBS: Final = {
     # workspace; the pages it enqueues finish that run (FR-CRM-SYNC-04).
     "email_sync": Job("Email sync", timedelta(minutes=15)),
     "flags": Job("Follow-up flags", timedelta(minutes=30)),
-    "automations": Job("Stale-deal notices", timedelta(minutes=30)),
+    # Spec 009 FR-CRMAI-JOB-05: the stale-deal notice and the follow-up rules.
+    "automations": Job("Automations", timedelta(minutes=30)),
     "digests": Job("Digests", timedelta(minutes=15)),
     "reminders": Job("Task reminders", timedelta(minutes=15)),
     "trash_purge": Job("Trash purge", timedelta(days=1)),
+    # Spec 009 FR-CRMAI-JOB-01: the AI jobs, on the crm-ai queue.
+    "summaries": Job("Email summaries", timedelta(minutes=15)),
+    "meetings": Job("Meeting capture", timedelta(minutes=15)),
+    "enrichment": Job("Company enrichment", timedelta(minutes=15)),
+    "ai_fields": Job("AI fields", timedelta(minutes=15)),
+    "review_expiry": Job("Review expiry", timedelta(days=1)),
+    # Spec 009 FR-CRMAI-JOB-01, D-4: the R-1 drafts, enqueued by an
+    # `automations` tick with R-1 work.
+    "followup_drafts": Job("Follow-up drafts", timedelta(minutes=30)),
 }
 #: FR-CRM-JOB-02.
 STREAK: Final = 3
+#: Spec 009 FR-CRMAI-JOB-01 (amended in S5): how long an AI task takes items
+#: for, shared by the workspaces it runs, well inside Celery's 600-second
+#: task limit (`app/worker.py`); the rest wait for the next tick.
+AI_TASK_SECONDS: Final = 400
+
+#: The monotonic time the running workspace's share ends, while one is set.
+_deadline: ContextVar[float | None] = ContextVar("crm_job_deadline", default=None)
 
 
 class Skipped(Exception):
-    """The run had nothing to do on purpose: recorded `skipped`."""
+    """The run had nothing to do on purpose: recorded `skipped`, with the
+    counts of what it did before it stopped, if any."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, counts: dict[str, Any] | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.counts = dict(counts or {})
+
+
+def monotonic() -> float:
+    """The elapsed-time clock; tests move it."""
+    return time.monotonic()
+
+
+def out_of_time() -> bool:
+    """Whether the running workspace's share of its task's time is spent:
+    its work takes no more items, which wait for the next tick."""
+    end = _deadline.get()
+    return end is not None and monotonic() >= end
+
+
+@contextmanager
+def time_share(began: float, index: int, count: int, seconds: float) -> Iterator[None]:
+    """The `index`th of `count` workspaces works until its share of
+    `seconds` from `began` ends. A workspace that finishes early leaves its
+    time to the next; one that is slow never takes a later one's share."""
+    token = _deadline.set(began + seconds * (index + 1) / max(count, 1))
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
 
 
 def _now() -> datetime:
@@ -97,26 +151,49 @@ def run(
         counts = work(workspace, now) or {}
         values = {"outcome": "ok", "counts": counts}
     except Skipped as skipped:
-        values = {"outcome": "skipped", "counts": {"skipped": skipped.reason}}
+        values = {"outcome": "skipped", "counts": {**skipped.counts, "skipped": skipped.reason}}
     except Exception as exc:
-        logger.exception(
-            '{"event": "crm_job_failed", "job": "%s", "workspace": "%s"}',
-            job,
-            (workspace or {}).get("key", "-"),
-        )
+        if _safe(exc):
+            # Spec 009 FR-CRMAI-JOB-03: an AI job's fixed sentence, and no
+            # traceback, which may carry request content.
+            logger.warning(
+                '{"event": "crm_job_failed", "job": "%s", "workspace": "%s", "error": "%s"}',
+                job,
+                (workspace or {}).get("key", "-"),
+                exc,
+            )
+        else:
+            logger.exception(
+                '{"event": "crm_job_failed", "job": "%s", "workspace": "%s"}',
+                job,
+                (workspace or {}).get("key", "-"),
+            )
         values = failure(job, exc)
     finish(job, workspace, started["id"], values, now)
     return {"outcome": values["outcome"], "counts": values["counts"]}
 
 
 def failure(job: str, exc: BaseException) -> dict[str, Any]:
-    """A failed run's values: `error` for members, `error_public` for anyone."""
+    """A failed run's values: `error` for members, `error_public` for anyone.
+    An AI job's `SafeError` is already a fixed sentence naming the step and
+    the exception type, and is both (spec 009 FR-CRMAI-JOB-03)."""
+    if _safe(exc):
+        sentence = str(exc)[:500]
+        return {"outcome": "failed", "counts": {}, "error": sentence, "error_public": sentence}
     return {
         "outcome": "failed",
         "counts": {},
         "error": f"{type(exc).__name__}: {exc}"[:2000],
         "error_public": public_error(job, exc),
     }
+
+
+def _safe(exc: BaseException) -> bool:
+    # ai.py imports this module (for Skipped), so its error type is looked
+    # up when a run fails rather than at import.
+    from app.services.crm.ai import SafeError
+
+    return isinstance(exc, SafeError)
 
 
 def finish(
@@ -144,10 +221,11 @@ def finish(
             logger.exception('{"event": "crm_job_alert_failed", "job": "%s"}', job)
 
 
-def crm_job(job: str, *, per_workspace: bool = True):
+def crm_job(job: str, *, per_workspace: bool = True, seconds: float | None = None):
     """Wraps `fn(workspace, now) -> counts` as a recorded job. The wrapped
     callable takes `now` and returns `{runs: {workspace key: {outcome,
-    counts}}, failed: [workspace key]}`."""
+    counts}}, failed: [workspace key]}`. With `seconds`, the workspaces
+    share that much time (`time_share`)."""
     if job not in JOBS:
         raise ValueError(f"unknown CRM job: {job}")
 
@@ -157,8 +235,14 @@ def crm_job(job: str, *, per_workspace: bool = True):
             now = now or _now()
             targets = store.list_workspaces() if per_workspace else [None]
             runs: dict[str, Any] = {}
-            for workspace in targets:
-                runs[workspace["key"] if workspace else "all"] = run(job, workspace, fn, now)
+            began = monotonic()
+            for index, workspace in enumerate(targets):
+                key = workspace["key"] if workspace else "all"
+                if seconds is None:
+                    runs[key] = run(job, workspace, fn, now)
+                    continue
+                with time_share(began, index, len(targets), seconds):
+                    runs[key] = run(job, workspace, fn, now)
             return {
                 "runs": runs,
                 "failed": [k for k, r in runs.items() if r["outcome"] == "failed"],

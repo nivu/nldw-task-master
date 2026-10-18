@@ -29,6 +29,12 @@ from pydantic import BaseModel, ValidationError
 from app.domain.calendar import today_in_company_tz
 from app.domain.crm import campaigns as campaign_rules
 from app.domain.crm import dedupe, objects, pipeline
+from app.domain.tasks import delegation as task_delegation
+from app.domain.tasks import recurrence as task_recurrence
+from app.domain.tasks import rollout as task_rollout
+from app.domain.tasks import rules as task_rules
+from app.domain.tasks import visibility as task_visibility
+from app.domain.tasks.visibility import TaskFacts
 from app.schemas.crm import (
     CampaignFields,
     CampaignUpdate,
@@ -48,6 +54,9 @@ from app.services import supabase as db
 from app.services.crm import CrmRefused, flags, notifications, store, tva
 from app.services.crm import present as show
 from app.services.crm.context import actor
+from app.services.tasks import notices as task_notices
+from app.services.tasks import store as task_store
+from app.services.tasks import viewer as task_viewer
 
 #: FR-CRM-DEL-01.
 TRASH_DAYS = 90
@@ -73,7 +82,7 @@ KINDS = {
     "opportunity": Kind(
         "opportunity", "crm_opportunities", "deal", OpportunityCreate, OpportunityUpdate
     ),
-    "task": Kind("task", "crm_tasks", "task", TaskFields, TaskUpdate),
+    "task": Kind("task", "tasks", "task", TaskFields, TaskUpdate),
     "note": Kind("note", "crm_notes", "note", NoteFields, NoteUpdate),
     "campaign": Kind("campaign", "crm_campaigns", "campaign", CampaignFields, CampaignUpdate),
 }
@@ -91,14 +100,14 @@ PLURALS = {
 TRASH_TABLES = (
     "crm_drive_links",
     "crm_notes",
-    "crm_tasks",
+    "tasks",
     "crm_campaigns",
     "crm_opportunities",
     "crm_people",
     "crm_companies",
 )
 #: A task's or note's link table, by kind.
-LINKS_OF = {"task": "crm_task_links", "note": "crm_note_links"}
+LINKS_OF = {"task": "task_links", "note": "crm_note_links"}
 #: The records whose page has Tasks and Notes tabs (FR-CRM-REC-03).
 SHOW_TABS = objects.TASK_NOTE_TARGETS
 #: 1b: the records whose page has an Emails tab (FR-CRM-REC-03).
@@ -166,6 +175,8 @@ _EMPTY: dict[str, Any] = {
     "additional_emails": [],
     "phones": [],
     "do_not_contact": False,
+    "tags": [],
+    "priority": "normal",
 }
 
 
@@ -451,6 +462,69 @@ def link_names(ws_id: str, links: list[dict[str, Any]]) -> dict[tuple[str, str],
     return names
 
 
+def _task_projects(ws: Workspace, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """008 FR-TASK-VIS-07 — a CRM task's TVA project, by task, for a member
+    who can see that project; a member who cannot gets none at all."""
+    found = [
+        lk
+        for lk in task_store.list_links([r["id"] for r in rows])
+        if lk["record_type"] == "tva_project"
+    ]
+    if not found:
+        return {}
+    me = task_viewer.load(ws.ctx.user)
+    projects = {p["id"]: p for p in task_store.get_projects([lk["record_id"] for lk in found])}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        link = next((lk for lk in found if lk["task_id"] == row["id"]), None)
+        project = projects.get(link["record_id"]) if link else None
+        if project is None:
+            continue
+        task = TaskFacts(
+            id=row["id"],
+            workspace_id=row.get("workspace_id"),
+            created_by=row.get("created_by"),
+            assignee_id=row.get("assignee_id"),
+            project_id=project["id"],
+        )
+        if task_visibility.project_field(me, task) == "full":
+            out[row["id"]] = {"id": project["id"], "name": project["name"]}
+    return out
+
+
+def task_parents(user: Any, ids: set[str]) -> dict[str, dict[str, Any] | None]:
+    """008 FR-TASK-DATA-09, FR-TASK-VIS-06 — each parent task as `user` may
+    see it: its id and title, or "a private task" with neither. A parent no
+    longer in the table cannot be checked, so it is private too."""
+    wanted = sorted(i for i in ids if i)
+    if not wanted:
+        return {}
+    me = task_viewer.load(user)
+    found = {p["id"]: p for p in task_store.get_tasks(wanted)}
+    projects: dict[str, str] = {
+        lk["task_id"]: lk["record_id"]
+        for lk in task_store.list_links(list(found))
+        if lk["record_type"] == "tva_project"
+    }
+    out: dict[str, dict[str, Any] | None] = {}
+    for pid in wanted:
+        parent = found.get(pid)
+        if parent is None:
+            out[pid] = {"private": True}
+            continue
+        facts = TaskFacts(
+            id=parent["id"],
+            workspace_id=parent.get("workspace_id"),
+            created_by=parent.get("created_by"),
+            assignee_id=parent.get("assignee_id"),
+            project_id=projects.get(pid),
+            deleted_at=parent.get("deleted_at"),
+            parent_id=parent.get("parent_id"),
+        )
+        out[pid] = task_visibility.parent_field(me, facts, parent.get("title"))
+    return out
+
+
 def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if kind == "company":
         domains = store.list_domains(ws.id, company_ids=[r["id"] for r in rows])
@@ -478,8 +552,17 @@ def present_rows(ws: Workspace, kind: str, rows: list[dict[str, Any]]) -> list[d
         names = link_names(ws.id, links)
         owner = "task_id" if kind == "task" else "note_id"
         if kind == "task":
+            projects = _task_projects(ws, rows)
+            parents = task_parents(ws.ctx.user, {r.get("parent_id") or "" for r in rows})
             return [
-                show.task(r, ws.facts, [lk for lk in links if lk[owner] == r["id"]], names)
+                show.task(
+                    r,
+                    ws.facts,
+                    [lk for lk in links if lk[owner] == r["id"]],
+                    names,
+                    projects.get(r["id"]),
+                    parents.get(r.get("parent_id") or ""),
+                )
                 for r in rows
             ]
         mentions = store.list_mentions(ws.id, [r["id"] for r in rows])
@@ -590,7 +673,7 @@ def list_records(
         KINDS[kind].table,
         q=q,
         filters=filters,
-        not_equal={"status": "done"} if open_only else None,
+        any_of={"status": list(task_rules.OPEN)} if open_only else None,
         limit=limit + 1,
         offset=offset,
     )
@@ -652,8 +735,8 @@ def get(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
 
 
 def linked(ws_id: str, of: str, record_type: str, record_id: str) -> list[dict[str, Any]]:
-    """The live tasks or notes linked to a record: open tasks first, then by
-    due date; notes newest first."""
+    """The live tasks or notes linked to a record: open and waiting tasks
+    first, then by due date; notes newest first."""
     links = store.list_links(ws_id, LINKS_OF[of], record_type=record_type, record_ids=[record_id])
     owner = "task_id" if of == "task" else "note_id"
     ids = sorted({lk[owner] for lk in links})
@@ -663,7 +746,11 @@ def linked(ws_id: str, of: str, record_type: str, record_id: str) -> list[dict[s
     if of == "task":
         return sorted(
             rows,
-            key=lambda r: (r["status"] == "done", r.get("due_on") or "9999-12-31", r["title"]),
+            key=lambda r: (
+                r["status"] not in task_rules.OPEN,
+                r.get("due_on") or "9999-12-31",
+                r["title"],
+            ),
         )
     return sorted(rows, key=lambda r: r["created_at"], reverse=True)
 
@@ -796,11 +883,35 @@ def timeline(
             limit=batch,
         )
         found = show.timeline(rows, kind, ws.facts, around=around)
+        # Spec 009 FR-CRMAI-REV-05: an entry written under an approved
+        # suggestion says so ("approved AI suggestion").
+        suggested = {r["id"]: r.get("suggestion_id") for r in rows}
+        for entry in found:
+            if suggested.get(entry["id"]):
+                entry["suggestion_id"] = suggested[entry["id"]]
+                entry["approved_suggestion"] = True
+        if kind == "task":
+            _parents_shown(ws, found)
         entries += [e for e in found if not types or e["type"] in types]
         if len(rows) < batch:
             break
         before = rows[-1]["id"]
     return entries[:limit]
+
+
+def _parents_shown(ws: Workspace, entries: list[dict[str, Any]]) -> None:
+    """008 FR-TASK-DATA-09 — a change of a task's parent names the parent by
+    its title, or "a private task" when the reader may not see it; never its
+    id."""
+    changes = [c for e in entries for c in e["changes"] if c["field"] == "parent_id"]
+    parents = task_parents(
+        ws.ctx.user, {c[side] or "" for c in changes for side in ("before", "after")}
+    )
+    for change in changes:
+        for side in ("before", "after"):
+            shown = parents.get(change[side] or "")
+            if shown is not None:
+                change[side] = "a private task" if shown.get("private") else shown.get("title")
 
 
 def duplicates(
@@ -1219,6 +1330,15 @@ def restore(ctx: Any, kind: str, record_id: str) -> dict[str, Any]:
         for p in people
         if p.get("company_id") in gone
     ]
+    # 008 FR-TASK-DATA-05: a task comes back only with a CRM link left.
+    tasks_back = [r["id"] for t, r in back if t == "tasks"]
+    if tasks_back:
+        linked_ids = {
+            lk["task_id"]
+            for lk in store.list_links(ctx.workspace_id, "task_links", owner_ids=tasks_back)
+        }
+        if any(t not in linked_ids for t in tasks_back):
+            raise CrmRefused(422, NO_LINK_LEFT)
     # A deal cannot come back without its company (Company is required).
     deals = [r for t, r in back if t == "crm_opportunities"]
     held = sorted({d["company_id"] for d in deals} - coming)
@@ -1362,6 +1482,12 @@ def purge_expired(workspace_id: str, now: datetime) -> int:
 # ---------------------------------------------------------------------------
 
 MUST_LINK = "A task must be linked to at least one record."
+#: 008 FR-TASK-DATA-05: a CRM task never loses its last CRM link.
+LAST_LINK = "A CRM task needs at least one linked record; delete it instead."
+#: 008 FR-TASK-DATA-05: nor comes back from the Trash without one.
+NO_LINK_LEFT = "This task has no linked record left, so it cannot be restored."
+#: 008 TP-05: the old status keys, still accepted as input, read as Open.
+OLD_STATUSES = ("todo", "in_progress")
 
 
 def _targets(ws: Workspace, links: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -1402,14 +1528,57 @@ def _category(ws: Workspace, values: dict[str, Any]) -> None:
 
 
 def _status(values: dict[str, Any], existing: dict[str, Any] | None) -> None:
-    """`completed_at` is written when the status becomes Done (spec §5.9)."""
+    """`completed_at` is written when the status becomes Done and cleared when
+    it leaves Done (spec §5.9; 008 FR-TASK-DATA-03), for every status."""
     if "status" not in values:
         return
-    was = (existing or {}).get("status")
-    if values["status"] == "done" and was != "done":
-        values["completed_at"] = datetime.now(UTC).isoformat()
-    elif values["status"] != "done":
-        values["completed_at"] = None
+    values.update(
+        task_rules.status_values(
+            values["status"], (existing or {}).get("status"), datetime.now(UTC)
+        )
+    )
+
+
+def _bucket(ctx: Any, values: dict[str, Any], existing: dict[str, Any] | None) -> None:
+    """008 FR-TASK-DATA-08 — an open or waiting task has a bucket: a create,
+    or an update or reopen that leaves the task open or waiting with none,
+    gets the default for its due date, in the person's own day."""
+    after = {**(existing or {}), **values}
+    if after.get("status") in task_rules.OPEN and not after.get("bucket"):
+        today = task_rules.day_of(datetime.now(UTC), ctx.user.profile.get("timezone"))
+        values["bucket"] = task_rules.default_bucket(after.get("due_on"), today)
+
+
+def _tasks_level(ctx: Any) -> int:
+    """008 FR-TASK-ROLL-03 — the actor's phase level: a task write sends its
+    delegation messages (FR-TASK-DEL-01, -05) only from phase 2."""
+    return task_rollout.level_for(ctx.user.profile, task_store.default_level())
+
+
+def _task_extras(ws: Workspace, values: dict[str, Any], existing: dict[str, Any] | None) -> None:
+    """008 FR-TASK-CHG-01 — the new task fields through the CRM: tags trimmed
+    with exact repeats dropped (TP-14); a parent that is a live task of this
+    workspace with no parent of its own (FR-TASK-DATA-09); Waiting on a
+    member of the workspace, kept as their name, and required while Waiting
+    (FR-TASK-DATA-03)."""
+    if values.get("tags") is not None:
+        try:
+            values["tags"] = task_rules.normalise_tags(values["tags"])
+        except ValueError as exc:
+            raise CrmRefused(422, str(exc)) from None
+    if values.get("parent_id"):
+        parent = live(ws.id, "task", values["parent_id"])
+        if parent.get("parent_id") or (existing and parent["id"] == existing["id"]):
+            raise CrmRefused(422, "A subtask cannot have subtasks.")
+    if values.get("waiting_on_id"):
+        if values["waiting_on_id"] not in ws.members:
+            raise CrmRefused(422, "You can wait only on a member of this workspace.")
+        values["waiting_on_text"] = ws.facts.name(values["waiting_on_id"]) or values.get(
+            "waiting_on_text"
+        )
+    after = {**(existing or {}), **values}
+    if after.get("status") == "waiting" and not (after.get("waiting_on_text") or "").strip():
+        raise CrmRefused(422, "Waiting needs who or what you are waiting on.")
 
 
 def _mentions(ws: Workspace, ids: list[str]) -> list[str]:
@@ -1436,11 +1605,13 @@ def _task_or_note_values(
     raw_links = values.pop("links", None)
     mention_ids = values.pop("mention_ids", None)
     if kind == "task":
+        if values.get("status") in OLD_STATUSES:
+            values["status"] = "open"
         _category(ws, values)
         if creating and not values.get("assignee_id"):
             values["assignee_id"] = ws.ctx.user.id
         if creating:
-            values.setdefault("status", "todo")
+            values.setdefault("status", "open")
     else:
         if creating and not values.get("kind"):
             values["kind"] = "note"
@@ -1449,13 +1620,23 @@ def _task_or_note_values(
         if "assignee_id" in values and values["assignee_id"] not in ws.members:
             raise CrmRefused(422, "The assignee must be a member of this workspace.")
         _status(values, existing)
+        _bucket(ws.ctx, values, existing)
+        _task_extras(ws, values, existing)
+        if existing is not None and "due_on" in values:
+            # 008 FR-TASK-RRULE-01: a recurring task keeps a due date.
+            try:
+                task_recurrence.check(existing.get("recurrence"), values["due_on"])
+            except ValueError as exc:
+                raise CrmRefused(422, str(exc)) from None
     else:
         after = {**(existing or {}), **values}
         if after.get("kind", "note") != "note" and not after.get("occurred_on"):
             raise CrmRefused(422, "Log activity needs the date it happened.")
     links = _targets(ws, raw_links) if raw_links is not None else None
-    if kind == "task" and (links == [] or (creating and not links)):
+    if kind == "task" and creating and not links:
         raise CrmRefused(422, MUST_LINK)
+    if kind == "task" and links == []:
+        raise CrmRefused(422, LAST_LINK)
     mentions = _mentions(ws, mention_ids) if mention_ids is not None else None
     return values, links, mentions
 
@@ -1465,6 +1646,11 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
     links and (a note) its mentions in one `crm_apply` call."""
     ws = load(ctx)
     values, links, mentions = _task_or_note_values(ws, kind, payload, None)
+    if kind == "task":
+        # Who set the assignee (008 FR-TASK-DEL-02).
+        values["assigned_by"] = task_delegation.assignment(values["assignee_id"], ctx.user.id)[
+            "assigned_by"
+        ]
     owner = "task_id" if kind == "task" else "note_id"
     ops: list[dict[str, Any]] = [
         {"op": "insert", "table": KINDS[kind].table, "ref": "record", "values": values}
@@ -1490,6 +1676,8 @@ def _create_task_or_note(ctx: Any, kind: str, payload: Any) -> dict[str, Any]:
     targets = [{"record_type": t, "record_id": i} for t, i in links or []]
     reflag(ws.id, kind, [row], links=targets)
     if kind == "task":
+        # 008 FR-TASK-DEL-01: the message, and the bell as well.
+        task_notices.after_write(_tasks_level(ctx), ctx.user.id, None, row)
         notifications.quietly(
             notifications.assigned(ctx, "task", row["id"], row["title"], row.get("assignee_id"))
         )
@@ -1512,6 +1700,42 @@ def _about(ws_id: str, links: list[dict[str, Any]]) -> dict[str, str] | None:
         flags.logger.exception('{"event": "crm_notify_about_failed"}')
         name = None
     return {**first, "name": name or ""}
+
+
+def _next_task(
+    ctx: Any, row: dict[str, Any], after: dict[str, Any], links: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """008 FR-TASK-RRULE-02, -03; TP-18 — closing a recurring task here
+    inserts its next occurrence, exactly as My Tasks does; 422 when its rule
+    has no next date."""
+    today = task_rules.day_of(datetime.now(UTC), ctx.user.profile.get("timezone"))
+    try:
+        return task_recurrence.next_occurrence_ops(row, after, links, today)
+    except ValueError as exc:
+        raise CrmRefused(422, str(exc)) from None
+
+
+def _write_task(
+    ctx: Any,
+    ops: list[dict[str, Any]],
+    following: list[dict[str, Any]],
+    *,
+    moves_due: bool = False,
+) -> list[dict[str, Any]]:
+    """A task write. One that inserts a next occurrence (`_next_task`) goes
+    through `task_apply`, as My Tasks' does, so the next occurrence keeps the
+    series' creator and its project link; its new links name the workspace,
+    which `crm_apply` would have set."""
+    if not following:
+        return store.apply(actor(ctx), ops)
+    ops = [
+        {**op, "values": {**op["values"], "workspace_id": ctx.workspace_id}}
+        if op["table"] == LINKS_OF["task"] and op["op"] == "insert"
+        else op
+        for op in ops
+    ]
+    who = {"user_id": ctx.user.id, "kind": "user", "channel": ctx.channel}
+    return task_store._apply_closing(who, ops, following, moves_due=moves_due)
 
 
 def _may_change_task(ctx: Any, row: dict[str, Any], sent: set[str]) -> None:
@@ -1579,6 +1803,32 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     changes = {k: v for k, v in values.items() if row.get(k) != v}
     if not changes and not ops:
         return present_rows(ws, kind, [row])[0]
+    # 008 FR-TASK-DEL-02: a new assignee has not accepted yet; any other
+    # change by the assignee accepts.
+    if kind == "task" and "assignee_id" in changes:
+        changes.update(task_delegation.assignment(changes["assignee_id"], ctx.user.id))
+    elif kind == "task":
+        changes.update(task_delegation.accepting(row, ctx.user.id, datetime.now(UTC).isoformat()))
+    following: list[dict[str, Any]] = []
+    if kind == "task" and row.get("recurrence"):
+        # 008 FR-TASK-RRULE-02: the next occurrence takes the links the task
+        # has after this change.
+        task_links = task_store.list_links([record_id])
+        if links is not None:
+            pairs = {(lk["record_type"], lk["record_id"]) for lk in task_links}
+            task_links = [
+                lk
+                for lk in task_links
+                if lk["record_type"] == "tva_project"
+                or (lk["record_type"], lk["record_id"]) in links
+            ] + [
+                {"record_type": t, "record_id": i, "workspace_id": ctx.workspace_id}
+                for t, i in links
+                if (t, i) not in pairs
+            ]
+        following = _next_task(ctx, row, {**row, **changes}, task_links)
+        if following:
+            changes["recurrence_spawned"] = True
     main = {
         "op": "update",
         "table": KINDS[kind].table,
@@ -1587,8 +1837,9 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     }
     if expect:
         main["expect_updated_at"] = expect
-    done = store.apply(actor(ctx), [main, *ops])
+    done = _write_task(ctx, [main, *ops], following, moves_due="due_on" in changes)
     after = done[0]["row"]
+    spawned = [done[1 + len(ops)]["row"]] if following else []
     # Read after the write: a failure falls back to the links read before it
     # and never fails the write.
     try:
@@ -1596,7 +1847,9 @@ def _update_task_or_note(ctx: Any, kind: str, record_id: str, payload: Any) -> d
     except Exception:
         flags.logger.exception('{"event": "crm_links_reread_failed", "kind": "%s"}', kind)
         now_links = current_links or []
-    reflag(ws.id, kind, [after], links=[*now_links, *(current_links or [])])
+    reflag(ws.id, kind, [after, *spawned], links=[*now_links, *(current_links or [])])
+    if kind == "task":
+        task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, after)
     if kind == "task" and "assignee_id" in changes:
         notifications.quietly(
             notifications.assigned(ctx, "task", record_id, after["title"], changes["assignee_id"])
@@ -1619,16 +1872,19 @@ def complete_task(ctx: Any, task_id: str) -> dict[str, Any]:
         raise CrmRefused(403, "Only the task's assignee or a member can mark it done.")
     if row["status"] == "done":
         return present_rows(ws, "task", [row])[0]
-    done = store.apply(
-        actor(ctx),
-        [
-            {
-                "op": "update",
-                "table": "crm_tasks",
-                "id": task_id,
-                "values": {"status": "done", "completed_at": datetime.now(UTC).isoformat()},
-            }
-        ],
+    now = datetime.now(UTC)
+    values = {
+        **task_rules.status_values("done", row["status"], now),
+        **task_delegation.accepting(row, ctx.user.id, now.isoformat()),
+    }
+    # 008 FR-TASK-RRULE-02: a recurring task's next occurrence, in the same write.
+    task_links = task_store.list_links([task_id]) if row.get("recurrence") else []
+    following = _next_task(ctx, row, {**row, **values}, task_links)
+    if following:
+        values["recurrence_spawned"] = True
+    done = _write_task(
+        ctx, [{"op": "update", "table": "tasks", "id": task_id, "values": values}], following
     )
-    reflag(ws.id, "task", [done[0]["row"]])
+    task_notices.after_write(_tasks_level(ctx), ctx.user.id, row, done[0]["row"])
+    reflag(ws.id, "task", [done[0]["row"], *([done[1]["row"]] if following else [])])
     return present_rows(ws, "task", [done[0]["row"]])[0]

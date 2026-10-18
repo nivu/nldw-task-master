@@ -23,7 +23,7 @@ from typing import Any
 
 from app.domain.crm import today as rules
 from app.services import supabase as db
-from app.services.crm import CrmRefused, email_sync, jobs, store
+from app.services.crm import CrmRefused, email_sync, jobs, review, store
 from app.services.crm import records as base
 
 
@@ -79,7 +79,7 @@ def build(
 
     # §3 — tasks for today, each with the records it is linked to.
     tasks = store.tasks_for_today(ws_id, person_id, by)
-    links = store.list_links(ws_id, "crm_task_links", owner_ids=[t["id"] for t in tasks])
+    links = store.list_links(ws_id, "task_links", owner_ids=[t["id"] for t in tasks])
     named = base.link_names(ws_id, links)
     linked: dict[str, list[str]] = {}
     opens: dict[str, dict[str, str]] = {}
@@ -92,16 +92,16 @@ def build(
                 {"record_type": link["record_type"], "record_id": link["record_id"]},
             )
 
-    # §5 — loose ends: Nurturing, no next touch, and no open task.
+    # §5 — loose ends: Nurturing, no next touch, and no open or waiting task.
     nurturing = store.nurturing_without_next_touch(ws_id, person_id)
     company_links = store.list_links(
-        ws_id, "crm_task_links", record_type="company", record_ids=[c["id"] for c in nurturing]
+        ws_id, "task_links", record_type="company", record_ids=[c["id"] for c in nurturing]
     )
     task_ids = {lk["task_id"] for lk in company_links}
     open_ids = {
         t["id"]
-        for t in base.by_id(ws_id, "crm_tasks", task_ids).values()
-        if t["status"] != "done" and not t.get("deleted_at")
+        for t in base.by_id(ws_id, "tasks", task_ids).values()
+        if t["status"] in ("open", "waiting") and not t.get("deleted_at")
     }
     with_open = {lk["record_id"] for lk in company_links if lk["task_id"] in open_ids}
 
@@ -124,5 +124,6 @@ def build(
     return {
         "as_of": by,
         "timezone": zone,
-        "sections": rules.assemble(sync_on=sync_on, built=built),
+        "sections": rules.assemble(sync_on=sync_on, built=built)
+        + review.today_section(ws_id, person_id),
     }
