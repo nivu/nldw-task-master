@@ -193,6 +193,11 @@ def transcript_link(url: Any) -> str | None:
     return None
 
 
+def _outside(text: str) -> str:
+    """Invite text as generated text is stored: links dropped, money masked."""
+    return ai_rules.mask_money(ai_rules.drop_urls(text))
+
+
 def note_body(
     *,
     title: str,
@@ -204,11 +209,13 @@ def note_body(
     transcript_url: str | None,
 ) -> str:
     """The note's plain-text body under fixed headings: the title, then
-    Attendees, Summary, Decisions, Action items and Transcript. Money in the
-    title is masked as in generated text (FR-CRMAI-LLM-05)."""
-    shown = list(attendees)[:ATTENDEES_SHOWN]
+    Attendees, Summary, Decisions, Action items and Transcript. The title and
+    the attendees come from the invite, which an outsider can write: money
+    is masked and links dropped in them as in generated text
+    (FR-CRMAI-LLM-04, -05), so the transcript link stays the only URL."""
+    shown = [_outside(a) for a in list(attendees)[:ATTENDEES_SHOWN]]
     more = len(attendees) - len(shown)
-    lines = [f"Meeting: {ai_rules.mask_money(title.strip()) or '(untitled)'}", "", "Attendees"]
+    lines = [f"Meeting: {_outside(title).strip() or '(untitled)'}", "", "Attendees"]
     lines += [f"- {a}" for a in shown] or ["- (none listed)"]
     if more > 0:
         lines.append(f"- and {more} more")

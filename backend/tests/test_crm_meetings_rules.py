@@ -179,6 +179,24 @@ class TestTheNote:
         )
         assert "4,50,000" not in body.splitlines()[0]
 
+    def test_rules_links_in_the_title_and_attendees_are_dropped(self):
+        """Q-37: the transcript link is the only URL a meeting note stores;
+        the invite's title and attendees are written by outsiders."""
+        body = rules.note_body(
+            title="Kickoff - verify access at https://acme-sso.evil.example/login",
+            attendees=["priya@acme.in", "Priya (see acme-sso.co/login)", "www.phish.example/x"],
+            summary="Kickoff.",
+            decisions=[],
+            actions=[],
+            owner_names={},
+            transcript_url="https://app.fireflies.ai/view/t1",
+        )
+        lines = body.splitlines()
+        assert lines[0] == "Meeting: Kickoff - verify access at"
+        assert "- priya@acme.in" in lines and "- Priya (see )" in lines
+        assert "evil" not in body and "acme-sso" not in body and "phish" not in body
+        assert [w for w in body.split() if "/" in w] == ["https://app.fireflies.ai/view/t1"]
+
     def test_rules_long_attendee_lists_are_cut(self):
         many = [f"p{i:02}@acme.in" for i in range(rules.ATTENDEES_SHOWN + 3)]
         body = rules.note_body(
