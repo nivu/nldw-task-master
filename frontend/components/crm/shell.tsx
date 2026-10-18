@@ -12,6 +12,7 @@ import {
   CircleHelp,
   Kanban,
   LayoutDashboard,
+  ListTodo,
   LogOut,
   Megaphone,
   MoreHorizontal,
@@ -28,10 +29,12 @@ import { StaleBanner } from "@/components/crm/stale-banner";
 import { ViewIcon } from "@/components/crm/view-switcher";
 import { WorkspaceSwitcher } from "@/components/crm/workspace-switcher";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
+import { QuickAdd } from "@/components/tasks/quick-add";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { listCrmFavourites, listCrmViews, selectCrmWorkspace } from "@/lib/api/crm";
 import type { CrmBootstrap, CrmFavourite, CrmSavedView, CrmWorkspace } from "@/lib/api/crm-types";
+import { getMe } from "@/lib/api/portal";
 import { OBJECT_PATH } from "@/lib/crm/view-fields";
 import { createClient } from "@/lib/supabase/client";
 import { useAsync } from "@/lib/use-async";
@@ -53,6 +56,10 @@ import { cn } from "@/lib/utils";
  *
  * From 1b the tools hold the bell (FR-CRM-NOTIF-01), and an Admin sees a
  * banner above every page while a background job is late (FR-CRM-JOB-03).
+ *
+ * Spec 008 FR-TASK-ADD-01, FR-TASK-LIST-08 (T6): with phase 1 of tasks
+ * switched on, a My Tasks link and the quick-add box in the header, for
+ * staff and CRM-only sellers alike; below it, nothing of tasks shows.
  */
 
 const COLLAPSED_KEY = "crm.sidebar.collapsed";
@@ -113,6 +120,10 @@ export function CrmShell({
     [ws]
   );
   const favourites = pins.data?.[0] ?? [];
+  // Spec 008 FR-TASK-ROLL-03 — the web app hides tasks below level 1; the
+  // backend refuses them regardless. A failure hides them too.
+  const who = useAsync(getMe, []);
+  const tasksOn = (who.data?.tasks.level ?? 0) >= 1;
   const pinned = favourites
     .map((fav) => ({ fav, href: favouriteHref(ws, fav, pins.data?.[1] ?? []) }))
     .filter((p): p is { fav: CrmFavourite; href: string } => p.href !== null);
@@ -155,6 +166,8 @@ export function CrmShell({
     { href: `/crm/${ws}/people`, label: "People", icon: Users, show: true },
     { href: `/crm/${ws}/opportunities`, label: "Opportunities", icon: Briefcase, show: true },
     { href: `/crm/${ws}/tasks`, label: "Tasks", icon: CheckSquare, show: true },
+    // Spec 008 FR-TASK-LIST-08 — the same My Tasks page as TVA's /tasks.
+    { href: `/crm/${ws}/my-tasks`, label: "My Tasks", icon: ListTodo, show: tasksOn },
     // 1b (FR-CRM-UI-02, FR-CRM-CAMP).
     { href: `/crm/${ws}/campaigns`, label: "Campaigns", icon: Megaphone, show: true },
     // FR-CRM-DASH-01: Admins and Members (their own numbers); Viewers have none.
@@ -289,6 +302,14 @@ export function CrmShell({
             </div>
           )}
 
+          {tasksOn && (
+            <QuickAdd
+              className={collapsed ? "flex justify-center pb-3" : "px-2 pb-3"}
+              collapsed={collapsed}
+              onExpand={toggleCollapsed}
+            />
+          )}
+
           <nav className="flex-1 space-y-0.5 overflow-y-auto px-2">
             {links.map((link) => navLink(link))}
             {pinned.length > 0 && (
@@ -318,6 +339,7 @@ export function CrmShell({
             <div className="min-w-0 flex-1">
               <WorkspaceSwitcher current={ws} workspaces={workspaces} />
             </div>
+            {tasksOn && <QuickAdd className="min-w-0 flex-1" />}
             <div className="flex items-center gap-1">{tools}</div>
           </div>
         </header>

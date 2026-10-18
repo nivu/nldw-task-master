@@ -20,8 +20,16 @@ from fastapi import APIRouter, Query
 
 from app.api.errors import ProblemDetail
 from app.api.tasks.deps import TasksDep
-from app.domain.tasks import service
-from app.schemas.tasks import TaskAudienceIn, TaskCreate, TaskIn, TaskLinkIn, TaskPatch
+from app.domain.tasks import quick_add, rules, service
+from app.schemas.tasks import (
+    QuickAddAnswers,
+    QuickAddIn,
+    TaskAudienceIn,
+    TaskCreate,
+    TaskIn,
+    TaskLinkIn,
+    TaskPatch,
+)
 from app.services.tasks import listing, people
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -76,6 +84,47 @@ def create(actor: TasksDep, body: TaskIn) -> dict[str, Any]:
 def audience(actor: TasksDep, body: TaskAudienceIn) -> dict[str, str]:
     """Who will see a draft (FR-TASK-VIS-08)."""
     return people.audience(actor, body)
+
+
+@router.post("/quick-add/preview")
+def quick_add_preview(actor: TasksDep, body: QuickAddIn) -> dict[str, Any]:
+    """The parsed draft of one line, who will see it and any questions;
+    writes nothing (FR-TASK-ADD-02 to -04). `today` is the caller's, in
+    their own zone (FR-TASK-CHG-06)."""
+    zone = actor.user.profile.get("timezone") or rules.DEFAULT_ZONE
+    today = rules.day_of(service._now(), zone)
+    offered = people.people(actor)
+    parsed = quick_add.parse(body.text, today, offered, zone)
+    answers = body.answers or QuickAddAnswers()
+    chosen = None
+    if answers.assignee_id is not None:
+        person = next((p for p in offered if p["id"] == str(answers.assignee_id)), None)
+        if person is None:
+            raise ProblemDetail(404, people.NO_SUCH_PERSON)
+        chosen = {"id": person["id"], "name": person["display_name"]}
+    parsed = quick_add.answer(parsed, today, due_on=answers.due_on, assignee=chosen)
+    assignee = parsed.assignee or {"id": actor.user.id, "name": actor.user.display_name}
+    seen = people.audience(actor, TaskAudienceIn(assignee_id=assignee["id"]))
+    return {
+        "draft": {
+            "title": parsed.title,
+            "due_on": parsed.due_on.isoformat() if parsed.due_on else None,
+            "due_weekday": quick_add.weekday_name(parsed.due_on) if parsed.due_on else None,
+            "bucket": parsed.bucket,
+            "tags": list(parsed.tags),
+            "assignee": assignee,
+            "links": [],
+        },
+        "visible_to": seen["visible_to"],
+        "questions": [
+            {
+                "kind": q.kind,
+                "prompt": q.prompt,
+                "options": [{"value": o.value, "label": o.label} for o in q.options],
+            }
+            for q in parsed.questions
+        ],
+    }
 
 
 @router.get("/people")

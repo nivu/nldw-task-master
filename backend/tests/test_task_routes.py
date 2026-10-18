@@ -77,7 +77,7 @@ def _detail(r) -> tuple[int, str]:
 
 class TestOffByDefault:
     def test_the_slice_adds_routes(self):
-        assert len(TASK_ROUTES) == 14
+        assert len(TASK_ROUTES) == 15
 
     @pytest.mark.parametrize(
         ("method", "path"), TASK_ROUTES, ids=[f"{m} {p}" for m, p in TASK_ROUTES]

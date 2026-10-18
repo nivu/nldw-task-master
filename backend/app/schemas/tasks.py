@@ -95,3 +95,21 @@ class TaskAudienceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     assignee_id: UUID | None = None
     links: list[TaskLinkIn] = Field(default_factory=list, max_length=20)
+
+
+class QuickAddAnswers(BaseModel):
+    """Contracts §1 `POST /tasks/quick-add/preview` — the answers to the
+    preview's questions: a chosen date and a chosen person."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    due_on: date | None = Field(default=None, alias="date")
+    assignee_id: UUID | None = None
+
+
+class QuickAddIn(BaseModel):
+    """Contracts §1 `POST /tasks/quick-add/preview` — one line, and any
+    answers so far (FR-TASK-ADD-02 to -04)."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=500)
+    answers: QuickAddAnswers | None = None

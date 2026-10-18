@@ -127,7 +127,7 @@ removed from the title.
 | `next <weekday>` | — | always |
 | `next week` | next Monday | — |
 | `YYYY-MM-DD`, `D Mon`, `D Month` | that date | the date has already passed this year (FR-TASK-ADD-04): a `D Mon` / `D Month` whose date this year is before today, and a `YYYY-MM-DD` before today ("2026-10-02 has passed: keep it or choose another date?") |
-| `D/M` | day first | both parts ≤ 12 and differ ("5 Nov or 11 May?"); read without asking when one part > 12 or the parts are equal |
+| `D/M` | day first | both parts ≤ 12 and differ ("5 Nov or 11 May?"; a reading already passed this year is offered as next year's, FR-TASK-ADD-04); read without asking when one part > 12 or the parts are equal |
 
 Bucket: This week when the due date is after today and within the caller's
 current Monday–Sunday week; else FR-TASK-DATA-08 (Today when due today or

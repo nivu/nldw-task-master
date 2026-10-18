@@ -181,6 +181,8 @@ export const updateUser = (
     left_on: string | null;
     /** Spec 003 FR-DASH-03 — refused for anybody but the owner. */
     dashboard_access: boolean;
+    /** Spec 008 FR-TASK-ROLL-02 — 0–4, or "default" to follow the global level. */
+    tasks_level: number | "default";
   }>
 ) => call<PortalUser>(`/admin/users/${id}`, { method: "PATCH", ...body(changes) });
 

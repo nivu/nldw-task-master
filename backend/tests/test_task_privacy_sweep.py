@@ -234,6 +234,9 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     ("POST", f"{TASKS}/audience"): lambda s, who: [
         _http(s, who, "POST", f"{TASKS}/audience", json={"assignee_id": ID["creator"]})
     ],
+    ("POST", f"{TASKS}/quick-add/preview"): lambda s, who: [
+        _http(s, who, "POST", f"{TASKS}/quick-add/preview", json={"text": "zqx fri @Chitra"})
+    ],
     ("GET", f"{TASKS}/people"): lambda s, who: [
         _http(s, who, "GET", f"{TASKS}/people", params={"q": "zqx"})
     ],
