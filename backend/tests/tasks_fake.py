@@ -7,7 +7,8 @@ of `task_apply` (049), the deferred workspace check (047) and
 `task_purge_expired` (049), so route tests never touch a database. The real
 functions are covered by `tests/db/`. S2a adds 052's comments (insert and
 soft delete only, the workspace of their task) and the delegation messages'
-sent markers.
+sent markers. S2b reads the tasks a person created (Assigned by me, the
+brief's nudges).
 
 `FakeCrmStore.install` installs one beside itself, so a CRM route that
 presents a task (its project link, FR-TASK-VIS-07) reads the same rows.
@@ -177,6 +178,20 @@ class FakeTaskStore:
         rows.sort(key=lambda r: r["id"])
         rows.sort(key=lambda r: _at(r["updated_at"]), reverse=True)
         return rows[:limit]
+
+    def created_tasks(
+        self, user_id: str, statuses: tuple[str, ...], *, others_only: bool = False
+    ) -> list[dict[str, Any]]:
+        rows = [
+            dict(t)
+            for t in self.rows["tasks"].values()
+            if t.get("created_by") == user_id
+            and t["status"] in statuses
+            and not t.get("deleted_at")
+            # SQL's `<>`: a task with no assignee is not someone else's.
+            and (not others_only or t.get("assignee_id") not in (None, user_id))
+        ]
+        return sorted(rows, key=lambda r: r["id"])
 
     def linked_task_ids(self, record_type: str, record_id: str) -> list[str]:
         return sorted(

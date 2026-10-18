@@ -205,6 +205,35 @@ def assigned_tasks(
     return rows[:limit]
 
 
+def created_tasks(
+    user_id: str, statuses: tuple[str, ...], *, others_only: bool = False
+) -> list[dict[str, Any]]:
+    """Contracts §2 — the live tasks the person created with one of
+    `statuses` (`tasks_created_by`), every row, page by page; with
+    `others_only`, only those assigned to someone else (Assigned by me,
+    FR-TASK-VIEW-02)."""
+
+    def query_for():
+        query = (
+            db.supabase.table("tasks")
+            .select("*")
+            .eq("created_by", user_id)
+            .in_("status", list(statuses))
+            .is_("deleted_at", "null")
+        )
+        return query.neq("assignee_id", user_id) if others_only else query
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = query_for().order("id").range(offset, offset + _PAGE - 1).execute().data or []
+        rows += page
+        if len(page) < _PAGE:
+            break
+        offset += _PAGE
+    return rows
+
+
 def linked_task_ids(record_type: str, record_id: str) -> list[str]:
     """The tasks linking this record or project (contracts §1 `link_type`)."""
     rows = (

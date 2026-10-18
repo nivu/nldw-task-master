@@ -18,15 +18,17 @@ Chitra (a Labs Member whose TVA lead is Lakshmi) holds a private task, a
 shared personal task first given to Farah and then reassigned to Arun and
 waiting on Wasim, one handed back to her by Farah, and a deleted one; the
 private and the shared one carry a comment of hers (S2a). Phase 2 is on for
-the cast, so the comment routes answer them too. Each of
-the ten account kinds of FR-TASK-VIS-06 — a TVA admin, a manager, the owner,
-the creator's TVA lead, a CRM workspace Admin, a Viewer, a `crm_only`
-account, the former assignee, the Waiting-on person and a removed workspace
-member — calls every fixture; no answer carries a marker string or one of
-the tasks' ids, every task route given one of their ids answers 404, and the
-tasks are unchanged afterwards. `TestTheMatrix` then tries each of the ten
-against the private and the shared personal task one at a time (twenty
-cells), and checks that the cast really holds the ten kinds.
+the cast, so the comment routes answer them too, and so do the views, the
+project panel and the brief (S2b), where the shared task is Chitra's
+"nudge?". Each of the ten account kinds of FR-TASK-VIS-06 — a TVA admin,
+a manager, the owner, the creator's TVA lead, a CRM workspace Admin, a
+Viewer, a `crm_only` account, the former assignee, the Waiting-on person
+and a removed workspace member — calls every fixture; no answer carries a
+marker string or one of the tasks' ids, every task route given one of their
+ids answers 404, and the tasks are unchanged afterwards. `TestTheMatrix`
+then tries each of the ten against the private and the shared personal task
+one at a time (twenty cells), and checks that the cast really holds the ten
+kinds.
 
 FR-TASK-VIS-06's further proofs: a removed workspace member reads none of
 the workspace's CRM tasks they created or were assigned, through the task
@@ -188,6 +190,8 @@ class Sweep:
             self.shared,
             json={"status": "waiting", "waiting_on_id": ID["waiting"]},
         )
+        # S2b: idle long enough to be Chitra's "nudge?" in her brief.
+        w.tasks[self.shared["id"]]["updated_at"] = "2026-10-01T06:30:00+00:00"
         self.handed = w.add("creator", title="Zqxhanded back", assignee_id="former")
         self._as("former", "PATCH", self.handed, json={"assignee_id": ID["creator"]})
         for task, mark in ((self.private, "Zqxpriv"), (self.shared, "Zqxshared")):
@@ -247,7 +251,14 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     # -- every task route -------------------------------------------------
     ("GET", TASKS): lambda s, who: [
         _http(s, who, "GET", TASKS, params=p)
-        for p in ({}, {"q": "zqx"}, {"tag": "zqxpriv"}, {"closed_limit": 100})
+        for p in (
+            {},
+            {"q": "zqx"},
+            {"tag": "zqxpriv"},
+            {"closed_limit": 100},
+            {"view": "waiting"},
+            {"view": "assigned_by_me"},
+        )
     ],
     ("POST", TASKS): lambda s, who: [
         _http(s, who, "POST", TASKS, json={"title": "x", "parent_id": i}, must_404=True)
@@ -281,6 +292,11 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
     ("GET", f"{TASKS}/settings"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/settings")],
     ("PATCH", f"{TASKS}/settings"): lambda s, who: [
         _http(s, who, "PATCH", f"{TASKS}/settings", json={"nudge_days": 5})
+    ],
+    ("GET", f"{TASKS}/brief"): lambda s, who: [_http(s, who, "GET", f"{TASKS}/brief")],
+    ("GET", f"{TASKS}/project/{{project_id}}"): lambda s, who: [
+        _http(s, who, "GET", f"{TASKS}/project/{s.w.lumen['id']}", params=p)
+        for p in ({}, {"include_closed": True})
     ],
     ("GET", f"{TASKS}/{{id}}"): lambda s, who: _each(s, who, "GET", ""),
     ("PATCH", f"{TASKS}/{{id}}"): lambda s, who: _each(
@@ -317,7 +333,12 @@ FIXTURES: dict[tuple[str, str], Callable[[Sweep, str], list[Answer]]] = {
             for st in (None, "open", "waiting", "done", "cancelled")
         ]
         + [_tool(task_tools.task_list(Ctx(who), tag="zqxpriv"))]
+        + [
+            _tool(task_tools.task_list(Ctx(who), assigned="by_me", status=st))
+            for st in (None, "waiting")
+        ]
     ),
+    ("tool", "task_brief"): lambda s, who: [_tool(task_tools.task_brief(Ctx(who)))],
     ("tool", "task_update"): lambda s, who: [
         _tool(task_tools.task_update(Ctx(who), i, {"priority": "low"})) for i in s.ids
     ],
@@ -473,6 +494,8 @@ class TestTheTenAccounts:
         answers = FIXTURES[("GET", TASKS)](sweep, "creator")
         assert "zqxpriv" in answers[0][1].lower()
         assert "zqxshared" in FIXTURES[("GET", TASKS)](sweep, "assignee")[0][1].lower()
+        [(_, brief, _)] = FIXTURES[("GET", f"{TASKS}/brief")](sweep, "creator")
+        assert "zqxpriv" in brief.lower() and "zqxshared" in brief.lower()
 
 
 #: FR-TASK-VIS-06's two tasks: the attribute of `Sweep` and its marker.

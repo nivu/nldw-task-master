@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { FieldEditor, type Choice, type RelationSearch } from "@/components/crm/field-editor";
+import { useOpenTask } from "@/components/crm/record-page";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -92,6 +93,8 @@ export function TaskList({
 }) {
   const [error, setError] = useState<string | null>(null);
   const member = bootstrap.role !== "viewer";
+  // 008 FR-TASK-VIEW-03: on a record page, a task opens in the shared panel.
+  const openTask = useOpenTask();
 
   async function toggle(task: CrmTask) {
     setError(null);
@@ -131,9 +134,22 @@ export function TaskList({
                 onCheckedChange={() => toggle(task)}
               />
               <div className="min-w-0 flex-1 space-y-0.5">
-                <p className={cn("text-sm", closed && "text-muted-foreground line-through")}>
-                  {task.title}
-                </p>
+                {openTask ? (
+                  <button
+                    type="button"
+                    onClick={() => openTask(task.id, onChange)}
+                    className={cn(
+                      "block max-w-full text-left text-sm hover:underline",
+                      closed && "text-muted-foreground line-through"
+                    )}
+                  >
+                    {task.title}
+                  </button>
+                ) : (
+                  <p className={cn("text-sm", closed && "text-muted-foreground line-through")}>
+                    {task.title}
+                  </p>
+                )}
                 <p className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                   <span>{task.assignee_name ?? "—"}</span>
                   {task.due_on && (

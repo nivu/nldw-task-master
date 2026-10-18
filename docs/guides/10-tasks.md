@@ -1,6 +1,6 @@
 ---
 title: Your tasks
-summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, the Life OS import and Claude's task tools.
+summary: My Tasks, buckets, quick add and its questions, who sees what, CRM and project tasks, handing work over, Waiting on, Assigned by me, the morning brief, the Life OS import and Claude's task tools.
 order: 11
 ---
 
@@ -133,6 +133,47 @@ only because they can see the project may read it but not change it.
 People who use only the CRM see their CRM tasks in My Tasks, and never see a
 project task unless they made it or it is assigned to them.
 
+## Handing work over
+
+These parts come with the second stage of tasks; if you do not see them yet,
+it has not been switched on for you.
+
+- **Giving a task to someone** sends them one message, by Slack and email. The
+  task shows **New** in their list until they accept it, comment on it,
+  change it or complete it.
+- **Accept** takes the task up. **Hand back**, with a short note, gives it
+  back to the person who made it; the note is kept on the task as a comment.
+- When someone else completes or hands back a task you made, you are told
+  once. You are never told about something you did yourself.
+- **Comments** on a task are read by everyone who can see the task, and only
+  their author can delete one.
+- **Waiting** names who or what you are waiting on. A person you name must be
+  someone you could give the task to, and naming them does not show them the
+  task.
+
+## Waiting on, Assigned by me and the brief
+
+My Tasks has four views across the top:
+
+| View | Shows |
+|---|---|
+| **Mine** | your tasks by section, as above |
+| **Waiting on** | your waiting tasks, grouped by whom or what they wait on, each with how many days old it is |
+| **Assigned by me** | tasks you made for someone else, with who has them and their status |
+| **Brief** | your morning brief |
+
+The **brief** is one screen: your tasks for today, your overdue tasks, the
+waiting tasks you made that nobody has touched for a while ("Nudge?"), and,
+for each CRM workspace you belong to, that workspace's CRM Today exactly as
+the CRM shows it. "A while" is five days unless you change it (1 to 30 days,
+on the Mine view). The brief is there when you open it; it is never sent to
+you as a message. The CRM's 09:00 digest is unchanged.
+
+A **TVA project's page** (Analytics, then the project) lists the project's
+tasks you may see, with **Add task**, which links the new task to that
+project. On a **CRM record**, a task in the Tasks tab opens in the same task
+panel as My Tasks.
+
 ## Moving from the Life OS sheet
 
 The portal owner can bring the tasks over from the Life OS sheet, at
@@ -154,15 +195,16 @@ brings in only those. The file itself is never stored.
 
 ## Asking Claude
 
-If you have connected Claude (see **Connecting Claude**), four tools keep
+If you have connected Claude (see **Connecting Claude**), these tools keep
 your list:
 
 | Tool | Does |
 |---|---|
-| `task_list` | your tasks by section, with days overdue; done and cancelled ones when asked |
+| `task_list` | your tasks by section, with days overdue; done and cancelled ones when asked; or the tasks you gave others |
 | `task_add` | adds a task, with notes, bucket, due date, priority, tags, an assignee by name or email, links and a parent |
 | `task_update` | changes a task's fields |
 | `task_complete` | marks a task done |
+| `task_brief` | your morning brief, the same as the Brief view |
 
 Claude tells you what it will change and waits for your yes before it adds or
 changes anything. It sees exactly what you see. The Life OS import is in the

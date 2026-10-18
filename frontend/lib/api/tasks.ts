@@ -8,13 +8,16 @@
 
 import { backendFetch, upload } from "@/lib/api/backend";
 import type {
+  AssignedByMeView,
   LifeOsApplied,
   LifeOsDryRun,
   MyTasks,
   MyTasksFilters,
+  ProjectTasks,
   QuickAddIn,
   QuickAddPreview,
   TaskAudienceIn,
+  TaskBrief,
   TaskComment,
   TaskDetail,
   TaskIn,
@@ -25,6 +28,7 @@ import type {
   TaskPerson,
   TaskSettings,
   TrashedTask,
+  WaitingView,
 } from "@/lib/api/task-types";
 import { createClient } from "@/lib/supabase/client";
 
@@ -116,6 +120,22 @@ export const getTaskSettings = () => call<TaskSettings>("/settings");
 
 export const updateTaskSettings = (changes: Partial<TaskSettings>) =>
   call<TaskSettings>("/settings", { method: "PATCH", ...body(changes) });
+
+// ---------------------------------------------------------------------------
+// Views, the project panel and the brief — phase 2 (FR-TASK-VIEW-01 to -03,
+// FR-TASK-BRIEF-01)
+// ---------------------------------------------------------------------------
+
+export const getWaitingTasks = () => call<WaitingView>("?view=waiting");
+
+export const getAssignedByMe = () => call<AssignedByMeView>("?view=assigned_by_me");
+
+export const getProjectTasks = (projectId: string, includeClosed = false) =>
+  call<ProjectTasks>(
+    `/project/${encodeURIComponent(projectId)}${query({ include_closed: includeClosed ? "true" : undefined })}`
+  );
+
+export const getTaskBrief = () => call<TaskBrief>("/brief");
 
 // ---------------------------------------------------------------------------
 // Drafts: who sees, who may be assigned, what may be linked, quick add

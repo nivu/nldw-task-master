@@ -361,18 +361,18 @@ panel, and the CRM record Tasks tab on the shared panel.
 
 **Migrations.** None.
 
-- [ ] T090 [P] Modify `backend/app/services/tasks/listing.py`: `view=waiting` (grouped, age in days) and `view=assigned_by_me`; `project_tasks(viewer, project_id)`
-- [ ] T091 [P] Create `backend/app/domain/tasks/brief.py` (today, overdue, nudge by `task_nudge_days` against `updated_at`) and `backend/app/services/tasks/brief.py` (calls `services/crm/today.build` per current membership, unchanged; FR-TASK-BRIEF-01)
-- [ ] T092 Create `backend/app/api/tasks/brief.py` (`GET /tasks/brief`) and add `GET /tasks/project/{project_id}` (`UUID`) to `backend/app/api/tasks/tasks.py` before `/tasks/{id}`; register `brief.py` in `backend/app/api/tasks/__init__.py` `ROUTERS` before the `tasks.py` router
-- [ ] T093 Modify `backend/app/mcp/tasks.py`: `task_brief`; `task_list` accepts `assigned=by_me`
-- [ ] T094 [P] Modify `frontend/components/tasks/my-tasks.tsx`: views Mine, Waiting on, Assigned by me, Brief (`?view=`), shown at level ≥ 2
-- [ ] T095 [P] Create `frontend/components/tasks/project-tasks.tsx` and modify `frontend/app/(portal)/analytics/page.tsx` (`ProjectDetail` gains the panel with Add task pre-linked) (FR-TASK-VIEW-03, FR-TASK-ADD-05)
-- [ ] T096 [P] Modify `frontend/components/crm/record-page.tsx`: the Tasks tab opens tasks in `components/tasks/task-panel.tsx` (FR-TASK-VIEW-03)
-- [ ] T097 [P] Create `backend/tests/test_task_views_routes.py` (waiting grouping and age; assigned by me; project panel lists only what the viewer may see; a TVA `user` cannot open the project page but sees the task in My Tasks; Add task from the project panel creates a task pre-linked to that project (FR-TASK-ADD-05); `/tasks/project/{id}` reaches its own handler) and `backend/tests/test_task_brief.py` (sections equal CRM Today's for each workspace; nudge after N days at a fixed clock; never pushed; `task_brief` returns the same; `/tasks/brief` reaches its own handler, not `/tasks/{id}`)
-- [ ] T098 Extend `backend/tests/test_task_privacy_sweep.py` and `backend/tests/test_task_mcp.py` (five tools) for the new routes and tool (same scope as T050); add the phase-2 lines to `backend/tests/test_task_acceptance.py`
+- [x] T090 [P] Modify `backend/app/services/tasks/listing.py`: `view=waiting` (grouped, age in days) and `view=assigned_by_me`; `project_tasks(viewer, project_id)`; and `backend/app/services/tasks/store.py` (`created_tasks`: the read of the tasks a person created, which Assigned by me and the brief's nudges need)
+- [x] T091 [P] Create `backend/app/domain/tasks/brief.py` (today, overdue, nudge by `task_nudge_days` against `updated_at`) and `backend/app/services/tasks/brief.py` (calls `services/crm/today.build` per current membership, unchanged; FR-TASK-BRIEF-01)
+- [x] T092 Create `backend/app/api/tasks/brief.py` (`GET /tasks/brief`) and add `GET /tasks/project/{project_id}` (`UUID`) to `backend/app/api/tasks/tasks.py` before `/tasks/{id}`; register `brief.py` in `backend/app/api/tasks/__init__.py` `ROUTERS` before the `tasks.py` router
+- [x] T093 Modify `backend/app/mcp/tasks.py`: `task_brief`; `task_list` accepts `assigned=by_me`
+- [x] T094 [P] Modify `frontend/components/tasks/my-tasks.tsx`: views Mine, Waiting on, Assigned by me, Brief (`?view=`), shown at level ≥ 2; and `frontend/lib/api/tasks.ts`, `frontend/lib/api/task-types.ts` (the calls and types of the three views, the project panel and the brief)
+- [x] T095 [P] Create `frontend/components/tasks/project-tasks.tsx` and modify `frontend/app/(portal)/analytics/page.tsx` (`ProjectDetail` gains the panel with Add task pre-linked) (FR-TASK-VIEW-03, FR-TASK-ADD-05)
+- [x] T096 [P] Modify `frontend/components/crm/record-page.tsx`: the Tasks tab opens tasks in `components/tasks/task-panel.tsx` (FR-TASK-VIEW-03); and `frontend/components/crm/task-dialog.tsx` (the tab's task list draws the titles, so it asks the record page to open the panel)
+- [x] T097 [P] Create `backend/tests/test_task_views_routes.py` (waiting grouping and age; assigned by me; project panel lists only what the viewer may see; a TVA `user` cannot open the project page but sees the task in My Tasks; Add task from the project panel creates a task pre-linked to that project (FR-TASK-ADD-05); `/tasks/project/{id}` reaches its own handler) and `backend/tests/test_task_brief.py` (sections equal CRM Today's for each workspace; nudge after N days at a fixed clock; never pushed; `task_brief` returns the same; `/tasks/brief` reaches its own handler, not `/tasks/{id}`); and `backend/tests/tasks_fake.py` (the fake of `store.created_tasks`) and `backend/tests/test_task_routes.py` (its count of task routes gains the two new ones)
+- [x] T098 Extend `backend/tests/test_task_privacy_sweep.py` and `backend/tests/test_task_mcp.py` (five tools) for the new routes and tool (same scope as T050); add the phase-2 lines to `backend/tests/test_task_acceptance.py`
 
 **Done when.**
-- [ ] All gates
+- [x] All gates
 - [ ] Journey 4.8 by hand; `docs/guides/10-tasks.md` covers delegation, the views and the brief
 
 ---

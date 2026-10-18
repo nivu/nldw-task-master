@@ -1,7 +1,8 @@
 """My Tasks and reading one task — spec 008 FR-TASK-LIST-01 to -07,
 FR-TASK-VIS-02, -05, FR-TASK-DATA-09, -11, FR-TASK-CHG-06; TP-06, TP-15,
 TP-16; contracts §1 `GET /tasks`, `GET /tasks/{id}`, `GET /tasks/trash`;
-plan §5.6.
+plan §5.6. Phase 2 (contracts §2): Waiting on and Assigned by me
+(FR-TASK-VIEW-01, -02) and a TVA project's task panel (FR-TASK-VIEW-03).
 
 One query plan per read: the caller's open and waiting tasks in one paged
 read of `(assignee_id, status)`, the closed page in one more, then each task
@@ -12,7 +13,7 @@ rewritten.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -128,6 +129,90 @@ def my_tasks(
         "sections": sections,
         "closed": present.present(me, closed_rows, today=today),
         "next_closed": f"{page[-1]['updated_at']},{page[-1]['id']}" if more and page else None,
+    }
+
+
+def _day_of(value: Any, zone: str) -> date:
+    return rules.day_of(datetime.fromisoformat(str(value)), zone)
+
+
+def waiting(actor: TaskActor) -> dict[str, Any]:
+    """Contracts §2 `GET /tasks?view=waiting` (FR-TASK-VIEW-01) — the
+    caller's waiting tasks grouped by whom or what they wait on, groups by
+    label, each task by due date, priority and title with its age in days
+    (since it was created, in the caller's own day)."""
+    zone = _zone(actor)
+    today = rules.day_of(service._now(), zone)
+    me = viewer.load(actor.user)
+    rows = sorted(_seen(me, store.assigned_tasks(actor.user.id, ("waiting",))), key=rules.sort_key)
+    groups: dict[tuple[str | None, str], list[dict[str, Any]]] = {}
+    for row, task in zip(rows, present.present(me, rows, today=today), strict=True):
+        task["age_days"] = max(0, (today - _day_of(row["created_at"], zone)).days)
+        on = task["waiting_on"] or {"id": None, "label": ""}
+        groups.setdefault((on["id"], on["label"] or ""), []).append(task)
+    return {
+        "groups": [
+            {"waiting_on": {"id": key[0], "label": key[1]}, "tasks": tasks}
+            for key, tasks in sorted(
+                groups.items(),
+                # A picked person and a free-text label can share a label: no
+                # id first, then by id, so None never meets a uuid.
+                key=lambda g: (g[0][1].casefold(), g[0][0] is not None, g[0][0] or "", g[0][1]),
+            )
+        ]
+    }
+
+
+def _open_then_closed(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Open and waiting first, by due date, priority and title; then done
+    and cancelled, most recently changed first."""
+    live = sorted((r for r in rows if r["status"] in rules.OPEN), key=rules.sort_key)
+    closed = sorted(
+        (r for r in rows if r["status"] not in rules.OPEN),
+        key=lambda r: (datetime.fromisoformat(str(r["updated_at"])), r["id"]),
+        reverse=True,
+    )
+    return live + closed
+
+
+def assigned_by_me(actor: TaskActor) -> dict[str, Any]:
+    """Contracts §2 `GET /tasks?view=assigned_by_me` (FR-TASK-VIEW-02) — the
+    live tasks the caller created for someone else, with their assignee and
+    status, that the caller may still see."""
+    today = rules.day_of(service._now(), _zone(actor))
+    me = viewer.load(actor.user)
+    rows = store.created_tasks(actor.user.id, rules.OPEN + CLOSED, others_only=True)
+    return {"tasks": present.present(me, _open_then_closed(_seen(me, rows)), today=today)}
+
+
+def project_tasks(
+    actor: TaskActor, project_id: str, *, include_closed: bool = False
+) -> dict[str, Any]:
+    """Contracts §2 `GET /tasks/project/{project_id}` (FR-TASK-VIEW-03) — the
+    project's live tasks the caller may see (§3.1), each checked on its own:
+    a CRM task linking it only for that workspace's members. 404 a project
+    the caller cannot see."""
+    me = viewer.load(actor.user)
+    project = next(iter(store.get_projects([project_id])), None)
+    if project is None or not visibility.can_see_project(me, project_id):
+        raise TaskRefused(404, service.NO_SUCH_PROJECT)
+    wanted = rules.OPEN + (CLOSED if include_closed else ())
+    rows = [
+        r
+        for r in store.get_tasks(store.linked_task_ids("tva_project", project_id))
+        if not r.get("deleted_at") and r["status"] in wanted
+    ]
+    links = store.list_links([r["id"] for r in rows])
+    seen = [
+        r
+        for r in rows
+        if visibility.sight(me, present.facts(r, [lk for lk in links if lk["task_id"] == r["id"]]))
+        != "none"
+    ]
+    today = rules.day_of(service._now(), _zone(actor))
+    return {
+        "project": {"id": project["id"], "name": project["name"]},
+        "tasks": present.present(me, _open_then_closed(seen), today=today),
     }
 
 

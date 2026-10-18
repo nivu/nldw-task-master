@@ -5,6 +5,8 @@
  * returns, by hand, as `crm-types.ts` mirrors `schemas/crm.py`.
  */
 
+import type { TodaySection } from "@/lib/api/crm-types";
+
 export type TaskKind = "private" | "shared_personal" | "crm" | "project";
 export type TaskStatus = "open" | "waiting" | "done" | "cancelled";
 export type TaskBucket = "today" | "this_week" | "this_month" | "later";
@@ -120,6 +122,39 @@ export interface MyTasksFilters {
   q?: string;
   closed_limit?: number;
   closed_before?: string;
+}
+
+/** Contracts §2 — GET /tasks?view=waiting (FR-TASK-VIEW-01). */
+export interface WaitingTask extends TaskOut {
+  /** Days since the task was created, in the reader's own day. */
+  age_days: number;
+}
+
+export interface WaitingView {
+  groups: { waiting_on: { id: string | null; label: string }; tasks: WaitingTask[] }[];
+}
+
+/** Contracts §2 — GET /tasks?view=assigned_by_me (FR-TASK-VIEW-02). */
+export interface AssignedByMeView {
+  tasks: TaskOut[];
+}
+
+/** Contracts §2 — GET /tasks/project/{project_id} (FR-TASK-VIEW-03). */
+export interface ProjectTasks {
+  project: { id: string; name: string };
+  tasks: TaskOut[];
+}
+
+/** Contracts §2 — GET /tasks/brief (FR-TASK-BRIEF-01). */
+export interface TaskBrief {
+  /** The reader's own today, YYYY-MM-DD. */
+  as_of: string;
+  today: TaskOut[];
+  overdue: TaskOut[];
+  /** Waiting tasks the reader created, untouched for their nudge days. */
+  nudge: (TaskOut & { idle_days: number })[];
+  /** Each workspace's CRM Today sections, exactly as CRM Today gives them. */
+  workspaces: { workspace: { key: string; name: string }; sections: TodaySection[] }[];
 }
 
 /** GET /tasks/trash. */

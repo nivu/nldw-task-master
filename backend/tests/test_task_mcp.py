@@ -1,7 +1,8 @@
 """The task tools — spec 008 FR-TASK-MCP-01 to -05, FR-TASK-ROLL-03; contracts
 §5, §5.1; plan §5.7.
 
-Exactly the phase-1 tools; each opens with its caller line and every write
+Exactly the tools of the phases built (S2b adds `task_brief` and
+`task_list(assigned="by_me")`); each opens with its caller line and every write
 says CONFIRM FIRST; each is one `_api` call to a `/tasks` route; the MCP
 instructions describe tasks; a CRM-only account uses them and receives no
 project field; a Viewer changes only the status of a CRM task assigned to
@@ -18,6 +19,9 @@ Acceptance criteria (spec §12, phase 1):
   test_task_routes.py).
 - "A person with phase 1 off gets 403 from every task route and tool" —
   TestThroughTheRoutes.
+
+Phase 2: `task_brief` returns what `GET /tasks/brief` does
+(test_task_brief.py) and is refused below level 2 — TestPhaseTwo.
 """
 
 from __future__ import annotations
@@ -32,7 +36,8 @@ from app.mcp import server
 from app.mcp import tasks as tools
 from app.mcp.server import ToolError
 
-#: Contracts §5 — the tools of the phases built (S1b: 4) and their caller lines.
+#: Contracts §5 — the tools of the phases built (S1b: 4, S2b: 5) and their
+#: caller lines.
 CALLER_LINES = {
     "task_add": "ANYONE WITH MY TASKS SWITCHED ON. CONFIRM FIRST. Adds a task. With no links "
     "it is private to you, or shared with the assignee; a CRM link makes it a task of that "
@@ -47,6 +52,9 @@ CALLER_LINES = {
     "status of a task assigned to them.",
     "task_complete": "ANYONE WITH MY TASKS SWITCHED ON, ON A TASK THEY MAY CHANGE. CONFIRM "
     "FIRST. Marks a task done.",
+    "task_brief": "ANYONE WITH PHASE 2 OF TASKS SWITCHED ON. Your morning brief: today's and "
+    "overdue tasks, waiting items due a nudge, and the CRM Today sections of each workspace "
+    "you belong to.",
 }
 WRITES = {"task_add", "task_update", "task_complete"}
 
@@ -117,6 +125,8 @@ class TestTheTools:
                 "POST",
                 "/tasks/00000000-0000-4000-8000-0000000000aa/complete",
             ),
+            ("task_list", {"assigned": "by_me"}, "GET", "/tasks"),
+            ("task_brief", {}, "GET", "/tasks/brief"),
         ],
     )
     def test_one_api_call_each(self, monkeypatch, name, args, method, path):
@@ -124,7 +134,7 @@ class TestTheTools:
 
         async def fake_api(ctx, m, p, **kwargs):
             calls.append((m, p))
-            return {"as_of": "", "timezone": "", "sections": {}, "closed": []}
+            return {"as_of": "", "timezone": "", "sections": {}, "closed": [], "tasks": []}
 
         monkeypatch.setattr(tools, "_api", fake_api)
         asyncio.run(getattr(tools, name)(Ctx("member"), **args))
@@ -241,3 +251,55 @@ class TestViewer:
             asyncio.run(tools.task_update(Ctx("viewer"), task["id"], {"title": "Mine"}))
         done = asyncio.run(tools.task_update(Ctx("viewer"), task["id"], {"status": "done"}))
         assert done["status"] == "done"
+
+
+class TestPhaseTwo:
+    """Contracts §5 rows 2 and 5 (S2b)."""
+
+    @pytest.fixture
+    def world(self, monkeypatch) -> TaskWorld:
+        w = TaskWorld(monkeypatch)
+        for person in w.fake.profiles.values():
+            if person.get("tasks_level") == 1:
+                person["tasks_level"] = 2
+        return w
+
+    def test_task_list_by_me_lists_what_you_gave_others(self, world):
+        given = world.add("creator", title="Draft", assignee_id="assignee", bucket="this_week")
+        world.add("creator", title="Mine")
+        found = asyncio.run(tools.task_list(Ctx("creator"), assigned="by_me"))
+        assert [(t["id"], t["assignee"]["id"]) for t in found["tasks"]] == [
+            (given["id"], ID["assignee"])
+        ]
+        assert asyncio.run(tools.task_list(Ctx("creator"), assigned="by_me", section="today")) == {
+            "tasks": []
+        }
+        assert asyncio.run(tools.task_list(Ctx("creator"), assigned="by_me", status="done")) == {
+            "tasks": []
+        }
+
+    def test_task_list_by_me_section_leaves_closed_tasks_out(self, world):
+        live = world.add("creator", title="Live", assignee_id="assignee", bucket="today")
+        done = world.add("creator", title="Done", assignee_id="assignee", bucket="today")
+        world.call("assignee", "POST", f"/{done['id']}/complete")
+        ids = lambda **a: [  # noqa: E731
+            t["id"]
+            for t in asyncio.run(tools.task_list(Ctx("creator"), assigned="by_me", **a))["tasks"]
+        ]
+        assert ids(section="today") == [live["id"]]
+        assert ids(section="today", status="done") == [done["id"]]
+
+    def test_task_brief_is_the_route(self, world):
+        world.add("member", title="Ring the bank", due_on="2026-10-20")
+        tool = asyncio.run(tools.task_brief(Ctx("member")))
+        route = world.call("member", "GET", "/brief").json()
+        assert tool == route
+        assert [t["title"] for t in tool["today"]] == ["Ring the bank"]
+
+    @pytest.mark.parametrize(
+        ("name", "args"), [("task_brief", {}), ("task_list", {"assigned": "by_me"})]
+    )
+    def test_level_1_is_refused(self, world, name, args):
+        world.fake.profiles[ID["member"]]["tasks_level"] = 1
+        with pytest.raises(ToolError, match="Tasks are not switched on for you yet."):
+            asyncio.run(getattr(tools, name)(Ctx("member"), **args))

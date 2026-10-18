@@ -78,8 +78,8 @@ def _detail(r) -> tuple[int, str]:
 class TestOffByDefault:
     def test_the_slice_adds_routes(self):
         # 17 of phase 1; S2a: accept, hand-back, three comment routes and
-        # GET and PATCH settings.
-        assert len(TASK_ROUTES) == 24
+        # GET and PATCH settings; S2b: the brief and the project panel.
+        assert len(TASK_ROUTES) == 26
 
     @pytest.mark.parametrize(
         ("method", "path"), TASK_ROUTES, ids=[f"{m} {p}" for m, p in TASK_ROUTES]

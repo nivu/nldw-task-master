@@ -1,6 +1,6 @@
 """Task routes, phases 1 and 2 — spec 008 contracts §1, §2; FR-TASK-LIST-01
 to -07, FR-TASK-VIS-01 to -08, FR-TASK-DATA-05 to -13, FR-TASK-ROLL-03, -04,
-FR-TASK-DEL-02, -03, -06.
+FR-TASK-DEL-02, -03, -06, FR-TASK-VIEW-01 to -03.
 
 HTTP only: each route takes its `TaskActor` from the phase guard
 (`TasksDep`, level 1; `TasksDep2` for phase 2) and hands the rest to `app.domain.tasks.service` (every
@@ -21,7 +21,7 @@ from fastapi import APIRouter, Query
 
 from app.api.errors import ProblemDetail
 from app.api.tasks.deps import TasksDep, TasksDep2
-from app.domain.tasks import delegation, quick_add, rules, service
+from app.domain.tasks import delegation, quick_add, rollout, rules, service
 from app.schemas.tasks import (
     QuickAddAnswers,
     QuickAddIn,
@@ -49,7 +49,7 @@ Priority = Literal["urgent", "high", "normal", "low"]
 @router.get("")
 def list_tasks(
     actor: TasksDep,
-    view: Literal["mine"] = "mine",
+    view: Literal["mine", "waiting", "assigned_by_me"] = "mine",
     tag: str | None = None,
     priority: Priority | None = None,
     link_type: LinkType | None = None,
@@ -58,7 +58,14 @@ def list_tasks(
     closed_limit: int = Query(default=20, ge=1, le=100),
     closed_before: str | None = None,
 ) -> dict[str, Any]:
-    """My Tasks: open and waiting tasks by section, and a page of closed ones."""
+    """My Tasks: open and waiting tasks by section, and a page of closed ones.
+    Phase 2 adds `view=waiting` (grouped by whom they wait on) and
+    `view=assigned_by_me` (FR-TASK-VIEW-01, -02)."""
+    if view != "mine":
+        why = rollout.refusal(rollout.level_for(actor.user.profile, store.default_level()), 2)
+        if why:
+            raise ProblemDetail(403, why)
+        return listing.waiting(actor) if view == "waiting" else listing.assigned_by_me(actor)
     return listing.my_tasks(
         actor,
         tag=tag,
@@ -175,6 +182,14 @@ def update_settings(actor: TasksDep2, body: TaskSettingsIn) -> dict[str, Any]:
     if body.nudge_days is None:
         return _settings(actor.user.profile)
     return _settings(store.set_nudge_days(actor.user.id, body.nudge_days))
+
+
+@router.get("/project/{project_id}")
+def project_tasks(
+    actor: TasksDep2, project_id: UUID, include_closed: bool = False
+) -> dict[str, Any]:
+    """A TVA project's tasks the caller may see (FR-TASK-VIEW-03)."""
+    return listing.project_tasks(actor, str(project_id), include_closed=include_closed)
 
 
 # ---------------------------------------------------------------------------

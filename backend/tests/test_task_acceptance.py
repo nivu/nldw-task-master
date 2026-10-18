@@ -1,10 +1,11 @@
-"""Phase 1's acceptance criteria, one test each — spec 008 §12 (phase 1);
-NFR-TASK-08; tasks T073.
+"""Phases 1 and 2's acceptance criteria, one test each — spec 008 §12
+(phases 1 and 2); NFR-TASK-08; tasks T073, T098.
 
 The lines are read from `specs/008-tasks/spec.md` §12 itself, from "Phase 1 —
-migration and CRM" to "Phase 2", so each one is its own test here and a line
-added to or reworded in the spec fails `test_every_line_has_exactly_one_entry`
-until this file says how it is proved.
+migration and CRM" to "Phase 2" and from "Phase 2" to "Phase 3", so each one
+is its own test here and a line added to or reworded in the spec fails
+`test_every_line_has_exactly_one_entry` until this file says how it is
+proved. Phase 2's lines are proved by named covering tests only.
 
 Each line is proved one of two ways:
 
@@ -99,6 +100,21 @@ def _phase_1_lines() -> list[str]:
 
 
 LINES = _phase_1_lines()
+
+
+def _phase_2_lines() -> list[str]:
+    """Spec §12's phase-2 lines, in order, without their check boxes."""
+    text = SPEC.read_text()
+    start = text.index("\nPhase 2\n")
+    end = text.index("\nPhase 3\n", start)
+    return [
+        line.removeprefix("- [ ] ").removeprefix("- [x] ")
+        for line in text[start:end].splitlines()
+        if line.startswith(("- [ ] ", "- [x] "))
+    ]
+
+
+LINES_2 = _phase_2_lines()
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +602,38 @@ ENTRIES: list[tuple[str, Proof]] = [
 ]
 
 
+#: Phase 2 (S2a, S2b): (a prefix that starts exactly one spec line, its
+#: covering tests).
+ENTRIES_2: list[tuple[str, tuple[str, ...]]] = [
+    (
+        "Assigning to someone else sends exactly one message",
+        (
+            "test_task_delegation_routes.py::TestMessages",
+            "test_task_delegation_routes.py::TestCrmRoutes",
+        ),
+    ),
+    (
+        "Waiting needs Waiting on, limited to people the caller may assign",
+        (
+            "test_task_delegation_routes.py::TestWaitingOn",
+            "test_task_brief.py::TestNudge",
+        ),
+    ),
+    (
+        "The brief shows the CRM Today sections exactly as CRM Today does",
+        (
+            "test_task_brief.py::TestCrmToday",
+            "test_task_brief.py::TestNeverPushed",
+            "test_task_brief.py::TestTheTool",
+        ),
+    ),
+    (
+        "A TVA project page shows the tasks of that project that the viewer may see",
+        ("test_task_views_routes.py::TestProjectPanel",),
+    ),
+]
+
+
 def _entry(line: str) -> Proof:
     [proof] = [proof for prefix, proof in ENTRIES if line.startswith(prefix)]
     return proof
@@ -604,6 +652,15 @@ class TestTheLines:
             assert sum(line.startswith(p) for p, _ in ENTRIES) == 1, line
         for prefix, _ in ENTRIES:
             assert sum(line.startswith(prefix) for line in LINES) == 1, prefix
+
+    def test_phase_2_has_its_lines(self):
+        assert len(LINES_2) == 4
+
+    def test_every_phase_2_line_has_exactly_one_entry(self):
+        for line in LINES_2:
+            assert sum(line.startswith(p) for p, _ in ENTRIES_2) == 1, line
+        for prefix, _ in ENTRIES_2:
+            assert sum(line.startswith(prefix) for line in LINES_2) == 1, prefix
 
     def test_the_recorded_proofs_are_the_two_exceptions(self):
         """Only the migration mapping and the 5,000-task line rest on a
@@ -705,4 +762,12 @@ def test_phase_1_line(line, monkeypatch):
         proof(monkeypatch)
         return
     for ref in proof:
+        check_cover(ref)
+
+
+@pytest.mark.parametrize("line", LINES_2, ids=_id)
+def test_phase_2_line(line):
+    [proof] = [proof for prefix, proof in ENTRIES_2 if line.startswith(prefix)]
+    for ref in proof:
+        assert ref not in RECORDED
         check_cover(ref)
