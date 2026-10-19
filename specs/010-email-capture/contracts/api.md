@@ -43,9 +43,11 @@ Pydantic models go in `backend/app/schemas/crm.py` (request models
 `PATCH /crm/mailboxes/{id}` (Admin), `MailboxUpdate` gains both, each
 optional and not nullable (sent `null` is refused like the other fields). A
 change to `email`, `labels`, `capture_source` or `capture_start_date` clears
-the sync cursor: the response's `backfilled_at` is `null`. A change of
-`capture_source` from `primary_sent` to `labels` also makes the next
-reconcile look back to the old capture start date, so captured mail with no
+the sync cursor: the response's `backfilled_at` is `null`. A change to
+`capture_source` or `capture_start_date` also clears `docs_checked_at`. A
+change of `capture_source` from `primary_sent` to `labels` also makes the
+next reconcile look back to the earliest capture start date the mailbox
+captured from (including one since moved later), so captured mail with no
 label is removed however old it is (plan §5.3, PD-3).
 
 New 422 sentence (`email_rules.mailbox_refusal`):

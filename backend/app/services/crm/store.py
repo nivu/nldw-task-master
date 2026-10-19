@@ -1573,11 +1573,23 @@ def get_job_run(workspace_id: str, run_id: str) -> dict[str, Any] | None:
 
 _MAILBOX_COLUMNS = (
     "id, workspace_id, email, owner_id, labels, is_active, history_id, page_token, "
-    "backfilled_at, last_synced_at, created_at, updated_at"
+    "backfilled_at, last_synced_at, created_at, updated_at, "
+    # Spec 010 (071).
+    "capture_source, capture_start_date, docs_checked_at, reconcile_after"
 )
 #: The cursor columns the sync writes itself; 039's audit trigger ignores a
-#: change to these alone.
-MAILBOX_PROGRESS = frozenset({"history_id", "page_token", "backfilled_at", "last_synced_at"})
+#: change to these alone (071 adds the deal-document cursor and the
+#: switch-back reconcile point).
+MAILBOX_PROGRESS = frozenset(
+    {
+        "history_id",
+        "page_token",
+        "backfilled_at",
+        "last_synced_at",
+        "docs_checked_at",
+        "reconcile_after",
+    }
+)
 
 
 def list_mailboxes(workspace_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
@@ -1663,6 +1675,21 @@ def remove_emails(workspace_id: str, mailbox_id: str, gmail_ids: list[str]) -> d
         "crm_remove_emails",
         {"p_workspace": workspace_id, "p_mailbox": mailbox_id, "p_ids": sorted(set(gmail_ids))},
     ) or {"removed": 0, "records": []}
+
+
+def mark_candidates(workspace_id: str, mailbox_id: str, rows: list[dict[str, Any]]) -> int:
+    """071 `crm_capture_mark` — spec 010 FR-CAP-SRC-05: one discovery
+    candidate per thread (`[{thread_id, message_id, sent_at}]`), advanced
+    only by a later message; returns the rows inserted or advanced."""
+    if not rows:
+        return 0
+    return int(
+        rpc(
+            "crm_capture_mark",
+            {"p_workspace": workspace_id, "p_mailbox": mailbox_id, "p_rows": rows},
+        )
+        or 0
+    )
 
 
 _PERSON_MATCH = (

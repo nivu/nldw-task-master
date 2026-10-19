@@ -212,13 +212,24 @@ ours = set(scan)
   `history_id`, `page_token`, `backfilled_at` when `email`, `labels`,
   `capture_source` or `capture_start_date` changes. The next page re-reads
   with reconcile on (`last_synced_at` is set), as a label change does today.
+  A change of `capture_source` or `capture_start_date` also clears
+  `docs_checked_at`, so the deal-document search starts again at most 14
+  days back (PD-19).
 - **Switching back to *Labels only*** (PD-3). The same PATCH, when
   `capture_source` goes from `primary_sent` to `labels`, also sets
-  `reconcile_after` to the old `capture_start_date` at 00:00 IST.
-  `_reconcile` lists and compares from `min(capture_after(mailbox, now),
-  reconcile_after)`, so captured mail older than 90 days is removed too, and
-  the page that finishes that reconcile writes `reconcile_after = NULL` with
-  the cursor (`MAILBOX_PROGRESS`; skipped by the audit like the cursor).
+  `reconcile_after` to `reconcile_window(mailbox)`: the old
+  `capture_start_date` at 00:00 IST, or an earlier `reconcile_after`. A
+  `primary_sent` mailbox whose start date is moved later gets the same
+  value, so mail captured under the earlier start date is still the switch
+  back's to remove. `_reconcile` compares from `min(capture_after(mailbox,
+  now), reconcile_after)`; from a fixed day (a start date or
+  `reconcile_after`) the day's margin is on the listing, not the
+  comparison, so mail stored on that day is compared too
+  (`capture.reconcile_bounds`). Captured mail older than 90 days is removed
+  too, and the page that finishes that reconcile on a *Labels only*
+  mailbox writes `reconcile_after = NULL` with the cursor
+  (`MAILBOX_PROGRESS`; skipped by the audit like the cursor); while
+  capturing it is kept.
 
 ### 5.4 S1 — what `_take` does with each message (FR-CAP-SRC-03, -04, -05; CHG-02)
 
@@ -750,7 +761,7 @@ simplest option consistent with the spec.
 |---|---|---|
 | PD-1 | Migrations are **071–073**. `test_crm_security_db._009_sql()` is narrowed to 060–070 and a `_010_sql()`/`NOT_AUDITED_010` sweep (071–079) is added; `TestThe048BodiesAreKept`'s 060–079 range still accepts 071's `crm_audit_row` | 009's sweep reads 060–079 and asserts exactly its tables |
 | PD-2 | `List-Unsubscribe` is the only new header; `Precedence`, `Auto-Submitted`, `Content-Type` are already fetched. Calendar invitations are detected by subject prefix and Google's sender, because metadata has no nested `text/calendar` part | spec §11 vs `email_rules.HEADERS` |
-| PD-3 | Switching a mailbox back to *Labels only* resets the cursor and sets `reconcile_after` to the old capture start date; the reconcile then removes captured mail without a label back to that date, not only the last 90 days (§5.3). "Leaves scope" includes that switch | NFR-CAP-05 is otherwise unimplementable without remembering which label brought each message |
+| PD-3 | Switching a mailbox back to *Labels only* resets the cursor and sets `reconcile_after` to the earliest capture start date the mailbox captured from (kept when the start date moves later while capturing); the reconcile then removes captured mail without a label back to that date, the date itself included, not only the last 90 days (§5.3). "Leaves scope" includes that switch | NFR-CAP-05 is otherwise unimplementable without remembering which label brought each message |
 | PD-4 | A Claude `deal_signal` for a candidate (unknown by definition) becomes a `new_lead` with a deal-stage hint, unless the duplicate check matches a company, when it is a `deal_signal` on that company | a candidate has no known company to put a deal on |
 | PD-5 | Both types are owned by the mailbox owner, including a deal-document move (journey 4.4 says "the deal's owner") | FR-CAP-REV-04 is the requirement; in Labs they are the same person today |
 | PD-6 | A Member who may decide a `new_lead` may add to the ignore list by dismissing it; editing the list directly is Admin only | FR-CAP-REV-03 vs the Admin-only list |

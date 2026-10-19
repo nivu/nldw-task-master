@@ -11,6 +11,7 @@ credential, and the tick is checked never to read the key at all.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -55,7 +56,9 @@ def _ms(at: datetime) -> str:
 
 class FakeGmail:
     """One Gmail per mailbox address: labels, messages, and a history whose
-    records carry increasing ids."""
+    records carry increasing ids. Spec 010: Primary, Sent, Trash and Spam
+    are labels as Gmail has them, a message may carry attachment names, and
+    `search` answers the deal-document queries."""
 
     def __init__(self) -> None:
         self.boxes: dict[str, dict[str, Any]] = {}
@@ -69,6 +72,10 @@ class FakeGmail:
                     {"id": "INBOX", "name": "INBOX"},
                     {"id": "Label_1", "name": "Sales"},
                     {"id": "Label_2", "name": "Leads"},
+                    {"id": "CATEGORY_PERSONAL", "name": "CATEGORY_PERSONAL"},
+                    {"id": "SENT", "name": "SENT"},
+                    {"id": "TRASH", "name": "TRASH"},
+                    {"id": "SPAM", "name": "SPAM"},
                 ],
                 "messages": {},
                 "history": [],
@@ -84,17 +91,20 @@ class FakeGmail:
         sender: str,
         to: str,
         at: datetime,
-        labels=("Label_1",),
+        labels=None,
         subject="Proposal",
         thread="t1",
+        attachments=(),
         **headers: str,
     ) -> None:
+        """`labels` as given; by default Sales in the Inbox, as before."""
         box = self.box(address)
         box["messages"][gmail_id] = {
             "id": gmail_id,
             "threadId": thread,
-            "labelIds": ["INBOX", *labels],
+            "labelIds": ["INBOX", "Label_1"] if labels is None else list(labels),
             "internalDate": _ms(at),
+            "attachments": list(attachments),
             "headers": [
                 {"name": "From", "value": sender},
                 {"name": "To", "value": to},
@@ -120,6 +130,36 @@ class FakeGmail:
             address,
             {"labelsRemoved": [{"message": self._ref(address, gmail_id), "labelIds": [label]}]},
         )
+
+    def relabel(self, address: str, gmail_id: str, *, add=(), remove=()) -> None:
+        """Labels added then removed, each a history record as Gmail writes
+        them (the message's labels after the change)."""
+        msg = self.box(address)["messages"][gmail_id]
+        if add:
+            msg["labelIds"] += [lb for lb in add if lb not in msg["labelIds"]]
+            self._record(
+                address,
+                {"labelsAdded": [{"message": self._ref(address, gmail_id), "labelIds": list(add)}]},
+            )
+        if remove:
+            msg["labelIds"] = [lb for lb in msg["labelIds"] if lb not in remove]
+            self._record(
+                address,
+                {
+                    "labelsRemoved": [
+                        {"message": self._ref(address, gmail_id), "labelIds": list(remove)}
+                    ]
+                },
+            )
+
+    def trash(self, address: str, gmail_id: str) -> None:
+        self.relabel(address, gmail_id, add=("TRASH",))
+
+    def spam(self, address: str, gmail_id: str) -> None:
+        self.relabel(address, gmail_id, add=("SPAM",))
+
+    def untrash(self, address: str, gmail_id: str) -> None:
+        self.relabel(address, gmail_id, remove=("TRASH",))
 
     # -- the module's reads -------------------------------------------------
 
@@ -166,10 +206,75 @@ class FakeGmail:
     def message(self, mailbox, gmail_id):
         self.calls.append(("message", gmail_id))
         msg = self.box(mailbox)["messages"].get(gmail_id)
-        return dict(msg) if msg else {}
+        if not msg:
+            return {}
+        # Metadata only: attachment names are not in it (plan CT-3).
+        return {k: v for k, v in msg.items() if k != "attachments"}
+
+    @staticmethod
+    def _words(text: str) -> list[str]:
+        return [w for w in re.split(r"[^a-z0-9]+", text.lower()) if w]
+
+    def _names_file(self, names: list[str], term: str) -> bool:
+        want = self._words(term)
+        for name in names:
+            words = self._words(name)
+            if any(words[i : i + len(want)] == want for i in range(len(words))):
+                return True
+        return False
+
+    def search(self, mailbox, q, *, page_token, page_size):
+        """The deal-document queries (`gmail.search`): has:attachment,
+        after:, the scope group (category:primary, in:sent, label:) and the
+        filename group; never Trash or Spam."""
+        self.calls.append(("search", q))
+        box = self.box(mailbox)
+        by_name = {lb["name"].lower(): lb["id"] for lb in box["labels"]}
+        term = r'("[^"]+"|[^\s()]+)'
+        files = [t.strip('"') for t in re.findall(rf"filename:{term}", q)]
+        named = [by_name.get(t.strip('"').lower()) for t in re.findall(rf"label:{term}", q)]
+        scope = set(filter(None, named))
+        if "category:primary" in q:
+            scope.add("CATEGORY_PERSONAL")
+        if "in:sent" in q:
+            scope.add("SENT")
+        after = re.search(r"after:(\d+)", q)
+        found = []
+        for m in sorted(box["messages"].values(), key=lambda m: m["id"]):
+            labels = set(m["labelIds"])
+            if labels & {"TRASH", "SPAM"}:
+                continue
+            if "has:attachment" in q and not m.get("attachments"):
+                continue
+            if after and int(m["internalDate"]) // 1000 <= int(after.group(1)):
+                continue
+            if scope and not labels & scope:
+                continue
+            if files and not any(self._names_file(m.get("attachments") or [], f) for f in files):
+                continue
+            found.append(m)
+        start = int(page_token or 0)
+        out: dict[str, Any] = {
+            "messages": [
+                {"id": m["id"], "threadId": m["threadId"]} for m in found[start : start + page_size]
+            ]
+        }
+        if start + page_size < len(found):
+            out["nextPageToken"] = str(start + page_size)
+        return out
+
+    def threads_get(self, mailbox, thread_id):
+        """A thread's messages' metadata, oldest first (for S2's readers)."""
+        self.calls.append(("thread", thread_id))
+        msgs = [
+            {k: v for k, v in m.items() if k != "attachments"}
+            for m in self.box(mailbox)["messages"].values()
+            if m["threadId"] == thread_id
+        ]
+        return {"id": thread_id, "messages": sorted(msgs, key=lambda m: int(m["internalDate"]))}
 
     def install(self, monkeypatch) -> FakeGmail:
-        for name in ("profile", "labels", "list_messages", "history", "message"):
+        for name in ("profile", "labels", "list_messages", "history", "message", "search"):
             monkeypatch.setattr(gmail, name, getattr(self, name))
         return self
 
@@ -1009,6 +1114,148 @@ class TestMailboxes:
         body = http.get(f"/api/v1/crm/mailboxes{LABS}", headers=as_(OWNER["id"])).json()
         assert body["sync"] == {"enabled": True, "configured": True, "live": True}
         assert [m["email"] for m in body["mailboxes"]] == ["owner@nunnarilabs.com"]
+
+    # -- Spec 010 FR-CAP-SRC-01, -07; contracts §1.1; plan §5.3, PD-3 --------
+
+    def test_capture_fields_are_listed_with_their_defaults(self, crm):
+        http, *_ = crm
+        [row] = http.get(f"/api/v1/crm/mailboxes{LABS}", headers=as_(OWNER["id"])).json()[
+            "mailboxes"
+        ]
+        assert row["capture_source"] == "labels"
+        assert row["capture_start_date"] == "2026-04-01"
+        assert row["docs_checked_at"] is None
+
+    def test_capture_a_new_mailbox_defaults_to_labels_only(self, crm):
+        http, fake, *_ = crm
+        r = self._add(
+            http,
+            OWNER["id"],
+            {"email": "navaneeth@deepweaver.ai", "owner_id": OWNER["id"], "labels": ["Sales"]},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["capture_source"] == "labels"
+        assert r.json()["capture_start_date"] == "2026-04-01"
+
+    def test_capture_a_new_mailbox_may_capture_primary_and_sent(self, crm):
+        http, fake, *_ = crm
+        r = self._add(
+            http,
+            OWNER["id"],
+            {
+                "email": "navaneeth@deepweaver.ai",
+                "owner_id": OWNER["id"],
+                "labels": ["Sales"],
+                "capture_source": "primary_sent",
+                "capture_start_date": "2026-05-01",
+            },
+        )
+        assert r.status_code == 201, r.text
+        row = fake.rows["crm_mailboxes"][r.json()["id"]]
+        assert row["capture_source"] == "primary_sent"
+        assert row["capture_start_date"] == "2026-05-01"
+
+    def test_capture_a_start_date_in_the_future_is_refused(self, crm):
+        http, *_, mailbox, _ = crm
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"capture_start_date": "2099-01-01"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == "The capture start date cannot be in the future."
+        r = self._add(
+            http,
+            OWNER["id"],
+            {
+                "email": "navaneeth@deepweaver.ai",
+                "owner_id": OWNER["id"],
+                "labels": ["Sales"],
+                "capture_start_date": "2099-01-01",
+            },
+        )
+        assert r.status_code == 422
+
+    def test_capture_an_unknown_source_is_refused(self, crm):
+        http, *_, mailbox, _ = crm
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"capture_source": "everything"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422
+
+    @pytest.mark.parametrize("key", ["capture_source", "capture_start_date"])
+    def test_capture_fields_cannot_be_emptied(self, crm, key):
+        http, *_, mailbox, _ = crm
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={key: None},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"].endswith("cannot be empty.")
+
+    @pytest.mark.parametrize(
+        "body", [{"capture_source": "primary_sent"}, {"capture_start_date": "2026-06-01"}]
+    )
+    def test_capture_a_change_reads_the_mailbox_afresh(self, crm, body):
+        http, fake, *_, mailbox, _ = crm
+        fake.rows["crm_mailboxes"][mailbox["id"]].update(
+            history_id="123", backfilled_at=NOW.isoformat(), page_token='{"phase": "history"}'
+        )
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}", json=body, headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["backfilled_at"] is None
+        row = fake.rows["crm_mailboxes"][mailbox["id"]]
+        assert row["history_id"] is None and row["page_token"] is None
+        assert row["reconcile_after"] is None
+        # Audited as an Admin's settings change.
+        [change] = [
+            a
+            for a in fake.audit
+            if a["target_id"] == mailbox["id"] and a["action"] == "mailbox.updated"
+        ]
+        assert set(body) <= set(change["after"])
+
+    def test_capture_switching_back_reconciles_from_the_old_start_date(self, crm):
+        http, fake, *_, mailbox, _ = crm
+        fake.rows["crm_mailboxes"][mailbox["id"]].update(
+            capture_source="primary_sent", capture_start_date="2026-05-01"
+        )
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"capture_source": "labels"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        row = fake.rows["crm_mailboxes"][mailbox["id"]]
+        assert row["capture_source"] == "labels"
+        assert row["reconcile_after"] == "2026-05-01T00:00:00+05:30"
+        assert row["backfilled_at"] is None
+
+    def test_capture_the_same_values_change_nothing(self, crm):
+        http, fake, *_, mailbox, _ = crm
+        fake.rows["crm_mailboxes"][mailbox["id"]].update(history_id="123")
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"capture_source": "labels", "capture_start_date": "2026-04-01"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert fake.rows["crm_mailboxes"][mailbox["id"]]["history_id"] == "123"
+
+    @pytest.mark.parametrize("who", [MEMBER["id"], VIEWER["id"]])
+    def test_capture_only_admins_change_the_source(self, crm, who):
+        http, *_, mailbox, _ = crm
+        r = http.patch(
+            f"/api/v1/crm/mailboxes/{mailbox['id']}{LABS}",
+            json={"capture_source": "primary_sent"},
+            headers=as_(who),
+        )
+        assert r.status_code == 403
 
 
 class TestTheSwitch:

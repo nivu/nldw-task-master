@@ -724,6 +724,10 @@ class NotificationsRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: Spec 010 FR-CAP-SRC-01 — *Labels only* or *Primary and Sent*.
+CaptureSource = Literal["labels", "primary_sent"]
+
+
 class MailboxIn(BaseModel):
     """A mailbox to sync: its address, its owner (a member) and its labels."""
 
@@ -733,6 +737,9 @@ class MailboxIn(BaseModel):
     owner_id: str = Field(min_length=1, max_length=64)
     labels: list[str] = Field(min_length=1, max_length=20)
     is_active: bool = True
+    # Spec 010 FR-CAP-SRC-01, -07 (contracts §1.1).
+    capture_source: CaptureSource = "labels"
+    capture_start_date: date = date(2026, 4, 1)
 
 
 class MailboxUpdate(BaseModel):
@@ -742,6 +749,9 @@ class MailboxUpdate(BaseModel):
     owner_id: str | None = Field(default=None, min_length=1, max_length=64)
     labels: list[str] | None = Field(default=None, min_length=1, max_length=20)
     is_active: bool | None = None
+    # Spec 010: optional, and refused when sent as null (contracts §1.1).
+    capture_source: CaptureSource | None = None
+    capture_start_date: date | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +847,7 @@ ReviewItemType = Literal[
     "deal_link",
     "enrichment_conflict",
     "rule_suggestion",
+    "deal_signal",
 ]
 ReviewStatus = Literal["open", "approved", "dismissed", "expired"]
 

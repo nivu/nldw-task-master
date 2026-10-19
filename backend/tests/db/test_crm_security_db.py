@@ -44,6 +44,7 @@ NOT_AUDITED = {
     "crm_email_summary_links",  # an email summary's links to its records (009 FR-CRMAI-SUM-05)
     "crm_company_enrichment",  # AI values beside a company's fields, re-read often (009 ENR-06)
     "crm_ai_field_values",  # AI field values, recomputed hourly at most (009 FR-CRMAI-FIELD-04)
+    "crm_capture_candidates",  # one row per thread awaiting discovery, ids only (010 SRC-05)
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}
@@ -281,7 +282,7 @@ class TestTheBellNamesOnlyItsOwnWorkspace:
         assert refused.value.code == "CRM04"
 
 
-#: 009's migrations (plan §6 rule 1: only 060–079 are 009's).
+#: 009's migrations: 060–070 (010 plan PD-1 gives 071–079 to 010).
 MIGRATIONS = Path(__file__).resolve().parents[3] / "supabase/migrations"
 #: The 007 tables with no audit trigger, as 007 left the list.
 NOT_AUDITED_007 = {
@@ -308,16 +309,34 @@ NOT_AUDITED_009 = {
 UUID_ARRAYS = {("crm_companies", "channel_ids")}
 
 
-def _009_sql() -> str:
-    """060–079's text with its comment lines left out."""
-    files = sorted(p for p in MIGRATIONS.glob("0[67]*.sql") if 60 <= int(p.name[:3]) <= 79)
-    assert [p.name[:3] for p in files][:8] == [f"0{n}" for n in range(60, 68)]
+def _sql(first: int, last: int) -> str:
+    """Migrations `first`–`last`, their text with comment lines left out."""
+    files = sorted(p for p in MIGRATIONS.glob("0[67]*.sql") if first <= int(p.name[:3]) <= last)
     return "\n".join(
         line
         for p in files
         for line in p.read_text().splitlines()
         if not line.lstrip().startswith("--")
     )
+
+
+def _009_sql() -> str:
+    """060–070's text with its comment lines left out."""
+    files = sorted(p for p in MIGRATIONS.glob("0[67]*.sql") if 60 <= int(p.name[:3]) <= 70)
+    assert [p.name[:3] for p in files][:8] == [f"0{n}" for n in range(60, 68)]
+    return _sql(60, 70)
+
+
+#: Spec 010 data-model §5: the logs 071–073 add without the trigger (S1:
+#: the discovery candidates).
+NOT_AUDITED_010 = {"crm_capture_candidates"}
+
+
+def _010_sql() -> str:
+    """071–079's text with its comment lines left out (010 plan PD-1)."""
+    files = sorted(p for p in MIGRATIONS.glob("07*.sql") if 71 <= int(p.name[:3]) <= 79)
+    assert [p.name[:3] for p in files][:1] == ["071"]
+    return _sql(71, 79)
 
 
 class TestThe009Additions:
@@ -327,7 +346,8 @@ class TestThe009Additions:
     the sweeps see; and 009 makes no new `uuid[]` column."""
 
     def test_not_audited_is_007s_and_the_seven(self):
-        assert NOT_AUDITED == NOT_AUDITED_007 | NOT_AUDITED_009
+        # 010's logs are swept by TestThe010Additions.
+        assert NOT_AUDITED - NOT_AUDITED_010 == NOT_AUDITED_007 | NOT_AUDITED_009
         assert len(NOT_AUDITED_009) == 7 and not NOT_AUDITED_007 & NOT_AUDITED_009
 
     def test_every_009_table_is_swept(self, stack):
@@ -363,6 +383,62 @@ class TestThe009Additions:
         names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _009_sql()))
         assert len(names) > 15
         # The CRM function sweep reads `crm_%`: every 009 function is one.
+        assert {n for n in names if not n.startswith("crm_")} == set()
+        rows = stack.sql(
+            "SELECT p.proname, "
+            "has_function_privilege('anon', p.oid, 'EXECUTE') AS anon, "
+            "has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            f"WHERE n.nspname = 'public' AND p.proname IN ({', '.join(stack.q(x) for x in sorted(names))})"
+        )
+        assert {r["proname"] for r in rows} == names
+        assert [r["proname"] for r in rows if r["anon"] or r["auth"]] == []
+
+    def test_no_new_uuid_array_column(self, stack):
+        rows = stack.sql(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND udt_name = '_uuid' "
+            "AND table_name IN (SELECT relname FROM pg_class WHERE relkind IN ('r', 'p'))"
+        )
+        assert {(r["table_name"], r["column_name"]) for r in rows} == UUID_ARRAYS
+
+
+class TestThe010Additions:
+    """Spec 010 data-model §5; plan PD-1; tasks T116 (S1): the sweeps above
+    re-run over 071–079. `NOT_AUDITED` is 007's, 009's and 010's lists;
+    every table 010 creates is a log of that list, with RLS on and no
+    browser grant; every function it creates or replaces is a `crm_` one
+    with EXECUTE revoked; and 010 makes no new `uuid[]` column."""
+
+    def test_not_audited_is_007s_009s_and_010s(self):
+        assert NOT_AUDITED == NOT_AUDITED_007 | NOT_AUDITED_009 | NOT_AUDITED_010
+        assert not (NOT_AUDITED_007 | NOT_AUDITED_009) & NOT_AUDITED_010
+
+    def test_every_010_table_is_swept(self, stack):
+        made = set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)", _010_sql()))
+        assert made == NOT_AUDITED_010
+        rows = stack.sql(
+            "SELECT c.relname, c.relrowsecurity FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') "
+            f"AND c.relname IN ({', '.join(stack.q(t) for t in sorted(made))})"
+        )
+        assert {r["relname"]: r["relrowsecurity"] for r in rows} == {t: True for t in made}
+        for role in ("anon", "authenticated"):
+            for table in made:
+                [row] = stack.sql(
+                    "SELECT "
+                    + " OR ".join(
+                        f"has_table_privilege({stack.q(role)}, {stack.q('public.' + table)}, '{p}')"
+                        for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+                    )
+                    + " AS any"
+                )
+                assert row["any"] is False, (role, table)
+
+    def test_every_010_function_is_swept_and_revoked(self, stack):
+        names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _010_sql()))
+        assert {"crm_capture_mark", "crm_audit_row"} <= names
         assert {n for n in names if not n.startswith("crm_")} == set()
         rows = stack.sql(
             "SELECT p.proname, "

@@ -13,6 +13,7 @@ non-secret flag that says the key exists on `worker-crm-sync` (plan §2.2).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -21,6 +22,8 @@ from app.api.crm.deps import CrmAdminDep, CrmContext, CrmReadDep
 from app.api.crm.members import is_tva_admin
 from app.api.errors import ProblemDetail
 from app.config import settings
+from app.domain.calendar import today_in_company_tz
+from app.domain.crm import capture as capture_rules
 from app.domain.crm import email_rules as rules
 from app.domain.crm import today as today_rules
 from app.schemas.crm import MailboxIn, MailboxUpdate
@@ -46,7 +49,22 @@ def _present(row: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
         "backfilled_at": row.get("backfilled_at"),
         "last_synced_at": row.get("last_synced_at"),
         "updated_at": row.get("updated_at"),
+        # Spec 010 contracts §1.1.
+        "capture_source": row.get("capture_source") or capture_rules.LABELS_ONLY,
+        "capture_start_date": row.get("capture_start_date"),
+        "docs_checked_at": row.get("docs_checked_at"),
     }
+
+
+def _day(value: Any) -> date | None:
+    if value in (None, ""):
+        return None
+    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def _now() -> datetime:
+    """The clock; tests fix it."""
+    return datetime.now(UTC)
 
 
 def _names() -> dict[str, str]:
@@ -76,6 +94,7 @@ def _check(
     email: str,
     owner_id: str,
     labels: list[str],
+    capture_start_date: date | None = None,
     mailbox_id: str | None = None,
     same_address: bool = False,
 ) -> None:
@@ -92,6 +111,8 @@ def _check(
         owner_is_member=owner is not None,
         by_tva_admin=same_address or is_tva_admin(ctx.user),
         labels=labels,
+        capture_start_date=capture_start_date,
+        today=today_in_company_tz(),
     )
     if why:
         raise ProblemDetail(422, why)
@@ -105,7 +126,13 @@ def add_mailbox(payload: MailboxIn, ctx: CrmAdminDep) -> dict:
     email = str(payload.email).lower()
     owner_id = str(payload.owner_id)
     labels = rules.clean_labels(payload.labels)
-    _check(ctx, email=email, owner_id=owner_id, labels=labels)
+    _check(
+        ctx,
+        email=email,
+        owner_id=owner_id,
+        labels=labels,
+        capture_start_date=payload.capture_start_date,
+    )
     done = store.apply(
         actor(ctx),
         [
@@ -117,6 +144,8 @@ def add_mailbox(payload: MailboxIn, ctx: CrmAdminDep) -> dict:
                     "owner_id": owner_id,
                     "labels": labels,
                     "is_active": payload.is_active,
+                    "capture_source": payload.capture_source,
+                    "capture_start_date": payload.capture_start_date.isoformat(),
                 },
             }
         ],
@@ -137,21 +166,37 @@ def _mailbox(ctx: CrmContext, mailbox_id: str) -> dict[str, Any]:
 
 @router.patch("/mailboxes/{mailbox_id}")
 def update_mailbox(mailbox_id: str, payload: MailboxUpdate, ctx: CrmAdminDep) -> dict:
-    """A changed address or label set reads the labels afresh: the cursor is
-    reset, and messages stored already are not stored twice."""
+    """A changed address, label set, capture source or capture start date
+    reads the labels afresh: the cursor is reset, and messages stored
+    already are not stored twice. Spec 010 PD-3: going from Primary and Sent
+    back to Labels only also makes the next reconcile look back to the old
+    start date, so captured mail with no label leaves however old it is."""
     row = _mailbox(ctx, mailbox_id)
     sent = payload.model_dump(exclude_unset=True)
-    for key in ("email", "owner_id", "labels", "is_active"):
+    for key in (
+        "email",
+        "owner_id",
+        "labels",
+        "is_active",
+        "capture_source",
+        "capture_start_date",
+    ):
         if key in sent and sent[key] is None:
             raise ProblemDetail(422, f"{key.replace('_', ' ').capitalize()} cannot be empty.")
     email = str(sent.get("email", row["email"])).lower()
     owner_id = str(sent.get("owner_id", row["owner_id"]))
     labels = rules.clean_labels(sent["labels"]) if "labels" in sent else row["labels"]
+    was_source = row.get("capture_source") or capture_rules.LABELS_ONLY
+    source = sent.get("capture_source", was_source)
+    was_start = _day(row.get("capture_start_date"))
+    start = sent.get("capture_start_date", was_start)
     _check(
         ctx,
         email=email,
         owner_id=owner_id,
         labels=labels,
+        # Only a start date being set is checked: one set earlier stands.
+        capture_start_date=start if start != was_start else None,
         mailbox_id=row["id"],
         same_address=email == row["email"] and owner_id == row["owner_id"],
     )
@@ -164,10 +209,25 @@ def update_mailbox(mailbox_id: str, payload: MailboxUpdate, ctx: CrmAdminDep) ->
         values["labels"] = labels
     if "is_active" in sent and sent["is_active"] != row["is_active"]:
         values["is_active"] = sent["is_active"]
+    if source != was_source:
+        values["capture_source"] = source
+    if start != was_start:
+        values["capture_start_date"] = start.isoformat() if start else None
     if not values:
         return _present(row, _names())
-    if "email" in values or "labels" in values:
+    if {"email", "labels", "capture_source", "capture_start_date"} & set(values):
         values.update(history_id=None, page_token=None, backfilled_at=None)
+    if {"capture_source", "capture_start_date"} & set(values):
+        # Contracts §1.1: the deal-document search starts afresh, at most
+        # 14 days back (PD-19).
+        values["docs_checked_at"] = None
+    if was_source == capture_rules.PRIMARY_SENT and (
+        source == capture_rules.LABELS_ONLY or (start and was_start and start > was_start)
+    ):
+        # PD-3: the earliest day captured mail may date from (the old start
+        # date at 00:00 IST, or an earlier one kept when the start date was
+        # moved later), so the switch back removes it however old it is.
+        values["reconcile_after"] = capture_rules.reconcile_window(row, _now()).isoformat()
     done = store.apply(
         actor(ctx), [{"op": "update", "table": "crm_mailboxes", "id": row["id"], "values": values}]
     )

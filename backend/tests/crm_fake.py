@@ -151,6 +151,8 @@ TABLES = (
     # Spec 009: AI fields (065), audited, and their values, a log.
     "crm_ai_fields",
     "crm_ai_field_values",
+    # Spec 010: discovery candidates (071), a log with no audit trigger.
+    "crm_capture_candidates",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -203,6 +205,8 @@ REVIEW_TYPES = (
     "deal_link",
     "enrichment_conflict",
     "rule_suggestion",
+    # Spec 010 (071).
+    "deal_signal",
 )
 
 
@@ -359,6 +363,24 @@ DEFAULTS = {
         "page_token": None,
         "backfilled_at": None,
         "last_synced_at": None,
+        # Spec 010 (071): every mailbox starts as today's Labels only.
+        "capture_source": "labels",
+        "capture_start_date": "2026-04-01",
+        "docs_checked_at": None,
+        "reconcile_after": None,
+    },
+    # 071: a candidate as marked, its decision empty (the reset of a later
+    # message too).
+    "crm_capture_candidates": {
+        "status": "pending",
+        "attempts": 0,
+        "judged_message_id": None,
+        "outcome": None,
+        "confidence": None,
+        "classifier_version": None,
+        "judged_at": None,
+        "dry_run": False,
+        "finding": None,
     },
     # 009 (065): what an Admin's field keeps (D-3).
     "crm_ai_fields": {
@@ -3115,6 +3137,54 @@ class FakeCrmStore:
         # 039: the audit trigger skips the cursor columns, and so does this.
         row.update(json.loads(json.dumps(values)))
 
+    def mark_candidates(self, workspace_id: str, mailbox_id: str, rows: list[dict]) -> int:
+        """071 crm_capture_mark: one row per thread, its latest message
+        first; a later message re-opens the decision, an older or the same
+        one changes nothing; older than 365 days is not marked; another
+        workspace's mailbox is refused (CRM04)."""
+        mailbox = self.rows["crm_mailboxes"].get(mailbox_id)
+        if mailbox is None or mailbox["workspace_id"] != workspace_id:
+            raise store.refusal_for("CRM04", "No such mailbox.")
+        cutoff = datetime.now(UTC) - timedelta(days=365)
+        latest: dict[str, dict[str, Any]] = {}
+        for r in json.loads(json.dumps(rows)):
+            at = datetime.fromisoformat(r["sent_at"])
+            if at < cutoff:
+                continue
+            seen = latest.get(r["thread_id"])
+            if seen is None or (at, r["message_id"]) > (seen["at"], seen["message_id"]):
+                latest[r["thread_id"]] = {**r, "at": at}
+        n = 0
+        for thread_id, r in sorted(latest.items()):
+            row = next(
+                (
+                    c
+                    for c in self.rows["crm_capture_candidates"].values()
+                    if c["mailbox_id"] == mailbox_id and c["thread_id"] == thread_id
+                ),
+                None,
+            )
+            if row is None:
+                self.add(
+                    "crm_capture_candidates",
+                    workspace_id=workspace_id,
+                    mailbox_id=mailbox_id,
+                    thread_id=thread_id,
+                    latest_message_id=r["message_id"],
+                    latest_message_at=r["at"].isoformat(),
+                    **DEFAULTS["crm_capture_candidates"],
+                )
+                n += 1
+            elif r["at"] > datetime.fromisoformat(row["latest_message_at"]):
+                row.update(
+                    latest_message_id=r["message_id"],
+                    latest_message_at=r["at"].isoformat(),
+                    **DEFAULTS["crm_capture_candidates"],
+                    updated_at=datetime.now(UTC).isoformat(),
+                )
+                n += 1
+        return n
+
     def stored_message_ids(self, workspace_id: str, mailbox_id: str, gmail_ids: list) -> set:
         return {
             m["gmail_message_id"]
@@ -3793,6 +3863,9 @@ class FakeCrmStore:
                     clash("crm_saved_views_one_default")
             return
         if table == "crm_mailboxes":
+            # 071: the capture source CHECK.
+            if row.get("capture_source") not in ("labels", "primary_sent"):
+                raise CheckViolation(f"crm_mailboxes.capture_source {row.get('capture_source')}")
             # 039: one address in one workspace, across workspaces.
             if any(
                 other["id"] != row["id"] and other["email"] == row["email"]

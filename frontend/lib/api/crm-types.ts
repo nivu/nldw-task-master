@@ -1343,7 +1343,16 @@ export interface CrmMailbox {
   backfilled_at: string | null;
   last_synced_at: string | null;
   updated_at: string;
+  /** 010 S1 (FR-CAP-SRC-01): Labels only, or Primary and Sent as well. */
+  capture_source: CrmCaptureSource;
+  /** YYYY-MM-DD: where a Primary and Sent backfill starts (FR-CAP-SRC-07). */
+  capture_start_date: string;
+  /** The last deal-document search (FR-CAP-SRC-06); null before the first. */
+  docs_checked_at: string | null;
 }
+
+/** 010 S1 — what a mailbox syncs (FR-CAP-SRC-01). */
+export type CrmCaptureSource = "labels" | "primary_sent";
 
 export interface CrmMailboxes {
   mailboxes: CrmMailbox[];
@@ -1364,6 +1373,10 @@ export interface CrmMailboxIn {
   owner_id: string;
   labels: string[];
   is_active?: boolean;
+  /** Default "labels". */
+  capture_source?: CrmCaptureSource;
+  /** Default 2026-04-01; never in the future. */
+  capture_start_date?: string;
 }
 
 export type EmailSyncResult =
@@ -1633,7 +1646,9 @@ export type ReviewItemType =
   | "task_from_meeting"
   | "deal_link"
   | "enrichment_conflict"
-  | "rule_suggestion";
+  | "rule_suggestion"
+  /** 010 S1 (FR-CAP-REV-01): a deal document or discovery on a known company. */
+  | "deal_signal";
 
 export type ReviewItemStatus = "open" | "approved" | "dismissed" | "expired";
 

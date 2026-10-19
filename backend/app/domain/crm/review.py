@@ -29,7 +29,12 @@ TYPES: Final = {
     "deal_link": "Link meeting to a deal",
     "enrichment_conflict": "Use the enriched value",
     "rule_suggestion": "Follow-up suggestion",
+    # Spec 010 FR-CAP-REV-01: a deal document or discovery on a known company.
+    "deal_signal": "Deal signal",
 }
+#: Spec 010 FR-CAP-REV-04: the item types capture makes, owned by the
+#: mailbox owner (PD-5).
+CAPTURE_TYPES: Final = ("new_lead", "deal_signal")
 #: The items that create a task, and the task source each gives it
 #: (FR-CRMAI-REV-06, FR-CRMAI-CHG-10).
 TASK_SOURCES: Final = {
@@ -100,6 +105,7 @@ def owner_for(
     - `deal_link`, `enrichment_conflict`: the company owner.
     - `rule_suggestion`: the deal owner for a deal-level rule
       (`rule_level="deal"`), else the company owner.
+    - `new_lead`, `deal_signal` (spec 010 FR-CAP-REV-04): the mailbox owner.
 
     `roles`: member id → CRM role in this workspace; `active`: the ids of
     active accounts. Whoever it lands on must be an Admin or Member with an
@@ -116,6 +122,8 @@ def owner_for(
         fallback = deal_owner
     elif item_type == "rule_suggestion":
         fallback = deal_owner if rule_level == "deal" else company_owner
+    elif item_type in CAPTURE_TYPES:
+        fallback = mailbox_owner
     else:
         fallback = company_owner
     return fallback if _eligible(fallback, roles, active) else None

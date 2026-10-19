@@ -72,7 +72,7 @@ replaced-function provenance line; a `Reversible:` paragraph (§8).
 | `capture_source` | text | NOT NULL DEFAULT `'labels'` `CHECK (capture_source IN ('labels','primary_sent'))` |
 | `capture_start_date` | date | NOT NULL DEFAULT `'2026-04-01'` |
 | `docs_checked_at` | timestamptz | NULL; the deal-document search's cursor (FR-CAP-SRC-06) |
-| `reconcile_after` | timestamptz | NULL; set by the mailbox PATCH when `capture_source` goes from `primary_sent` to `labels` (the old start date, 00:00 IST); the next reconcile looks back to it, then clears it (plan §5.3, PD-3) |
+| `reconcile_after` | timestamptz | NULL; set by the mailbox PATCH when `capture_source` goes from `primary_sent` to `labels`, or when a `primary_sent` mailbox's start date moves later (the earliest start date captured from, 00:00 IST); the next reconcile on *Labels only* looks back to it, then clears it (plan §5.3, PD-3) |
 
 - `ADD COLUMN` with defaults fills every existing mailbox with `labels` and
   `2026-04-01`: today's behaviour (spec §13 S1 line 1). The ALTER writes no
@@ -109,13 +109,13 @@ participant and no configured label.
 | `classifier_version` | text | NULL ≤ 40 |
 | `judged_at` | timestamptz | NULL |
 | `dry_run` | boolean | NOT NULL DEFAULT false |
-| `finding` | jsonb | NULL; `CHECK (finding IS NULL OR (outcome IN ('new_lead','deal_signal') AND jsonb_typeof(finding) = 'object' AND pg_column_size(finding) <= 4096))` |
+| `finding` | jsonb | NULL; `CHECK (finding IS NULL OR (outcome IS NOT NULL AND outcome IN ('new_lead','deal_signal') AND jsonb_typeof(finding) = 'object' AND pg_column_size(finding) <= 4096))` |
 | `created_at`, `updated_at` | timestamptz | NOT NULL DEFAULT now() |
 
 Constraints:
 
 - `crm_capture_candidates_once UNIQUE (mailbox_id, thread_id)`.
-- `crm_capture_candidates_judged CHECK ((status = 'judged') = (outcome IS NOT NULL AND confidence IS NOT NULL AND judged_at IS NOT NULL AND judged_message_id IS NOT NULL))`.
+- `crm_capture_candidates_judged CHECK ((status = 'judged' AND outcome, confidence, judged_at, judged_message_id all NOT NULL) OR (status <> 'judged' AND all four NULL))`: a decision is whole on a judged row and absent on any other. The finding CHECK tests `outcome IS NOT NULL` first, since a NULL `outcome IN (...)` is NULL and a CHECK passes NULL.
 - `CONSTRAINT crm_capture_candidates_workspace_id UNIQUE (workspace_id, id)`.
 
 `finding` (lead and deal signal only; the only place an address or name is

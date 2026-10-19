@@ -4,14 +4,17 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { AiMarker } from "@/components/crm/ai-marker";
+import { AmountField } from "@/components/crm/amount-field";
+import { FieldEditor } from "@/components/crm/field-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { approveCrmReview, dismissCrmReview } from "@/lib/api/crm";
+import { approveCrmReview, dismissCrmReview, searchPersonChoices } from "@/lib/api/crm";
 import type {
+  CrmCurrency,
   CrmLists,
   CrmMember,
   CrmReviewItem,
@@ -21,7 +24,7 @@ import type {
   ViewObjectKind,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { type CrmTimezone, formatDate } from "@/lib/crm/format";
+import { type CrmTimezone, type NumberFormat, formatDate } from "@/lib/crm/format";
 import { OBJECT_PATH } from "@/lib/crm/view-fields";
 
 /**
@@ -33,6 +36,13 @@ import { OBJECT_PATH } from "@/lib/crm/view-fields";
  * manual edit uses, so its refusals are the manual path's own sentences; a
  * task the tasks service refused keeps the item open with the refusal shown.
  * Every generated string is rendered as a text node (FR-CRMAI-LLM-04).
+ *
+ * Spec 010 FR-CAP-REV-01, -02: a deal signal shows its evidence (dates,
+ * message count, whether the owner replied, attachment names, the reason;
+ * never message text) and asks for what its stage needs: a new deal's next
+ * step, or Proposal's amount, expected close, point of contact (and the TVA
+ * project's name in Labs). Closed Won in Labs is the handoff, done from the
+ * deal's page, so the item links there instead of approving.
  */
 
 const STATUS_TEXT: Record<ReviewItemStatus, string> = {
@@ -69,6 +79,43 @@ const text = (value: unknown): string =>
 function recordHref(ws: string, recordType: ViewObjectKind | undefined, recordId: string | undefined) {
   if (!recordType || !recordId || recordType === "note" || recordType === "task") return null;
   return `/crm/${ws}/${OBJECT_PATH[recordType]}/${recordId}`;
+}
+
+/** Spec 010 contracts §6.2 — what a deal signal would do, as To review says it. */
+function dealSignalLine(s: Record<string, unknown>, timeZone: CrmTimezone): string {
+  if (s.action === "create") return "New deal at Discovery";
+  if (s.stage === "proposal") {
+    const sent = text(s.proposal_sent_on);
+    return sent ? `Move to Proposal, proposal sent on ${formatDate(sent, timeZone)}` : "Move to Proposal";
+  }
+  if (s.stage === "closed_won") return "Possibly Closed Won: check the signed document";
+  return "Deal signal";
+}
+
+/** Spec 010 FR-CAP-REV-01 — the evidence a capture item carries, in words. */
+function evidenceRows(item: CrmReviewItem, timeZone: CrmTimezone): { label: string; value: string }[] {
+  const e = item.suggestion.evidence;
+  if (!e || typeof e !== "object") return [];
+  const ev = e as Record<string, unknown>;
+  const rows: { label: string; value: string }[] = [];
+  const first = text(ev.first_at);
+  const latest = text(ev.latest_at) || text(ev.message_at);
+  if (first && latest && formatDate(first, timeZone) !== formatDate(latest, timeZone)) {
+    rows.push({ label: "When", value: `${formatDate(first, timeZone)} to ${formatDate(latest, timeZone)}` });
+  } else if (latest || first) {
+    rows.push({ label: "When", value: formatDate(latest || first, timeZone) });
+  }
+  if (typeof ev.message_count === "number") {
+    rows.push({ label: "Messages", value: `${ev.message_count} email${ev.message_count === 1 ? "" : "s"}` });
+  }
+  if (typeof ev.owner_replied === "boolean") {
+    rows.push({ label: "Replied", value: ev.owner_replied ? "Yes" : "No" });
+  }
+  const attachments = Array.isArray(ev.attachments) ? ev.attachments.map(text).filter(Boolean) : [];
+  if (attachments.length > 0) rows.push({ label: "Attachments", value: attachments.join(", ") });
+  if (text(ev.reason)) rows.push({ label: "Why", value: text(ev.reason) });
+  if (text(ev.confidence)) rows.push({ label: "Confidence", value: text(ev.confidence) });
+  return rows;
 }
 
 function nextStepLine(nextStep: unknown, nextStepOn: unknown, timeZone: CrmTimezone): string {
@@ -115,6 +162,8 @@ function describe(
         current: `${name}: ${storedLabel || "empty"}`,
       };
     }
+    case "deal_signal":
+      return { suggestion: dealSignalLine(s, timeZone), current: null };
     case "rule_suggestion": {
       const current = Object.entries(item.current)
         .map(([key, value]) => `${key.replace(/_/g, " ")}: ${text(value)}`)
@@ -152,6 +201,24 @@ function initialEdits(item: CrmReviewItem): Record<string, string> {
         next_step: "",
         next_step_on: "",
       };
+    case "deal_signal":
+      if (s.action === "create") {
+        return {
+          name: text(s.name) || item.target.name,
+          next_step: text(s.next_step),
+          next_step_on: text(s.next_step_on),
+        };
+      }
+      return {
+        amount: text(s.amount),
+        currency: text(s.currency) || "INR",
+        expected_close_on: text(s.expected_close_on),
+        proposal_sent_on: text(s.proposal_sent_on),
+        point_of_contact_id: text(s.point_of_contact_id),
+        next_step: text(s.next_step),
+        next_step_on: text(s.next_step_on),
+        project_name: "",
+      };
     default:
       return {};
   }
@@ -179,11 +246,33 @@ function editsPayload(
     if (edits.notes) out.notes = edits.notes;
     return out;
   }
+  if (item.type === "deal_signal") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(edits)) {
+      if (value) out[key] = value;
+    }
+    // A currency alone, with no amount, is not a change.
+    if (!out.amount) delete out.currency;
+    return out;
+  }
   return { ...edits };
 }
 
-/** A deal link has nothing to edit; a rule suggestion only by option. */
+/** A deal link has nothing to edit; a rule suggestion only by option; a deal
+ *  signal by its stage (below). */
 const EDITABLE = new Set(["next_step_change", "task_from_commitment", "task_from_meeting", "enrichment_conflict"]);
+
+/** Spec 010: a deal signal's form exists for a new deal, for Proposal, and
+ *  for Closed Won outside Labs (a skipped stage's fields are required). */
+function dealSignalEditable(item: CrmReviewItem, labs: boolean): boolean {
+  return item.suggestion.action === "create" || dealStageForm(item, labs);
+}
+
+/** The amount, close date and point-of-contact form of a deal move. */
+function dealStageForm(item: CrmReviewItem, labs: boolean): boolean {
+  const stage = item.suggestion.stage;
+  return item.suggestion.action !== "create" && (stage === "proposal" || (stage === "closed_won" && !labs));
+}
 
 /** The rule options that need a date or the new deal's fields (FR-CRMAI-RULE-05, -06). */
 const RULE_EDITS = new Set(["next_touch", "qualify"]);
@@ -195,12 +284,18 @@ export function ReviewItemCard({
   lists,
   members,
   showOwner,
+  labs,
+  numberFormat,
   onDecided,
 }: {
   workspace: string;
   item: CrmReviewItem;
   timeZone: CrmTimezone;
   lists: CrmLists;
+  /** The workspace is connected to TVA projects (Nunnari Labs). */
+  labs: boolean;
+  /** The viewer's amount format, for a deal signal's amount. */
+  numberFormat: NumberFormat;
   /** Assignee choices for a task: the workspace's Admins and Members. */
   members: CrmMember[];
   /** All and Decided name whose item it is. */
@@ -225,7 +320,17 @@ export function ReviewItemCard({
   const targetHref = recordHref(workspace, item.target.record_type, item.target.record_id);
   const sourceHref = recordHref(workspace, item.source.link?.record_type, item.source.link?.record_id);
   const assignees = members.filter((m) => m.role !== "viewer");
-  const editable = EDITABLE.has(item.type) || (item.type === "rule_suggestion" && RULE_EDITS.has(option));
+  const editable =
+    EDITABLE.has(item.type) ||
+    (item.type === "rule_suggestion" && RULE_EDITS.has(option)) ||
+    (item.type === "deal_signal" && dealSignalEditable(item, labs));
+  const evidence = evidenceRows(item, timeZone);
+  // Closed Won in Labs is the handoff (FR-CRM-TVA-07): approving would be
+  // refused with its sentence, so the item opens the deal instead.
+  const handoff = labs && item.type === "deal_signal" && item.suggestion.stage === "closed_won";
+  const handoffDeal = deal ?? (item.deal_choices.length === 1 ? item.deal_choices[0] : undefined);
+  const dealCreate = item.type === "deal_signal" && item.suggestion.action === "create";
+  const dealProposal = item.type === "deal_signal" && dealStageForm(item, labs);
 
   async function approve(withEdits: boolean) {
     setBusy(true);
@@ -299,6 +404,12 @@ export function ReviewItemCard({
               <dd className="whitespace-pre-wrap">{draft}</dd>
             </>
           )}
+          {evidence.map((row) => (
+            <div key={row.label} className="contents" data-testid="review-evidence">
+              <dt className="text-muted-foreground">{row.label}</dt>
+              <dd className="whitespace-pre-wrap">{row.value}</dd>
+            </div>
+          ))}
           <dt className="text-muted-foreground">Source</dt>
           <dd>
             {sourceHref ? (
@@ -453,6 +564,120 @@ export function ReviewItemCard({
                 )}
               </div>
             )}
+            {dealCreate && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={field("name")}>Deal name</Label>
+                  <Input id={field("name")} value={edits.name} maxLength={200} onChange={set("name")} />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step")}>Next step</Label>
+                    <Input
+                      id={field("next_step")}
+                      value={edits.next_step}
+                      maxLength={500}
+                      onChange={set("next_step")}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step_on")}>By</Label>
+                    <Input
+                      id={field("next_step_on")}
+                      type="date"
+                      value={edits.next_step_on}
+                      onChange={set("next_step_on")}
+                      required
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+            {dealProposal && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={field("amount")}>Amount</Label>
+                  <AmountField
+                    id={field("amount")}
+                    value={{ amount: edits.amount || null, currency: (edits.currency || "INR") as CrmCurrency }}
+                    onChange={(money) =>
+                      setEdits((prev) => ({ ...prev, amount: money.amount ?? "", currency: money.currency }))
+                    }
+                    numberFormat={numberFormat}
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("expected_close_on")}>Expected close date</Label>
+                    <Input
+                      id={field("expected_close_on")}
+                      type="date"
+                      value={edits.expected_close_on}
+                      onChange={set("expected_close_on")}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("proposal_sent_on")}>Proposal sent on</Label>
+                    <Input
+                      id={field("proposal_sent_on")}
+                      type="date"
+                      value={edits.proposal_sent_on}
+                      onChange={set("proposal_sent_on")}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={field("point_of_contact_id")}>Point of contact</Label>
+                  <FieldEditor
+                    id={field("point_of_contact_id")}
+                    spec={{
+                      name: "point_of_contact_id",
+                      label: "Point of contact",
+                      type: "relation",
+                      choices: [],
+                      search: (q, after) => searchPersonChoices(workspace, q, after),
+                    }}
+                    value={edits.point_of_contact_id || null}
+                    onChange={(value) =>
+                      setEdits((prev) => ({ ...prev, point_of_contact_id: (value as string | null) ?? "" }))
+                    }
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step")}>Next step</Label>
+                    <Input
+                      id={field("next_step")}
+                      value={edits.next_step}
+                      maxLength={500}
+                      onChange={set("next_step")}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("next_step_on")}>By</Label>
+                    <Input
+                      id={field("next_step_on")}
+                      type="date"
+                      value={edits.next_step_on}
+                      onChange={set("next_step_on")}
+                    />
+                  </div>
+                </div>
+                {labs && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor={field("project_name")}>TVA project name</Label>
+                    <Input
+                      id={field("project_name")}
+                      value={edits.project_name}
+                      maxLength={200}
+                      placeholder="The deal's name"
+                      onChange={set("project_name")}
+                    />
+                  </div>
+                )}
+              </>
+            )}
             {item.type === "rule_suggestion" && option === "next_touch" && (
               <div className="space-y-1.5">
                 <Label htmlFor={field("next_touch_on")}>Next touch</Label>
@@ -523,11 +748,29 @@ export function ReviewItemCard({
           </div>
         )}
 
+        {open && handoff && (
+          <p className="text-sm text-muted-foreground">
+            In Nunnari Labs, Closed Won is done with the handoff from the deal&apos;s page.{" "}
+            {handoffDeal ? (
+              <>
+                <Link href={`/crm/${workspace}/${OBJECT_PATH.opportunity}/${handoffDeal.id}`} className="underline">
+                  Open {handoffDeal.name} to hand it off
+                </Link>
+                , then dismiss this item.
+              </>
+            ) : (
+              "Choose the deal above, then open it to hand it off."
+            )}
+          </p>
+        )}
+
         {open && !editing && (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => approve(false)} disabled={busy || needsDeal || needsOption}>
-              Approve
-            </Button>
+            {!handoff && (
+              <Button size="sm" onClick={() => approve(false)} disabled={busy || needsDeal || needsOption}>
+                Approve
+              </Button>
+            )}
             {editable && (
               <Button size="sm" variant="outline" onClick={() => setEditing(true)} disabled={busy}>
                 Edit and approve

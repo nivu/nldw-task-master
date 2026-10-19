@@ -109,6 +109,8 @@ export default function ReviewPage() {
               lists={bootstrap.lists}
               members={members.data ?? []}
               showOwner={shown !== "mine"}
+              labs={bootstrap.workspace.tva_linked}
+              numberFormat={bootstrap.me.number_format}
               onDecided={decided}
             />
           ))}
