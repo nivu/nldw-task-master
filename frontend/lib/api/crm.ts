@@ -32,6 +32,8 @@ import type {
   CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
+  CrmCaptureDryRunStarted,
+  CrmCaptureOverview,
   CrmEnrichmentRun,
   CrmColor,
   CrmCompany,
@@ -868,3 +870,15 @@ export const updateCrmAiField = (workspace: string, id: string, changes: CrmAiFi
 /** Admins and Members: now, or the trailing recompute when inside the hour (Q-38). */
 export const recomputeCrmAiFields = (workspace: string, object: "companies" | "opportunities", id: string) =>
   call<CrmAiFieldRecompute>(`/${object}/${id}/ai-fields/recompute${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// 010 S2 — Settings, Email capture (010 contracts §2.1, §2.2, §5)
+// ---------------------------------------------------------------------------
+
+/** The mode, the mailboxes, the ignore list and the latest dry run's report; Admins only. */
+export const getCrmCapture = (workspace: string) =>
+  call<CrmCaptureOverview>(`/capture${query(workspace)}`);
+
+/** Opens a dry run and sets the mode to Dry run; the hourly job does the work. */
+export const startCrmCaptureDryRun = (workspace: string) =>
+  call<CrmCaptureDryRunStarted>(`/capture/dry-run${query(workspace)}`, { method: "POST" });

@@ -378,3 +378,57 @@ class TestAStopKeepsItsCounts:
             raise jobs.Skipped("Switched off")
 
         assert jobs.run("summaries", labs, work, NOW)["counts"] == {"skipped": "Switched off"}
+
+
+class TestTheCaptureJob:
+    """Spec 010 FR-CAP-DIS-01, -05, NFR-CAP-04; plan §5.6 — the job's name,
+    its interval, its usage rows, and that only it calls Claude with no
+    phase switch."""
+
+    def test_jobs_capture_is_hourly_and_logs_usage(self):
+        assert jobs.JOBS["capture"].label == "Email capture"
+        assert jobs.JOBS["capture"].every.total_seconds() == 3600
+        assert "capture" in ai_rules.USAGE_JOBS
+
+    def test_jobs_capture_listed_once_it_has_run(self, crm):
+        http, _, labs = crm
+        jobs.run("capture", labs, lambda ws, now: {"considered": 0}, NOW)
+        got = http.get(
+            "/api/v1/crm/jobs?workspace=labs&job=capture", headers=as_(OWNER["id"])
+        ).json()
+        assert [r["job"] for r in got["runs"]] == ["capture"]
+        assert "capture" in {j["job"] for j in http.get("/health/jobs").json()["jobs"]}
+
+    def test_jobs_no_phase_skips_only_the_switch(self, crm, monkeypatch):
+        _, fake, labs = crm
+        fake.set_ai(labs, budget_usd=10)  # every phase off
+        FakeClaude(ANSWER).install(monkeypatch)
+        out = ai.call(labs, "capture", None, Summary, "Judge.", [("email", "x")])
+        assert out.summary == ANSWER["summary"]
+        fake.set_ai(labs, budget_usd=0)
+        with pytest.raises(jobs.Skipped) as stopped:
+            ai.gate(labs, None)
+        assert stopped.value.reason == ai_rules.BUDGET_REACHED
+        monkeypatch.setattr(config, "CRM_AI_INPUT_USD_PER_MTOK", None)
+        with pytest.raises(jobs.Skipped) as stopped:
+            ai.gate(labs, None)
+        assert stopped.value.reason == ai_rules.RATES_NOT_SET
+
+    def test_jobs_only_capture_passes_no_phase(self):
+        """An AST walk: `ai.call(..., <job>, None, ...)` or `ai.gate(ws,
+        None)` appears in `services/crm/capture.py` and nowhere else."""
+        users = set()
+        for path in APP.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "ai"):
+                    continue
+                at = {"call": 2, "gate": 1}.get(node.func.attr)
+                if at is None or len(node.args) <= at:
+                    continue
+                arg = node.args[at]
+                if isinstance(arg, ast.Constant) and arg.value is None:
+                    users.add(path.relative_to(APP).as_posix())
+        assert users == {"services/crm/capture.py"}

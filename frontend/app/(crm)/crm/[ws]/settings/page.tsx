@@ -8,6 +8,7 @@ import { AiBudgetBanner } from "@/components/crm/ai-budget-banner";
 import { AiFieldsEditor } from "@/components/crm/ai-fields-editor";
 import { AiSettings } from "@/components/crm/ai-settings";
 import { AuditTable } from "@/components/crm/audit-table";
+import { CaptureSettings } from "@/components/crm/capture-settings";
 import { FollowupRulesForm } from "@/components/crm/followup-rules-form";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
 import { InviteDialog } from "@/components/crm/invite-dialog";
@@ -24,6 +25,7 @@ import {
   getCrmFxRates,
   addCrmMailbox,
   getCrmAi,
+  getCrmCapture,
   listCrmAiFields,
   getCrmJobs,
   getCrmLists,
@@ -75,6 +77,7 @@ const TABS = [
   "automations",
   "targets",
   "mailboxes",
+  "email-capture",
   "jobs",
   "ai",
   "ai-fields",
@@ -90,7 +93,8 @@ const TABS = [
  * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02); from 009
  * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01),
  * the AI field definitions (FR-CRMAI-FIELD-01) and the follow-up rules
- * (FR-CRMAI-RULE-01).
+ * (FR-CRMAI-RULE-01); from 010 Email capture: the mode, the dry run and its
+ * report (FR-CAP-DIS-01, FR-CAP-RPT-01 to -03).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -130,6 +134,7 @@ export default function SettingsPage() {
           <TabsTrigger value="automations">Automations</TabsTrigger>
           <TabsTrigger value="targets">Targets</TabsTrigger>
           <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
+          <TabsTrigger value="email-capture">Email capture</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="ai-fields">AI fields</TabsTrigger>
@@ -162,6 +167,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="mailboxes" className="pt-4">
           <MailboxesTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="email-capture" className="pt-4">
+          <EmailCaptureTab workspace={ws} />
         </TabsContent>
         <TabsContent value="jobs" className="pt-4">
           <JobsTab workspace={ws} onShowAi={() => setTab("ai")} />
@@ -787,6 +795,35 @@ function AiTab({ workspace }: { workspace: string }) {
               // The phases and the budget banner travel in bootstrap.
               reloadShell();
             }}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 010 FR-CAP-DIS-01, FR-CAP-RPT-01 to -03 — the mode, the dry run and its report. */
+function EmailCaptureTab({ workspace }: { workspace: string }) {
+  const { bootstrap } = useCrm();
+  const { data, error, reload } = useAsync(() => getCrmCapture(workspace), [workspace]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Email capture</CardTitle>
+        <CardDescription>
+          Finds new leads and deal signals in Primary and Sent mail from people not yet in the
+          CRM. Start with a dry run to see what it would find before anything is created. Capture
+          starts off.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        {data && (
+          <CaptureSettings
+            workspace={workspace}
+            overview={data}
+            timeZone={bootstrap.me.timezone}
+            onChanged={reload}
           />
         )}
       </CardContent>

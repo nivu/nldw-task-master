@@ -14,6 +14,20 @@ workspace's mailbox; a mailbox's candidates go with it; and
 cursor columns is in `test_crm_email_db.py::TestMailboxAudit`; the tables'
 place in the security sweep in `test_crm_security_db.py`.
 
+S2 (migration 072, tasks T216; FR-CAP-DIS-01, -06, -10, FR-CAP-RPT-01 to
+-03; data-model §3.4, §3.5; plan PD-13): the `capture` setting is a key the
+CHECK takes, seeded off in every workspace and by the trigger in a new
+one; `crm_capture_record` writes only on the latest message of a pending
+row; a dry run's start resets what a dry run judged, refuses a second open
+run and sets the mode with an audit row; `crm_capture_set_mode` cancels an
+open run (audited) so a new one can start, and refuses Live with no
+applied run; a cancelled run cannot finish; the recall check's progress is
+kept on the open run, each thread once, and a full recall (RECALL_CAP rows)
+fits its CHECK; a finding in Tamil at its largest fits 071's; the report
+counts, live while the run is open and as they stood once it finished or
+was cancelled; and the job and usage CHECKs and `crm_job_latest` know
+`capture`.
+
 Each test works in a workspace of its own.
 """
 
@@ -418,3 +432,496 @@ class TestDealSignalItems:
             "WHERE conname = 'crm_review_items_type_check'"
         )
         assert "'deal_signal'" in row["d"] and "'new_lead'" not in row["d"]
+
+
+# ---------------------------------------------------------------------------
+# S2 — migration 072 (tasks T216)
+# ---------------------------------------------------------------------------
+
+
+def _setting(stack, ws: str) -> dict | None:
+    rows = stack.sql(
+        "SELECT value FROM crm_workspace_settings "
+        f"WHERE workspace_id = {stack.q(ws)} AND key = 'capture'"
+    )
+    return rows[0]["value"] if rows else None
+
+
+def _audit(stack, ws: str) -> list[dict]:
+    return stack.sql(
+        "SELECT action, actor_label, after FROM audit_log "
+        f"WHERE workspace_id = {stack.q(ws)} AND target_table = 'crm_workspace_settings' "
+        "ORDER BY id"
+    )
+
+
+def _runs(stack, ws: str) -> list[dict]:
+    return stack.sql(
+        f"SELECT * FROM crm_capture_dry_runs WHERE workspace_id = {stack.q(ws)} ORDER BY started_at"
+    )
+
+
+class TestTheCaptureSetting:
+    """Data-model §3.4; tasks "Gates": every workspace starts Off."""
+
+    def test_capture_every_workspace_is_seeded_off(self, stack):
+        rows = stack.sql(
+            "SELECT w.id, s.value FROM crm_workspaces w LEFT JOIN crm_workspace_settings s "
+            "ON s.workspace_id = w.id AND s.key = 'capture'"
+        )
+        assert rows and all(r["value"] is not None for r in rows)
+        assert (
+            stack.sql(
+                "SELECT count(*) AS n FROM crm_workspace_settings s JOIN crm_workspaces w "
+                "ON w.id = s.workspace_id WHERE s.key = 'capture' AND s.value <> '{\"mode\": \"off\"}' "
+                "AND w.key NOT LIKE 'cp%'"
+            )[0]["n"]
+            == 0
+        )
+
+    def test_capture_a_new_workspace_is_seeded_by_the_trigger(self, stack, ws):
+        assert _setting(stack, ws) == {"mode": "off"}
+        [row] = [r for r in _audit(stack, ws) if (r["after"] or {}).get("key") == "capture"]
+        assert (row["action"], row["actor_label"]) == ("setting.created", "system")
+
+    def test_capture_the_key_check_takes_capture_only(self, stack):
+        [row] = stack.sql(
+            "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
+            "WHERE conname = 'crm_workspace_settings_key_check'"
+        )
+        assert "'capture'" in row["d"] and "'ai'" in row["d"]
+
+
+class TestRecord:
+    """072 crm_capture_record — FR-CAP-DIS-06."""
+
+    def _one(self, stack, ws, owner, real) -> tuple[dict, dict]:
+        box = _mailbox(stack, ws, owner)
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1")])
+        [row] = _candidates(stack, box["id"])
+        return box, row
+
+    def test_record_writes_a_judged_decision(self, stack, ws, owner, real):
+        box, row = self._one(stack, ws, owner, real)
+        finding = {"company_name": "Acme", "person_email": "priya@acme.com"}
+        assert real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {
+                "status": "judged",
+                "outcome": "new_lead",
+                "confidence": "high",
+                "classifier_version": "010.1",
+                "finding": finding,
+                "dry_run": True,
+            },
+        )
+        [row] = _candidates(stack, box["id"])
+        assert (row["status"], row["outcome"], row["confidence"]) == ("judged", "new_lead", "high")
+        assert row["judged_message_id"] == "m1" and row["judged_at"] is not None
+        assert row["finding"] == finding and row["dry_run"] is True
+
+    def test_record_refuses_a_stale_message(self, stack, ws, owner, real):
+        box, row = self._one(stack, ws, owner, real)
+        real.mark_candidates(ws, box["id"], [_row("t1", "m2", timedelta(minutes=1))])
+        assert not real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {"status": "judged", "outcome": "not_relevant", "confidence": "high", "dry_run": True},
+        )
+        [row] = _candidates(stack, box["id"])
+        assert (row["status"], row["latest_message_id"]) == ("pending", "m2")
+
+    def test_record_refuses_a_decided_row_and_another_workspace(self, stack, ws, owner, real):
+        _, row = self._one(stack, ws, owner, real)
+        assert real.record_candidate(ws, row["id"], "m1", {"status": "skipped", "dry_run": True})
+        assert not real.record_candidate(ws, row["id"], "m1", {"status": "known", "dry_run": True})
+        other = _workspace(stack, owner)
+        assert not real.record_candidate(other, row["id"], "m1", {"status": "known"})
+
+    def test_record_takes_a_tamil_finding_at_its_largest(self, stack, ws, owner, real):
+        # 071's 4096-byte CHECK counts UTF-8 bytes: `finding_of` keeps under it.
+        box, row = self._one(stack, ws, owner, real)
+        tamil = "அ" * 300
+        sent = datetime(2026, 10, 1, 3, 42, tzinfo=UTC)
+        messages = [
+            {
+                "id": "m1",
+                "sent_at": sent,
+                "direction": "inbound",
+                "from_email": "priya@acme.com",
+                "outside": [{"email": "priya@acme.com", "name": tamil}],
+                "attachments": [f"{n}{tamil}.pdf" for n in range(10)],
+            }
+        ]
+        answer = {
+            "outcome": "new_lead",
+            "confidence": "high",
+            "company_name": tamil,
+            "person_name": tamil,
+            "person_email": "priya@acme.com",
+            "person_title": tamil,
+            "lead_stage": "contacted",
+            "deal_stage": None,
+            "website_choice": None,
+            "reason": tamil,
+        }
+        finding = capture.finding_of(answer, messages, mailbox_email=box["email"], choices=[])
+        assert real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {
+                "status": "judged",
+                "outcome": "new_lead",
+                "confidence": "high",
+                "finding": json.loads(json.dumps(finding, default=str)),
+                "dry_run": True,
+            },
+        )
+        [row] = _candidates(stack, box["id"])
+        assert row["finding"]["company_name"] == finding["company_name"]
+
+    def test_record_counts_attempts_and_keeps_no_finding_unjudged(self, stack, ws, owner, real):
+        box, row = self._one(stack, ws, owner, real)
+        assert real.record_candidate(
+            ws, row["id"], "m1", {"status": "pending", "attempts": 1, "finding": {"x": 1}}
+        )
+        [row] = _candidates(stack, box["id"])
+        assert (row["status"], row["attempts"], row["finding"]) == ("pending", 1, None)
+        assert real.record_candidate(ws, row["id"], "m1", {"status": "failed", "attempts": 3})
+        assert _candidates(stack, box["id"])[0]["status"] == "failed"
+
+
+class TestDryRuns:
+    """072 start, set mode, finish — FR-CAP-DIS-10, RPT-01; PD-13."""
+
+    def test_start_resets_dry_run_rows_and_sets_the_mode(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner)
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1"), _row("t2", "m2")])
+        rows = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            rows[0]["id"],
+            "m1",
+            {"status": "judged", "outcome": "not_relevant", "confidence": "low", "dry_run": True},
+        )
+        real.record_candidate(ws, rows[1]["id"], "m2", {"status": "skipped", "dry_run": False})
+        run_id = real.start_dry_run(_actor(ws, owner))
+        [run] = _runs(stack, ws)
+        assert run["id"] == run_id and run["started_by"] == owner and run["finished_at"] is None
+        t1, t2 = _candidates(stack, box["id"])
+        assert (t1["status"], t1["outcome"], t1["dry_run"]) == ("pending", None, False)
+        assert t2["status"] == "skipped"
+        assert _setting(stack, ws) == {"mode": "dry_run"}
+        last = _audit(stack, ws)[-1]
+        assert (last["action"], last["actor_label"]) == ("setting.updated", "user")
+        assert last["after"] == {"value": {"mode": "dry_run"}}
+
+    def test_start_refuses_a_second_open_run(self, stack, ws, owner, real):
+        real.start_dry_run(_actor(ws, owner))
+        with pytest.raises(CrmRefused) as refused:
+            real.start_dry_run(_actor(ws, owner))
+        assert (refused.value.status, refused.value.detail) == (409, capture.ALREADY_RUNNING)
+        assert len(_runs(stack, ws)) == 1
+
+    def test_set_mode_off_cancels_an_open_run_and_a_new_start_succeeds(
+        self, stack, ws, owner, real
+    ):
+        run_id = real.start_dry_run(_actor(ws, owner))
+        done = real.set_capture_mode(_actor(ws, owner), ws, "off")
+        assert done == {"mode": "off", "cancelled_run_id": run_id}
+        [run] = _runs(stack, ws)
+        assert run["cancelled"] is True and run["finished_at"] is not None
+        assert _setting(stack, ws) == {"mode": "off"}
+        assert _audit(stack, ws)[-1]["after"] == {"value": {"mode": "off"}}
+        assert not real.finish_dry_run(ws, run_id, [])
+        real.start_dry_run(_actor(ws, owner))
+        assert len(_runs(stack, ws)) == 2
+
+    @pytest.mark.parametrize(
+        ("mode", "detail"),
+        [
+            ("live", capture.APPLY_FIRST),
+            ("dry_run", capture.START_FROM_CAPTURE),
+            ("on", capture.MODE_REFUSAL),
+        ],
+    )
+    def test_set_mode_refusals(self, stack, ws, owner, real, mode, detail):
+        with pytest.raises(CrmRefused) as refused:
+            real.set_capture_mode(_actor(ws, owner), ws, mode)
+        assert (refused.value.status, refused.value.detail) == (422, detail)
+        assert _setting(stack, ws) == {"mode": "off"}
+
+    def test_set_mode_refuses_another_workspace(self, stack, ws, owner, real):
+        other = _workspace(stack, owner)
+        with pytest.raises(CrmRefused) as refused:
+            real.set_capture_mode(_actor(ws, owner), other, "off")
+        assert refused.value.status == 404
+
+    def test_finish_records_the_recall_once(self, stack, ws, owner, real):
+        run_id = real.start_dry_run(_actor(ws, owner))
+        recall = [{"mailbox_id": "x", "thread_id": "t1", "latest_at": None, "fate": "found"}]
+        assert real.finish_dry_run(ws, run_id, recall)
+        assert not real.finish_dry_run(ws, run_id, [])
+        [run] = _runs(stack, ws)
+        assert run["recall"] == recall and run["finished_at"] is not None
+
+    def test_finish_takes_a_full_recall(self, stack, ws, owner, real):
+        # The job keeps up to RECALL_CAP rows; the CHECK holds every one.
+        run_id = real.start_dry_run(_actor(ws, owner))
+        mailbox = str(uuid.uuid4())
+        recall = [
+            {
+                "mailbox_id": mailbox,
+                "thread_id": f"18f{n:013x}",
+                "latest_at": "2026-10-19T14:05:31.123000+05:30",
+                "fate": "judged_otherwise",
+            }
+            for n in range(capture.RECALL_CAP)
+        ]
+        half = capture.RECALL_CAP // 2
+        assert real.add_recall(ws, run_id, recall[:half])
+        assert real.add_recall(ws, run_id, recall[half:])
+        assert real.finish_dry_run(ws, run_id, recall)
+        [run] = _runs(stack, ws)
+        assert len(run["recall"]) == capture.RECALL_CAP
+
+    def test_recall_add_keeps_progress_and_each_thread_once(self, stack, ws, owner, real):
+        run_id = real.start_dry_run(_actor(ws, owner))
+        first = {"mailbox_id": "x", "thread_id": "t1", "latest_at": None, "fate": "found"}
+        second = {"mailbox_id": "x", "thread_id": "t2", "latest_at": None, "fate": "filed_known"}
+        assert real.add_recall(ws, run_id, [first])
+        assert real.add_recall(ws, run_id, [{**first, "fate": "outside_scope"}, second])
+        [run] = _runs(stack, ws)
+        assert run["recall"] == [first, second] and run["finished_at"] is None
+        other = _workspace(stack, owner)
+        assert not real.add_recall(other, run_id, [first])
+        assert real.finish_dry_run(ws, run_id, [first, second])
+        assert not real.add_recall(ws, run_id, [first])
+
+    def test_cancel_keeps_the_counts_and_clears_the_recall(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1")])
+        real.add_recall(
+            ws, run_id, [{"mailbox_id": "x", "thread_id": "t1", "latest_at": None, "fate": "found"}]
+        )
+        before = real.capture_report(ws, run_id)
+        real.set_capture_mode(_actor(ws, owner), ws, "off")
+        [run] = _runs(stack, ws)
+        assert run["cancelled"] is True and run["recall"] == []
+        real.mark_candidates(ws, box["id"], [_row("t2", "m2")])
+        assert real.capture_report(ws, run_id) == before
+        assert before["considered"] == 1
+
+    def test_a_cancelled_run_is_never_applicable(self, stack, ws):
+        _refused(
+            stack,
+            "INSERT INTO crm_capture_dry_runs (workspace_id, cancelled) "
+            f"VALUES ({stack.q(ws)}, true)",
+        )
+        _refused(
+            stack,
+            "INSERT INTO crm_capture_dry_runs (workspace_id, applied_at) "
+            f"VALUES ({stack.q(ws)}, now())",
+        )
+
+
+class TestTheReport:
+    """072 crm_capture_report — FR-CAP-RPT-02, counts only."""
+
+    def test_report_counts(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        labels = _mailbox(stack, ws, owner)
+        real.mark_candidates(ws, box["id"], [_row(f"t{i}", f"m{i}") for i in range(4)])
+        real.mark_candidates(ws, labels["id"], [_row("x1", "y1")])
+        rows = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            rows[0]["id"],
+            "m0",
+            {"status": "judged", "outcome": "new_lead", "confidence": "high", "dry_run": True},
+        )
+        real.record_candidate(
+            ws,
+            rows[1]["id"],
+            "m1",
+            {"status": "judged", "outcome": "not_relevant", "confidence": "low", "dry_run": True},
+        )
+        # Skipped outside a dry run: a new dry run does not re-open it.
+        real.record_candidate(ws, rows[2]["id"], "m2", {"status": "skipped", "dry_run": False})
+        real.store_emails(
+            ws,
+            box["id"],
+            [
+                {
+                    "gmail_message_id": f"g{i}",
+                    "thread_id": "stored",
+                    "subject": None,
+                    "sent_at": _at(),
+                    "direction": "inbound",
+                    "from_email": "priya@acme.com",
+                    "participants": [],
+                    "is_internal": False,
+                    "is_auto": False,
+                    "links": [],
+                }
+                for i in range(2)
+            ],
+        )
+        run_id = real.start_dry_run(_actor(ws, owner))
+        report = real.capture_report(ws, run_id)
+        # The dry run's start re-opened the two it judged.
+        assert {k: v for k, v in report.items() if k != "by_outcome"} == {
+            "considered": 4,
+            "pending": 3,
+            "skipped_rules": 1,
+            "ignored": 0,
+            "known": 0,
+            "judged": 0,
+            "failed": 0,
+            "filed_known_threads": 1,
+        }
+        rows = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            rows[0]["id"],
+            "m0",
+            {"status": "judged", "outcome": "new_lead", "confidence": "medium", "dry_run": True},
+        )
+        report = real.capture_report(ws, run_id)
+        assert report["judged"] == 1
+        assert report["by_outcome"]["new_lead"] == {"high": 0, "medium": 1, "low": 0}
+        assert set(report["by_outcome"]) == {
+            "new_lead",
+            "deal_signal",
+            "other_business",
+            "not_relevant",
+        }
+
+    def test_report_of_a_finished_run_stays_as_it_stood(self, stack, ws, owner, real):
+        # Contracts §2.1, plan §5.7: what the sync marks later is not the run's.
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1")])
+        [row] = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {"status": "judged", "outcome": "not_relevant", "confidence": "high", "dry_run": True},
+        )
+        assert real.finish_dry_run(ws, run_id, [])
+        before = real.capture_report(ws, run_id)
+        assert (before["considered"], before["pending"], before["judged"]) == (1, 0, 1)
+        real.mark_candidates(ws, box["id"], [_row(f"n{i}", f"y{i}") for i in range(3)])
+        assert real.capture_report(ws, run_id) == before
+
+    def test_report_refuses_another_workspaces_run(self, stack, ws, owner, real):
+        run_id = real.start_dry_run(_actor(ws, owner))
+        other = _workspace(stack, owner)
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_report(other, run_id)
+        assert refused.value.status == 404
+
+
+class TestTheJobName:
+    """072 — the job log, the usage log and `crm_job_latest` know `capture`."""
+
+    def test_capture_job_and_usage_rows_are_accepted(self, stack, ws, real):
+        stack.sql(
+            "INSERT INTO crm_job_runs (job, workspace_id, started_at, outcome) "
+            f"VALUES ('capture', {stack.q(ws)}, now(), 'running')"
+        )
+        try:
+            self._check(stack, ws, real)
+        finally:
+            # test_crm_followup_db re-runs 066, whose job CHECK predates
+            # `capture`: the shared database keeps no such run.
+            stack.sql(
+                f"DELETE FROM crm_job_runs WHERE workspace_id = {stack.q(ws)} AND job = 'capture'"
+            )
+
+    def _check(self, stack, ws, real) -> None:
+        real.insert_ai_usage(
+            ws,
+            {
+                "job": "capture",
+                "model": "claude-sonnet-5-5",
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "cost_usd": "0.0001",
+                "outcome": "ok",
+                "at": _at(),
+            },
+        )
+        latest = stack.sql("SELECT crm_job_latest() AS r")[0]["r"]
+        assert any(r["job"] == "capture" and r["workspace_id"] == ws for r in latest)
+        _refused(
+            stack,
+            "INSERT INTO crm_job_runs (job, workspace_id, started_at, outcome) "
+            f"VALUES ('captures', {stack.q(ws)}, now(), 'running')",
+        )
+
+
+class TestTheStoreReads:
+    """The store's 072 reads against the real database (plan §5.6, §5.7)."""
+
+    def test_capture_store_reads(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        assert real.capture_setting(ws) == {"mode": "off"}
+        assert real.latest_dry_run(ws) is None and real.has_applied_dry_run(ws) is False
+        real.mark_candidates(
+            ws,
+            box["id"],
+            [_row("old", "m1", -timedelta(hours=2)), _row("new", "m2", -timedelta(hours=1))],
+        )
+        oldest = real.pending_candidates(ws, [box["id"]], newest_first=False)
+        newest = real.pending_candidates(ws, [box["id"]], newest_first=True, limit=1)
+        assert [c["thread_id"] for c in oldest] == ["old", "new"]
+        assert [c["thread_id"] for c in newest] == ["new"]
+        assert real.pending_candidates(ws, [], newest_first=True) == []
+        run_id = real.start_dry_run(_actor(ws, owner))
+        assert real.latest_dry_run(ws)["id"] == run_id
+        assert real.capture_setting(ws) == {"mode": "dry_run"}
+        real.record_candidate(
+            ws,
+            oldest[0]["id"],
+            "m1",
+            {
+                "status": "judged",
+                "outcome": "new_lead",
+                "confidence": "low",
+                "dry_run": True,
+                "finding": {"company_name": "Acme"},
+            },
+        )
+        [found] = real.dry_run_findings(ws)
+        assert (found["thread_id"], found["finding"]) == ("old", {"company_name": "Acme"})
+        stack.sql(
+            "UPDATE crm_capture_dry_runs SET finished_at = now(), applied_at = now() "
+            f"WHERE id = {stack.q(run_id)}"
+        )
+        assert real.has_applied_dry_run(ws) is True
+        real.store_emails(
+            ws,
+            box["id"],
+            [
+                {
+                    "gmail_message_id": "g1",
+                    "thread_id": "s1",
+                    "subject": "Re: Proposal",
+                    "sent_at": _at(),
+                    "direction": "inbound",
+                    "from_email": "priya@acme.com",
+                    "participants": [],
+                    "is_internal": False,
+                    "is_auto": False,
+                    "links": [],
+                }
+            ],
+        )
+        assert real.thread_subjects(ws, box["id"], ["s1", "s2"]) == {"s1": "Re: Proposal"}

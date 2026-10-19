@@ -103,6 +103,10 @@ ACCOUNT_LEVEL = frozenset(
         "store_summary",
         # Spec 009 (063): crm_store_meeting_note scopes by the actor's workspace.
         "store_meeting_note",
+        # Spec 010 (072): crm_capture_start_dry_run scopes by the actor's
+        # workspace; crm_capture_set_mode takes it and checks the actor's.
+        "start_dry_run",
+        "set_capture_mode",
     }
 )
 
@@ -140,6 +144,8 @@ UNIQUE_MESSAGES = {
     # FR-CRM-IO-01, FR-CRM-LIST-06 (043); the services check them first.
     "crm_csv_mappings_name": "There is already a saved mapping with that name.",
     "crm_bookings_targets_period": "There is already a target for that period.",
+    # Spec 010 (072): one open dry run; crm_capture_start_dry_run checks first.
+    "crm_capture_dry_runs_one_open": "A dry run is already running.",
 }
 
 #: A reference to a row that is not in the workspace: the composite foreign
@@ -1690,6 +1696,197 @@ def mark_candidates(workspace_id: str, mailbox_id: str, rows: list[dict[str, Any
         )
         or 0
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 — email capture's discovery (data-model §3.2, §3.4, §3.5)
+#
+# Candidates and dry runs are logs: read directly, written only through
+# migrations 071 and 072's functions. No column holds text, a subject or an
+# address, except a lead's or a deal signal's finding.
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_COLUMNS = (
+    "id, workspace_id, mailbox_id, thread_id, latest_message_id, latest_message_at, status, "
+    "attempts, judged_message_id, outcome, confidence, classifier_version, judged_at, dry_run, "
+    "finding, created_at, updated_at"
+)
+_DRY_RUN_COLUMNS = (
+    "id, workspace_id, started_at, started_by, finished_at, cancelled, recall, applied_at, "
+    "applied_by"
+)
+
+
+def capture_setting(workspace_id: str) -> dict[str, Any] | None:
+    """The workspace's `capture` setting value, or None for a workspace
+    without the row (which reads Off, FR-CAP-DIS-01)."""
+    rows = (
+        supabase.table("crm_workspace_settings")
+        .select("value")
+        .eq("workspace_id", workspace_id)
+        .eq("key", "capture")
+        .execute()
+        .data
+    )
+    return rows[0]["value"] if rows else None
+
+
+def pending_candidates(
+    workspace_id: str, mailbox_ids: list[str], *, newest_first: bool, limit: int = 200
+) -> list[dict[str, Any]]:
+    """FR-CAP-DIS-02 — the pending candidates of these mailboxes (the
+    caller's active *Primary and Sent* ones whose owner is still here),
+    oldest first for a dry run, newest first live (plan §5.6)."""
+    if not mailbox_ids:
+        return []
+    return (
+        supabase.table("crm_capture_candidates")
+        .select(_CANDIDATE_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("status", "pending")
+        .in_("mailbox_id", sorted(set(mailbox_ids)))
+        .order("latest_message_at", desc=newest_first)
+        .order("id")
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+
+
+def record_candidate(
+    workspace_id: str, candidate_id: str, message_id: str, values: dict[str, Any]
+) -> bool:
+    """072 `crm_capture_record` — a candidate's decision, written only while
+    it is still pending on `message_id` (FR-CAP-DIS-06); False when a newer
+    message arrived or it was decided meanwhile."""
+    return bool(
+        rpc(
+            "crm_capture_record",
+            {
+                "p_workspace": workspace_id,
+                "p_candidate": candidate_id,
+                "p_message_id": message_id,
+                "p_values": values,
+            },
+        )
+    )
+
+
+def start_dry_run(actor: dict[str, Any]) -> str:
+    """072 `crm_capture_start_dry_run` — the new run's id; 409 when one is
+    open."""
+    return str(rpc("crm_capture_start_dry_run", {"p_actor": actor}))
+
+
+def set_capture_mode(actor: dict[str, Any], workspace_id: str, mode: str) -> dict[str, Any]:
+    """072 `crm_capture_set_mode` — `{mode, cancelled_run_id}`; an open dry
+    run is cancelled in the same transaction (PD-13)."""
+    return rpc(
+        "crm_capture_set_mode", {"p_actor": actor, "p_workspace": workspace_id, "p_mode": mode}
+    ) or {"mode": mode, "cancelled_run_id": None}
+
+
+def finish_dry_run(workspace_id: str, run_id: str, recall: list[dict[str, Any]]) -> bool:
+    """072 `crm_capture_finish_dry_run` — False when the run had already
+    finished or was cancelled."""
+    return bool(
+        rpc(
+            "crm_capture_finish_dry_run",
+            {"p_workspace": workspace_id, "p_run": run_id, "p_recall": recall},
+        )
+    )
+
+
+def add_recall(workspace_id: str, run_id: str, rows: list[dict[str, Any]]) -> bool:
+    """072 `crm_capture_recall_add` — the recall check's progress, appended
+    to the open run (a thread already there is kept as it was); False once
+    the run finished or was cancelled."""
+    return bool(
+        rpc(
+            "crm_capture_recall_add",
+            {"p_workspace": workspace_id, "p_run": run_id, "p_rows": rows},
+        )
+    )
+
+
+def capture_report(workspace_id: str, run_id: str) -> dict[str, Any]:
+    """072 `crm_capture_report` — the report's counts (FR-CAP-RPT-02): live
+    while the run is open, as they stood once it finished or was
+    cancelled."""
+    return rpc("crm_capture_report", {"p_workspace": workspace_id, "p_run": run_id}) or {}
+
+
+def latest_dry_run(workspace_id: str) -> dict[str, Any] | None:
+    """The workspace's latest dry run (the open one, while one is)."""
+    rows = (
+        supabase.table("crm_capture_dry_runs")
+        .select(_DRY_RUN_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .order("started_at", desc=True)
+        .order("id", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def has_applied_dry_run(workspace_id: str) -> bool:
+    """Whether a dry run of the workspace was ever applied (E6: Live first
+    comes through Apply)."""
+    rows = (
+        supabase.table("crm_capture_dry_runs")
+        .select("id")
+        .eq("workspace_id", workspace_id)
+        .not_.is_("applied_at", "null")
+        .limit(1)
+        .execute()
+        .data
+    )
+    return bool(rows)
+
+
+def dry_run_findings(workspace_id: str) -> list[dict[str, Any]]:
+    """Every lead and deal signal a dry run judged, with its finding,
+    oldest message first (FR-CAP-RPT-02)."""
+    return (
+        supabase.table("crm_capture_candidates")
+        .select(_CANDIDATE_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("dry_run", True)
+        .eq("status", "judged")
+        .in_("outcome", ["new_lead", "deal_signal"])
+        .order("latest_message_at")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
+def thread_subjects(workspace_id: str, mailbox_id: str, thread_ids: list[str]) -> dict[str, str]:
+    """The subject of each of these threads the mailbox has stored (the
+    latest message's that has one): already captured mail, which the recall
+    check may name (contracts §2.1)."""
+    found: dict[str, tuple[str, str]] = {}
+    for batch in text_batches(sorted(set(thread_ids))):
+        for row in (
+            supabase.table("crm_email_messages")
+            .select("thread_id, subject, sent_at")
+            .eq("workspace_id", workspace_id)
+            .eq("mailbox_id", mailbox_id)
+            .in_("thread_id", batch)
+            .execute()
+            .data
+            or []
+        ):
+            if not row.get("subject"):
+                continue
+            seen = found.get(row["thread_id"])
+            if seen is None or str(row["sent_at"]) > seen[0]:
+                found[row["thread_id"]] = (str(row["sent_at"]), row["subject"])
+    return {thread: subject for thread, (_, subject) in found.items()}
 
 
 _PERSON_MATCH = (

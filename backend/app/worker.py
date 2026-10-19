@@ -76,7 +76,12 @@ celery_app.autodiscover_tasks(["app.tasks"])
 # need. Everything else stays on the default queue.
 # ---------------------------------------------------------------------------
 CRM_SYNC_QUEUE = "crm_sync"
-celery_app.conf.task_routes = {"crm.email_sync_page": {"queue": CRM_SYNC_QUEUE}}
+celery_app.conf.task_routes = {
+    "crm.email_sync_page": {"queue": CRM_SYNC_QUEUE},
+    # Spec 010 plan §5.1: filing one conversation reads Gmail, so it runs
+    # where the key is, never on the shared worker.
+    "crm.capture_thread": {"queue": CRM_SYNC_QUEUE},
+}
 
 # ---------------------------------------------------------------------------
 # Scheduled work — spec Q-04
@@ -203,6 +208,24 @@ celery_app.conf.beat_schedule.update(
         "crm-ai-ai-fields": {
             "task": "crm_ai.ai_fields",
             "schedule": crontab(minute="*/15"),
+        },
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 — automatic email capture, plan §5.1
+#
+# The discovery job runs on the crm-ai queue (`crm_ai.*`, above) at minute 7
+# of every hour, off 009's quarter-hour ticks (E9). Filing one conversation
+# (`crm.capture_thread`) is routed to CRM_SYNC_QUEUE in 007's block.
+# ---------------------------------------------------------------------------
+celery_app.conf.beat_schedule.update(
+    {
+        # FR-CAP-DIS-10: new candidates judged hourly; a dry run chains itself.
+        "crm-ai-capture": {
+            "task": "crm_ai.capture",
+            "schedule": crontab(minute=7),
         },
     }
 )

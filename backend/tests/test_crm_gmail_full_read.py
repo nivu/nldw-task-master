@@ -120,3 +120,44 @@ class TestOnlyTheSummariser:
                 if named or imported:
                     users.add(path.relative_to(APP).as_posix())
         assert users == {"services/crm/summaries.py"}
+
+
+class TestCapturesRead:
+    """Spec 010 FR-CAP-CHG-05, plan CT-1 — email capture's two reads: the
+    conversation's metadata, then the text of only the ids it was given."""
+
+    def test_full_read_capture_asks_metadata_for_the_thread(self, gmail_api):
+        gmail.thread_meta("owner@nunnarilabs.com", "t1")
+        [(url, params)] = gmail_api
+        assert url.endswith("/me/threads/t1")
+        assert ("format", "metadata") in params and ("format", "full") not in params
+
+    def test_full_read_capture_reads_only_the_ids_given(self, gmail_api):
+        got = gmail.thread_text("owner@nunnarilabs.com", ["m1", "gone", "m2"])
+        assert [url.rsplit("/", 1)[-1] for url, _ in gmail_api] == ["m1", "gone", "m2"]
+        assert all(("format", "full") in params for _, params in gmail_api)
+        # A message deleted meanwhile is left out; attachments by name only.
+        assert [g["id"] for g in got] == ["m1", "m2"]
+        assert got[0] == {"id": "m1", "text": BODY, "attachments": ["notes.txt"]}
+
+    def test_full_read_capture_logs_no_content(self, gmail_api, caplog):
+        caplog.set_level(logging.INFO, logger="nldw-task-master")
+        gmail.thread_text("owner@nunnarilabs.com", ["m1"])
+        everything = "\n".join(r.getMessage() for r in caplog.records)
+        assert "ZQXBODY" not in everything and "owner@nunnarilabs.com" not in everything
+        assert '"op": "thread_text"' in everything
+
+    def test_full_read_capture_is_referenced_only_by_the_capture_job(self):
+        users = set()
+        for path in APP.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                named = (isinstance(node, ast.Attribute) and node.attr == "thread_text") or (
+                    isinstance(node, ast.Name) and node.id == "thread_text"
+                )
+                imported = isinstance(node, ast.ImportFrom) and any(
+                    a.name == "thread_text" for a in node.names
+                )
+                if named or imported:
+                    users.add(path.relative_to(APP).as_posix())
+        assert users == {"services/crm/capture.py"}

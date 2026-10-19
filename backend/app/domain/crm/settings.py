@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any, Final, Literal
 
 from app.domain.crm import ai_rules, flags
+from app.domain.crm import capture as capture_rules
 
 Scope = Literal["all", "tva_linked", "not_tva_linked"]
 
@@ -229,6 +230,8 @@ VALIDATORS: Final = {
 }
 #: Spec 009 FR-CRMAI-FLAG-01: the phase switches and the AI budget.
 VALIDATORS["ai"] = ai_rules.ai_refusal
+#: Spec 010 FR-CAP-DIS-01: email capture's discovery mode.
+VALIDATORS["capture"] = capture_rules.capture_refusal
 
 
 def setting_refusal(key: str, value: Any) -> str | None:

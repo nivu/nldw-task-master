@@ -411,9 +411,14 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   `dry_run = true` and creates no item and no record (FR-CAP-RPT-01). When it
   stops for time with candidates left, it re-enqueues itself with
   `countdown=60`, guarded by a Redis key `crm:capture:next` (`SET NX EX
-  300`; the chained task deletes it first), so at most one follow-up is ever
-  queued and summaries interleave on the single slot. A gate that closes
-  (budget, rates, mode) ends the chain; the hourly tick resumes.
+  3600`, holding the follow-up's task id; only the task with that id
+  deletes it when it starts, so an hourly tick that lands while a follow-up
+  waits neither clears it nor queues another), so at most one follow-up is
+  ever queued and summaries interleave on the single slot. A gate that
+  closes (budget, rates, mode) ends the chain; the hourly tick resumes. The
+  mode is read again before each conversation's text is read: Off, another
+  mode, or a dry run no longer open (cancelled, or a new one started) ends
+  the run there, with no further text read or Claude call.
 - **Finishing.** When no pending candidate remains and every `primary_sent`
   mailbox has `backfilled_at`, the job computes the recall check and sets
   `finished_at` and `recall` on the run. Later candidates stay `pending`
@@ -436,12 +441,18 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
      `deal_signal`, else `judged_otherwise` (low confidence included, as it
      would make no item).
   Nothing is stored for it beyond the fate: no candidate row, no finding.
-  If a gate closes or the run runs out of time during the recall, the run
-  is not finished and the recall is computed again on the next tick.
-  Stored as `[{mailbox_id, thread_id, latest_at, fate}]` (≤ 500 rows; no
-  subject, no address).
+  Each fate is appended to the open run as it is decided
+  (`crm_capture_recall_add`); if a gate closes or the run runs out of time
+  during the recall, the run is not finished and the next tick resumes
+  with the threads that have no fate yet, so no thread is read or sent to
+  Claude twice. Stored as `[{mailbox_id, thread_id, latest_at, fate}]`
+  (≤ 500 rows, about 165 bytes each; no subject, no address). The report
+  shows the recall only once the run has finished; a cancelled run's
+  partial recall is cleared.
 - **Report (FR-CAP-RPT-02).** `GET /crm/capture` returns the latest run with
-  counts computed live by `crm_capture_report(p_workspace, p_run)`:
+  counts computed live by `crm_capture_report(p_workspace, p_run)` while it
+  is open, and as they stood when it finished or was cancelled (stored on
+  the run then, since the sync keeps marking candidates afterwards):
   considered, skipped by rules, ignored, filed as known (candidates `known`
   plus distinct stored threads of `primary_sent` mailboxes since the start
   date), judged, by outcome × confidence, failed, pending; the estimated cost

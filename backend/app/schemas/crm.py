@@ -1129,3 +1129,100 @@ class FollowupDraftOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     draft: str = Field(min_length=1, max_length=2000)
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 — email capture's discovery (contracts §1.2, §2.1, §4)
+# ---------------------------------------------------------------------------
+
+CaptureMode = Literal["off", "dry_run", "live"]
+
+
+class CaptureSettingsValue(BaseModel):
+    """FR-CAP-DIS-01 — the `capture` setting's value; `PATCH
+    /crm/settings/capture` takes `off` or `live` (Dry run is started from
+    Email capture)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: CaptureMode
+
+
+class DiscoveryOutput(BaseModel):
+    """FR-CAP-DIS-05 — what the model must answer for one conversation. The
+    website is chosen by number from the hosts found in the thread, never
+    typed (PD-20)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["new_lead", "deal_signal", "other_business", "not_relevant"]
+    confidence: Literal["high", "medium", "low"]
+    company_name: str | None = Field(default=None, max_length=200)
+    person_name: str | None = Field(default=None, max_length=200)
+    person_email: str | None = Field(default=None, max_length=320)
+    person_title: str | None = Field(default=None, max_length=200)
+    lead_stage: Literal["contacted", "qualified"] | None = None
+    deal_stage: Literal["discovery", "proposal", "closed_won"] | None = None
+    website_choice: int | None = Field(default=None, ge=1, le=10)
+    reason: str = Field(min_length=1, max_length=160)
+
+
+class CaptureMailboxOut(BaseModel):
+    id: str
+    email: str
+    capture_source: Literal["labels", "primary_sent"]
+    capture_start_date: str
+    backfilled_at: str | None
+
+
+class CaptureFindingOut(BaseModel):
+    candidate_id: str
+    outcome: Literal["new_lead", "deal_signal"]
+    confidence: Literal["high", "medium", "low"]
+    company_name: str | None
+    domain: str | None
+    domain_from_text: bool
+    person_name: str | None
+    person_email: str | None
+    first_at: str | None
+    latest_at: str | None
+    message_count: int
+    owner_replied: bool
+    reason: str | None
+    duplicate_company: dict[str, Any] | None
+
+
+class CaptureRecallRowOut(BaseModel):
+    thread_id: str
+    latest_at: str | None
+    subject: str | None
+    fate: Literal["filed_known", "found", "judged_otherwise", "skipped_rules", "outside_scope"]
+
+
+class CaptureRecallOut(BaseModel):
+    line: str
+    rows: list[CaptureRecallRowOut]
+
+
+class CaptureDryRunOut(BaseModel):
+    id: str
+    started_at: str
+    finished_at: str | None
+    cancelled: bool
+    applied_at: str | None
+    applicable: bool
+    counts: dict[str, Any]
+    estimated_cost_usd: str
+    findings: list[CaptureFindingOut]
+    recall: CaptureRecallOut
+
+
+class CaptureOverviewOut(BaseModel):
+    """`GET /crm/capture` — Settings, Email capture, for the workspace's
+    Admins only (FR-CAP-RPT-02, -03). No message text; a recall row's
+    subject only for a thread already stored as captured mail."""
+
+    mode: CaptureMode
+    mailboxes: list[CaptureMailboxOut]
+    ignores: list[dict[str, Any]]
+    dry_run: CaptureDryRunOut | None

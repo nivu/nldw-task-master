@@ -13,6 +13,7 @@ three failures in a row alert the admins.
 | `crm.digest_tick` | every 15 min | `digests` (no workspace), then `reminders` |
 | `crm.email_sync_tick` | every 15 min | `email_sync` (a run or a skip per workspace) |
 | `crm.email_sync_page` | enqueued, `crm_sync` queue | ends its workspace's `email_sync` run |
+| `crm.capture_thread` | enqueued, `crm_sync` queue | none (spec 010: files one conversation that became known) |
 """
 
 from __future__ import annotations
@@ -132,3 +133,30 @@ def email_sync_page(args: dict) -> dict:
     with the key), well inside the worker's 10-minute limit; it enqueues the
     next page itself and resumes from the cursor stored on the mailbox."""
     return email_sync.page(args, datetime.now(UTC))
+
+
+@celery_app.task(name="crm.capture_thread", ignore_result=True, soft_time_limit=240, time_limit=300)
+def capture_thread(workspace_id: str, mailbox_id: str, thread_id: str) -> None:
+    """Spec 010 plan §5.1, §5.9 — one conversation that became known filed as
+    known-contact capture files it, on `worker-crm-sync` only (the process
+    with the Gmail key). Its arguments are ids, never text. Not a job of the
+    job log: a failure is logged with the ids and the kind of error and not
+    retried; the conversation is filed when its next message arrives
+    (PD-10). Idempotent: a stored message is not stored twice."""
+    try:
+        counts = email_sync.file_thread(workspace_id, mailbox_id, thread_id)
+    except Exception as exc:  # noqa: BLE001 - logged with ids only, PD-10
+        logger.warning(
+            '{"event": "crm_capture_thread_failed", "workspace_id": "%s", "mailbox_id": "%s", '
+            '"thread_id": "%s", "error": "%s"}',
+            workspace_id,
+            mailbox_id,
+            thread_id,
+            type(exc).__name__,
+        )
+        return
+    logger.info(
+        '{"event": "crm_capture_thread_done", "workspace_id": "%s", "stored": %d}',
+        workspace_id,
+        counts.get("stored", 0),
+    )

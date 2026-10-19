@@ -1213,7 +1213,8 @@ export type CrmJobName =
   | "enrichment"
   | "ai_fields"
   | "review_expiry"
-  | "followup_drafts";
+  | "followup_drafts"
+  | "capture";
 
 /** A job more than twice its interval late (FR-CRM-JOB-03). */
 export interface StaleJob {
@@ -1594,7 +1595,13 @@ export interface AiSettingsValue {
 }
 
 /** The AI jobs whose estimated spend Settings, AI shows. */
-export type CrmAiSpendJob = "summaries" | "meetings" | "enrichment" | "ai_fields" | "followup_drafts";
+export type CrmAiSpendJob =
+  | "summaries"
+  | "meetings"
+  | "enrichment"
+  | "ai_fields"
+  | "followup_drafts"
+  | "capture";
 
 /** GET /crm/ai — Admin only; the one route that returns spend (FR-CRMAI-LLM-09, -10).
  *  Amounts are decimal strings in USD. */
@@ -1888,4 +1895,110 @@ export interface CrmContactRecency {
   level: ContactRecencyLevel | null;
   /** Gmail sync is off for the workspace: counted from meeting notes only (FR-CRMAI-REL-03). */
   meetings_only: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 010 S2 — Settings, Email capture (010 contracts §2.1, §2.2; FR-CAP-DIS-01,
+// FR-CAP-RPT-01 to -03; mirrors schemas/crm.py CaptureOverviewOut)
+// ---------------------------------------------------------------------------
+
+/** The `capture` setting: Dry run is started from Email capture, never set. */
+export type CrmCaptureMode = "off" | "dry_run" | "live";
+
+export type CrmCaptureOutcome = "new_lead" | "deal_signal" | "other_business" | "not_relevant";
+export type CrmCaptureConfidence = "high" | "medium" | "low";
+
+/** An ignore-list entry (FR-CAP-DIS-03); always empty before S3. */
+export interface CrmCaptureIgnore {
+  id: string;
+  kind: "address" | "domain";
+  value: string;
+  from_item_id: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+/** A judged lead or deal signal of every confidence; low is listed apart (FR-CAP-DIS-07).
+ *  `reason` is generated plain text; no message text is ever returned. */
+export interface CrmCaptureFinding {
+  candidate_id: string;
+  outcome: "new_lead" | "deal_signal";
+  confidence: CrmCaptureConfidence;
+  company_name: string | null;
+  domain: string | null;
+  /** The host came from the text, not an address: the reviewer confirms it. */
+  domain_from_text: boolean;
+  person_name: string | null;
+  person_email: string | null;
+  first_at: string | null;
+  latest_at: string | null;
+  message_count: number;
+  owner_replied: boolean;
+  reason: string | null;
+  duplicate_company: Record<string, unknown> | null;
+}
+
+export type CrmCaptureRecallFate =
+  | "filed_known"
+  | "found"
+  | "judged_otherwise"
+  | "skipped_rules"
+  | "outside_scope";
+
+/** One Sales- or Leads-labelled conversation of the recall check (FR-CAP-RPT-03). */
+export interface CrmCaptureRecallRow {
+  thread_id: string;
+  latest_at: string | null;
+  /** Only for a thread already stored as captured mail. */
+  subject: string | null;
+  fate: CrmCaptureRecallFate;
+}
+
+/** The report's counts, live while the dry run is open. */
+export interface CrmCaptureCounts {
+  considered: number;
+  pending: number;
+  skipped_rules: number;
+  ignored: number;
+  known: number;
+  judged: number;
+  failed: number;
+  filed_known_threads: number;
+  by_outcome: Record<CrmCaptureOutcome, Record<CrmCaptureConfidence, number>>;
+}
+
+export interface CrmCaptureDryRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  /** The mode was changed away from Dry run before it finished. */
+  cancelled: boolean;
+  applied_at: string | null;
+  /** Finished, not cancelled, not applied, the latest, and finished within 7 days. */
+  applicable: boolean;
+  counts: CrmCaptureCounts;
+  /** Decimal string, USD. */
+  estimated_cost_usd: string;
+  findings: CrmCaptureFinding[];
+  recall: { line: string; rows: CrmCaptureRecallRow[] };
+}
+
+/** GET /crm/capture — Admin only. */
+export interface CrmCaptureOverview {
+  mode: CrmCaptureMode;
+  mailboxes: {
+    id: string;
+    email: string;
+    capture_source: CrmCaptureSource;
+    capture_start_date: string;
+    backfilled_at: string | null;
+  }[];
+  ignores: CrmCaptureIgnore[];
+  /** Null when none has run. */
+  dry_run: CrmCaptureDryRun | null;
+}
+
+/** POST /crm/capture/dry-run — 202. */
+export interface CrmCaptureDryRunStarted {
+  dry_run: { id: string; started_at: string };
 }

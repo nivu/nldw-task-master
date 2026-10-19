@@ -127,8 +127,10 @@ exists is reused, not an error.
 
 `GET /crm/jobs`, `GET /crm/tva-admin/jobs`, `GET /health/jobs` list job
 `capture` ("Email capture", hourly). `GET /crm/jobs?job=capture` is accepted.
-`counts` for a `capture` run: `{considered, skipped, ignored, known, judged,
-items, low_confidence, failed_items, pending_left}`. Email sync runs gain
+`counts` for a `capture` run: `{considered, skipped_rules, ignored, known,
+judged, items, low_confidence, failed_items, pending_left}` (`skipped_rules`
+counts candidates the rules skipped; a run that stopped part-way also
+carries `skipped`, the reason, as every job does). Email sync runs gain
 `skipped_bulk`, `candidates`, `deal_signals`, `deal_doc_failed`.
 
 ### 1.5 AI overview — S2
@@ -178,7 +180,9 @@ items, low_confidence, failed_items, pending_left}`. Email sync runs gain
 }
 ```
 
-- `dry_run` is `null` when none has run. `counts` are live while it runs.
+- `dry_run` is `null` when none has run. `counts` are live while it runs,
+  and as they stood once it finished or was cancelled. `recall` is empty
+  until it finishes.
 - `applicable`: finished, not cancelled, not applied, the latest, and
   **finished** within 7 days.
 - `cancelled`: the mode was changed away from Dry run before it finished;
@@ -317,11 +321,17 @@ replied; never quote the message; fields `null` when unknown.
 `parts` (`(label, text)`, each quoted by `ai.call`):
 
 ```text
-("Message 1 of 2 · inbound · from Priya Shah <priya@acme-robotics.com> · to navaneeth@nunnarilabs.com · 2026-10-01 09:12 IST · attachments: none", "<trimmed text>")
-("Message 2 of 2 · outbound · from navaneeth@nunnarilabs.com · to priya@acme-robotics.com · 2026-10-02 11:40 IST · attachments: Nunnari pricing.pdf", "<trimmed text>")
+("Message 1 of 2 inbound", "inbound · from Priya Shah <priya@acme-robotics.com> · to navaneeth@nunnarilabs.com · 2026-10-01 09:12 IST · attachments: none\n\n<trimmed text>")
+("Message 2 of 2 outbound", "outbound · from navaneeth@nunnarilabs.com · to priya@acme-robotics.com · 2026-10-02 11:40 IST · attachments: Nunnari pricing.pdf\n\n<trimmed text>")
 ("Websites in this conversation", "1. acme-robotics.com")
 ("Mailbox owner replied", "yes")
 ```
+
+A part's label is the `source` attribute of its quoted `<data>` block, and
+`ai_rules.quote_untrusted` keeps only letters, digits, spaces, `_`, `.` and
+`-` of it, and at most 60 characters. So each message's label is just its
+place and direction, and its sender, recipients, date and attachment names
+open its text instead (S2 build).
 
 ---
 

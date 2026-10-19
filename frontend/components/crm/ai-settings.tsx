@@ -23,6 +23,7 @@ const JOBS: { key: CrmAiSpendJob; label: string }[] = [
   { key: "enrichment", label: "Enrichment" },
   { key: "ai_fields", label: "AI fields" },
   { key: "followup_drafts", label: "Follow-up drafts" },
+  { key: "capture", label: "Email capture" },
 ];
 
 const usd = (amount: string) =>

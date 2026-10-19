@@ -97,6 +97,8 @@ class TestAnAdminReadsIt:
                     "enrichment": "0.00",
                     "ai_fields": "0.00",
                     "followup_drafts": "0.00",
+                    # Spec 010 contracts §1.5: email capture's discovery.
+                    "capture": "0.00",
                 },
             },
             "budget_reached": False,

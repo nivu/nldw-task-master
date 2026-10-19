@@ -16,6 +16,7 @@ from app.api.crm import (
     audit,
     campaigns,
     capacity,
+    capture,
     dashboard,
     deals,
     email,
@@ -67,4 +68,6 @@ ROUTERS = [
     summaries.router,
     enrichment.router,
     ai_fields.router,
+    # Spec 010: Settings, Email capture.
+    capture.router,
 ]

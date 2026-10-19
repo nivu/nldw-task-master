@@ -858,3 +858,95 @@ class TestDealDocuments:
         _sync(queue)
         assert not [c for c in mail.calls if c[0] == "search"]
         assert _items(fake) == []
+
+
+class TestFilingAThread:
+    """Plan §5.1, §5.9; tasks T207a — `crm.capture_thread` files one
+    conversation that became known, on `worker-crm-sync`, as known-contact
+    capture would: Primary, Sent and labelled messages only (E10)."""
+
+    def _thread(self, mail, at):
+        mail.send(
+            OWNER_ADDRESS,
+            "f1",
+            sender="priya@acme.com",
+            to=OWNER_ADDRESS,
+            at=at,
+            labels=PRIMARY,
+            thread="t9",
+        )
+        mail.send(
+            OWNER_ADDRESS,
+            "f2",
+            sender="priya@acme.com",
+            to=OWNER_ADDRESS,
+            at=at + timedelta(minutes=5),
+            labels=("INBOX", "CATEGORY_PROMOTIONS"),
+            thread="t9",
+        )
+        mail.send(
+            OWNER_ADDRESS,
+            "f3",
+            sender="priya@acme.com",
+            to=OWNER_ADDRESS,
+            at=at + timedelta(minutes=10),
+            labels=("CATEGORY_PERSONAL", "TRASH"),
+            thread="t9",
+        )
+
+    def test_capture_files_a_known_thread_and_skips_promotions_and_trash(self, crm):
+        from app.services.crm import email_sync
+
+        _, fake, labs, _, mail, _, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        acme = _company(fake, labs, "Acme", "acme.com")
+        priya = _person(fake, labs, "Priya", "priya@acme.com", acme)
+        at = NOW - timedelta(hours=2)
+        self._thread(mail, at)
+        got = email_sync.file_thread(labs["id"], mailbox["id"], "t9")
+        [msg] = _messages(fake)
+        assert msg["gmail_message_id"] == "f1" and got["stored"] == 1
+        assert _links(fake, msg) == {("person", priya["id"]), ("company", acme["id"])}
+        assert fake.rows["crm_people"][priya["id"]]["last_inbound_at"] == at.isoformat()
+        # Filing twice stores nothing twice.
+        assert email_sync.file_thread(labs["id"], mailbox["id"], "t9")["stored"] == 0
+        assert len(_messages(fake)) == 1
+
+    def test_capture_files_nothing_for_a_paused_mailbox_or_sync_off(self, crm):
+        from app.services.crm import email_sync
+
+        _, fake, labs, _, mail, _, mailbox, _ = crm
+        _capturing(fake, mailbox, is_active=False)
+        _person(fake, labs, "Priya", "priya@acme.com", _company(fake, labs, "Acme", "acme.com"))
+        self._thread(mail, NOW - timedelta(hours=2))
+        assert email_sync.file_thread(labs["id"], mailbox["id"], "t9")["stored"] == 0
+        fake.rows["crm_mailboxes"][mailbox["id"]]["is_active"] = True
+        setting = next(
+            r
+            for r in fake.rows["crm_workspace_settings"].values()
+            if r["workspace_id"] == labs["id"] and r["key"] == "email_sync"
+        )
+        setting["value"] = {"enabled": False}
+        assert email_sync.file_thread(labs["id"], mailbox["id"], "t9")["stored"] == 0
+        assert _messages(fake) == []
+
+    def test_capture_thread_task_runs_on_the_sync_queue_and_logs_only_ids(
+        self, crm, monkeypatch, caplog
+    ):
+        import logging
+
+        from app.services.crm import email_sync
+        from app.tasks import crm as tasks
+        from app.worker import celery_app
+
+        assert celery_app.conf.task_routes["crm.capture_thread"] == {"queue": "crm_sync"}
+        assert tasks.capture_thread.ignore_result is True
+
+        def broken(*args):
+            raise RuntimeError("ZQXSECRET Priya wrote this")
+
+        monkeypatch.setattr(email_sync, "file_thread", broken)
+        caplog.set_level(logging.INFO)
+        assert tasks.capture_thread("w1", "m1", "t1") is None
+        assert "crm_capture_thread_failed" in caplog.text
+        assert "RuntimeError" in caplog.text and "ZQXSECRET" not in caplog.text

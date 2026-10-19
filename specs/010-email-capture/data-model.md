@@ -18,7 +18,7 @@ range `010`'s security sweep reads (plan PD-1).
 | File | Slice | Contents |
 |---|---|---|
 | `071_crm_capture_sync.sql` | S1 | `crm_mailboxes` + `capture_source`, `capture_start_date`, `docs_checked_at`, `reconcile_after`; `crm_capture_candidates` (log); `crm_capture_mark()`; `crm_audit_row()` replaced (skip `docs_checked_at`); `crm_review_items_type_check` + `deal_signal` |
-| `072_crm_capture_discovery.sql` | S2 | `crm_workspace_settings_key_check` + `capture`; `capture` row seeded `{"mode":"off"}` in every workspace; `crm_workspaces_seed_ai()` replaced (seeds `capture`); `crm_capture_dry_runs` (log); `crm_capture_record()`, `crm_capture_start_dry_run()`, `crm_capture_set_mode()`, `crm_capture_finish_dry_run()`, `crm_capture_report()`; `crm_job_runs_job_check` + `capture` and `crm_job_latest()` replaced; `crm_ai_usage_job_check` + `capture` |
+| `072_crm_capture_discovery.sql` | S2 | `crm_workspace_settings_key_check` + `capture`; `capture` row seeded `{"mode":"off"}` in every workspace; `crm_workspaces_seed_ai()` replaced (seeds `capture`); `crm_capture_dry_runs` (log); `crm_capture_record()`, `crm_capture_start_dry_run()`, `crm_capture_set_mode()`, `crm_capture_finish_dry_run()`, `crm_capture_recall_add()`, `crm_capture_report()`; `crm_job_runs_job_check` + `capture` and `crm_job_latest()` replaced; `crm_ai_usage_job_check` + `capture` |
 | `073_crm_capture_live.sql` | S3 | `crm_capture_ignores` (audited configuration); `crm_review_items`: `record_type`/`record_id` nullable for `new_lead` only, `crm_review_items_type_check` + `new_lead`; `crm_capture_apply()`; `crm_capture_purge()` |
 
 **Replacing a function.** Each `CREATE OR REPLACE` is copied from its latest
@@ -109,7 +109,7 @@ participant and no configured label.
 | `classifier_version` | text | NULL ≤ 40 |
 | `judged_at` | timestamptz | NULL |
 | `dry_run` | boolean | NOT NULL DEFAULT false |
-| `finding` | jsonb | NULL; `CHECK (finding IS NULL OR (outcome IS NOT NULL AND outcome IN ('new_lead','deal_signal') AND jsonb_typeof(finding) = 'object' AND pg_column_size(finding) <= 4096))` |
+| `finding` | jsonb | NULL; `CHECK (finding IS NULL OR (outcome IS NOT NULL AND outcome IN ('new_lead','deal_signal') AND jsonb_typeof(finding) = 'object' AND pg_column_size(finding) <= 4096))`; `finding_of` keeps it under 3,584 bytes of UTF-8 JSON (names at most 200 characters and 400 bytes, the last attachment names dropped until it fits), so a name in Tamil or Chinese never trips the CHECK |
 | `created_at`, `updated_at` | timestamptz | NOT NULL DEFAULT now() |
 
 Constraints:
@@ -190,7 +190,8 @@ target assertion.
 | `started_by` | uuid | FK `profiles` ON DELETE SET NULL |
 | `finished_at` | timestamptz | NULL |
 | `cancelled` | boolean | NOT NULL DEFAULT false; true when the mode left Dry run before the run finished (`crm_capture_set_mode`) |
-| `recall` | jsonb | NOT NULL DEFAULT `'[]'` `CHECK (jsonb_typeof(recall) = 'array' AND pg_column_size(recall) <= 65536)`; `[{mailbox_id, thread_id, latest_at, fate}]`, fate ∈ `filed_known, found, judged_otherwise, skipped_rules, outside_scope` |
+| `recall` | jsonb | NOT NULL DEFAULT `'[]'` `CHECK (jsonb_typeof(recall) = 'array' AND pg_column_size(recall) <= 262144)` (500 rows of about 165 bytes); `[{mailbox_id, thread_id, latest_at, fate}]`, fate ∈ `filed_known, found, judged_otherwise, skipped_rules, outside_scope`; filled as the recall check goes, while the run is open |
+| `counts` | jsonb | NULL while the run is open; `CHECK (counts IS NULL OR jsonb_typeof(counts) = 'object')`; `crm_capture_report` as it stood when the run finished or was cancelled |
 | `applied_at` | timestamptz | NULL |
 | `applied_by` | uuid | FK `profiles` ON DELETE SET NULL |
 
@@ -223,20 +224,27 @@ Functions (072):
   (CRM22 otherwise; `dry_run` is only started above). In one transaction:
   set `crm.actor`; update the `capture` setting (audited `setting.updated`);
   when an open run exists, `UPDATE crm_capture_dry_runs SET finished_at =
-  now(), cancelled = true WHERE workspace_id = ws AND finished_at IS NULL`.
+  now(), cancelled = true, recall = '[]', counts = crm_capture_report(ws,
+  id) WHERE workspace_id = ws AND finished_at IS NULL`.
   `live` is refused CRM22 "Run and apply a dry run first." unless a run of
   the workspace has `applied_at` set (the API checks first, contracts §1.2).
   Returns `{mode, cancelled_run_id}`. The settings route calls it instead
   of the generic settings write for key `capture`.
 - **`crm_capture_finish_dry_run(p_workspace uuid, p_run uuid, p_recall jsonb)
-  RETURNS boolean`** — sets `finished_at = now()`, `recall`; false if already
-  finished or cancelled.
+  RETURNS boolean`** — sets `finished_at = now()`, `recall`, and `counts`
+  from `crm_capture_report`; false if already finished or cancelled.
+- **`crm_capture_recall_add(p_workspace uuid, p_run uuid, p_rows jsonb)
+  RETURNS boolean`** — appends recall rows to the open run, a
+  `(mailbox_id, thread_id)` already there kept as it was (the recall check's
+  progress, plan §5.7); CRM22 for a value that is not an array; false once
+  the run finished or was cancelled.
 - **`crm_capture_report(p_workspace uuid, p_run uuid) RETURNS jsonb`**,
   `STABLE` — `{considered, pending, skipped_rules, ignored, known, judged,
   failed, filed_known_threads, by_outcome: {outcome: {high, medium, low}}}`
   over candidates with `latest_message_at >=` each mailbox's
   `capture_start_date`, plus distinct stored threads of `primary_sent`
-  mailboxes since their start date. Counts only.
+  mailboxes since their start date; a run with `counts` set (finished or
+  cancelled) returns those instead. Counts only.
 - `crm_job_runs_job_check` + `'capture'`; `crm_job_latest()` replaced from
   `066`, `'capture'` appended to the array (`-- 072`).
 - `crm_ai_usage_job_check` (the inline CHECK of `060`; name confirmed in
@@ -307,7 +315,8 @@ Functions (072):
 - `REVOKE ALL ON FUNCTION ... FROM PUBLIC, anon, authenticated; GRANT EXECUTE
   ... TO service_role` for: `crm_capture_mark`, `crm_audit_row` (071);
   `crm_workspaces_seed_ai`, `crm_capture_record`, `crm_capture_start_dry_run`, `crm_capture_set_mode`,
-  `crm_capture_finish_dry_run`, `crm_capture_report`, `crm_job_latest` (072);
+  `crm_capture_finish_dry_run`, `crm_capture_recall_add`, `crm_capture_report`,
+  `crm_job_latest` (072);
   `crm_capture_apply`, `crm_capture_purge` (073).
 - `tests/db/test_crm_security_db.py`: `_009_sql()` reads `060`–`070` only;
   new `_010_sql()` reads `071`–`079`; `NOT_AUDITED_010 = {"crm_capture_candidates",

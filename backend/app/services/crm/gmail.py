@@ -27,6 +27,15 @@ Spec 010 (plan §5.5, §5.13): `search()` lists the ids a Gmail search finds,
 for the sync's deal-document check (ids only, never Spam or Trash); and
 every read waits and tries again on Gmail's rate limit (429) and its own
 faults (5xx), at most three tries in all.
+
+Spec 010 FR-CAP-CHG-05 (plan §5.6, CT-1): email capture's discovery, on
+`worker-crm-ai`, reads a candidate conversation's metadata (`thread_meta`)
+and then the text of only the messages that passed its rules
+(`thread_text`). So two modules read message text, each with its own
+reader: `services/crm/summaries.py` (`message_text`, stored messages only)
+and `services/crm/capture.py` (`thread_text`, the surviving messages of an
+unstored conversation). Neither text is stored, logged or queued, and no
+other module calls either reader.
 """
 
 from __future__ import annotations
@@ -327,3 +336,69 @@ def message_text(mailbox: str, message_id: str) -> str:
             return ""
         raise
     return "\n\n".join(_text_parts(found.get("payload") or {}))
+
+
+# ---------------------------------------------------------------------------
+# Email capture's reads — spec 010 FR-CAP-DIS-02 to -04, FR-CAP-CHG-05
+# ---------------------------------------------------------------------------
+
+
+def thread_meta(mailbox: str, thread_id: str) -> dict[str, Any]:
+    """A conversation's messages as metadata only (`threads.get
+    format=metadata`, the sync's headers): `{id, messages: [{id, threadId,
+    labelIds, internalDate, headers}]}`, oldest first as Gmail gives them.
+    A conversation deleted meanwhile (404) answers `{}`."""
+    params = [("format", "metadata"), *(("metadataHeaders", h) for h in HEADERS)]
+    try:
+        found = _get(mailbox, "thread", f"/threads/{thread_id}", params)
+    except GmailError as exc:
+        if "(404)" in str(exc):
+            return {}
+        raise
+    return {
+        "id": found.get("id"),
+        "messages": [
+            {
+                "id": m.get("id"),
+                "threadId": m.get("threadId"),
+                "labelIds": m.get("labelIds") or [],
+                "internalDate": m.get("internalDate"),
+                "headers": (m.get("payload") or {}).get("headers") or [],
+            }
+            for m in found.get("messages") or []
+        ],
+    }
+
+
+def _filenames(part: dict[str, Any]) -> list[str]:
+    """The names of a payload's attachments, in order."""
+    found = [str(part["filename"])] if part.get("filename") else []
+    for sub in part.get("parts") or []:
+        found += _filenames(sub)
+    return found
+
+
+def thread_text(mailbox: str, message_ids: list[str]) -> list[dict[str, Any]]:
+    """The plain text and attachment names of these messages only, each read
+    with `format=full` as `message_text` reads one (decoded `text/plain`
+    parts): `[{id, text, attachments}]`, in the order given. For email
+    capture's discovery alone (FR-CAP-CHG-05), with the ids that passed its
+    rules; returned in memory, never stored, logged or queued. A message
+    deleted meanwhile (404) is left out."""
+    out: list[dict[str, Any]] = []
+    for message_id in message_ids:
+        try:
+            found = _get(mailbox, "thread_text", f"/messages/{message_id}", [("format", "full")])
+        except GmailError as exc:
+            if "(404)" in str(exc):
+                continue
+            raise
+        payload = found.get("payload") or {}
+        out.append(
+            {
+                "id": message_id,
+                "text": "\n\n".join(_text_parts(payload)),
+                "attachments": _filenames(payload),
+            }
+        )
+    return out

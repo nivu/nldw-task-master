@@ -781,6 +781,39 @@ def _deal_documents(
     return counts, now.isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Filing one conversation — spec 010 plan §5.1, §5.9 (`crm.capture_thread`)
+# ---------------------------------------------------------------------------
+
+
+def file_thread(workspace_id: str, mailbox_id: str, thread_id: str) -> dict[str, int]:
+    """Spec 010 FR-CAP-SRC-04 for one conversation that became known after
+    the sync passed it (a candidate discovery found known, S2; an approved
+    lead, S3): its messages go through `_take` with the mailbox's scan
+    labels, so what is in Primary, Sent or a configured label is stored and
+    linked and `last_*` move, and nothing else is (E10). Runs on
+    `worker-crm-sync`, the process with the Gmail key. A mailbox that is
+    gone, paused, or whose owner left, or a workspace whose sync is off,
+    files nothing."""
+    counts = dict.fromkeys(COUNTS, 0)
+    ws = next((w for w in store.list_workspaces() if w["id"] == workspace_id), None)
+    if ws is None or not today_rules.email_sync_on(_settings(workspace_id)):
+        return counts
+    mailbox = store.get_mailbox(workspace_id, mailbox_id)
+    if (
+        not mailbox
+        or not mailbox["is_active"]
+        or not _owner_here(ws, mailbox, _members(workspace_id))
+    ):
+        return counts
+    source = mailbox.get("capture_source") or capture_rules.LABELS_ONLY
+    configured = _label_ids(mailbox, required=source == capture_rules.LABELS_ONLY)
+    scan = capture_rules.scan_labels(configured, source)
+    thread = gmail.thread_meta(mailbox["email"], thread_id)
+    ids = [m["id"] for m in thread.get("messages") or [] if m.get("id")]
+    return _take(ws, mailbox, ids, set(scan), set(configured))
+
+
 def _sync_actor(workspace_id: str) -> dict[str, Any]:
     """Email sync writes as itself (FR-CRM-AUD-02 `sync`)."""
     return {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}

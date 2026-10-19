@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from crm_ai_fakes import INVALID, CapturedCelery, FakeClaude
@@ -377,3 +377,86 @@ class TestFollowUpDraftEveryWay:
             assert marker not in found, marker
         assert "Here is the pilot plan." not in found
         assert len(chain.items("R-1")) == (1 if len(answers) == 1 else 0)
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 S2 (tasks T215): email capture's discovery
+# ---------------------------------------------------------------------------
+
+CAPTURE_BODY = "ZQXCAPTUREBODY"
+CAPTURE_QUOTED = "ZQXCAPTUREQUOTED"
+CAPTURE_SUBJECT = "ZQXCAPTURESUBJECT"
+CAPTURE_SKIPPED = "ZQXCAPTURESKIPPED"
+CAPTURE_MARKERS = (CAPTURE_BODY, CAPTURE_QUOTED, CAPTURE_SUBJECT, CAPTURE_SKIPPED)
+
+
+@pytest.fixture
+def discovery(monkeypatch, caplog):
+    """A dry run over three candidates: a lead, a not-relevant one and a
+    newsletter the rules skip, each with markers in its body, its quoted
+    history and its subject."""
+    from test_crm_capture_job import NOW, Capture
+
+    caplog.set_level(logging.DEBUG)
+    cap = Capture(monkeypatch)
+    text = (
+        f"Could you send pricing? {CAPTURE_BODY}\n\n"
+        "On Mon, 12 Oct 2026 at 10:00, Owner <owner@nunnarilabs.com> wrote:\n"
+        f"> Our old offer {CAPTURE_QUOTED}"
+    )
+    # Oldest first in a dry run: the lead is judged first, then the other.
+    days = timedelta(days=1)
+    cap.conversation("lead", text=text, subject=f"Pricing {CAPTURE_SUBJECT}", at=NOW - 3 * days)
+    cap.conversation(
+        "other", sender="ravi@robots.io", text=text, subject=CAPTURE_SUBJECT, at=NOW - 2 * days
+    )
+    cap.conversation(
+        "news",
+        sender="news@vendor.io",
+        text=CAPTURE_SKIPPED,
+        subject=CAPTURE_SKIPPED,
+        List_Unsubscribe="<mailto:x@vendor.io>",
+    )
+    return cap
+
+
+class TestCapture:
+    """FR-CAP-CHG-05, NFR-CAP-02 — the text of a candidate reaches Claude
+    only, and nothing of a skipped or not-relevant conversation is kept."""
+
+    def test_privacy_capture_text_reaches_the_model_only(self, discovery):
+        from test_crm_capture_job import LEAD
+
+        claude = discovery.answer(LEAD, {**LEAD, "outcome": "not_relevant", "company_name": None})
+        result = crm_ai._capture()
+        assert result["runs"]["labs"]["outcome"] == "ok", result
+        prompts = "\n".join(claude.prompts)
+        assert CAPTURE_BODY in prompts and CAPTURE_QUOTED in prompts
+        assert CAPTURE_SKIPPED not in prompts
+        assert "news-m1" not in discovery.gmail.text_reads
+
+    @pytest.mark.parametrize("valid", [True, False], ids=["ok", "invalid"])
+    def test_privacy_capture_no_marker_in_any_column_log_payload_or_result(
+        self, discovery, caplog, valid
+    ):
+        from test_crm_capture_job import LEAD
+
+        if valid:
+            discovery.answer(LEAD, {**LEAD, "outcome": "not_relevant", "company_name": None})
+        else:
+            discovery.answer(default=INVALID)
+        result = crm_ai._capture()
+        found = _everything(discovery, caplog, result)
+        for marker in CAPTURE_MARKERS:
+            assert marker not in found, marker
+        rows = discovery.fake.rows["crm_capture_candidates"].values()
+        kept = {r["thread_id"]: r["finding"] for r in rows}
+        assert kept["other"] is None and kept["news"] is None
+        if valid:
+            assert kept["lead"]["company_name"] == "Acme Robotics"
+
+    def test_privacy_capture_the_task_stores_no_result_and_takes_no_text(self, discovery):
+        assert crm_ai.capture_conversations.ignore_result is True
+        discovery.answer(default=INVALID)
+        crm_ai.capture_conversations()
+        assert all(not s["args"] and not s["kwargs"] for s in discovery.celery.sent)

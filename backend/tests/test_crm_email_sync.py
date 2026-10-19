@@ -273,8 +273,21 @@ class FakeGmail:
         ]
         return {"id": thread_id, "messages": sorted(msgs, key=lambda m: int(m["internalDate"]))}
 
+    def thread_meta(self, mailbox, thread_id):
+        """`gmail.thread_meta`: `{}` for a thread it does not hold, as a 404."""
+        found = self.threads_get(mailbox, thread_id)
+        return found if found["messages"] else {}
+
     def install(self, monkeypatch) -> FakeGmail:
-        for name in ("profile", "labels", "list_messages", "history", "message", "search"):
+        for name in (
+            "profile",
+            "labels",
+            "list_messages",
+            "history",
+            "message",
+            "search",
+            "thread_meta",
+        ):
             monkeypatch.setattr(gmail, name, getattr(self, name))
         return self
 

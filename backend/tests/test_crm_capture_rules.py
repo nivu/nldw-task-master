@@ -1,12 +1,15 @@
 """Automatic email capture, the pure rules — spec 010 FR-CAP-SRC-01 to -08,
 FR-CAP-CHG-01, -03, FR-CAP-REV-01 (`deal_signal`), -04; data-model §3.1;
-plan §5.3 to §5.5, §5.10, PD-2, PD-3, PD-5, PD-19.
+plan §5.3 to §5.5, §5.10, PD-2, PD-3, PD-5, PD-19. S2 (tasks T212):
+FR-CAP-DIS-01, -04, -05, -07, -09, FR-CAP-RPT-03; data-model §3.2, §3.4;
+plan §5.6, §5.7, PD-9, PD-11, PD-17, PD-20.
 
 No I/O: labels, headers, rows and the clock in, decisions out.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -383,4 +386,380 @@ class TestTheQueue:
                 mailbox_owner="u-owner",
             )
             is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# S2 — discovery (tasks T212)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCaptureSetting:
+    """FR-CAP-DIS-01; data-model §3.4 — `{"mode": off | dry_run | live}`."""
+
+    @pytest.mark.parametrize("mode", ["off", "dry_run", "live"])
+    def test_capture_each_mode_is_accepted(self, mode):
+        assert capture.capture_refusal({"mode": mode}) is None
+        assert capture.capture_mode({"mode": mode}) == mode
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, [], {}, {"mode": "on"}, {"mode": "off", "extra": 1}, {"enabled": True}, "off"],
+    )
+    def test_capture_anything_else_is_refused(self, value):
+        assert capture.capture_refusal(value) == "Email capture is off, dry run or live."
+
+    @pytest.mark.parametrize("value", [None, {}, {"mode": "everything"}])
+    def test_capture_a_missing_or_broken_setting_reads_off(self, value):
+        assert capture.capture_mode(value) == "off"
+
+    def test_capture_the_setting_has_a_validator(self):
+        from app.domain.crm import settings
+
+        assert settings.setting_refusal("capture", {"mode": "dry_run"}) is None
+        assert settings.setting_refusal("capture", {"mode": "x"}) == capture.MODE_REFUSAL
+
+
+def _msg(mid, sender, to, at, direction="inbound", attachments=(), name=""):
+    info = rules.classify(
+        _h(From=f"{name} <{sender}>" if name else sender, To=to),
+        ["nunnarilabs.com"],
+        int(at.timestamp() * 1000),
+    )
+    return {**info, "id": mid, "attachments": list(attachments)}
+
+
+T0 = datetime(2026, 10, 1, 3, 42, tzinfo=UTC)  # 09:12 IST
+OWNER_BOX = "navaneeth@nunnarilabs.com"
+
+
+class TestTheConversation:
+    """FR-CAP-DIS-04 — who is outside, and whether the owner replied."""
+
+    def test_capture_outside_participants_once_in_order(self):
+        msgs = [
+            _msg("m1", "priya@acme.com", f"{OWNER_BOX}, ravi@acme.com", T0),
+            _msg("m2", OWNER_BOX, "priya@acme.com", T0 + timedelta(hours=1)),
+        ]
+        assert [p["email"] for p in capture.outside_of(msgs)] == ["priya@acme.com", "ravi@acme.com"]
+
+    def test_capture_owner_replied_only_when_the_owner_wrote(self):
+        inbound = _msg("m1", "priya@acme.com", OWNER_BOX, T0)
+        colleague = _msg("m2", "deepika@nunnarilabs.com", "priya@acme.com", T0)
+        owner = _msg("m3", OWNER_BOX, "priya@acme.com", T0)
+        assert capture.owner_replied([inbound, colleague], OWNER_BOX) is False
+        assert capture.owner_replied([inbound, owner], OWNER_BOX.upper()) is True
+
+    def test_capture_webmail_names_no_company_domain(self):
+        assert capture.domain_for("priya@gmail.com") is None
+        assert capture.domain_for("priya@Acme.com") == "acme.com"
+        assert capture.domain_for("acme.io") == "acme.io"
+
+
+class TestTrim:
+    """FR-CAP-DIS-04, PD-9 — a message's own text and 20 lines of the rest."""
+
+    def test_capture_keeps_a_forwarded_inquiry(self):
+        text = (
+            "See below, can you help them?\n\n"
+            "---------- Forwarded message ----------\n"
+            "From: Priya <priya@acme.com>\nSubject: Pricing\n\n"
+            "We need a quote for 40 seats."
+        )
+        trimmed = capture.trim(text)
+        assert trimmed.startswith("See below") and "We need a quote for 40 seats." in trimmed
+
+    def test_capture_keeps_at_most_twenty_quoted_lines(self):
+        quoted = "\n".join(f"> line {i}" for i in range(1, 40))
+        trimmed = capture.trim(f"Thanks, sending it today.\n\nOn Mon, X wrote:\n{quoted}")
+        lines = trimmed.split("\n")
+        assert lines[0] == "Thanks, sending it today."
+        assert "> line 19" in lines and "> line 20" not in lines
+        assert len(lines) == 2 + 20
+
+    def test_capture_the_signature_counts_toward_the_twenty(self):
+        sig = "\n".join(f"Sig {i}" for i in range(1, 26))
+        trimmed = capture.trim(f"Body here.\n-- \n{sig}\n> quoted")
+        lines = trimmed.split("\n")
+        assert lines[0] == "Body here." and len(lines) == 1 + 20
+        assert "> quoted" not in trimmed
+
+    def test_capture_a_plain_message_is_kept_whole(self):
+        assert capture.trim("  Hello there.\r\nTwo lines.  ") == "Hello there.\nTwo lines."
+
+
+class TestThePrompt:
+    """FR-CAP-DIS-04 — 12 messages, 24,000 characters, websites, the reply."""
+
+    def test_capture_parts_oldest_first_then_websites_then_reply(self):
+        msgs = [
+            _msg(
+                "m2",
+                OWNER_BOX,
+                "priya@acme-robotics.com",
+                T0 + timedelta(days=1),
+                attachments=["Nunnari pricing.pdf"],
+            ),
+            _msg("m1", "priya@acme-robotics.com", OWNER_BOX, T0, name="Priya Shah"),
+        ]
+        parts = capture.prompt_parts(
+            msgs,
+            {"m1": "Pricing please?", "m2": "Attached."},
+            websites=["acme-robotics.com"],
+            replied=True,
+        )
+        assert [label for label, _ in parts] == [
+            "Message 1 of 2 inbound",
+            "Message 2 of 2 outbound",
+            "Websites in this conversation",
+            "Mailbox owner replied",
+        ]
+        assert parts[0][1] == (
+            "inbound · from Priya Shah <priya@acme-robotics.com> · to navaneeth@nunnarilabs.com · "
+            "2026-10-01 09:12 IST · attachments: none\n\nPricing please?"
+        )
+        assert "attachments: Nunnari pricing.pdf" in parts[1][1]
+        assert parts[2] == ("Websites in this conversation", "1. acme-robotics.com")
+        assert parts[3] == ("Mailbox owner replied", "yes")
+
+    def test_capture_labels_survive_the_quoting(self):
+        from app.domain.crm import ai_rules
+
+        quoted = ai_rules.quote_untrusted("Message 12 of 12 outbound", "x")
+        assert quoted.startswith('<data source="Message 12 of 12 outbound">')
+
+    def test_capture_only_the_last_twelve_messages(self):
+        msgs = [
+            _msg(f"m{i:02}", "priya@acme.com", OWNER_BOX, T0 + timedelta(hours=i))
+            for i in range(15)
+        ]
+        parts = capture.prompt_parts(
+            msgs, {m["id"]: m["id"] for m in msgs}, websites=[], replied=False
+        )
+        bodies = [text.rsplit("\n\n", 1)[-1] for _, text in parts[:-2]]
+        assert bodies == [f"m{i:02}" for i in range(3, 15)]
+        assert parts[-2] == ("Websites in this conversation", "none")
+        assert parts[-1] == ("Mailbox owner replied", "no")
+
+    def test_capture_drops_the_oldest_until_24000_characters(self):
+        msgs = [
+            _msg(f"m{i}", "priya@acme.com", OWNER_BOX, T0 + timedelta(hours=i)) for i in range(3)
+        ]
+        texts = {"m0": "a" * 10_000, "m1": "b" * 10_000, "m2": "c" * 10_000}
+        parts = capture.prompt_parts(msgs, texts, websites=[], replied=False)
+        assert [label for label, _ in parts[:-2]] == [
+            "Message 1 of 2 inbound",
+            "Message 2 of 2 inbound",
+        ]
+        assert parts[0][1].endswith("b" * 10_000)
+
+    def test_capture_cuts_one_long_message_at_the_end(self):
+        msgs = [_msg("m0", "priya@acme.com", OWNER_BOX, T0)]
+        parts = capture.prompt_parts(msgs, {"m0": "x" * 30_000}, websites=[], replied=False)
+        assert parts[0][1].endswith("x" * 24_000) and "x" * 24_001 not in parts[0][1]
+
+
+class TestTheWebsite:
+    """FR-CAP-DIS-05, -09, PD-20 — chosen from the hosts found, never typed."""
+
+    def test_capture_choices_are_participant_domains_then_text_hosts(self):
+        outside = [{"email": "priya@acme-robotics.com"}, {"email": "ravi@gmail.com"}]
+        texts = [
+            "See https://www.acme-robotics.com/about and acme.io, notes.pdf, R.Priya",
+            "nunnarilabs.com",
+        ]
+        assert capture.website_choices(outside, texts, ["nunnarilabs.com"]) == [
+            "acme-robotics.com",
+            "acme.io",
+        ]
+
+    def test_capture_at_most_ten_choices(self):
+        text = " ".join(f"site{i}.com" for i in range(20))
+        assert len(capture.website_choices([], [text], [])) == 10
+
+    def test_capture_a_choice_by_number(self):
+        outside = [{"email": "priya@acme.com"}]
+        assert capture.domain_of_finding(1, ["acme.com", "acme.io"], "priya@acme.com", outside) == (
+            "acme.com",
+            False,
+        )
+        assert capture.domain_of_finding(2, ["acme.com", "acme.io"], "priya@acme.com", outside) == (
+            "acme.io",
+            True,
+        )
+
+    def test_capture_no_choice_falls_back_to_the_address_unless_webmail(self):
+        outside = [{"email": "priya@acme.com"}]
+        assert capture.domain_of_finding(None, [], "priya@acme.com", outside) == ("acme.com", False)
+        assert capture.domain_of_finding(7, ["acme.com"], "priya@gmail.com", outside) == (
+            None,
+            False,
+        )
+
+
+class TestTheFinding:
+    """FR-CAP-DIS-05, -06, -09; data-model §3.2 `finding`."""
+
+    ANSWER = {
+        "outcome": "new_lead",
+        "confidence": "high",
+        "company_name": "Acme Robotics",
+        "person_name": "Priya Shah",
+        "person_email": "not-in-thread@x.com",
+        "person_title": "Head of Ops",
+        "lead_stage": "qualified",
+        "deal_stage": None,
+        "website_choice": 1,
+        "reason": "Asked for pricing; you replied.",
+    }
+
+    def _msgs(self):
+        return [
+            _msg("m1", "priya@acme-robotics.com", OWNER_BOX, T0, attachments=["brief.pdf"]),
+            _msg(
+                "m2",
+                OWNER_BOX,
+                "priya@acme-robotics.com",
+                T0 + timedelta(days=1),
+                attachments=["brief.pdf", "quote.pdf"],
+            ),
+        ]
+
+    def test_capture_a_lead_keeps_its_finding(self):
+        found = capture.finding_of(
+            self.ANSWER, self._msgs(), mailbox_email=OWNER_BOX, choices=["acme-robotics.com"]
+        )
+        assert found == {
+            "company_name": "Acme Robotics",
+            "domain": "acme-robotics.com",
+            "domain_from_text": False,
+            "person_name": "Priya Shah",
+            # Not one of the thread's outside participants: the first sender.
+            "person_email": "priya@acme-robotics.com",
+            "person_title": "Head of Ops",
+            "lead_stage": "qualified",
+            "deal_stage": None,
+            "reason": "Asked for pricing; you replied.",
+            "first_at": "2026-10-01T09:12:00+05:30",
+            "latest_at": "2026-10-02T09:12:00+05:30",
+            "message_count": 2,
+            "owner_replied": True,
+            "attachments": ["brief.pdf", "quote.pdf"],
+            "duplicate_company_id": None,
+        }
+
+    def test_capture_no_reply_suggests_new(self):
+        msgs = self._msgs()[:1]
+        found = capture.finding_of(self.ANSWER, msgs, mailbox_email=OWNER_BOX, choices=[])
+        assert found["lead_stage"] == "new" and found["owner_replied"] is False
+
+    def test_capture_other_outcomes_keep_nothing(self):
+        for outcome in ("other_business", "not_relevant"):
+            answer = {**self.ANSWER, "outcome": outcome}
+            assert (
+                capture.finding_of(answer, self._msgs(), mailbox_email=OWNER_BOX, choices=[])
+                is None
+            )
+
+    def test_capture_a_finding_in_tamil_fits_its_check_in_bytes(self):
+        # 071 holds a finding to 4096 bytes as stored; a Tamil letter is
+        # three bytes in UTF-8, so character caps alone overflow it.
+        tamil = "அ" * 300
+        answer = {**self.ANSWER, "company_name": tamil, "person_name": tamil}
+        answer["person_title"] = tamil
+        answer["reason"] = tamil
+        msgs = [
+            _msg(
+                "m1",
+                "priya@acme-robotics.com",
+                OWNER_BOX,
+                T0,
+                attachments=[f"{n}{tamil}.pdf" for n in range(10)],
+            )
+        ]
+        found = capture.finding_of(answer, msgs, mailbox_email=OWNER_BOX, choices=[])
+        assert capture.finding_bytes(found) <= capture.FINDING_BYTES < 4096
+        assert len(json.dumps(found, ensure_ascii=False).encode()) <= 4096
+        assert 0 < len(found["attachments"]) < 10
+        assert found["attachments"][0].startswith("0")
+        assert len(found["company_name"].encode()) <= 400
+
+    def test_capture_lead_stage_defaults_to_contacted_once_replied(self):
+        assert capture.lead_stage_for(None, True) == "contacted"
+        assert capture.lead_stage_for("qualified", False) == "new"
+
+
+class TestFailures:
+    """PD-17 — which failures count against a conversation."""
+
+    def test_capture_only_invalid_output_and_a_malformed_thread_count(self):
+        from app.domain.crm import ai_rules
+        from app.services.crm import ai, gmail
+        from app.services.crm.capture import MalformedThread
+
+        assert capture.failure_counts(ai.AiFailed(ai_rules.OUTPUT_INVALID, "s", "t")) is True
+        assert capture.failure_counts(MalformedThread()) is True
+        for reason in (ai_rules.CALL_FAILED, ai_rules.CALL_TIMED_OUT):
+            assert capture.failure_counts(ai.AiFailed(reason, "s", "t")) is False
+        assert capture.failure_counts(gmail.GmailError("Gmail thread failed (503).")) is False
+        assert capture.failure_counts(gmail.NotConfigured("x")) is False
+
+
+class TestRecall:
+    """FR-CAP-RPT-03, PD-11 — a labelled conversation's fate, and the line."""
+
+    def test_capture_the_fates_in_order(self):
+        fate = capture.recall_fate
+        assert fate(in_capture=False, survived=True, known_before=True) == "outside_scope"
+        assert fate(in_capture=True, survived=False, known_before=True) == "skipped_rules"
+        assert fate(in_capture=True, survived=True, known_before=True) == "filed_known"
+        assert (
+            fate(
+                in_capture=True,
+                survived=True,
+                known_before=False,
+                outcome="new_lead",
+                confidence="medium",
+            )
+            == "found"
+        )
+        assert (
+            fate(
+                in_capture=True,
+                survived=True,
+                known_before=False,
+                outcome="deal_signal",
+                confidence="high",
+            )
+            == "found"
+        )
+        assert (
+            fate(
+                in_capture=True,
+                survived=True,
+                known_before=False,
+                outcome="new_lead",
+                confidence="low",
+            )
+            == "judged_otherwise"
+        )
+        assert (
+            fate(
+                in_capture=True,
+                survived=True,
+                known_before=False,
+                outcome="other_business",
+                confidence="high",
+            )
+            == "judged_otherwise"
+        )
+        assert fate(in_capture=True, survived=True, known_before=False) == "judged_otherwise"
+
+    def test_capture_the_recall_line(self):
+        rows = [
+            {"fate": f}
+            for f in ("filed_known", "found", "outside_scope", "judged_otherwise", "outside_scope")
+        ]
+        assert capture.recall_line(rows) == (
+            "Found 2 of your 5 labelled conversations; 2 of the rest are outside Primary and Sent."
         )

@@ -45,6 +45,7 @@ NOT_AUDITED = {
     "crm_company_enrichment",  # AI values beside a company's fields, re-read often (009 ENR-06)
     "crm_ai_field_values",  # AI field values, recomputed hourly at most (009 FR-CRMAI-FIELD-04)
     "crm_capture_candidates",  # one row per thread awaiting discovery, ids only (010 SRC-05)
+    "crm_capture_dry_runs",  # one row per dry run, ids and counts only (010 RPT-01)
 }
 #: Polymorphic references, checked by crm_check_refs() (data-model §5.14).
 POLYMORPHIC = {"record_id", "target_id"}
@@ -328,8 +329,8 @@ def _009_sql() -> str:
 
 
 #: Spec 010 data-model §5: the logs 071–073 add without the trigger (S1:
-#: the discovery candidates).
-NOT_AUDITED_010 = {"crm_capture_candidates"}
+#: the discovery candidates; S2: the dry runs).
+NOT_AUDITED_010 = {"crm_capture_candidates", "crm_capture_dry_runs"}
 
 
 def _010_sql() -> str:
@@ -438,7 +439,19 @@ class TestThe010Additions:
 
     def test_every_010_function_is_swept_and_revoked(self, stack):
         names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _010_sql()))
-        assert {"crm_capture_mark", "crm_audit_row"} <= names
+        assert {
+            "crm_capture_mark",
+            "crm_audit_row",
+            # 072 (S2).
+            "crm_workspaces_seed_ai",
+            "crm_capture_record",
+            "crm_capture_start_dry_run",
+            "crm_capture_set_mode",
+            "crm_capture_finish_dry_run",
+            "crm_capture_recall_add",
+            "crm_capture_report",
+            "crm_job_latest",
+        } <= names
         assert {n for n in names if not n.startswith("crm_")} == set()
         rows = stack.sql(
             "SELECT p.proname, "
