@@ -103,7 +103,10 @@ A deal already at or past the suggested stage is refused.
 **Dismissing a new lead** gives you a choice: dismiss only, **ignore this
 sender**, or **ignore this whole domain**. Ignoring adds the address or the
 domain to the workspace's ignore list, and email from it never reaches the
-AI again. A public webmail domain can only be ignored by sender. Dismissing
+AI again. The whole-domain choice is the sender's own domain, and is offered
+only when that is also the lead's domain: a public webmail sender (or one
+whose company website came from the email's text) can only be ignored by
+sender. Dismissing
 a deal signal changes nothing else.
 
 ## Who sees which suggestion

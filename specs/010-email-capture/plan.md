@@ -160,6 +160,13 @@ beat (IST)
 - Beat entry `"crm-ai-capture": {"task": "crm_ai.capture", "schedule":
   crontab(minute=7)}` in a `# Spec 010` block placed last in `worker.py`.
   Minute 7 keeps it off `009`'s `*/15` ticks.
+- `crm_ai.capture` has `soft_time_limit=540`, below Celery's 600-second hard
+  limit. `SoftTimeLimitExceeded` is treated like `jobs.out_of_time()`: the
+  run ends `ok` with its counts, the conversation being judged stays
+  pending, and a dry run chains its follow-up. (`ai.call` passes it through
+  instead of turning it into a `SafeError`.) Without it, one slow
+  conversation past 600 s had the worker child killed and its `crm_job_runs`
+  row left `running`.
 
 ### 5.2 Layering
 
@@ -336,8 +343,8 @@ backlog (G-3), and older pending rows are worked when nothing newer waits.
 | a | `gmail.thread_meta` (metadata, `HEADERS`); messages not `in_scope` (no Primary/Sent/configured label, or in Trash or Spam) are dropped | thread gone or nothing left → `skipped` |
 | b | rules on each message: drop internal-only and `is_bulk` ones | none left → `skipped` |
 | c | ignore list: every outside participant matched by address or domain (after a metadata-only read; PD-21) | → `ignored` |
-| d | known check: any outside participant now a person or a company domain (as `_take`, PD-7) | → `known`, enqueue `crm.capture_thread` |
-| e | `ai.gate` again (the budget may have moved), then `gmail.thread_text(mailbox, ids)` for the **message ids that survived a and b only** | — |
+| d | known check, **message by message as `_take` decides** (`links_for`): a message naming an outside participant who is a person or has a company domain (PD-7) is known-contact mail. Every surviving message known → `known`, enqueue `crm.capture_thread`. Otherwise only the messages naming nobody known go on to e–g (they are what made the thread a candidate; G-5); `crm.capture_thread` is still queued when a known message is not stored yet | → `known` |
+| e | `ai.gate` again (the budget may have moved), then `gmail.thread_text(mailbox, ids)` for the **message ids that survived a, b and d only**, at most the last 12 (all the prompt holds), so one long conversation costs at most 12 text reads | — |
 | f | `ai.call(ws, "capture", None, DiscoveryOutput, INSTRUCTION, parts)` | → `judged` with outcome and confidence |
 | g | live: high/medium lead or deal → item (§5.10); dry run: finding kept only | — |
 
@@ -406,7 +413,18 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   `cancelled = true`, recall left `[]`. A cancelled run is never applicable,
   and the next `POST /crm/capture/dry-run` starts normally. (The partial
   unique index would otherwise refuse every later start, and only hand SQL
-  could clear it.)
+  could clear it.) A switch to `live` also returns every candidate a dry run
+  judged (`dry_run = true`, never applied) to `pending`, after the cancelled
+  run's counts are kept, so the live job judges them again: the live job
+  reads only pending candidates, and a lead judged during a second dry run
+  would otherwise never become an item.
+- **One at a time.** `crm_capture_start_dry_run`, `crm_capture_set_mode` and
+  `crm_capture_apply` (073) each first take the workspace's capture lock,
+  `pg_advisory_xact_lock(hashtext('crm_capture:' || workspace))`, so an
+  Apply and a Run dry run (or a mode change) racing each other run one after
+  the other, and apply's latest-run check sees a start that committed
+  meanwhile. Without it, a race could leave the mode Live with a new run
+  open, refusing every later start.
 - **Running.** The hourly job in `dry_run` judges pending candidates with
   `dry_run = true` and creates no item and no record (FR-CAP-RPT-01). When it
   stops for time with candidates left, it re-enqueues itself with
@@ -432,11 +450,18 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   the start date; for each thread, from `thread_meta` and the database:
   1. no message `in_scope` through Primary or Sent alone → `outside_scope`;
   2. steps a–b leave nothing → `skipped_rules`;
-  3. an outside participant matches a person or a company domain whose
+  3. every outside participant on the ignore list (step c) → `ignored`,
+     before any text is read (FR-CAP-DIS-03);
+  4. an outside participant matches a person or a company domain whose
      record was **created before the thread's first message** →
      `filed_known` (capture would have filed it as known);
-  4. otherwise steps e–f run on it as a dry-run-only evaluation (same
-     prompt, same call, job `capture`; about 60 threads, a few cents) and
+  5. step d as live: every surviving message names someone the CRM holds
+     **now** (typically a company automation 2 made from the label) →
+     `known_now`, **not sent to Claude** (G-5, NFR-CAP-02: Claude never sees
+     known-client mail, not even for the recall check). The summary line
+     counts these apart;
+  6. otherwise steps e–f run on the messages naming nobody known, as a
+     dry-run-only evaluation (same prompt, same call, job `capture`) and
      its fate is `found` for a high- or medium-confidence `new_lead` or
      `deal_signal`, else `judged_otherwise` (low confidence included, as it
      would make no item).
@@ -468,7 +493,8 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   run (E6: dry run first), and "Set a mailbox to Primary and Sent first."
   while no active mailbox is on `primary_sent`. Live is therefore first
   entered through Apply (FR-CAP-RPT-04); afterwards an Admin may switch Off
-  and back to Live. Off is always accepted. In S2 no run can be applied, so
+  and back to Live, also while or after a later dry run that was not applied
+  (its decisions are then judged again live, §5.7). Off is always accepted. In S2 no run can be applied, so
   `live` is always refused there (live findings would make no item until
   S3's step g).
 - Live: step g of §5.6 turns each high/medium `new_lead`/`deal_signal` into
@@ -480,10 +506,17 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   recorded first would never be read again, and the lead would be lost).
   The retry makes no second item: the upsert is idempotent per dedupe key
   and source version. A newer message arriving meanwhile refreshes that
-  item at the next judgement. After a `new_lead` upsert,
-  `crm_capture_supersede` expires any other open `new_lead` of the same
-  conversation under another dedupe key (made before a later duplicate check
-  linked it, or unlinked it), so a conversation keeps one open new lead.
+  item at the next judgement. After any capture item's upsert (`new_lead` or
+  discovered `deal_signal`), `crm_capture_supersede` expires every other
+  open capture item of the same conversation under another dedupe key (made
+  before a later duplicate check linked it, or unlinked it, or before the
+  lead became a deal signal on a matched company), so a conversation keeps
+  one open capture item. A live judgement that makes **no** item (not
+  relevant, other business, low confidence, or a deal signal whose deals
+  are all past its stage) calls it with a key that matches nothing, so the
+  earlier judgement's item, its evidence now stale, expires (FR-CAP-DIS-06).
+  A discovered `deal_signal` is told from a deal document's by its evidence
+  (`origin: discovery`); a deal document's signal is never expired here.
 - **Duplicates (FR-CAP-DIS-08)**, before a `new_lead` item: exact domain
   (`store.list_domains`), a sibling domain (the same name on another public
   suffix: `acme.io` ↔ `acme.com` ↔ `acme.co.uk`; both must be bare
@@ -607,9 +640,13 @@ re-keys the `company:` heads unchanged.
   says "reading from <date>" for Primary and Sent. A new tab
   `email-capture` ("Email capture", Admin only) renders
   `components/crm/capture-settings.tsx`: mode (Off / Dry run / Live, with Dry
-  run started by its button), ignore list editor, the report (counts, cost,
-  findings table, recall table and line), Apply with `window.confirm`,
-  disabled unless `applicable`.
+  run started by its button; Live enabled from the overview's
+  `live_allowed`, the server's own rule, not from the latest run), ignore
+  list editor, the report (counts, cost, findings table, recall table and
+  line, the recall shown only once the run finished and was not cancelled),
+  Apply with `window.confirm`, disabled unless `applicable`. Run dry run
+  asks `window.confirm` while capture is Live (live capture pauses until it
+  is applied or Live is chosen again).
 - `components/crm/review-item.tsx`: cases for both types in `describe()`,
   `initialEdits()`, `editsPayload()`, `EDITABLE`; `recordHref()` handles a
   null target; an evidence block (date range, message count, owner replied,
@@ -617,8 +654,9 @@ re-keys the `company:` heads unchanged.
   (company, domain, stage, person; link to an existing company); the
   deal-signal form (Discovery: next step and date; Proposal: amount,
   currency, expected close, point of contact, project name in Labs); Dismiss
-  with *ignore this sender* / *ignore this whole domain* (domain hidden for
-  webmail).
+  with *ignore this sender* / *ignore this whole domain* (the domain offered
+  only when the sender's domain is the lead's domain: hidden for webmail,
+  and for a lead whose website came from the text).
 - `lib/api/crm-types.ts`, `lib/api/crm.ts`: the new types and calls
   (contracts §5).
 
@@ -630,7 +668,7 @@ re-keys the `company:` heads unchanged.
 | Skipped, ignored, known, other and not-relevant rows hold no address, subject or name | CHECK `finding IS NULL OR outcome IN (...)` | db + fake |
 | Text read only by `thread_text`, only from `services/crm/capture.py` | import-graph test | `test_crm_gmail_full_read.py` |
 | Text never reaches a log, a row, a task argument, an error or a result | `ai.SafeError`; ids-only task args; `ignore_result=True` | `test_crm_ai_privacy.py::TestCapture` (markers in body, quoted history, subject of a skipped and a not-relevant candidate) |
-| Internal, bulk, ignored and known candidates never reach Claude | step order §5.6 | `FakeClaude()` with no script fails on any call |
+| Internal, bulk, ignored and known candidates never reach Claude, nor known or ignored labelled threads in the recall check, nor the known messages of a mixed thread | step order §5.6, §5.7; step d per message | `FakeClaude()` with no script fails on any call; `TestRecall`, `TestRejudging` |
 | Only surviving messages reach Claude: an internal, bulk, Promotions, Trash or Spam message in a candidate thread is never fetched as text nor quoted | §5.6 step e reads only the ids left after a and b | `FakeGmailThread.text_reads` lists only those ids; marker absent from the Claude request |
 | A closed gate reads no Gmail text | gate before step a and e | `FakeGmailThread.reads == []` |
 | The sync stores nothing for a skipped message | `_take` step 3–4, 8 | sync tests assert no row of any table |
@@ -641,7 +679,8 @@ re-keys the `company:` heads unchanged.
 |---|---|
 | Gmail 429 or 5xx on any call | `gmail._get` retries: up to 3 tries in all, waiting `Retry-After` (capped at 30 s) or 1 s then 4 s; then `GmailError` as today (NFR-CAP-03) |
 | Gmail error on a sync page | unchanged: that workspace's run fails, the plan moves on, the cursor stays |
-| Deal-document search error | counted, cursor not advanced, page succeeds |
+| Deal-document search error | any exception (Gmail, a soft time limit, a refused item): logged with ids, counted, its cursor not advanced; the history cursor is saved and the page succeeds |
+| `crm_ai.capture` near its time limit | soft limit at 540 s: the run ends `ok` with its counts, the conversation stays pending, a dry run chains |
 | `LabelsMissing` in `primary_sent` | not raised; Primary and Sent still scanned |
 | Candidate thread gone (404) | `skipped` |
 | Claude invalid twice (`OUTPUT_INVALID`), malformed thread | `attempts += 1`; `failed` at 3 |
@@ -757,7 +796,7 @@ docs/operations/deployment.md (§9); specs/007-crm/spec.md, specs/009-crm-intell
 | R-2 | Backfill since April re-fetches unstored messages (candidates, skips) on every reconcile | pages of 50; reconcile only after a reset; acceptable at one mailbox (NFR-CAP-03) |
 | R-3 | Gmail `filename:` search misses names like "SOW_v2_final" or catches "po" in odd names | per-kind queries are constants, tuned without schema change; items are reviewed |
 | R-4 | Captured mail raises phase-1 summary cost (FR-CAP-CHG-06) | counted in the same budget; noted in the deployment section |
-| R-5 | Recall would be circular for labelled threads (hand labels win, and automation 2 makes their company) | each labelled thread is judged as if unlabelled; known only through records created before it (§5.7, PD-11) |
+| R-5 | Recall would be circular for labelled threads (hand labels win, and automation 2 makes their company) | each labelled thread is judged as if unlabelled; known only through records created before it (§5.7, PD-11). One whose contacts are in the CRM now is not sent to Claude (G-5) and is counted apart (`known_now`), so the recall measures fewer threads than it was labelled with |
 | R-6 | Dry run longer than expected | self-chaining; the report shows pending counts |
 
 ---
@@ -804,7 +843,7 @@ simplest option consistent with the spec.
 | PD-8 | The conversation is stored by `crm.capture_thread` on `worker-crm-sync` after approval; the item id is in the audit of the company and person, not of the (unaudited) email log | the API has no Gmail key; `crm_store_emails` takes no actor |
 | PD-9 | `capture.trim` keeps the message's own text and the first 20 lines of its quoted or forwarded block and signature, reusing `summaries`' quote patterns; it is not `summaries.strip`, which drops the whole block | FR-CAP-DIS-04; a forwarded referral must keep the forwarded inquiry |
 | PD-10 | A failed `crm.capture_thread` is logged, not retried; no UI | YAGNI; the next message files the thread |
-| PD-11 | Recall fates: `filed_known`, `found`, `judged_otherwise`, `skipped_rules`, `outside_scope`. Each labelled thread is judged as if unlabelled: `filed_known` only through a person or company created before its first message; otherwise it is evaluated by steps e–f in the dry run, storing only the fate | G-4 asks what capture would have found, not what the labels did |
+| PD-11 | Recall fates: `filed_known`, `found`, `judged_otherwise`, `skipped_rules`, `outside_scope`, `ignored`, `known_now`. Each labelled thread is judged as if unlabelled: `filed_known` only through a person or company created before its first message; on the ignore list → `ignored`, and every message naming someone in the CRM now → `known_now`, neither sent to Claude (G-5, NFR-CAP-02; amended after review, the spec wins over recall coverage); otherwise its unknown messages are evaluated by steps e–f in the dry run, storing only the fate | G-4 asks what capture would have found, not what the labels did |
 | PD-12 | A *Primary and Sent* mailbox still needs at least one configured label | DB CHECK and `NO_LABELS`; recall needs the labels anyway |
 | PD-13 | Dry run is entered only by `POST /crm/capture/dry-run`; `PATCH /crm/settings/capture` accepts `off` always and `live` only when the workspace has an applied dry run and a `primary_sent` mailbox; Live is first entered through Apply. Any mode change through PATCH cancels an open dry run (`crm_capture_set_mode`) | E6 "dry run first, applied after review"; the run row must exist; a run left open would block every later start |
 | PD-14 | After a dry run finishes, new candidates wait as `pending`; the job skips with "The dry run is finished..." until Live or a new dry run | "runs once ... then stops" |

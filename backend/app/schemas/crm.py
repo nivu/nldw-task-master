@@ -1208,7 +1208,15 @@ class CaptureRecallRowOut(BaseModel):
     thread_id: str
     latest_at: str | None
     subject: str | None
-    fate: Literal["filed_known", "found", "judged_otherwise", "skipped_rules", "outside_scope"]
+    fate: Literal[
+        "filed_known",
+        "found",
+        "judged_otherwise",
+        "skipped_rules",
+        "outside_scope",
+        "ignored",
+        "known_now",
+    ]
 
 
 class CaptureRecallOut(BaseModel):
@@ -1245,6 +1253,10 @@ class CaptureOverviewOut(BaseModel):
     subject only for a thread already stored as captured mail."""
 
     mode: CaptureMode
+    #: Whether `PATCH /crm/settings/capture {"mode": "live"}` would pass its
+    #: own checks: a dry run of the workspace was ever applied and an active
+    #: mailbox is on Primary and Sent (contracts §1.2).
+    live_allowed: bool
     mailboxes: list[CaptureMailboxOut]
     ignores: list[dict[str, Any]]
     dry_run: CaptureDryRunOut | None

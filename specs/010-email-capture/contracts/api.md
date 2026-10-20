@@ -67,7 +67,10 @@ applicable), so a new dry run can start later. Response as the generic
 settings PATCH, plus `cancelled_dry_run_id` (`null` when none was open).
 `live` is accepted only once the workspace has an applied dry run (E6):
 Live is first entered through Apply (§2.3). In S2, where nothing can be
-applied, `live` is always refused.
+applied, `live` is always refused. Afterwards `live` is accepted also while,
+or after, a later dry run that was not applied: that run is cancelled when
+open, and every decision it made goes back to pending, so the live job
+judges it again (no lead it found is lost).
 
 | Status | `detail` |
 |---|---|
@@ -150,6 +153,7 @@ carries `skipped`, the reason, as every job does). Email sync runs gain
 ```json
 {
   "mode": "dry_run",
+  "live_allowed": true,
   "mailboxes": [{"id": "…", "email": "navaneeth@nunnarilabs.com",
                  "capture_source": "primary_sent", "capture_start_date": "2026-04-01",
                  "backfilled_at": "2026-10-21T02:00:00+05:30"}],
@@ -180,6 +184,10 @@ carries `skipped`, the reason, as every job does). Email sync runs gain
 }
 ```
 
+- `live_allowed`: whether `PATCH /crm/settings/capture {"mode": "live"}`
+  passes its own checks (§1.2): a dry run of the workspace was ever applied
+  (not only the latest) and an active mailbox is on Primary and Sent. The
+  page enables its Live option from it.
 - `dry_run` is `null` when none has run. `counts` are live while it runs,
   and as they stood once it finished or was cancelled. `recall` is empty
   until it finishes.
@@ -190,10 +198,16 @@ carries `skipped`, the reason, as every job does). Email sync runs gain
 - Recall: each labelled thread is judged as if it had no label (plan §5.7):
   `filed_known` only through a person or company created before the
   thread's first message; `found` is a high- or medium-confidence lead or
-  deal signal.
+  deal signal. `ignored` (every outside person on the ignore list) and
+  `known_now` (every message names someone the CRM holds now, made after
+  the thread began) are never sent to Claude (spec G-5); the line adds
+  "J of the rest name only people added to the CRM after they began, so
+  they were not sent to Claude." when J > 0. The line and rows are shown
+  only once the run finished and was not cancelled.
 - `recall.rows[].subject` is present only when the thread is stored (it is
   already captured mail); otherwise `null`. `fate` ∈ `filed_known`, `found`,
-  `judged_otherwise`, `skipped_rules`, `outside_scope`.
+  `judged_otherwise`, `skipped_rules`, `outside_scope`, `ignored`,
+  `known_now`.
 - `findings` include every confidence; the UI groups low separately
   (FR-CAP-DIS-07).
 

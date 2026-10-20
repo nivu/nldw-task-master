@@ -424,13 +424,15 @@ export function ReviewItemCard({
   const newLead = item.type === "new_lead";
   const leadLinked = newLead && (Boolean(edits.link_company_id) || item.target?.record_type === "company");
   // Spec 010 FR-CAP-REV-03: the sender's own domain is what the server adds,
-  // even when the lead's company domain came from the text. A public webmail
-  // lead with no website has no domain (FR-CAP-DIS-09), so none is offered;
-  // a webmail sender whose website came from the text is refused by the
-  // server with its sentence.
+  // even when the lead's company domain came from the text. It is offered
+  // only when it is the lead's domain: a public webmail lead has no domain
+  // (FR-CAP-DIS-09), and one whose website came from the text names another
+  // domain than the sender's, which for webmail the server refuses (plan
+  // §5.11: hidden for webmail).
   const senderDomain = newLead ? domainOf(item.suggestion.email) : null;
   const ignoreAddress = newLead && senderDomain ? text(item.suggestion.email).trim().toLowerCase() : null;
-  const ignoreDomain = senderDomain && text(item.suggestion.domain) ? senderDomain : null;
+  const leadDomain = text(item.suggestion.domain).trim().toLowerCase();
+  const ignoreDomain = senderDomain && leadDomain === senderDomain ? senderDomain : null;
   const hint = newLead ? DEAL_HINT_TEXT[text(item.suggestion.deal_stage_hint)] : undefined;
   // A discovered deal signal whose company was matched only through a
   // website named in the email's text (spec 010 contracts §6.2).

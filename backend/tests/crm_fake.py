@@ -3367,7 +3367,8 @@ class FakeCrmStore:
 
     def set_capture_mode(self, actor: dict[str, Any], workspace_id: str, mode: str) -> dict:
         """072 crm_capture_set_mode: off or live (live only after an applied
-        run), audited; an open run is cancelled."""
+        run), audited; an open run is cancelled; live returns the dry run's
+        decisions to pending."""
         if actor["kind"] != "user" or actor["workspace_id"] != workspace_id:
             raise store.refusal_for("CRM04", "No such workspace.")
         if mode == "dry_run":
@@ -3383,6 +3384,15 @@ class FakeCrmStore:
             run.update(
                 finished_at=datetime.now(UTC).isoformat(), cancelled=True, recall=[], counts=counts
             )
+        if mode == "live":
+            # 072: what a dry run judged and was never applied is judged
+            # again live (after the cancelled run's counts are kept).
+            for c in self.rows["crm_capture_candidates"].values():
+                if c["workspace_id"] == workspace_id and c["dry_run"]:
+                    c.update(
+                        **DEFAULTS["crm_capture_candidates"],
+                        updated_at=datetime.now(UTC).isoformat(),
+                    )
         return {"mode": mode, "cancelled_run_id": run["id"] if run else None}
 
     def finish_dry_run(self, workspace_id: str, run_id: str, recall: list[dict]) -> bool:
@@ -3569,14 +3579,22 @@ class FakeCrmStore:
         return len(gone)
 
     def capture_supersede(self, workspace_id: str, source_key: str, keep: str) -> int:
-        """073 crm_capture_supersede: the conversation's other open new leads
-        expire, one review.expired audit row each, as the sync."""
+        """073 crm_capture_supersede: the conversation's other open capture
+        items (new leads and discovered deal signals; a deal document's is
+        the sync's) expire, one review.expired audit row each, as the sync."""
         actor = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
         gone = [
             r
             for r in self._of("crm_review_items", workspace_id)
             if r["status"] == "open"
-            and r["type"] == "new_lead"
+            and (
+                r["type"] == "new_lead"
+                or (
+                    r["type"] == "deal_signal"
+                    and ((r.get("suggestion") or {}).get("evidence") or {}).get("origin")
+                    == "discovery"
+                )
+            )
             and r["source_kind"] == "email_thread"
             and r["source_key"] == source_key
             and r["dedupe_key"] != keep

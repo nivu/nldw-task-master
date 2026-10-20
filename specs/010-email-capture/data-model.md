@@ -190,7 +190,7 @@ target assertion.
 | `started_by` | uuid | FK `profiles` ON DELETE SET NULL |
 | `finished_at` | timestamptz | NULL |
 | `cancelled` | boolean | NOT NULL DEFAULT false; true when the mode left Dry run before the run finished (`crm_capture_set_mode`) |
-| `recall` | jsonb | NOT NULL DEFAULT `'[]'` `CHECK (jsonb_typeof(recall) = 'array' AND pg_column_size(recall) <= 262144)` (500 rows of about 165 bytes); `[{mailbox_id, thread_id, latest_at, fate}]`, fate ∈ `filed_known, found, judged_otherwise, skipped_rules, outside_scope`; filled as the recall check goes, while the run is open |
+| `recall` | jsonb | NOT NULL DEFAULT `'[]'` `CHECK (jsonb_typeof(recall) = 'array' AND pg_column_size(recall) <= 262144)` (500 rows of about 165 bytes); `[{mailbox_id, thread_id, latest_at, fate}]`, fate ∈ `filed_known, found, judged_otherwise, skipped_rules, outside_scope, ignored, known_now` (no CHECK on the values); filled as the recall check goes, while the run is open |
 | `counts` | jsonb | NULL while the run is open; `CHECK (counts IS NULL OR jsonb_typeof(counts) = 'object')`; `crm_capture_report` as it stood when the run finished or was cancelled |
 | `applied_at` | timestamptz | NULL |
 | `applied_by` | uuid | FK `profiles` ON DELETE SET NULL |
@@ -210,6 +210,12 @@ Functions (072):
   attempts?}`; `status = 'judged'` sets `judged_message_id = p_message_id`
   and `judged_at = now()`. Returns false when nothing was written (a newer
   message arrived, or already decided). No actor (log).
+- **The capture lock.** `crm_capture_start_dry_run`, `crm_capture_set_mode`
+  and `crm_capture_apply` (§3.7) each begin with
+  `pg_advisory_xact_lock(hashtext('crm_capture:' || ws))`, before any
+  check, so a start, a mode change and an apply of one workspace run one
+  after another and each sees what the other committed (an apply racing a
+  start could otherwise leave the mode Live with a new run open).
 - **`crm_capture_start_dry_run(p_actor jsonb) RETURNS uuid`** — actor kind
   `user` (an Admin; the route checks the role). In one transaction: refuse
   CRM09 "A dry run is already running." when an unfinished run exists;
@@ -225,7 +231,9 @@ Functions (072):
   set `crm.actor`; update the `capture` setting (audited `setting.updated`);
   when an open run exists, `UPDATE crm_capture_dry_runs SET finished_at =
   now(), cancelled = true, recall = '[]', counts = crm_capture_report(ws,
-  id) WHERE workspace_id = ws AND finished_at IS NULL`.
+  id) WHERE workspace_id = ws AND finished_at IS NULL`; then, for `live`,
+  every `dry_run` candidate back to `pending` exactly as the start does, so
+  the live job judges again what an unapplied dry run judged.
   `live` is refused CRM22 "Run and apply a dry run first." unless a run of
   the workspace has `applied_at` set (the API checks first, contracts §1.2).
   Returns `{mode, cancelled_run_id}`. The settings route calls it instead
@@ -274,7 +282,7 @@ Functions (072):
 ### 3.7 Functions (073)
 
 - **`crm_capture_apply(p_actor jsonb, p_run uuid) RETURNS jsonb`** — actor
-  kind `user`. Refuses CRM22 "This dry run cannot be applied." unless the run
+  kind `user`. Takes the capture lock (§3.5) first. Refuses CRM22 "This dry run cannot be applied." unless the run
   is the workspace's latest, finished, not cancelled, not applied and
   `finished_at >= now() - interval '7 days'` (the report's age, not the
   start's: a run paused by the monthly budget may finish late) (the API checks first and gives the precise sentence,
@@ -293,12 +301,16 @@ Functions (072):
 - **`crm_capture_supersede(p_actor jsonb, p_source_key text, p_keep text)
   RETURNS integer`** — actor kind `sync` or `system`. Expires (`status =
   'expired'`, `decided_at = now()`, one `review.expired` audit row each, as
-  `crm_review_expire` does) every open `new_lead` item of the workspace with
+  `crm_review_expire` does) every open capture item of the workspace (a
+  `new_lead`, or a `deal_signal` whose `suggestion -> 'evidence' ->>
+  'origin' = 'discovery'`; a deal document's signal is never touched) with
   `source_kind = 'email_thread'`, that `source_key` and a dedupe key other
   than `p_keep`. Called by `services/crm/capture.py::store_items` after each
-  `new_lead` upsert, so a conversation whose duplicate check changed (a
-  company created, or trashed, after its first item) keeps one open new lead
-  (spec §13 S3 line 1). Returns how many.
+  capture item's upsert, so a conversation whose duplicate check changed (a
+  company created, or trashed, after its first item) or whose lead became a
+  deal signal keeps one open capture item (spec §13 S3 line 1); and by the
+  live job with `p_keep = ''` when a new judgement makes no item, so the
+  earlier one expires (FR-CAP-DIS-06). Returns how many.
 
 ---
 

@@ -80,6 +80,7 @@ class TestTheOverview:
         assert r.status_code == 200, r.text
         assert r.json() == {
             "mode": "off",
+            "live_allowed": False,
             "mailboxes": [
                 {
                     "id": mailbox["id"],
@@ -92,6 +93,32 @@ class TestTheOverview:
             "ignores": [],
             "dry_run": None,
         }
+
+    def test_capture_overview_live_allowed_follows_any_applied_run(self, crm):
+        # FE-1: an applied run A, then a newer run B never applied; the page
+        # still offers Live, as PATCH accepts it.
+        http, fake, labs, mailbox = crm
+        assert _get(http).json()["live_allowed"] is False
+        fake.add_dry_run(
+            labs,
+            started_at="2026-10-10T05:00:00+00:00",
+            finished_at="2026-10-10T09:00:00+00:00",
+            applied_at="2026-10-10T10:00:00+00:00",
+        )
+        fake.add_dry_run(
+            labs,
+            started_at="2026-10-19T05:00:00+00:00",
+            finished_at="2026-10-19T06:00:00+00:00",
+            cancelled=True,
+        )
+        fake.set_capture(labs, "off")
+        got = _get(http).json()
+        assert got["dry_run"]["applied_at"] is None
+        assert got["live_allowed"] is True
+        assert _mode(http, {"mode": "live"}).status_code == 200
+        # Without a Primary and Sent mailbox, PATCH refuses Live, and so does the page.
+        fake.rows["crm_mailboxes"][mailbox["id"]]["capture_source"] = "labels"
+        assert _get(http).json()["live_allowed"] is False
 
     def test_capture_overview_of_a_finished_dry_run(self, crm):
         http, fake, labs, mailbox = crm
@@ -431,6 +458,34 @@ class TestApplying:
         r = _mode(http, {"mode": "live"})
         assert r.status_code == 200, r.text
         assert fake.capture_setting(labs["id"]) == {"mode": "live"}
+
+    @pytest.mark.parametrize("second", ["open", "finished"])
+    def test_capture_live_by_patch_rejudges_a_second_dry_runs_decisions(self, crm, second):
+        # CAP-INT-2: Live after run 1 was applied; run 2 judged a lead and
+        # was cancelled (or finished, never applied) by a PATCH to Live: the
+        # decision goes back to pending, so the live job judges it again.
+        http, fake, labs, mailbox = crm
+        run = _finished(fake, labs)
+        assert _apply(http, run["id"]).status_code == 200
+        assert _start(http).status_code == 202
+        fake.mark_candidates(
+            labs["id"],
+            mailbox["id"],
+            [{"thread_id": "t1", "message_id": "m1", "sent_at": NOW.isoformat()}],
+        )
+        [cand] = fake.rows["crm_capture_candidates"].values()
+        fake.record_candidate(
+            labs["id"],
+            cand["id"],
+            "m1",
+            {"status": "judged", "outcome": "new_lead", "confidence": "high", "dry_run": True},
+        )
+        if second == "finished":
+            [open_run] = [r for r in _runs(fake, labs) if r["finished_at"] is None]
+            open_run["finished_at"] = NOW.isoformat()
+        r = _mode(http, {"mode": "live"})
+        assert r.status_code == 200, r.text
+        assert (cand["status"], cand["outcome"], cand["dry_run"]) == ("pending", None, False)
 
     def test_capture_live_still_needs_a_primary_and_sent_mailbox(self, crm):
         http, fake, labs, mailbox = crm

@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from crm_fake import DEFAULTS, OWNER, SELLER, as_
+from postgrest.exceptions import APIError
 from test_crm_email_sync import (
     LABS,
     NOW,
@@ -860,6 +861,47 @@ class TestDealDocuments:
         run = _latest_run(fake)
         assert run["outcome"] == "ok" and run["counts"]["deal_doc_failed"] == 1
         assert fake.rows["crm_mailboxes"][mailbox["id"]]["docs_checked_at"] is None
+
+    @pytest.mark.parametrize("failure", ["time_limit", "item_refused"])
+    def test_capture_any_deal_document_failure_keeps_the_history_cursor(
+        self, crm, monkeypatch, failure
+    ):
+        # OPS-1: the search is a secondary step; whatever it raises, the
+        # page saves its history cursor and the sync run is not failed.
+        fake, mail, queue, mailbox, acme, deal = self._ready(crm)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-sow",
+            sender=OWNER_ADDRESS,
+            to="priya@acme.com",
+            at=NOW - timedelta(hours=1),
+            labels=SENT,
+            thread="t-sow",
+            attachments=["Acme SOW v2.pdf"],
+        )
+        if failure == "time_limit":
+            from celery.exceptions import SoftTimeLimitExceeded
+
+            def refused(*args, **kwargs):
+                raise SoftTimeLimitExceeded()
+
+            monkeypatch.setattr(gmail, "search", refused)
+        else:
+            from app.services.crm import review
+
+            def refused(*args, **kwargs):
+                raise APIError({"code": "23514", "message": "check violation"})
+
+            monkeypatch.setattr(review, "upsert", refused)
+        before = fake.rows["crm_mailboxes"][mailbox["id"]]["history_id"]
+        _sync(queue)
+        run = _latest_run(fake)
+        assert run["outcome"] == "ok" and run["counts"]["deal_doc_failed"] == 1
+        row = fake.rows["crm_mailboxes"][mailbox["id"]]
+        assert row["docs_checked_at"] is None
+        assert row["history_id"] != before
+        # The history itself was read: the SOW is stored.
+        assert "m-sow" in {m["gmail_message_id"] for m in _messages(fake)}
 
     def test_capture_labels_only_never_searches(self, crm):
         _, fake, labs, _, mail, queue, mailbox, _ = crm

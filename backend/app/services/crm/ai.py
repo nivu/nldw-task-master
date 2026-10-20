@@ -42,6 +42,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
@@ -81,7 +82,9 @@ def call(
     as data. With `site`, links on that site survive the link policy."""
     try:
         return _call(ws, job, phase, output_model, instruction, parts, site=site)
-    except (jobs.Skipped, SafeError):
+    except (jobs.Skipped, SafeError, SoftTimeLimitExceeded):
+        # A task's soft time limit is its own to handle (spec 010 OPS-2),
+        # and carries no text.
         raise
     except Exception as exc:
         name = type(exc).__name__

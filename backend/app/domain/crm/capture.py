@@ -734,7 +734,16 @@ def failure_counts(exc: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 
 #: Data-model §3.5 — a labelled conversation's fate in the recall check.
-FATES: Final = ("filed_known", "found", "judged_otherwise", "skipped_rules", "outside_scope")
+#: `ignored` and `known_now` are never sent to Claude (G-5, NFR-CAP-02).
+FATES: Final = (
+    "filed_known",
+    "found",
+    "judged_otherwise",
+    "skipped_rules",
+    "outside_scope",
+    "ignored",
+    "known_now",
+)
 #: Labelled mail is judged as if it had no label: through Primary and Sent alone.
 CAPTURED: Final = (PRIMARY, SENT)
 
@@ -744,19 +753,28 @@ def recall_fate(
     in_capture: bool,
     survived: bool,
     known_before: bool,
+    ignored: bool = False,
+    known_now: bool = False,
     outcome: str | None = None,
     confidence: str | None = None,
 ) -> str:
     """PD-11 — what capture would have done with a labelled conversation:
-    outside Primary and Sent; skipped by the rules; filed as known through a
-    person or company that existed before it began; or judged, `found` only
-    as a high- or medium-confidence lead or deal signal."""
+    outside Primary and Sent; skipped by the rules; every outside person on
+    the ignore list; filed as known through a person or company that
+    existed before it began; every message naming someone in the CRM now
+    (its record made later, often from the label itself), so not judged:
+    Claude never sees known-client mail (G-5); or judged, `found` only as a
+    high- or medium-confidence lead or deal signal."""
     if not in_capture:
         return "outside_scope"
     if not survived:
         return "skipped_rules"
+    if ignored:
+        return "ignored"
     if known_before:
         return "filed_known"
+    if known_now:
+        return "known_now"
     if outcome in FINDING_OUTCOMES and confidence in ("high", "medium"):
         return "found"
     return "judged_otherwise"
@@ -764,14 +782,22 @@ def recall_fate(
 
 def recall_line(rows: Sequence[Mapping[str, Any]]) -> str:
     """ "Found N of your M labelled conversations; K of the rest are outside
-    Primary and Sent." (spec §4.5)."""
+    Primary and Sent." (spec §4.5), then, when there are any, how many were
+    not judged because they name only people already in the CRM."""
     total = len(rows)
     found = sum(1 for r in rows if r.get("fate") in ("filed_known", "found"))
     outside = sum(1 for r in rows if r.get("fate") == "outside_scope")
-    return (
+    known_now = sum(1 for r in rows if r.get("fate") == "known_now")
+    line = (
         f"Found {found} of your {total} labelled conversations; "
         f"{outside} of the rest are outside Primary and Sent."
     )
+    if known_now:
+        line += (
+            f" {known_now} of the rest name only people added to the CRM after they began,"
+            " so they were not sent to Claude."
+        )
+    return line
 
 
 # ---------------------------------------------------------------------------

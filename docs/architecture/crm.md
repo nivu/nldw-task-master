@@ -489,11 +489,13 @@ could not decide:
 2. Rules: internal-only and bulk messages dropped; nothing left → `skipped`.
 3. Ignore list: every outside participant on it by address or domain →
    `ignored`.
-4. Known check: a participant is now a person or a company domain →
-   `known`, and `crm.capture_thread` is queued on `worker-crm-sync` to file
-   the conversation.
-5. The gate again, then `gmail.thread_text` for the surviving message ids
-   only, and one structured call (`DiscoveryOutput`): *new lead*, *deal
+4. Known check, message by message as the sync decides: a message naming
+   a person or a company domain is known-contact mail. Every message known
+   → `known`, and `crm.capture_thread` is queued on `worker-crm-sync` to
+   file the conversation. Otherwise only the messages naming nobody known
+   go on (a known message not stored yet is still filed).
+5. The gate again, then `gmail.thread_text` for those message ids only (at
+   most the last 12, all the prompt holds), and one structured call (`DiscoveryOutput`): *new lead*, *deal
    signal*, *other business* or *not relevant*, with a confidence.
 6. `crm_capture_record` writes the decision only if the conversation's
    latest message is still the one judged, so a newer message wins and a
@@ -507,8 +509,15 @@ is pending and every capturing mailbox has finished its backfill, it
 computes the **recall check**: each Sales- or Leads-labelled conversation
 since the start date, judged as if it had no label, gets a fate
 (`filed_known`, `found`, `judged_otherwise`, `skipped_rules`,
-`outside_scope`). Any mode change through `PATCH /crm/settings/capture`
-cancels an open dry run (`crm_capture_set_mode`).
+`outside_scope`, `ignored`, `known_now`). The recall applies live's ignore
+list and known check before any text: a labelled thread on the ignore list
+(`ignored`) or naming only people the CRM holds now (`known_now`, often made
+by automation 2 from the label) never reaches Claude. Any mode change
+through `PATCH /crm/settings/capture` cancels an open dry run
+(`crm_capture_set_mode`); a change to Live also returns every unapplied dry
+run decision to pending, so Live judges it again. Starting, applying and
+changing the mode take one advisory lock per workspace, so they never
+interleave.
 
 **Apply and Live.** `POST /crm/capture/dry-runs/{id}/apply`, within 7 days
 of the run finishing, turns its high- and medium-confidence findings into
@@ -519,7 +528,10 @@ becomes an item before the decision is recorded; low confidence is recorded
 only. A finding's suggested domain and name are checked against existing
 companies (exact domain, a sibling domain on another public suffix, `007`'s
 name match); a match makes the item *link to the existing company*. A
-public webmail address never makes a company domain.
+public webmail address never makes a company domain. A conversation keeps
+one open capture item: after each upsert `crm_capture_supersede` expires
+its other open `new_lead` or discovered `deal_signal` (never a deal
+document's), and a re-judgement that makes no item expires the earlier one.
 
 **Retention.** `crm.purge_trash` deletes every decided candidate row older
 than 12 months (`crm_capture_purge`).

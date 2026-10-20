@@ -1960,7 +1960,11 @@ export type CrmCaptureRecallFate =
   | "found"
   | "judged_otherwise"
   | "skipped_rules"
-  | "outside_scope";
+  | "outside_scope"
+  /** Every outside person on the ignore list: never sent to Claude. */
+  | "ignored"
+  /** Names only people added to the CRM after it began: never sent to Claude (G-5). */
+  | "known_now";
 
 /** One Sales- or Leads-labelled conversation of the recall check (FR-CAP-RPT-03). */
 export interface CrmCaptureRecallRow {
@@ -2003,6 +2007,9 @@ export interface CrmCaptureDryRun {
 /** GET /crm/capture — Admin only. */
 export interface CrmCaptureOverview {
   mode: CrmCaptureMode;
+  /** Whether Live can be chosen: a dry run of the workspace was ever applied
+   *  and an active mailbox is on Primary and Sent (contracts §1.2). */
+  live_allowed: boolean;
   mailboxes: {
     id: string;
     email: string;

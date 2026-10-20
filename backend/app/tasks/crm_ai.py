@@ -149,7 +149,15 @@ def _capture(workspace: dict, now: datetime) -> dict:
     return capture.run(workspace, now)
 
 
-@celery_app.task(name="crm_ai.capture", ignore_result=True, bind=True)
+#: Below Celery's 600-second hard limit (`app/worker.py`): a conversation
+#: whose Gmail reads are slow ends its run with its counts instead of the
+#: worker child being killed with the run left `running` (OPS-2).
+CAPTURE_SOFT_SECONDS = 540
+
+
+@celery_app.task(
+    name="crm_ai.capture", ignore_result=True, bind=True, soft_time_limit=CAPTURE_SOFT_SECONDS
+)
 def capture_conversations(self) -> dict:
     """Hourly, per workspace (FR-CAP-DIS-10). No arguments. A dry run with
     work left queues this task again a minute later, at most one follow-up

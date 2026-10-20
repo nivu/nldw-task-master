@@ -17,10 +17,14 @@ b. internal-only and bulk messages drop out (the sync's rules); none left →
    `skipped`;
 c. every outside participant on the ignore list → `ignored` (after the
    metadata read alone, PD-21);
-d. an outside participant now a person or a company domain → `known`, and
-   `crm.capture_thread` files it on `worker-crm-sync`;
-e. the budget again, then the text of **only the messages left after a and
-   b** (`gmail.thread_text`), in memory;
+d. message by message, as the sync's `_take` decides: a message naming an
+   outside participant now a person or a company domain is known-contact
+   mail; every message known → `known`, and `crm.capture_thread` files it on
+   `worker-crm-sync`; otherwise only the messages naming nobody known go on
+   (G-5), a known one not stored yet still filed;
+e. the budget again, then the text of **only the messages left after a, b
+   and d**, at most the last 12 the prompt holds (`gmail.thread_text`), in
+   memory;
 f. one call through `009`'s wrapper (`ai.call(..., "capture", None, ...)`):
    budgeted, logged in `crm_ai_usage`, schema-checked and masked;
 g. live, a high- or medium-confidence lead or deal signal first becomes a
@@ -30,8 +34,9 @@ g. live, a high- or medium-confidence lead or deal signal first becomes a
    again; low confidence is recorded only (FR-CAP-DIS-07). Then the
    decision, recorded only while the candidate is still pending on the
    message judged (`crm_capture_record`); a lead or a deal signal keeps its
-   finding. A dry run writes nothing else: no item, no record
-   (FR-CAP-RPT-01).
+   finding. Live, a judgement that makes no item expires the conversation's
+   open one from an earlier judgement (FR-CAP-DIS-06). A dry run writes
+   nothing else: no item, no record (FR-CAP-RPT-01).
 
 Failures (PD-17): Claude answering off-schema twice, or a malformed thread,
 counts against the conversation (`attempts`; `failed` at the third). Any
@@ -47,7 +52,8 @@ The mode is read again before each conversation's text is read: a switch
 to Off, or a cancelled run, stops the run there. With nothing pending and
 every capturing mailbox backfilled, the recall check (FR-CAP-RPT-03, PD-11)
 judges each conversation labelled Sales or Leads since the start date **as
-if it had no label**, storing only its fate, on the open run as each is
+if it had no label**, after the same ignore list and known check as live
+(so no known client's mail reaches Claude), storing only its fate, on the open run as each is
 decided, so a run out of time resumes where it stopped; with every thread
 given a fate, the run finishes. After that the job skips until a new dry
 run, or until an Admin **applies** it (FR-CAP-RPT-04): its high- and
@@ -71,6 +77,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Final
+
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
 from app.domain.crm import ai_rules, email_rules
@@ -247,6 +255,10 @@ def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
         except jobs.Skipped as skipped:
             # A gate closed (the budget): the run stops and keeps its counts.
             raise jobs.Skipped(skipped.reason, counts) from None
+        except SoftTimeLimitExceeded:
+            # OPS-2: the task's soft limit, as out of time: the run ends with
+            # its counts, the candidate stays pending for the next tick.
+            break
         except Exception as exc:  # noqa: BLE001 - sorted by whose failure it is
             if rules.failure_counts(exc):
                 _attempt_failed(ws_id, candidate, dry, counts, exc)
@@ -354,16 +366,29 @@ def _survivors(
     return out
 
 
-def _known(ws_id: str, outside: list[dict[str, str]]) -> bool:
-    """Step d — an outside participant is a person (any of their emails) or
-    has a company's domain, Trash included, as the sync matches (PD-7)."""
-    addresses = sorted({p["email"] for p in outside})
+def _known_ids(ws_id: str, kept: list[dict[str, Any]]) -> set[str]:
+    """Step d, message by message as `_take` decides (`links_for`): the ids
+    of the messages naming an outside participant who is a person (any of
+    their emails) or has a company's domain, Trash included (PD-7). Such a
+    message is the sync's to file; the rest are what made the conversation
+    a candidate, and only they are judged (G-5)."""
+    addresses = sorted({p["email"] for m in kept for p in m["outside"]})
     if not addresses:
-        return False
-    if store.people_by_emails(ws_id, addresses):
-        return True
+        return set()
+    known: set[str] = set()
+    for person in store.people_by_emails(ws_id, addresses):
+        for address in [person.get("primary_email"), *(person.get("additional_emails") or [])]:
+            if address in addresses:
+                known.add(address)
     domains = sorted({email_rules.domain_of(a) for a in addresses})
-    return bool(store.list_domains(ws_id, domains=domains))
+    held = {d["domain"] for d in store.list_domains(ws_id, domains=domains)}
+    return {
+        m["id"]
+        for m in kept
+        if any(
+            p["email"] in known or email_rules.domain_of(p["email"]) in held for p in m["outside"]
+        )
+    }
 
 
 def _record(ws_id: str, candidate: dict[str, Any], values: dict[str, Any]) -> bool:
@@ -405,12 +430,21 @@ def _ask(
     and the budget are checked again first."""
     _still_on(workspace["id"], open_run)
     ai.gate(workspace, None)
-    read = gmail.thread_text(mailbox["email"], [m["id"] for m in kept])
+    # Only the messages the prompt can hold are read (its last 12), so one
+    # long conversation costs at most that many Gmail reads (OPS-2).
+    ordered = sorted(kept, key=lambda m: (m["sent_at"], m["id"]))
+    wanted = [m["id"] for m in ordered[-rules.MAX_MESSAGES :]]
+    read = gmail.thread_text(mailbox["email"], wanted)
     by_id = {r["id"]: r for r in read}
-    judged = [{**m, "attachments": by_id[m["id"]]["attachments"]} for m in kept if m["id"] in by_id]
-    if not judged:
+    if not by_id:
         return None
-    texts = {m["id"]: by_id[m["id"]]["text"] for m in judged}
+    gone = set(wanted) - set(by_id)
+    judged = [
+        {**m, "attachments": (by_id.get(m["id"]) or {}).get("attachments") or []}
+        for m in kept
+        if m["id"] not in gone
+    ]
+    texts = {m["id"]: by_id[m["id"]]["text"] for m in judged if m["id"] in by_id}
     outside = rules.outside_of(judged)
     choices = rules.website_choices(outside, texts.values(), workspace.get("allowed_domains") or [])
     parts = rules.prompt_parts(
@@ -450,12 +484,20 @@ def _judge(
         if _record(ws_id, candidate, {**base_values, "status": "ignored"}):
             counts["ignored"] += 1
         return
-    if _known(ws_id, rules.outside_of(kept)):
+    known_ids = _known_ids(ws_id, kept)
+    unknown = [m for m in kept if m["id"] not in known_ids]
+    if not unknown:
         if _record(ws_id, candidate, {**base_values, "status": "known"}):
             counts["known"] += 1
             _file(ws_id, mailbox["id"], candidate["thread_id"])
         return
-    asked = _ask(workspace, mailbox, kept, open_run)
+    if known_ids and len(store.stored_message_ids(ws_id, mailbox["id"], sorted(known_ids))) < len(
+        known_ids
+    ):
+        # A known message the sync has not stored (its contact became known
+        # after the sync passed it) is filed; the rest are judged below.
+        _file(ws_id, mailbox["id"], candidate["thread_id"])
+    asked = _ask(workspace, mailbox, unknown, open_run)
     if asked is None:
         if _record(ws_id, candidate, {**base_values, "status": "skipped"}):
             counts["skipped_rules"] += 1
@@ -465,25 +507,36 @@ def _judge(
     if finding is not None:
         # FR-CAP-DIS-08: kept with the finding, so the report shows it too.
         finding["duplicate_company_id"] = duplicate_of(ws_id, finding)
-    if not dry and finding is not None:
+    if not dry:
         # Live: the item is built and stored while the candidate is still
         # pending, so a fault in the duplicate check, the owner or the upsert
         # leaves it pending to be judged again; a decision recorded first
         # would never be picked up again. The upsert is idempotent per dedupe
         # key and source version, so the retry makes no second item.
-        item = item_for(
-            workspace,
-            mailbox,
-            thread_id=candidate["thread_id"],
-            message_id=candidate["latest_message_id"],
-            outcome=answer["outcome"],
-            confidence=answer["confidence"],
-            finding=finding,
-            generated_at=_now().isoformat(),
+        item = (
+            item_for(
+                workspace,
+                mailbox,
+                thread_id=candidate["thread_id"],
+                message_id=candidate["latest_message_id"],
+                outcome=answer["outcome"],
+                confidence=answer["confidence"],
+                finding=finding,
+                generated_at=_now().isoformat(),
+            )
+            if finding is not None
+            else None
         )
         if item is not None:
             made = store_items(ws_id, [item])
             counts["items"] += sum(1 for m in made if m.get("created"))
+        else:
+            # FR-CAP-DIS-06: judged again from the start, the conversation
+            # makes no item now, so an open one of an earlier judgement
+            # (its evidence stale) expires.
+            store.capture_supersede(
+                ws_id, rules.source_key(mailbox["id"], candidate["thread_id"]), ""
+            )
     recorded = _record(
         ws_id,
         candidate,
@@ -543,13 +596,15 @@ def duplicate_of(ws_id: str, finding: Mapping[str, Any]) -> str | None:
 
 
 def store_items(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`review.upsert`, then each stored `new_lead`'s conversation keeps it
-    as its only open new lead: one under another dedupe key (made before a
-    duplicate check linked it to a company, or before the company went)
-    expires (spec §13 S3 line 1)."""
+    """`review.upsert`, then each stored item is its conversation's only
+    open capture item: another open `new_lead` or discovered `deal_signal`
+    under another dedupe key (made before a duplicate check linked it to a
+    company, before the company went, or before a re-judgement turned the
+    lead into a deal signal) expires (spec §13 S3 line 1). A deal-document
+    signal is the sync's and is left as it is."""
     made = review.upsert(ws_id, items)
     for item, done in zip(items, made, strict=True):
-        if item["type"] == "new_lead" and done.get("id"):
+        if item["type"] in ("new_lead", "deal_signal") and done.get("id"):
             store.capture_supersede(ws_id, item["source_key"], item["dedupe_key"])
     return made
 
@@ -655,9 +710,15 @@ def _fate(
     mailbox: dict[str, Any],
     thread_id: str,
     open_run: Mapping[str, Any],
+    ignores: list[dict[str, Any]],
 ) -> tuple[str, str | None]:
     """A labelled conversation judged as if it had no label: `(fate, latest
-    message time)`. Nothing is stored for it but the fate."""
+    message time)`. Nothing is stored for it but the fate. Claude sees it
+    only after the same checks as live (G-5, NFR-CAP-02): the rules, the
+    ignore list (`ignored`) and the known-contact check, so a conversation
+    whose every message names someone in the CRM now is never read
+    (`known_now`, unless its record predates it: `filed_known`), and of the
+    rest only the messages naming nobody known are judged."""
     ws_id = workspace["id"]
     messages = gmail.thread_meta(mailbox["email"], thread_id).get("messages") or []
     if not messages:
@@ -672,11 +733,25 @@ def _fate(
         kept = []
     if not kept:
         return rules.recall_fate(in_capture=True, survived=False, known_before=False), latest
+    if rules.ignored(rules.outside_of(kept), ignores):
+        # FR-CAP-DIS-03: before any text is read.
+        return (
+            rules.recall_fate(in_capture=True, survived=True, known_before=False, ignored=True),
+            latest,
+        )
     first = min(times) if times else min(m["sent_at"] for m in kept)
     if _known_before(ws_id, rules.outside_of(kept), first):
         return rules.recall_fate(in_capture=True, survived=True, known_before=True), latest
+    known_ids = _known_ids(ws_id, kept)
+    unknown = [m for m in kept if m["id"] not in known_ids]
+    if not unknown:
+        # G-5: a known client's mail never reaches Claude, even for recall.
+        return (
+            rules.recall_fate(in_capture=True, survived=True, known_before=False, known_now=True),
+            latest,
+        )
     try:
-        asked = _ask(workspace, mailbox, kept, open_run)
+        asked = _ask(workspace, mailbox, unknown, open_run)
     except ai.AiFailed as failed:
         if not rules.failure_counts(failed):
             raise
@@ -710,6 +785,7 @@ def _recall(
     ws_id = workspace["id"]
     rows: list[dict[str, Any]] = list(open_run.get("recall") or [])
     done = {(r["mailbox_id"], r["thread_id"]) for r in rows}
+    ignores = store.list_ignores(ws_id)
     for mailbox in sorted(mailboxes.values(), key=lambda m: m["email"]):
         for thread_id in _labelled_threads(mailbox, now):
             if len(rows) >= rules.RECALL_CAP:
@@ -718,7 +794,11 @@ def _recall(
                 continue
             if jobs.out_of_time():
                 return None
-            fate, latest = _fate(workspace, mailbox, thread_id, open_run)
+            try:
+                fate, latest = _fate(workspace, mailbox, thread_id, open_run, ignores)
+            except SoftTimeLimitExceeded:
+                # OPS-2: as out of time; the next tick resumes here.
+                return None
             row = {
                 "mailbox_id": mailbox["id"],
                 "thread_id": thread_id,
@@ -928,6 +1008,7 @@ def overview(ctx: Any) -> dict[str, Any]:
     findings and recall check (FR-CAP-RPT-02, -03)."""
     ws_id = ctx.workspace_id
     now = _now()
+    boxes = store.list_mailboxes(ws_id)
     mailboxes = [
         {
             "id": m["id"],
@@ -936,7 +1017,7 @@ def overview(ctx: Any) -> dict[str, Any]:
             "capture_start_date": str(m.get("capture_start_date") or rules.DEFAULT_START)[:10],
             "backfilled_at": m.get("backfilled_at"),
         }
-        for m in store.list_mailboxes(ws_id)
+        for m in boxes
     ]
     latest = store.latest_dry_run(ws_id)
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
@@ -970,8 +1051,12 @@ def overview(ctx: Any) -> dict[str, Any]:
                 "rows": _recall_rows(ws_id, recall),
             },
         }
+    live_allowed = store.has_applied_dry_run(ws_id) and any(
+        m["is_active"] and m.get("capture_source") == rules.PRIMARY_SENT for m in boxes
+    )
     return CaptureOverviewOut(
         mode=rules.capture_mode(store.capture_setting(ws_id)),
+        live_allowed=live_allowed,
         mailboxes=mailboxes,
         ignores=ignores,
         dry_run=dry_run,

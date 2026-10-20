@@ -591,6 +591,67 @@ class TestTheChain:
         assert crm_ai.capture_conversations.ignore_result is True
         assert crm_ai.capture_conversations.name == "crm_ai.capture"
 
+    def test_capture_the_task_has_a_soft_limit_below_the_hard_one(self):
+        # OPS-2: a slow conversation ends the run, never kills the child.
+        from app.worker import celery_app
+
+        soft = crm_ai.capture_conversations.soft_time_limit
+        assert soft is not None and jobs.AI_TASK_SECONDS < soft < celery_app.conf.task_time_limit
+
+    @pytest.mark.parametrize("where", ["gmail", "claude"])
+    def test_capture_the_soft_limit_ends_the_run_with_its_counts(self, cap, monkeypatch, where):
+        # OPS-2: as out of time: the run is recorded with its counts, the
+        # candidate stays pending, and the dry run follows itself.
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        cap.conversation("t1", at=NOW - timedelta(days=3))
+        cap.conversation("t2", sender="ravi@robots.io")
+        cap.answer(LEAD, LEAD)
+        if where == "gmail":
+            real = cap.gmail.thread_text
+
+            def slow(mailbox, ids):
+                if "t2-m1" in ids:
+                    raise SoftTimeLimitExceeded()
+                return real(mailbox, ids)
+
+            monkeypatch.setattr(gmail, "thread_text", slow)
+        else:
+            reply = cap.claude.messages
+            calls = {"n": 0}
+
+            def slow(**kwargs):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise SoftTimeLimitExceeded()
+                return reply(**kwargs)
+
+            monkeypatch.setattr("app.services.crm.claude.messages", slow)
+        result = crm_ai.capture_conversations()
+        got = result["runs"]["labs"]
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["judged"] == 1 and got["counts"]["pending_left"] == 1
+        assert cap.candidate("t1")["status"] == "judged"
+        assert cap.candidate("t2")["status"] == "pending"
+        assert len(cap.celery.named("crm_ai.capture")) == 1
+
+    def test_capture_reads_at_most_the_messages_the_prompt_holds(self, cap):
+        # OPS-2: a long conversation costs at most 12 text reads, its latest.
+        for n in range(15):
+            cap.gmail.message(
+                "t1",
+                f"t1-m{n:02d}",
+                sender="priya@acme-robotics.com",
+                to=BOX,
+                at=NOW - timedelta(days=20 - n),
+            )
+        cap.mark("t1", "t1-m14", NOW - timedelta(days=6))
+        cap.answer(LEAD)
+        cap.tick()
+        assert cap.gmail.text_reads == [f"t1-m{n:02d}" for n in range(3, 15)]
+        row = cap.candidate("t1")
+        assert row["status"] == "judged" and row["finding"]["message_count"] == 15
+
     def test_capture_the_beat_runs_it_hourly_at_minute_seven(self):
         from app.worker import celery_app
 
@@ -643,9 +704,11 @@ class TestRecall:
         self._labelled(cap, "r-bulk", primary_sales, "news@bulk.io", List_Unsubscribe="<x>")
         self._labelled(cap, "r-known", primary_sales, "ravi@old.io")
         self._company(cap, "Old", "old.io", "2026-01-01T00:00:00+00:00")
-        # Automation 2 made this company from the labelled mail itself.
+        # Automation 2 made this company from the labelled mail itself: it
+        # is not `filed_known`, and, a client now, never sent to Claude (G-5).
         self._labelled(cap, "r-auto", primary_sales, "priya@acme-robotics.com")
         self._company(cap, "Acme Robotics", "acme-robotics.com", NOW.isoformat())
+        self._labelled(cap, "r-new", primary_sales, "sam@newco.io")
         self._labelled(cap, "r-vendor", primary_sales, "sales@vendor.io")
         cap.answer(LEAD, VENDOR)
         got = cap.tick()
@@ -657,7 +720,8 @@ class TestRecall:
             "r-out": "outside_scope",
             "r-bulk": "skipped_rules",
             "r-known": "filed_known",
-            "r-auto": "found",
+            "r-auto": "known_now",
+            "r-new": "found",
             "r-vendor": "judged_otherwise",
         }
         assert {r["mailbox_id"] for r in run["recall"]} == {cap.mailbox["id"]}
@@ -667,6 +731,42 @@ class TestRecall:
         # Nothing is stored for a labelled thread but its fate.
         assert cap.fake.rows["crm_capture_candidates"] == {}
         assert len(cap.claude.calls) == 2
+        assert sorted(cap.gmail.text_reads) == ["r-new-m1", "r-vendor-m1"]
+        line = capture.overview(_Ctx(cap))["dry_run"]["recall"]["line"]
+        assert line == (
+            "Found 2 of your 6 labelled conversations; 1 of the rest are outside Primary and "
+            "Sent. 1 of the rest name only people added to the CRM after they began, so they "
+            "were not sent to Claude."
+        )
+
+    def test_capture_recall_never_sends_an_ignored_or_known_client_message(self, cap):
+        # PRIV-1, PRIV-2: the recall applies live's ignore list and known
+        # check before any text; a mixed thread sends only its unknown part.
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        _ignore(cap, "domain", "vendor.io")
+        self._labelled(cap, "r-ignored", primary_sales, "sales@vendor.io", text="ZQXIGNORED")
+        self._company(cap, "Hearsight", "hearsight.com", NOW.isoformat())
+        self._labelled(cap, "r-mixed", primary_sales, "client@hearsight.com", text="ZQXCLIENT")
+        cap.gmail.message(
+            "r-mixed",
+            "r-mixed-m2",
+            sender="newperson@acme.io",
+            to=BOX,
+            at=NOW - timedelta(days=20),
+            labels=primary_sales,
+            text="Could we get a quote?",
+        )
+        cap.answer(LEAD)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert {r["thread_id"]: r["fate"] for r in run["recall"]} == {
+            "r-ignored": "ignored",
+            "r-mixed": "found",
+        }
+        assert cap.gmail.text_reads == ["r-mixed-m2"]
+        [prompt] = cap.claude.prompts
+        assert "ZQXIGNORED" not in prompt and "ZQXCLIENT" not in prompt
 
     def test_capture_recall_out_of_time_resumes_without_judging_twice(self, cap, monkeypatch):
         # Plan §5.7: each fate is kept on the open run as it is decided, so a
@@ -913,6 +1013,116 @@ class TestLive:
             a["action"] == "review.expired" and a["target_id"] == first["id"]
             for a in live.fake.audit
         )
+
+
+class TestRejudging:
+    """FR-CAP-DIS-06, -08 — a conversation judged again from the start keeps
+    at most one open capture item, and none when it no longer makes one."""
+
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_capture_a_new_sender_in_a_known_thread_is_judged(self, live, stored):
+        # CAP-INT-1: the known check is the sync's, message by message. The
+        # client's message is filed; the stranger's is judged, alone (G-5).
+        _company(live, "Hearsight", "hearsight.com")
+        at = NOW - timedelta(days=3)
+        live.gmail.message(
+            "t1", "t1-m1", sender="client@hearsight.com", to=BOX, at=at, text="ZQXCLIENT"
+        )
+        if stored:
+            live.fake.store_emails(
+                live.labs["id"],
+                live.mailbox["id"],
+                [
+                    {
+                        "gmail_message_id": "t1-m1",
+                        "thread_id": "t1",
+                        "subject": "Hello",
+                        "sent_at": at.isoformat(),
+                        "direction": "inbound",
+                        "from_email": "client@hearsight.com",
+                        "participants": [],
+                        "is_internal": False,
+                        "is_auto": False,
+                        "links": [],
+                    }
+                ],
+            )
+        later = NOW - timedelta(days=1)
+        live.gmail.message("t1", "t1-m2", sender="New Person <newperson@acme.io>", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        live.answer({**LEAD, "company_name": "Acme IO", "person_email": "newperson@acme.io"})
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        row = live.candidate("t1")
+        assert (row["status"], row["outcome"]) == ("judged", "new_lead")
+        assert live.gmail.text_reads == ["t1-m2"]
+        [prompt] = live.claude.prompts
+        assert "ZQXCLIENT" not in prompt
+        [item] = _items(live)
+        assert item["suggestion"]["email"] == "newperson@acme.io"
+        filed = live.celery.named("crm.capture_thread")
+        assert len(filed) == (0 if stored else 1)
+
+    def test_capture_a_lead_turned_deal_signal_keeps_one_open_item(self, live):
+        # CAP-INT-3: a webmail lead, a company then made by hand by name, a
+        # deal signal at the next message: the earlier new lead expires.
+        live.conversation("t1", sender="Priya Shah <priya.shah@gmail.com>")
+        signal = {
+            **LEAD,
+            "outcome": "deal_signal",
+            "confidence": "medium",
+            "deal_stage": "discovery",
+            "person_email": "priya.shah@gmail.com",
+            "website_choice": None,
+        }
+        live.answer(signal, signal)
+        live.tick()
+        [first] = _items(live)
+        assert first["type"] == "new_lead"
+        company = _company(live, "Acme Robotics")
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya.shah@gmail.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        live.tick()
+        opened = [i for i in _items(live) if i["status"] == "open"]
+        assert [(i["type"], i["record_id"]) for i in opened] == [("deal_signal", company["id"])]
+        assert live.fake.rows["crm_review_items"][first["id"]]["status"] == "expired"
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {**LEAD, "outcome": "not_relevant", "company_name": None, "website_choice": None},
+            {**LEAD, "confidence": "low"},
+        ],
+        ids=["not_relevant", "low_confidence"],
+    )
+    def test_capture_a_rejudgement_with_no_item_expires_the_open_one(self, live, answer):
+        # CAP-INT-4: "sorry, wrong company" at the next message.
+        live.conversation("t1")
+        live.answer(LEAD, answer)
+        live.tick()
+        [first] = _items(live)
+        # A deal document's signal on the same conversation is the sync's.
+        document = live.fake.add_review_item(
+            live.labs,
+            type="deal_signal",
+            record_type="company",
+            record_id=_company(live, "Other", "other.example")["id"],
+            source_key=first["source_key"],
+            suggestion={
+                "action": "move",
+                "stage": "proposal",
+                "evidence": {"origin": "deal_document"},
+            },
+        )
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya@acme-robotics.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert live.candidate("t1")["status"] == "judged"
+        assert live.fake.rows["crm_review_items"][first["id"]]["status"] == "expired"
+        assert live.fake.rows["crm_review_items"][document["id"]]["status"] == "open"
 
 
 class TestIgnore:

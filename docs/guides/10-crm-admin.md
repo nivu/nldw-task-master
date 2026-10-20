@@ -194,7 +194,12 @@ Capture has three modes, and starts **Off**:
    **Recall check** lists each conversation you labelled Sales or Leads
    since the start date and says what capture would have done with it: filed
    as known, found as a lead or deal signal, judged otherwise, skipped by
-   the rules, or never seen because it was outside Primary and Sent.
+   the rules, skipped by the ignore list, or never seen because it was
+   outside Primary and Sent. A labelled conversation with people who were
+   added to the CRM only later (often from that label) is not shown to the
+   AI at all, because the AI never reads mail with people the CRM knows; the
+   report says so and counts these separately. It appears once the dry run
+   has finished.
 3. **Apply.** Turns the dry run's high- and medium-confidence leads and deal
    signals into Review Queue items, without asking the AI again, and
    switches capture to **Live**. Only the latest dry run can be applied,
@@ -204,9 +209,13 @@ Capture has three modes, and starts **Off**:
 In **Live**, new conversations are looked at every hour, and anything the AI
 thinks is a new lead or a deal signal waits in the Review Queue for the
 mailbox's owner. Nothing is created until a person approves it. Live can be
-chosen only after a dry run has been applied. Switching capture **Off**
-stops it at once; switching it off during a dry run stops the dry run, and
-that run can no longer be applied.
+chosen only after a dry run has been applied; after that, Live can be chosen
+again at any time, even if a later dry run was never applied (whatever that
+later run looked at is then looked at again in Live). Running a new dry run
+while capture is Live pauses Live until you apply it or choose Live again;
+the page asks first. Switching capture **Off** stops it at once; switching
+it off during a dry run stops the dry run, and that run can no longer be
+applied.
 
 The AI only ever sees conversations that passed every earlier check: never
 email among colleagues, newsletters or automated mail, email from people on

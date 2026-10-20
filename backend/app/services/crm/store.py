@@ -1918,7 +1918,8 @@ def purge_capture(workspace_id: str, before: datetime) -> int:
 
 def capture_supersede(workspace_id: str, source_key: str, keep: str) -> int:
     """073 `crm_capture_supersede` — expires the conversation's other open
-    `new_lead` items (dedupe key not `keep`), as the sync; how many."""
+    capture items (`new_lead`, discovered `deal_signal`; dedupe key not
+    `keep`, `""` for all of them), as the sync; how many."""
     actor = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
     return int(
         rpc(

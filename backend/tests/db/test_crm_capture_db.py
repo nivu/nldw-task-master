@@ -653,6 +653,40 @@ class TestDryRuns:
         real.start_dry_run(_actor(ws, owner))
         assert len(_runs(stack, ws)) == 2
 
+    def test_set_mode_live_rejudges_a_dry_runs_decisions(self, stack, ws, owner, real):
+        # CAP-INT-2: Live by PATCH after an applied run; the second run's
+        # decisions go back to pending (its counts kept as they stood).
+        stack.sql(
+            "INSERT INTO crm_capture_dry_runs (workspace_id, started_at, finished_at, applied_at) "
+            f"VALUES ({stack.q(ws)}, now() - interval '2 days', now() - interval '2 days', "
+            "now() - interval '2 days')"
+        )
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1")])
+        [row] = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {"status": "judged", "outcome": "new_lead", "confidence": "high", "dry_run": True},
+        )
+        done = real.set_capture_mode(_actor(ws, owner), ws, "live")
+        assert done == {"mode": "live", "cancelled_run_id": run_id}
+        [t1] = _candidates(stack, box["id"])
+        assert (t1["status"], t1["outcome"], t1["dry_run"]) == ("pending", None, False)
+        cancelled = next(r for r in _runs(stack, ws) if r["id"] == run_id)
+        assert cancelled["cancelled"] is True and cancelled["counts"]["judged"] == 1
+
+    def test_start_set_mode_and_apply_share_the_capture_lock(self, stack):
+        # MIG-1: a start, a mode change and an apply run one after another.
+        for name in ("crm_capture_start_dry_run", "crm_capture_set_mode", "crm_capture_apply"):
+            [row] = stack.sql(
+                "SELECT pg_get_functiondef(p.oid) AS d FROM pg_proc p "
+                f"WHERE p.proname = {stack.q(name)}"
+            )
+            assert "pg_advisory_xact_lock(hashtext('crm_capture:'" in row["d"], name
+
     @pytest.mark.parametrize(
         ("mode", "detail"),
         [
@@ -1171,6 +1205,68 @@ class TestSupersede:
                 f"SELECT crm_capture_supersede({_j(stack, person)}, 'gmail:mb:t-2', 'k') AS n"
             )
         assert raised.value.code == "CRM22"
+
+    def test_supersede_covers_discovered_deal_signals_but_not_documents(self, stack, ws, owner):
+        # CAP-INT-3, -4: a discovered deal signal expires like a new lead; a
+        # deal document's signal on the same conversation is the sync's.
+        company = _apply(
+            stack,
+            _actor(ws, owner),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": "Acme", "owner_id": owner},
+                }
+            ],
+        )[0]["id"]
+        sync = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": ws}
+        finding = {
+            "company_name": "Acme",
+            "person_email": "priya@acme.com",
+            "message_count": 1,
+            "deal_stage": "discovery",
+        }
+        common = {
+            "confidence": "high",
+            "mailbox_id": "mb",
+            "thread_id": "t-9",
+            "message_id": "m1",
+            "owner_id": None,
+            "model": "claude-sonnet-5-5",
+            "generated_at": _at(),
+        }
+        lead = capture.to_item(finding, outcome="new_lead", **common)
+        signal = capture.to_item(
+            finding, outcome="deal_signal", duplicate_company_id=company, **common
+        )
+        document = {
+            **signal,
+            "dedupe_key": f"{signal['dedupe_key']}|document",
+            "model": None,
+            "suggestion": {**signal["suggestion"], "evidence": {"origin": "deal_document"}},
+        }
+        stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, sync)}, "
+            f"{_j(stack, [lead, signal, document])}) AS r"
+        )
+        [n] = stack.sql(
+            f"SELECT crm_capture_supersede({_j(stack, sync)}, {stack.q(lead['source_key'])}, '') "
+            "AS n"
+        )
+        assert n["n"] == 2
+        rows = {
+            r["dedupe_key"]: r["status"]
+            for r in stack.sql(
+                "SELECT dedupe_key, status FROM crm_review_items "
+                f"WHERE workspace_id = {stack.q(ws)}"
+            )
+        }
+        assert rows == {
+            lead["dedupe_key"]: "expired",
+            signal["dedupe_key"]: "expired",
+            document["dedupe_key"]: "open",
+        }
 
 
 class TestTheSiblingRead:

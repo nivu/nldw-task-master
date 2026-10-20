@@ -58,6 +58,8 @@ const FATE_TEXT: Record<CrmCaptureRecallFate, string> = {
   judged_otherwise: "Judged otherwise",
   skipped_rules: "Skipped by the rules",
   outside_scope: "Outside Primary and Sent",
+  ignored: "Skipped by the ignore list",
+  known_now: "Not judged: its contact was added to the CRM later",
 };
 
 /** The reason is Claude's; the marker says so (009 FR-CRMAI-LLM-04). */
@@ -102,9 +104,11 @@ export function CaptureSettings({
   const running = run !== null && run.finished_at === null;
   const capturing = overview.mailboxes.filter((m) => m.capture_source === "primary_sent");
 
-  // The server holds the full rule (any applied dry run); the latest run
-  // being applied, or Live already on, is what this page can see.
-  const liveAllowed = overview.mode === "live" || (run !== null && run.applied_at !== null);
+  // The server's own rule: any dry run of the workspace was applied (not
+  // only the latest), and a mailbox is on Primary and Sent.
+  const liveAllowed = overview.mode === "live" || overview.live_allowed;
+  // The recall is the report's only once the run finished (contracts §2.1).
+  const recallReady = run !== null && run.finished_at !== null && !run.cancelled;
 
   /** Runs one change; a string it returns is shown once it succeeds. */
   async function act(work: () => Promise<unknown>) {
@@ -134,6 +138,19 @@ export function CaptureSettings({
       return;
     }
     act(() => updateCrmSetting(workspace, "capture", { mode: next }));
+  }
+
+  function startDryRun() {
+    if (
+      overview.mode === "live" &&
+      !window.confirm(
+        "Run a dry run? Live capture pauses while it runs, until this dry run is applied " +
+          "or Live is chosen again."
+      )
+    ) {
+      return;
+    }
+    act(() => startCrmCaptureDryRun(workspace));
   }
 
   function apply() {
@@ -204,7 +221,7 @@ export function CaptureSettings({
           </label>
           <Button
             disabled={busy || running}
-            onClick={() => act(() => startCrmCaptureDryRun(workspace))}
+            onClick={startDryRun}
           >
             Run dry run
           </Button>
@@ -400,8 +417,10 @@ export function CaptureSettings({
             Your conversations labelled Sales or Leads since the start date, each judged as if it
             had no label.
           </p>
-          <p className="text-sm">{run.recall.line}</p>
-          {run.recall.rows.length > 0 && (
+          <p className="text-sm">
+            {recallReady ? run.recall.line : "Shown once the dry run finishes."}
+          </p>
+          {recallReady && run.recall.rows.length > 0 && (
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
                 <thead>

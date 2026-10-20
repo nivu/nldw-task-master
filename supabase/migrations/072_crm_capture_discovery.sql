@@ -23,12 +23,18 @@
 -- 5. `crm_capture_start_dry_run(actor)`: in one transaction, refuses a
 --    second open run (CRM09), opens a run, returns every candidate a dry run
 --    judged to `pending`, and sets `capture` to `{"mode": "dry_run"}`
---    (audited `setting.updated`).
+--    (audited `setting.updated`). It, `crm_capture_set_mode` and 073's
+--    `crm_capture_apply` first take the workspace's capture lock
+--    (`pg_advisory_xact_lock(hashtext('crm_capture:' || workspace))`), so
+--    a start, a mode change and an apply racing each other run one after
+--    another and each sees what the other committed.
 -- 6. `crm_capture_set_mode(actor, workspace, mode)`: the settings route's
 --    write for key `capture`: `off` or `live` (`live` only once a dry run of
 --    the workspace was applied), audited, and an open dry run is cancelled
 --    in the same transaction (PD-13), its counts kept as they stood and
---    its partial recall cleared.
+--    its partial recall cleared. `live` also returns every candidate a dry
+--    run judged (and nobody applied) to `pending`, so the live job judges
+--    it again and a lead found then is not lost.
 -- 7. `crm_capture_finish_dry_run(workspace, run, recall)`: the run's end,
 --    its recall and its counts; false for a run already finished or
 --    cancelled. `crm_capture_recall_add(workspace, run, rows)`: the recall
@@ -236,6 +242,8 @@ BEGIN
     IF p_actor ->> 'kind' IS DISTINCT FROM 'user' OR ws IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'A dry run is started by a person.';
     END IF;
+    -- The workspace's capture lock, shared with set_mode and 073's apply.
+    PERFORM pg_advisory_xact_lock(hashtext('crm_capture:' || ws::text));
     IF EXISTS (
         SELECT 1 FROM crm_capture_dry_runs WHERE workspace_id = ws AND finished_at IS NULL
     ) THEN
@@ -288,6 +296,8 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = 'CRM22',
             MESSAGE = 'Email capture is off, dry run or live.';
     END IF;
+    -- The workspace's capture lock, shared with start_dry_run and 073's apply.
+    PERFORM pg_advisory_xact_lock(hashtext('crm_capture:' || p_workspace::text));
     -- E6: Live is first entered through Apply.
     IF p_mode = 'live' AND NOT EXISTS (
         SELECT 1 FROM crm_capture_dry_runs
@@ -310,6 +320,17 @@ BEGIN
         counts = public.crm_capture_report(p_workspace, r.id)
     WHERE r.workspace_id = p_workspace AND r.finished_at IS NULL
     RETURNING r.id INTO cancelled_id;
+
+    -- Live judges again what a dry run judged and nobody applied (after the
+    -- cancelled run's counts are kept above): the live job reads only
+    -- pending candidates, so a lead found by that run would be lost.
+    IF p_mode = 'live' THEN
+        UPDATE crm_capture_candidates SET
+            status = 'pending', attempts = 0, outcome = NULL, confidence = NULL,
+            judged_at = NULL, judged_message_id = NULL, classifier_version = NULL,
+            finding = NULL, dry_run = false, updated_at = now()
+        WHERE workspace_id = p_workspace AND dry_run;
+    END IF;
 
     RETURN jsonb_build_object('mode', p_mode, 'cancelled_run_id', cancelled_id);
 END;

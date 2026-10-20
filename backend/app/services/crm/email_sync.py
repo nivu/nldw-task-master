@@ -540,8 +540,20 @@ def sync_page(
     }
     if capturing:
         # Spec 010 FR-CAP-SRC-06: the deal-document search, once the history
-        # is read; a failed search keeps its cursor for the next sync.
-        found, checked = _deal_documents(ws, mailbox, ours, now)
+        # is read; a failed search keeps its cursor for the next sync. Any
+        # failure of it (a time limit, a refused item) is its own: the
+        # history cursor is saved and the workspace's other mailboxes run.
+        try:
+            found, checked = _deal_documents(ws, mailbox, ours, now)
+        except Exception as exc:  # noqa: BLE001 - a secondary step fails alone
+            logger.warning(
+                '{"event": "crm_deal_documents_failed", "workspace": "%s", "mailbox": "%s", '
+                '"error": "%s"}',
+                ws["key"],
+                mailbox["id"],
+                type(exc).__name__,
+            )
+            found, checked = {"deal_signals": 0, "deal_doc_failed": 1}, None
         for key, value in found.items():
             got[key] += value
         if checked is not None:

@@ -19,16 +19,23 @@
 --    applied (finished within 7 days, not cancelled, not applied before),
 --    turns its candidates into live decisions (`dry_run = false`) and sets
 --    `capture` to `{"mode": "live"}` (audited `setting.updated`). The
---    items are upserted by Python before this call (plan §5.8).
+--    items are upserted by Python before this call (plan §5.8). It first
+--    takes the workspace's capture lock (072), so a dry run started at the
+--    same moment is either seen as the latest (and this one refused) or
+--    starts after this one is applied.
 -- 4. `crm_capture_purge(workspace, before)`: deletes every decided
 --    candidate (any status but `pending`, findings included) last updated
 --    before `before`; the nightly purge passes now - 365 days (FR-CAP-DIS-11,
 --    E12, PD-15). Returns the rows deleted.
 -- 5. `crm_capture_supersede(actor, source_key, keep)`: expires the open
---    `new_lead` items of one conversation whose dedupe key is not `keep`
---    (one `review.expired` audit row each), so a conversation keeps one
---    open new lead when a later duplicate check links it to a company, or
---    no longer does (FR-CAP-DIS-08; spec §13 S3 line 1). Returns how many.
+--    capture items of one conversation (`new_lead`, and a `deal_signal`
+--    whose evidence says `origin: discovery`; a deal document's signal is
+--    the sync's) whose dedupe key is not `keep` (one `review.expired` audit
+--    row each), so a conversation keeps one open capture item when a later
+--    duplicate check links it to a company, no longer does, or turns the
+--    lead into a deal signal; with a `keep` that matches nothing (`''`),
+--    when a later judgement makes no item (FR-CAP-DIS-06, -08; spec §13 S3
+--    line 1). Returns how many.
 --
 -- The type CHECK is dropped by name and re-added under the same name with
 -- `new_lead` added (name confirmed with pg_constraint, tasks T301:
@@ -123,6 +130,9 @@ BEGIN
     IF p_actor ->> 'kind' IS DISTINCT FROM 'user' OR ws IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'A dry run is applied by a person.';
     END IF;
+    -- The workspace's capture lock (072), before any check: a start that
+    -- committed meanwhile is then seen by the latest-run check below.
+    PERFORM pg_advisory_xact_lock(hashtext('crm_capture:' || ws::text));
     SELECT * INTO run FROM crm_capture_dry_runs
     WHERE workspace_id = ws AND id = p_run
     FOR UPDATE;
@@ -210,7 +220,9 @@ BEGIN
 
     FOR r IN
         UPDATE crm_review_items SET status = 'expired', decided_at = now()
-        WHERE workspace_id = ws AND status = 'open' AND type = 'new_lead'
+        WHERE workspace_id = ws AND status = 'open'
+          AND (type = 'new_lead'
+               OR (type = 'deal_signal' AND suggestion -> 'evidence' ->> 'origin' = 'discovery'))
           AND source_kind = 'email_thread' AND source_key = p_source_key
           AND dedupe_key <> p_keep
         RETURNING id
