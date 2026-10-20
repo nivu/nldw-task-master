@@ -226,12 +226,15 @@ class FakeGmail:
     def search(self, mailbox, q, *, page_token, page_size):
         """The deal-document queries (`gmail.search`): has:attachment,
         after:, the scope group (category:primary, in:sent, label:) and the
-        filename group; never Trash or Spam."""
+        filename group; never Trash or Spam. Spec 010 R1 (FR-CAP-INV-05):
+        `subject:` matches the subject's words, as Gmail does (not its
+        prefix)."""
         self.calls.append(("search", q))
         box = self.box(mailbox)
         by_name = {lb["name"].lower(): lb["id"] for lb in box["labels"]}
         term = r'("[^"]+"|[^\s()]+)'
         files = [t.strip('"') for t in re.findall(rf"filename:{term}", q)]
+        subjects = [t.strip('"') for t in re.findall(rf"subject:{term}", q)]
         named = [by_name.get(t.strip('"').lower()) for t in re.findall(rf"label:{term}", q)]
         scope = set(filter(None, named))
         if "category:primary" in q:
@@ -251,6 +254,9 @@ class FakeGmail:
             if scope and not labels & scope:
                 continue
             if files and not any(self._names_file(m.get("attachments") or [], f) for f in files):
+                continue
+            subject = next((h["value"] for h in m["headers"] if h["name"] == "Subject"), "")
+            if subjects and not all(self._names_file([subject], t) for t in subjects):
                 continue
             found.append(m)
         start = int(page_token or 0)

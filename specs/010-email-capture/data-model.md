@@ -460,6 +460,12 @@ row when only they change). Python: `store._MAILBOX_COLUMNS`,
 finding's person); approval makes one person per distinct `person_email`
 (FR-CAP-GRP-04). A pre-074 entry built by consolidation takes them from the
 suggestion. "Newest entry" is the greatest `(latest_at, message_id)`.
+A new lead's suggested person (`suggestion.email`, `first_name`,
+`last_name`) is the newest entry's sender: when an entry leaves and the
+newest is another one, they are rewritten from it and `title` (which no
+entry carries) is dropped (`crm_capture_person`, FR-CAP-GRP-03). Merging
+two entries of one `ref` keeps `origin = 'deal_document'` when either has
+it, so discovery never makes a document's entry releasable (PD-39).
 
 An Academy item has no `mailbox_id` anywhere: its top level is `{"threads":
 […]}` and each entry's `ref` is `gmail:<mailbox email>:<thread_id>`. Unique
@@ -531,7 +537,8 @@ updated (plan R1.2, PD-38).
      insert as 069 does with `source_link = {top, threads: [p_entry]}`,
      `source_version = message_id`, `crm_review_item_deals` from
      `deal_choices`; else merge `p_entry` into the open row's `threads`
-     (replace the same `ref` unless older), recompute `suggestion.evidence`
+     (replace the same `ref` unless older, keeping a `deal_document`
+     origin), recompute `suggestion.evidence`
      totals, and **only when `p_entry` is the newest entry** take
      `p_item.suggestion`'s other fields, `p_item.current_values` and
      replace `crm_review_item_deals` from `deal_choices`; otherwise those
@@ -545,7 +552,7 @@ updated (plan R1.2, PD-38).
   p_ref`; `new_lead`, or `deal_signal` of origin `discovery` as 073), each
   read `FOR UPDATE` and skipped unless still open: remove the entry (never
   one of origin `deal_document`), recompute totals and top level from the newest
-  remaining entry, `revision + 1`; an item left with none is expired
+  remaining entry (a `new_lead`'s person too, §9.3), `revision + 1`; an item left with none is expired
   (`status = 'expired'`, `decided_at = now()`, one `review.expired` audit
   row, as `crm_review_expire`). Returns `{removed, expired}`.
 - **`crm_capture_consolidate(p_actor jsonb, p_plan jsonb) RETURNS jsonb`**
@@ -573,10 +580,13 @@ updated (plan R1.2, PD-38).
   - **expire path** (another open item holds the key): before expiring,
     merge the refused item's entries (its `threads`, or one built from a
     pre-074 item's `source_link`) into that open item, read `FOR UPDATE`,
-    as the upsert's merge does (newest-entry rule, totals, `revision + 1`);
+    as the upsert's merge does (newest-entry rule, totals, `revision + 1`),
+    leaving out every entry whose `ref` a third open capture item lists
+    (a `deal_document` entry excepted; FR-CAP-GRP-07);
     then expire as 068 does (refusal kept, `review.expired`);
   - **reopen path**: remove from the item every entry whose `ref` another
-    open capture item lists, recompute totals and top level; when none is
+    open capture item lists, recompute totals, top level and a `new_lead`'s
+    person; when none is
     left, expire it instead of reopening (refusal kept, `review.expired`
     audit row), else reopen as 068 does.
 
@@ -599,7 +609,7 @@ function-name assertion gains the three names; `NOT_AUDITED_010` and
 | Each capture tick, mode Dry run or Live | `crm_capture_consolidate` for open items not on their key (never with capture Off) |
 | Conversation re-judged elsewhere, or to no item | `crm_capture_release_thread`; empty item expires |
 | Labs judgement ends as a Labs item or no item, Academy target exists | `crm_capture_release_thread(<academy sync>, 'gmail:<mailbox email>:<thread>', '')`, every time, not from the earlier finding (071's reopen clears it); no-op when the Academy holds no such entry |
-| Capture item refused while a newer open item holds its key | replaced `crm_review_release` merges its threads into the open item, then expires it |
+| Capture item refused while a newer open item holds its key | replaced `crm_review_release` merges its threads (those no third open item holds) into the open item, then expires it |
 | Refused capture item reopened | entries another open item holds are dropped; empty → expired, not reopened |
 | Company merged (065) | linked and deal keys re-keyed (`company:` head); a collision expires the moved item as today |
 | 90-day tombstone (061) | blanks `source_link` with its `threads`; the re-suggestion check then no longer sees them (accepted) |

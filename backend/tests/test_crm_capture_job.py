@@ -2,7 +2,10 @@
 -10, FR-CAP-RPT-01, -03, FR-CAP-CHG-05, NFR-CAP-01 to -04; plan §5.6, §5.7,
 PD-11, PD-14, PD-17; spec §13 S2. S3 (tasks T314): FR-CAP-DIS-03, -07 to
 -10 (live), FR-CAP-REV-04, FR-CAP-RPT-04; plan §5.8, §5.10, PD-4; spec §13
-S3 lines 1, 3, 5 and 6.
+S3 lines 1, 3, 5 and 6. R1 (tasks T416): FR-CAP-GRP-01 to -08 — one item
+per company, order-independent, a moved conversation leaves its item, one
+deal signal per company, consolidation of the items made before 074; plan
+R1.2, PD-24, PD-26, PD-38 to PD-40; spec §14.5 I1.
 
 Every run is on `tests/crm_fake.py` with `FakeClaude` and `FakeGmailThread`
 (`tests/crm_ai_fakes.py`): no network. A `FakeClaude()` with no script fails
@@ -12,6 +15,7 @@ by the run passing.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -978,15 +982,16 @@ class TestLive:
         # upsert ends the run with the conversation still to be judged.
         live.conversation("t1")
         live.answer(LEAD, LEAD)
-        real = capture.review.upsert
+        # Spec 010 R1: items are stored through the group upsert.
+        real = capture.review.capture_group_upsert
 
         def fails(*args, **kwargs):
             raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
 
-        monkeypatch.setattr(capture.review, "upsert", fails)
+        monkeypatch.setattr(capture.review, "capture_group_upsert", fails)
         assert live.tick()["outcome"] == "failed"
         assert live.candidate("t1")["status"] == "pending" and _items(live) == []
-        monkeypatch.setattr(capture.review, "upsert", real)
+        monkeypatch.setattr(capture.review, "capture_group_upsert", real)
         got = live.tick()
         assert got["outcome"] == "ok" and got["counts"]["items"] == 1
         assert live.candidate("t1")["status"] == "judged"
@@ -1316,3 +1321,641 @@ class TestApply:
             row["owner_id"] = "u-nobody"
         assert self._apply(cap)["items_created"] == 0
         assert _items(cap) == []
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 — one suggestion per company (FR-CAP-GRP; tasks T416)
+# ---------------------------------------------------------------------------
+
+
+def _open(cap) -> list[dict]:
+    return [i for i in _items(cap) if i["status"] == "open"]
+
+
+def _deal_row(cap, company, stage: str) -> dict:
+    return cap.fake.add(
+        "crm_opportunities",
+        workspace_id=cap.labs["id"],
+        company_id=company["id"],
+        name=f"{company['name']} {stage}",
+        stage=stage,
+        deleted_at=None,
+        created_at="2026-09-01T00:00:00+00:00",
+    )
+
+
+def _signal(cap, company, deals, *, stage, at, thread, message, confidence="high"):
+    """A discovered `deal_signal` on a matched company, as `item_for` makes it."""
+    finding = {
+        **FOUND,
+        "deal_stage": stage,
+        "latest_at": at.astimezone(rules.ZONE).isoformat(),
+        "first_at": at.astimezone(rules.ZONE).isoformat(),
+    }
+    return rules.to_item(
+        finding,
+        outcome="deal_signal",
+        confidence=confidence,
+        mailbox_id=cap.mailbox["id"],
+        thread_id=thread,
+        message_id=message,
+        owner_id=OWNER["id"],
+        model="claude-sonnet-5-5",
+        generated_at=NOW.isoformat(),
+        duplicate_company_id=company["id"],
+        open_deals=deals,
+    )
+
+
+FOUND = {
+    "company_name": "Acme Robotics",
+    "domain": "acme-robotics.com",
+    "domain_from_text": False,
+    "person_name": "Priya Shah",
+    "person_email": "priya@acme-robotics.com",
+    "person_title": None,
+    "lead_stage": "contacted",
+    "deal_stage": None,
+    "reason": "Asked for pricing.",
+    "first_at": "2026-10-01T09:00:00+05:30",
+    "latest_at": "2026-10-01T09:00:00+05:30",
+    "message_count": 1,
+    "owner_replied": False,
+    "attachments": [],
+    "duplicate_company_id": None,
+}
+
+
+class TestGrouping:
+    """Spec 010 R1 FR-CAP-GRP-01 to -07; plan R1.2; spec §14.5 I1."""
+
+    def test_capture_groups_a_company_s_conversations(self, live):
+        for n, who in enumerate(("priya", "ravi", "sam"), 1):
+            live.conversation(
+                f"t{n}", sender=f"{who}@acme-robotics.com", at=NOW - timedelta(days=n)
+            )
+        live.answer(*({**LEAD, "person_email": f"{w}@acme-robotics.com"} for w in "abc"))
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["items"] == 1 and got["counts"]["judged"] == 3
+        [item] = _items(live)
+        assert item["source_key"] == "capture:domain:acme-robotics.com"
+        threads = item["source_link"]["threads"]
+        assert sorted(t["thread_id"] for t in threads) == ["t1", "t2", "t3"]
+        assert {t["person_email"] for t in threads} == {
+            "priya@acme-robotics.com",
+            "ravi@acme-robotics.com",
+            "sam@acme-robotics.com",
+        }
+        evidence = item["suggestion"]["evidence"]
+        assert (evidence["conversations"], evidence["message_count"]) == (3, 3)
+        # The latest conversation (t1, newest) gives the person and the top level.
+        assert item["source_link"]["thread_id"] == "t1"
+        assert item["suggestion"]["email"] == "priya@acme-robotics.com"
+        assert item["revision"] == 3
+
+    def test_capture_groups_by_claude_s_company_name(self, live):
+        live.conversation("t1", sender="a.k@gmail.com", at=NOW - timedelta(days=1))
+        live.conversation("t2", sender="b.r@gmail.com", at=NOW - timedelta(days=2))
+        live.conversation("t3", sender="c.x@gmail.com", at=NOW - timedelta(days=3))
+        live.conversation("t4", sender="d.y@gmail.com", at=NOW - timedelta(days=4))
+        named = {**LEAD, "company_name": "Zeta Labs", "website_choice": None}
+        nameless = {**LEAD, "company_name": None, "website_choice": None}
+        live.answer(
+            {**named, "person_email": "a.k@gmail.com"},
+            {**named, "person_email": "b.r@gmail.com"},
+            {**nameless, "person_email": "c.x@gmail.com"},
+            {**nameless, "person_email": "d.y@gmail.com"},
+        )
+        live.tick()
+        keys = sorted(i["source_key"] for i in _open(live))
+        assert keys == [
+            "capture:email:c.x@gmail.com",
+            "capture:email:d.y@gmail.com",
+            "capture:name:zeta labs",
+        ]
+        [zeta] = [i for i in _open(live) if i["source_key"] == "capture:name:zeta labs"]
+        assert len(zeta["source_link"]["threads"]) == 2
+
+    def test_capture_apply_in_reverse_order_gives_the_same_item(self, live):
+        def lead(n: int) -> dict:
+            at = NOW - timedelta(days=n)
+            return rules.to_item(
+                {
+                    **FOUND,
+                    "person_email": f"p{n}@acme-robotics.com",
+                    "reason": f"Conversation {n}.",
+                    "latest_at": at.astimezone(rules.ZONE).isoformat(),
+                },
+                outcome="new_lead",
+                confidence="high",
+                mailbox_id=live.mailbox["id"],
+                thread_id=f"t{n}",
+                message_id=f"m{n}",
+                owner_id=OWNER["id"],
+                model="claude-sonnet-5-5",
+                generated_at=NOW.isoformat(),
+            )
+
+        shown = []
+        for order in ((1, 2, 3), (3, 2, 1)):
+            live.fake.rows["crm_review_items"].clear()
+            capture.store_items(live.labs["id"], [lead(n) for n in order])
+            [item] = _items(live)
+            shown.append(
+                (
+                    item["suggestion"],
+                    item["source_version"],
+                    item["source_link"]["thread_id"],
+                    sorted(t["ref"] for t in item["source_link"]["threads"]),
+                )
+            )
+        assert shown[0] == shown[1]
+        assert shown[0][0]["evidence"]["reason"] == "Conversation 1."
+        assert shown[0][1] == "m1"
+
+    def test_capture_an_older_signal_never_replaces_a_newer_ones_stage(self, live):
+        company = _company(live, "Acme Robotics")
+        early = _deal_row(live, company, "discovery")
+        late = _deal_row(live, company, "proposal")
+        newer = _signal(
+            live,
+            company,
+            [early, late],
+            stage="closed_won",
+            at=NOW - timedelta(days=1),
+            thread="t-won",
+            message="m-won",
+        )
+        older = _signal(
+            live,
+            company,
+            [early, late],
+            stage="proposal",
+            at=NOW - timedelta(days=5),
+            thread="t-prop",
+            message="m-prop",
+        )
+        assert newer["deal_choices"] == sorted([early["id"], late["id"]])
+        assert older["deal_choices"] == [early["id"]]
+        capture.store_items(live.labs["id"], [newer, older])
+        [item] = _items(live)
+        assert item["suggestion"]["stage"] == "closed_won"
+        assert live.fake._review_deals(item["id"]) == sorted([early["id"], late["id"]])
+        assert len(item["source_link"]["threads"]) == 2
+        assert item["source_version"] == "m-won"
+
+    def test_capture_one_document_to_two_companies_keeps_a_signal_for_each(self, live):
+        from app.services.crm import review
+
+        first, second = _company(live, "Acme"), _company(live, "Beta")
+        for company in (first, second):
+            deal = _deal_row(live, company, "discovery")
+            item = rules.deal_signal_item(
+                mailbox_id=live.mailbox["id"],
+                thread_id="t-sow",
+                message_id="m-sow",
+                company_id=company["id"],
+                deals=[deal],
+                stage="proposal",
+                kinds=["sow"],
+                direction="outbound",
+                message_at=NOW - timedelta(hours=1),
+                owner_id=OWNER["id"],
+                generated_at=NOW.isoformat(),
+            )
+            made = review.capture_group_upsert(
+                live.labs["id"], item, item["source_link"]["threads"][0]
+            )
+            assert made["created"], made
+        assert sorted(i["record_id"] for i in _open(live)) == sorted([first["id"], second["id"]])
+        # Dismissing one company's signal leaves the other's document state.
+        acme = next(i for i in _open(live) if i["record_id"] == first["id"])
+        live.fake.rows["crm_review_items"][acme["id"]].update(
+            status="dismissed", decided_at=NOW.isoformat()
+        )
+        again = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-sow",
+            message_id="m-sow",
+            company_id=second["id"],
+            deals=[],
+            stage="proposal",
+            kinds=["sow"],
+            direction="outbound",
+            message_at=NOW - timedelta(hours=1),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        made = review.capture_group_upsert(
+            live.labs["id"], again, again["source_link"]["threads"][0]
+        )
+        assert not made["skipped"]
+
+    def test_capture_a_dismissed_company_returns_only_for_new_mail(self, live):
+        live.conversation("t1")
+        live.answer(LEAD, LEAD, {**LEAD, "person_email": "ravi@acme-robotics.com"})
+        live.tick()
+        [item] = _items(live)
+        r = live.http.post(
+            f"/api/v1/crm/review/{item['id']}/dismiss?workspace=labs", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200, r.text
+        # Re-judged at the same latest message (a restart): not suggested again.
+        live.candidate("t1").update(DEFAULTS["crm_capture_candidates"])
+        got = live.tick()
+        assert got["counts"]["items"] == 0 and got["counts"]["items_skipped"] == 1
+        assert _open(live) == []
+        # Re-applied: the same finding again is skipped too.
+        again = capture.item_for(
+            live.labs,
+            live.mailbox,
+            thread_id="t1",
+            message_id="t1-m1",
+            outcome="new_lead",
+            confidence="high",
+            finding=live.candidate("t1")["finding"],
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [again])
+        assert made["skipped"] and _open(live) == []
+        # A new conversation from the company is suggested.
+        live.conversation("t2", sender="ravi@acme-robotics.com")
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        [fresh] = _open(live)
+        assert [t["thread_id"] for t in fresh["source_link"]["threads"]] == ["t2"]
+
+    def test_capture_a_moved_conversation_leaves_its_item(self, live):
+        live.conversation("t1", at=NOW - timedelta(days=2))
+        live.conversation("t2", sender="ravi@acme-robotics.com", at=NOW - timedelta(days=3))
+        live.answer(LEAD, {**LEAD, "person_email": "ravi@acme-robotics.com"})
+        live.tick()
+        [first] = _items(live)
+        assert len(first["source_link"]["threads"]) == 2
+        # t1 again: it names another company's site, which Claude picks.
+        later = NOW - timedelta(hours=1)
+        live.gmail.message(
+            "t1",
+            "t1-m2",
+            sender="priya@acme-robotics.com",
+            to=BOX,
+            at=later,
+            text="I moved to zeta.io, please write to me there.",
+        )
+        live.mark("t1", "t1-m2", later)
+        live.answer({**LEAD, "company_name": "Zeta", "website_choice": 2})
+        got = live.tick()
+        assert got["counts"]["released"] == 1
+        acme = live.fake.rows["crm_review_items"][first["id"]]
+        assert acme["status"] == "open"
+        assert [t["thread_id"] for t in acme["source_link"]["threads"]] == ["t2"]
+        assert acme["suggestion"]["evidence"]["conversations"] == 1
+        # FR-CAP-GRP-03: the person suggested is now t2's sender, not t1's.
+        assert acme["suggestion"]["email"] == "ravi@acme-robotics.com"
+        [zeta] = [i for i in _open(live) if i["source_key"] == "capture:domain:zeta.io"]
+        assert [t["thread_id"] for t in zeta["source_link"]["threads"]] == ["t1"]
+        # t2 judged no lead now: the Acme item is left empty and expires.
+        live.gmail.message("t2", "t2-m2", sender="ravi@acme-robotics.com", to=BOX, at=later)
+        live.mark("t2", "t2-m2", later)
+        live.answer({**VENDOR})
+        live.tick()
+        assert live.fake.rows["crm_review_items"][first["id"]]["status"] == "expired"
+        assert any(
+            a["action"] == "review.expired" and a["target_id"] == first["id"]
+            for a in live.fake.audit
+        )
+
+    def test_capture_one_deal_signal_per_company(self, live):
+        from app.services.crm import review
+
+        company = _company(live, "Acme Robotics")
+        deal = _deal_row(live, company, "discovery")
+        document = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-sow",
+            message_id="m-sow",
+            company_id=company["id"],
+            deals=[deal],
+            stage="proposal",
+            kinds=["sow"],
+            direction="outbound",
+            message_at=NOW - timedelta(days=3),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        review.capture_group_upsert(
+            live.labs["id"], document, document["source_link"]["threads"][0]
+        )
+        live.conversation("t1", at=NOW - timedelta(days=1))
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _open(live)
+        assert (item["type"], item["record_id"]) == ("deal_signal", company["id"])
+        assert sorted(t["origin"] for t in item["source_link"]["threads"]) == [
+            "deal_document",
+            "discovery",
+        ]
+        assert item["suggestion"]["stage"] == "proposal"
+
+    def test_capture_a_deal_document_s_conversation_outlives_discovery(self, live):
+        """PD-39: discovery's signal on a deal document's conversation keeps
+        the entry a document's, so a later no-item judgement leaves it."""
+        from app.services.crm import review
+
+        company = _company(live, "Acme Robotics")
+        deal = _deal_row(live, company, "discovery")
+        document = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t1",
+            message_id="m-sow",
+            company_id=company["id"],
+            deals=[deal],
+            stage="proposal",
+            kinds=["proposal"],
+            direction="outbound",
+            message_at=NOW - timedelta(days=3),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        made = review.capture_group_upsert(
+            live.labs["id"], document, document["source_link"]["threads"][0]
+        )
+        live.conversation("t1", at=NOW - timedelta(days=1))
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _open(live)
+        assert item["id"] == made["id"]
+        [entry] = item["source_link"]["threads"]
+        assert (entry["message_id"], entry["origin"]) == ("t1-m1", "deal_document")
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya@acme-robotics.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        live.answer({**VENDOR})
+        live.tick()
+        row = live.fake.rows["crm_review_items"][made["id"]]
+        assert row["status"] == "open"
+        assert [t["thread_id"] for t in row["source_link"]["threads"]] == ["t1"]
+
+    def test_capture_a_refusal_merge_leaves_out_what_another_item_holds(self, live):
+        """FR-CAP-GRP-07 (the fake's crm_review_release): a conversation
+        moved to another company while the item was claimed is not merged
+        back into the fresh item when the approval is refused."""
+
+        def lead(thread, *, domain="acme-robotics.com", message=None, at="2026-10-01"):
+            item = rules.to_item(
+                {
+                    **FOUND,
+                    "domain": domain,
+                    "person_email": f"{thread}@{domain}",
+                    "first_at": f"{at}T09:00:00+05:30",
+                    "latest_at": f"{at}T09:00:00+05:30",
+                },
+                outcome="new_lead",
+                confidence="high",
+                mailbox_id=live.mailbox["id"],
+                thread_id=thread,
+                message_id=message or f"{thread}-m1",
+                owner_id=OWNER["id"],
+                model=None,
+                generated_at=NOW.isoformat(),
+            )
+            [made] = capture.store_items(live.labs["id"], [item])
+            return made["id"]
+
+        claimed = lead("t1")
+        assert lead("t2", at="2026-10-02") == claimed
+        user = {"user_id": OWNER["id"], "kind": "user", "channel": None}
+        actor = {**user, "workspace_id": live.labs["id"]}
+        live.fake.review_claim(actor, claimed, "approved")
+        moved = lead("t2", domain="zeta.io", message="t2-m2", at="2026-10-08")
+        fresh = lead("t3", at="2026-10-03")
+        assert fresh not in (claimed, moved)
+        live.fake.review_release(actor, claimed, "Refused.", None)
+        rows = live.fake.rows["crm_review_items"]
+        assert rows[claimed]["status"] == "expired"
+        assert sorted(t["thread_id"] for t in rows[fresh]["source_link"]["threads"]) == [
+            "t1",
+            "t3",
+        ]
+        holders = [
+            i["id"]
+            for i in _open(live)
+            if "t2" in [t["thread_id"] for t in i["source_link"]["threads"]]
+        ]
+        assert holders == [moved]
+
+    def test_capture_money_is_masked_in_the_suggestion_and_every_reason(self, live):
+        live.conversation("t1")
+        live.answer({**LEAD, "reason": "Asked for a quote; budget USD 40,000."})
+        live.tick()
+        [item] = _items(live)
+        [entry] = item["source_link"]["threads"]
+        assert "40,000" not in entry["reason"]
+        assert "40,000" not in item["suggestion"]["evidence"]["reason"]
+        # The save-time check itself (FR-CRMAI-LLM-05): a finding's figure is
+        # masked by the group upsert's wrapper, whatever reached it.
+        lead = rules.to_item(
+            {**FOUND, "domain": "zeta.io", "reason": "Budget of Rs 5,00,000 agreed."},
+            outcome="new_lead",
+            confidence="high",
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-money",
+            message_id="m-money",
+            owner_id=OWNER["id"],
+            model=None,
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [lead])
+        stored = live.fake.rows["crm_review_items"][made["id"]]
+        assert "5,00,000" not in json.dumps(stored["suggestion"])
+        assert "5,00,000" not in json.dumps(stored["source_link"])
+
+
+def _old(cap, n: int, *, status="open", **suggestion) -> dict:
+    """An open `new_lead` as 073 made it: one per conversation."""
+    thread = f"h{n}"
+    key = rules.source_key(cap.mailbox["id"], thread)
+    return cap.fake.add_review_item(
+        cap.labs,
+        type="new_lead",
+        record_type=None,
+        record_id=None,
+        owner_id=OWNER["id"],
+        source_key=key,
+        source_version=f"{thread}-m1",
+        source_link={"mailbox_id": cap.mailbox["id"], "thread_id": thread},
+        created_at=f"2026-10-{10 + n:02d}T00:00:00+00:00",
+        status=status,
+        decided_at=None if status == "open" else "2026-10-19T00:00:00+00:00",
+        suggestion={
+            "company_name": "HearSight",
+            "domain": "hearsight.ai",
+            "first_name": "Asha",
+            "last_name": None,
+            "email": f"asha{n}@hearsight.ai",
+            "lead_stage": "new",
+            "evidence": {
+                "first_at": f"2026-10-{n:02d}T09:00:00+05:30",
+                "latest_at": f"2026-10-{n:02d}T10:00:00+05:30",
+                "message_count": 1,
+                "owner_replied": False,
+                "reason": f"Conversation {n}.",
+                "confidence": "high",
+                "origin": "discovery",
+            },
+            **suggestion,
+        },
+    )
+
+
+class TestConsolidation:
+    """Spec 010 R1 FR-CAP-GRP-08; plan R1.2, PD-26, PD-40; spec §14.5 I1."""
+
+    def test_capture_consolidates_open_items_once(self, live):
+        old = [_old(live, n) for n in range(1, 10)]
+        approved = _old(live, 10, status="approved")
+        dismissed = _old(live, 11, status="dismissed")
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert (got["counts"]["consolidated"], got["counts"]["rekeyed"]) == (8, 1)
+        rows = live.fake.rows["crm_review_items"]
+        survivor = rows[old[-1]["id"]]
+        assert survivor["status"] == "open"
+        assert survivor["source_key"] == "capture:domain:hearsight.ai"
+        assert len(survivor["source_link"]["threads"]) == 9
+        assert survivor["suggestion"]["evidence"]["conversations"] == 9
+        for item in old[:-1]:
+            row = rows[item["id"]]
+            assert row["status"] == "expired"
+            assert row["result"] == {
+                "superseded_by": survivor["id"],
+                "reason": "Merged into one suggestion for HearSight.",
+            }
+            [audit] = [
+                a
+                for a in live.fake.audit
+                if a["target_id"] == item["id"] and a["action"] == "review.expired"
+            ]
+            assert audit["after"]["superseded_by"] == survivor["id"]
+            # The loser keeps its own reference.
+            assert "threads" not in row["source_link"] and row["source_link"]["thread_id"]
+        assert rows[approved["id"]]["status"] == "approved"
+        assert rows[dismissed["id"]]["status"] == "dismissed"
+        assert "superseded_by" not in rows[dismissed["id"]]["result"]
+        before = json.dumps(rows, sort_keys=True, default=str)
+        again = live.tick()
+        assert "consolidated" not in again["counts"] or again["counts"]["consolidated"] == 0
+        assert json.dumps(rows, sort_keys=True, default=str) == before
+
+    def test_capture_an_open_item_on_the_new_key_takes_the_old_ones(self, live):
+        # Keyed by Claude's name: no domain.
+        old = [_old(live, n, domain=None) for n in (1, 2)]
+        new = rules.to_item(
+            {**FOUND, "domain": None, "company_name": "HearSight"},
+            outcome="new_lead",
+            confidence="high",
+            mailbox_id=live.mailbox["id"],
+            thread_id="t9",
+            message_id="t9-m1",
+            owner_id=OWNER["id"],
+            model=None,
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [new])
+        live.fake.rows["crm_review_items"][made["id"]]["created_at"] = "2026-10-01T00:00:00+00:00"
+        assert capture._consolidate(live.labs) == {"consolidated": 2, "rekeyed": 1}
+        [item] = _open(live)
+        assert item["source_key"] == "capture:name:hearsight"
+        assert len(item["source_link"]["threads"]) == 3
+        # The newest by creation survives, holding every conversation.
+        assert item["id"] == old[-1]["id"]
+        assert (
+            live.fake.rows["crm_review_items"][made["id"]]["result"]["superseded_by"]
+            == (item["id"])
+        )
+
+    def test_capture_a_consolidation_failure_does_not_stop_the_run(self, live, monkeypatch):
+        _old(live, 1)
+        _old(live, 2)
+
+        def fails(*args, **kwargs):
+            raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
+
+        monkeypatch.setattr(capture.store, "capture_consolidate", fails)
+        live.conversation("t1")
+        live.answer(LEAD)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["consolidate_failed"] == 1 and got["counts"]["judged"] == 1
+
+    def test_capture_off_leaves_every_item_untouched(self, live):
+        _old(live, 1)
+        _old(live, 2)
+        live.fake.set_capture(live.labs, "off")
+        before = json.dumps(live.fake.rows["crm_review_items"], sort_keys=True, default=str)
+        got = live.tick()
+        assert (got["outcome"], got["counts"]) == ("skipped", {"skipped": rules.CAPTURE_OFF})
+        assert json.dumps(live.fake.rows["crm_review_items"], sort_keys=True, default=str) == (
+            before
+        )
+
+    def test_capture_consolidates_in_a_dry_run_before_the_other_gates(self, cap):
+        _old(cap, 1)
+        _old(cap, 2)
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = NOW.isoformat()
+        got = cap.tick()
+        assert got["outcome"] == "skipped"
+        assert got["counts"]["consolidated"] == 1
+        assert len(_open(cap)) == 1
+
+    def test_capture_an_old_person_name_item_and_new_mail_end_in_one_item(self, live):
+        # PD-40: the old item's company name is the person's (no Claude
+        # name), so it keys by address, as the new conversation does.
+        old = _old(
+            live,
+            1,
+            company_name="Priya Shah",
+            domain=None,
+            first_name="Priya",
+            last_name="Shah",
+            email="priya.shah@gmail.com",
+        )
+        live.conversation("t1", sender="Priya Shah <priya.shah@gmail.com>")
+        live.answer(
+            {
+                **LEAD,
+                "company_name": None,
+                "person_email": "priya.shah@gmail.com",
+                "website_choice": None,
+            }
+        )
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        [item] = _open(live)
+        assert item["id"] == old["id"]
+        assert item["source_key"] == "capture:email:priya.shah@gmail.com"
+        assert sorted(t["thread_id"] for t in item["source_link"]["threads"]) == ["h1", "t1"]
+
+    def test_capture_an_old_item_keys_from_its_candidates_finding(self, live):
+        old = _old(live, 1, company_name="Asha", domain=None, email="asha@gmail.com")
+        live.fake.mark_candidates(
+            live.labs["id"],
+            live.mailbox["id"],
+            [{"thread_id": "h1", "message_id": "h1-m1", "sent_at": NOW.isoformat()}],
+        )
+        row = next(
+            c for c in live.fake.rows["crm_capture_candidates"].values() if c["thread_id"] == "h1"
+        )
+        row.update(
+            status="judged",
+            outcome="new_lead",
+            confidence="high",
+            judged_message_id="h1-m1",
+            judged_at=NOW.isoformat(),
+            finding={**FOUND, "domain": None, "company_name": "HearSight"},
+        )
+        capture._consolidate(live.labs)
+        assert live.fake.rows["crm_review_items"][old["id"]]["source_key"] == (
+            "capture:name:hearsight"
+        )

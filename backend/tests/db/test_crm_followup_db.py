@@ -40,6 +40,18 @@ MIGRATION = Path(__file__).resolve().parents[3] / "supabase/migrations/066_crm_f
 #: `crm_job_latest` and job CHECK. Re-run after 066, so the database the
 #: later tests share is still the one the tree builds.
 LATER = Path(__file__).resolve().parents[3] / "supabase/migrations/072_crm_capture_discovery.sql"
+#: Spec 010 R1: 074 widens 072's settings key CHECK with `capture_routing`
+#: and replaces `crm_workspaces_seed_ai` again. 072's CHECK cannot be
+#: re-added over `capture_routing` rows, so they are removed first (as the
+#: system) and 074, re-run last, seeds them again.
+LATEST = (
+    Path(__file__).resolve().parents[3] / "supabase/migrations/074_crm_capture_improvements.sql"
+)
+_WITHOUT_074 = (
+    "SELECT set_config('crm.actor', "
+    '\'{"kind": "system", "user_id": null, "channel": null, "workspace_id": null}\', '
+    "true);\nDELETE FROM crm_workspace_settings WHERE key = 'capture_routing';\n"
+)
 RULE_SWITCHES = {
     "no_reply_draft": False,
     "stuck_notice": False,
@@ -159,8 +171,17 @@ def _member_row(stack, member_id: str) -> dict:
 
 def _rerun(stack, before: str = "") -> None:
     """066 again, in one transaction, after `before`: it is idempotent. Then
-    072, which replaces some of 066's objects, so nothing later sees 066's."""
-    stack.sql(before + MIGRATION.read_text() + "\n" + LATER.read_text())
+    072 and 074, which replace some of 066's objects, so nothing later sees
+    066's."""
+    stack.sql(
+        before
+        + _WITHOUT_074
+        + MIGRATION.read_text()
+        + "\n"
+        + LATER.read_text()
+        + "\n"
+        + LATEST.read_text()
+    )
 
 
 class TestTheSettings:

@@ -671,8 +671,13 @@ class TestDealDocuments:
         assert (item["record_type"], item["record_id"]) == ("company", acme["id"])
         assert item["owner_id"] == OWNER["id"]
         assert item["source_version"] == "m-sow"
-        assert item["dedupe_key"] == (
-            f"email_thread|gmail:{mailbox['id']}:t-sow|deal_signal|company:{acme['id']}"
+        # Spec 010 R1 (FR-CAP-GRP-06): keyed per company, the document its entry.
+        assert item["dedupe_key"] == f"email_thread|capture:deal|deal_signal|company:{acme['id']}"
+        [entry] = item["source_link"]["threads"]
+        assert (entry["ref"], entry["message_id"], entry["origin"]) == (
+            f"gmail:{mailbox['id']}:t-sow",
+            "m-sow",
+            "deal_document",
         )
         suggestion = item["suggestion"]
         assert suggestion["stage"] == "proposal"
@@ -689,6 +694,32 @@ class TestDealDocuments:
         counts = _latest_run(fake)["counts"]
         assert counts["deal_signals"] == 1 and counts["deal_doc_failed"] == 0
         assert fake.rows["crm_mailboxes"][mailbox["id"]]["docs_checked_at"] == NOW.isoformat()
+
+    def test_capture_a_document_to_two_companies_names_each_one_s_contact(self, crm):
+        """PD-39: one signal per company, each entry's sender that
+        company's own outside person, not the document's first one."""
+        fake, mail, queue, mailbox, acme, deal = self._ready(crm)
+        labs = next(
+            w for w in fake.rows["crm_workspaces"].values() if w["id"] == acme["workspace_id"]
+        )
+        beta = _company(fake, labs, "Beta", "beta.com", lead_stage="deal_open")
+        _deal(fake, labs, beta, stage="qualification", created_at="2026-09-01T00:00:00+00:00")
+        mail.send(
+            OWNER_ADDRESS,
+            "m-sow",
+            sender=OWNER_ADDRESS,
+            to="priya@acme.com, ravi@beta.com",
+            at=NOW - timedelta(hours=1),
+            labels=SENT,
+            thread="t-sow",
+            attachments=["SOW.pdf"],
+        )
+        _sync(queue)
+        senders = {
+            i["record_id"]: [e["person_email"] for e in i["source_link"]["threads"]]
+            for i in _items(fake)
+        }
+        assert senders == {acme["id"]: ["priya@acme.com"], beta["id"]: ["ravi@beta.com"]}
 
     def test_capture_a_second_sync_makes_no_second_item(self, crm):
         fake, mail, queue, *_ = self._ready(crm)
@@ -892,7 +923,8 @@ class TestDealDocuments:
             def refused(*args, **kwargs):
                 raise APIError({"code": "23514", "message": "check violation"})
 
-            monkeypatch.setattr(review, "upsert", refused)
+            # Spec 010 R1: a deal document's signal is stored by the group upsert.
+            monkeypatch.setattr(review, "capture_group_upsert", refused)
         before = fake.rows["crm_mailboxes"][mailbox["id"]]["history_id"]
         _sync(queue)
         run = _latest_run(fake)

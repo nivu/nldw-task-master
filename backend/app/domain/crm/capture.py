@@ -47,6 +47,7 @@ a matched company; a Claude `deal_signal` on an unknown company is a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -55,7 +56,7 @@ from email.utils import parseaddr
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from app.domain.crm import ai_rules, email_rules
+from app.domain.crm import ai_rules, dedupe, email_rules
 from app.domain.crm import review as review_rules
 from app.domain.crm import summaries as summary_rules
 from app.domain.crm.invites import PUBLIC_WEBMAIL_DOMAINS
@@ -161,42 +162,101 @@ _BULK_PRECEDENCE: Final = ("bulk", "list", "junk", "auto_reply")
 _NO_REPLY: Final = re.compile(
     r"^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster)([+._-].*)?$"
 )
-#: Google Calendar's invitations, by how their subject starts (lower case).
-_INVITE_SUBJECTS: Final = (
-    "invitation:",
-    "updated invitation:",
+#: Spec 010 R1 (FR-CAP-INV-01, -03; PD-33) — Google Calendar's invitations
+#: and its notices, by how their subjects start (lower case). A reply to an
+#: invitation (`Re:`) is a person writing: no prefix is stripped.
+_INVITATION_SUBJECTS: Final = email_rules.INVITATION_SUBJECTS
+_CALENDAR_NOTICE_SUBJECTS: Final = (
     "accepted:",
     "declined:",
     "tentatively accepted:",
     "canceled event:",
     "cancelled event:",
+    "canceled event with note:",
+    "cancelled event with note:",
+    "proposed new time:",
+    "notification:",
 )
-_CALENDAR_SENDER: Final = "calendar-notification@google.com"
+_CALENDAR_SENDER: Final = email_rules.CALENDAR_SENDER
 
 
-def is_bulk(headers: list[dict[str, Any]], sender: str | None = None) -> bool:
+def _subject(headers: list[dict[str, Any]]) -> str:
+    return (email_rules.header(headers, "Subject") or "").strip().lower()
+
+
+def _sender(headers: list[dict[str, Any]], sender: str | None) -> str:
+    return (sender or parseaddr(email_rules.header(headers, "From") or "")[1]).strip().lower()
+
+
+def is_invitation(headers: list[dict[str, Any]]) -> bool:
+    """FR-CAP-INV-01 — a calendar invitation, by its subject's start."""
+    return _subject(headers).startswith(_INVITATION_SUBJECTS)
+
+
+def invite_parties(
+    headers: list[dict[str, Any]], sender: str | None, outside: Iterable[Mapping[str, Any]]
+) -> list[str]:
+    """The outside people of an invitation: its outside participants, never
+    Google Calendar's own sending address. `email_rules.classify` already
+    counts the organiser in `Reply-To` as a participant when Google Calendar
+    sent the invitation (PD-33), so an outside organiser is among them."""
+    return [
+        a
+        for p in outside
+        if (a := (p.get("email") or "").strip().lower()) and a != _CALENDAR_SENDER
+    ]
+
+
+def is_calendar_notice(
+    headers: list[dict[str, Any]], sender: str | None, outside: Iterable[Mapping[str, Any]] = ()
+) -> bool:
+    """FR-CAP-INV-03, FR-CAP-RPT-06 — a calendar notice: anything else Google
+    Calendar's sender sends, a response, a new-time proposal, a cancellation
+    or a reminder, or an invitation with nobody outside."""
+    if is_invitation(headers):
+        return not invite_parties(headers, sender, outside)
+    return _sender(headers, sender) == _CALENDAR_SENDER or _subject(headers).startswith(
+        _CALENDAR_NOTICE_SUBJECTS
+    )
+
+
+def is_bulk(
+    headers: list[dict[str, Any]],
+    sender: str | None = None,
+    outside: Iterable[Mapping[str, Any]] = (),
+) -> bool:
     """A newsletter, a notification, an auto-reply, a bounce or a calendar
-    invitation, from its headers (`List-Unsubscribe`, `Precedence`,
+    notice, from its headers (`List-Unsubscribe`, `Precedence`,
     `Auto-Submitted`, `X-Autoreply`/`X-Autorespond`, a delivery report), its
-    sender (a no-reply address, Google Calendar) or its subject (an
-    invitation)."""
+    sender (a no-reply address, Google Calendar) or its subject.
+
+    Spec 010 R1 (FR-CAP-INV-01): an invitation with someone outside among
+    `outside` (the message's outside participants, as `classify` gives them)
+    is not bulk for its subject, for coming from Google Calendar's sender or
+    for that sender's `Auto-Submitted`; every other sign above still makes
+    it bulk, checked first."""
     header = email_rules.header
+    address = _sender(headers, sender)
+    calendar = address == _CALENDAR_SENDER
     if (header(headers, "List-Unsubscribe") or "").strip():
         return True
     if (header(headers, "Precedence") or "").strip().lower() in _BULK_PRECEDENCE:
-        return True
-    auto = (header(headers, "Auto-Submitted") or "").strip().lower()
-    if auto and auto != "no":
         return True
     if header(headers, "X-Autoreply") or header(headers, "X-Autorespond"):
         return True
     if "report-type=delivery-status" in (header(headers, "Content-Type") or "").lower():
         return True
-    address = (sender or parseaddr(header(headers, "From") or "")[1]).strip().lower()
-    if address == _CALENDAR_SENDER or _NO_REPLY.match(address.split("@", 1)[0]):
+    if not calendar and _NO_REPLY.match(address.split("@", 1)[0]):
         return True
-    subject = (header(headers, "Subject") or "").strip().lower()
-    return subject.startswith(_INVITE_SUBJECTS)
+    auto = (header(headers, "Auto-Submitted") or "").strip().lower()
+    if auto and auto != "no" and not calendar:
+        return True
+    if is_invitation(headers) and invite_parties(headers, address, outside):
+        return False
+    if calendar or (auto and auto != "no"):
+        return True
+    subject = _subject(headers)
+    return subject.startswith(_INVITATION_SUBJECTS) or subject.startswith(_CALENDAR_NOTICE_SUBJECTS)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +336,258 @@ def deal_doc_deals(
 
 
 def source_key(mailbox_id: str, thread_id: str) -> str:
-    """Contracts §6: the same key `009`'s summaries use for a thread."""
+    """Contracts §6: the same key `009`'s summaries use for a thread. Since
+    spec 010 R1 it is a conversation's `ref`, and the key only of an item
+    made before 074."""
     return f"gmail:{mailbox_id}:{thread_id}"
+
+
+# ---------------------------------------------------------------------------
+# One suggestion per company — spec 010 R1 FR-CAP-GRP-01, -02, -06, -08;
+# plan R1.2; data-model §9.3; PD-22, PD-23, PD-40
+# ---------------------------------------------------------------------------
+
+#: The keys of a capture item linked to a company (`company:<id>` follows
+#: in the dedupe key, which 065's company merge rewrites).
+LINKED_KEY: Final = "capture:linked"
+DEAL_KEY: Final = "capture:deal"
+#: 061's `source_key` CHECK.
+_SOURCE_KEY_CAP: Final = 300
+#: What an entry's `origin` says.
+ORIGINS: Final = ("discovery", "deal_document", "academy_routing")
+
+
+def _name_key(name: Any) -> str | None:
+    """Claude's company name, case-folded, whitespace collapsed, trimmed."""
+    text = " ".join(str(name or "").split()).casefold()
+    return text or None
+
+
+def _keyed(key: str) -> str:
+    """`capture:<key>`, or `capture:sha256:<hex>` when longer than 061's
+    300 characters."""
+    full = f"capture:{key}"
+    if len(full) <= _SOURCE_KEY_CAP:
+        return full
+    return "capture:sha256:" + hashlib.sha256(key.encode()).hexdigest()
+
+
+def company_key(finding: Mapping[str, Any], ref: str | None = None) -> str:
+    """FR-CAP-GRP-01 — the `source_key` a lead with no matched company is
+    grouped under: `capture:domain:<d>` (the suggested domain normalised,
+    never a public webmail domain), else `capture:name:<n>` (Claude's own
+    company name only, never one made up from the domain, the person or the
+    address), else `capture:email:<address>`, else the conversation itself,
+    `capture:thread:<ref>`. Hashed when over 300 characters."""
+    raw = finding.get("domain")
+    domain = dedupe.normalise_domain(str(raw)) if raw else None
+    if domain and domain not in PUBLIC_WEBMAIL_DOMAINS:
+        return _keyed(f"domain:{domain}")
+    name = _name_key(finding.get("company_name"))
+    if name:
+        return _keyed(f"name:{name}")
+    email = (finding.get("person_email") or "").strip().lower()
+    if email:
+        return _keyed(f"email:{email}")
+    return _keyed(f"thread:{ref or ''}")
+
+
+def _entry(
+    *,
+    mailbox_id: str | None,
+    thread_id: str,
+    message_id: str,
+    first_at: Any,
+    latest_at: Any,
+    message_count: int,
+    owner_replied: bool | None,
+    origin: str,
+    reason: str | None,
+    confidence: str | None,
+    person_email: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    ref: str | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {"ref": ref or source_key(str(mailbox_id), thread_id)}
+    if mailbox_id is not None:
+        entry["mailbox_id"] = mailbox_id
+    entry.update(
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=first_at,
+        latest_at=latest_at,
+        message_count=int(message_count or 0),
+        owner_replied=owner_replied,
+        origin=origin,
+        reason=reason,
+        confidence=confidence,
+        person_email=person_email,
+        first_name=first_name,
+        last_name=last_name,
+    )
+    return entry
+
+
+def thread_entry(
+    finding: Mapping[str, Any],
+    *,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    confidence: str | None,
+    origin: str = "discovery",
+) -> dict[str, Any]:
+    """Data-model §9.3 — one conversation of a capture item: its reference,
+    the latest message judged, its dates and message count, whether the
+    owner replied, Claude's reason and confidence, and its sender (the
+    finding's person), whom approval makes a person (FR-CAP-GRP-04). Ids,
+    dates and counts only: no subject, no body."""
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    return _entry(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=finding.get("first_at"),
+        latest_at=finding.get("latest_at"),
+        message_count=int(finding.get("message_count") or 0),
+        owner_replied=bool(finding.get("owner_replied")),
+        origin=origin,
+        reason=finding.get("reason"),
+        confidence=confidence,
+        person_email=finding.get("person_email"),
+        first_name=first,
+        last_name=last,
+    )
+
+
+def _when_of(value: Any) -> datetime:
+    at = _at(value)
+    if at is None:
+        return datetime.min.replace(tzinfo=ZONE)
+    return at if at.tzinfo else at.replace(tzinfo=ZONE)
+
+
+def entry_order(entry: Mapping[str, Any]) -> tuple[datetime, bool, str]:
+    """ "Newest" is the greatest `(latest_at, message_id)` (data-model §9.3),
+    as `crm_capture_newest` orders it: no date or no id is the oldest."""
+    message = entry.get("message_id")
+    return _when_of(entry.get("latest_at")), message is not None, str(message or "")
+
+
+def entries_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """074 `crm_capture_entries` — an item's conversations: its
+    `source_link.threads`, or the one a pre-074 item (`source_key`
+    `gmail:…`) stands for, built from its link, source version and
+    evidence."""
+    link = item.get("source_link") or {}
+    if isinstance(link.get("threads"), list):
+        return [dict(e) for e in link["threads"]]
+    key = str(item.get("source_key") or "")
+    if not key.startswith("gmail:"):
+        return []
+    suggestion = item.get("suggestion") or {}
+    evidence = suggestion.get("evidence") or {}
+    return [
+        _entry(
+            ref=key,
+            mailbox_id=link.get("mailbox_id"),
+            thread_id=link.get("thread_id"),
+            message_id=item.get("source_version"),
+            first_at=evidence.get("first_at") or evidence.get("message_at"),
+            latest_at=evidence.get("latest_at") or evidence.get("message_at"),
+            message_count=int(evidence.get("message_count") or 0),
+            owner_replied=evidence.get("owner_replied"),
+            origin=evidence.get("origin") or "discovery",
+            reason=evidence.get("reason"),
+            confidence=evidence.get("confidence"),
+            person_email=suggestion.get("email") or evidence.get("email"),
+            first_name=suggestion.get("first_name"),
+            last_name=suggestion.get("last_name"),
+        )
+    ]
+
+
+def _claude_name(suggestion: Mapping[str, Any]) -> str | None:
+    """PD-40 — a pre-074 suggestion's company name is Claude's only when it
+    is not what `_company_name` falls back to: the domain, the address or
+    the person's name."""
+    name = suggestion.get("company_name")
+    if not name:
+        return None
+    person = " ".join(p for p in (suggestion.get("first_name"), suggestion.get("last_name")) if p)
+    folded = _name_key(name)
+    fallbacks = {
+        _name_key(suggestion.get("domain")),
+        _name_key(suggestion.get("email")),
+        _name_key(person),
+    }
+    return None if folded in fallbacks else name
+
+
+def _target(item: Mapping[str, Any], finding: Mapping[str, Any] | None) -> tuple[str, str]:
+    """`(source_key, dedupe_key)` an open capture item belongs under."""
+    company = item.get("record_id") if item.get("record_type") == "company" else None
+    if item["type"] == "deal_signal" and company:
+        return DEAL_KEY, review_rules.dedupe_key(
+            "email_thread", DEAL_KEY, "deal_signal", "company", company
+        )
+    if company:
+        return LINKED_KEY, review_rules.dedupe_key(
+            "email_thread", LINKED_KEY, "new_lead", "company", company
+        )
+    key = str(item.get("source_key") or "")
+    if not key.startswith("gmail:"):
+        # Keyed since 074 already.
+        return key, item["dedupe_key"]
+    if finding is None:
+        suggestion = item.get("suggestion") or {}
+        finding = {
+            "domain": suggestion.get("domain"),
+            "company_name": _claude_name(suggestion),
+            "person_email": suggestion.get("email"),
+        }
+    source = company_key(finding, key)
+    return source, review_rules.dedupe_key("email_thread", source, "new_lead", None, None)
+
+
+def consolidation_plan(
+    items: Iterable[Mapping[str, Any]],
+    findings: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """FR-CAP-GRP-08, PD-26, PD-40 — the groups of open capture items that
+    need work, for `crm_capture_consolidate`: each item's target key from
+    its conversation's stored finding (`findings` by `(mailbox_id,
+    thread_id)`), else from its suggestion (a company name equal to its
+    domain, address or person's name is not Claude's); a group of two or
+    more, or one still on a pre-074 key. Members newest first."""
+    groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for item in items:
+        if item.get("type") not in ("new_lead", "deal_signal"):
+            continue
+        link = item.get("source_link") or {}
+        finding = findings.get((str(link.get("mailbox_id")), str(link.get("thread_id"))))
+        groups.setdefault(_target(item, finding), []).append(item)
+    plan = []
+    for (source, dedupe_key_), members in sorted(groups.items()):
+        members = sorted(
+            members, key=lambda i: (str(i.get("created_at") or ""), str(i["id"])), reverse=True
+        )
+        stale = any(str(m.get("source_key") or "").startswith("gmail:") for m in members)
+        if len(members) < 2 and not stale:
+            continue
+        newest = members[0]
+        plan.append(
+            {
+                "source_key": source,
+                "dedupe_key": dedupe_key_,
+                "record_type": newest.get("record_type"),
+                "record_id": newest.get("record_id"),
+                "company_label": ((newest.get("suggestion") or {}).get("company_name") or "")[:200],
+                "members": [m["id"] for m in members],
+            }
+        )
+    return plan
 
 
 def deal_signal_item(
@@ -293,12 +603,14 @@ def deal_signal_item(
     message_at: datetime,
     owner_id: str | None,
     generated_at: str,
+    person_email: str | None = None,
 ) -> dict[str, Any]:
-    """Contracts §6.2 — one `deal_signal` from a deal document, as
-    `crm_review_upsert` takes it: the company the target, its eligible open
-    deals the choices, the message id the source version (model NULL: no
-    Claude)."""
-    key = source_key(mailbox_id, thread_id)
+    """Contracts §6.2, §7.4 — one `deal_signal` from a deal document, as
+    `crm_capture_group_upsert` takes it: the company the target, its
+    eligible open deals the choices, the message id the source version
+    (model NULL: no Claude). Spec 010 R1 (FR-CAP-GRP-06): keyed per company
+    (`capture:deal`), so a document and a discovered signal for one company
+    make one item; its conversation is one `deal_document` entry."""
     names = [DEAL_DOC_NAMES[k] for k in kinds if k in DEAL_DOC_NAMES]
     what = " and ".join(names) or "Document"
     suggestion: dict[str, Any] = {"action": "move", "stage": stage}
@@ -307,20 +619,40 @@ def deal_signal_item(
         reason = f"{what} sent to the client."
     else:
         reason = f"{what} received. {SIGNED_DOCUMENT}"
+    at = message_at.astimezone(ZONE).isoformat()
+    # Sent by the owner, so they wrote in the thread; for a received
+    # document the thread was not read, so it is not said (the card hides
+    # the row).
+    replied = True if direction == "outbound" else None
     suggestion["evidence"] = {
         "origin": "deal_document",
         "document_kinds": list(kinds),
         "direction": direction,
-        "message_at": message_at.astimezone(ZONE).isoformat(),
+        "message_at": at,
+        "first_at": at,
+        "latest_at": at,
         "message_count": 1,
-        # Sent by the owner, so they wrote in the thread; for a received
-        # document the thread was not read, so it is not said (the card
-        # hides the row).
-        "owner_replied": True if direction == "outbound" else None,
+        "conversations": 1,
+        "owner_replied": replied,
         "attachments": [],
         "reason": reason[:160],
         "confidence": None,
     }
+    entry = _entry(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=at,
+        latest_at=at,
+        message_count=1,
+        owner_replied=replied,
+        origin="deal_document",
+        reason=reason[:160],
+        confidence=None,
+        person_email=person_email,
+        first_name=None,
+        last_name=None,
+    )
     return {
         "type": "deal_signal",
         "owner_id": owner_id,
@@ -329,11 +661,11 @@ def deal_signal_item(
         "suggestion": suggestion,
         "current_values": {},
         "source_kind": "email_thread",
-        "source_key": key,
+        "source_key": DEAL_KEY,
         "source_version": message_id,
-        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id},
+        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id, "threads": [entry]},
         "dedupe_key": review_rules.dedupe_key(
-            "email_thread", key, "deal_signal", "company", company_id
+            "email_thread", DEAL_KEY, "deal_signal", "company", company_id
         ),
         "model": None,
         "generated_at": generated_at,
@@ -928,6 +1260,7 @@ def _evidence(finding: Mapping[str, Any], confidence: str) -> dict[str, Any]:
         "latest_at": finding.get("latest_at"),
         "message_count": int(finding.get("message_count") or 0),
         "owner_replied": bool(finding.get("owner_replied")),
+        "conversations": 1,
         "attachments": list(finding.get("attachments") or []),
         "reason": finding.get("reason"),
         "confidence": confidence,
@@ -936,7 +1269,9 @@ def _evidence(finding: Mapping[str, Any], confidence: str) -> dict[str, Any]:
 
 
 def _base_item(
+    finding: Mapping[str, Any],
     *,
+    confidence: str,
     mailbox_id: str,
     thread_id: str,
     message_id: str,
@@ -944,14 +1279,22 @@ def _base_item(
     model: str | None,
     generated_at: str | None,
 ) -> dict[str, Any]:
-    key = source_key(mailbox_id, thread_id)
+    """Spec 010 R1 (plan R1.2): the conversation is the item's one entry so
+    far; the key is set by the item (a company key, `capture:linked` or
+    `capture:deal`)."""
+    entry = thread_entry(
+        finding,
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        confidence=confidence,
+    )
     return {
         "owner_id": owner_id,
         "current_values": {},
         "source_kind": "email_thread",
-        "source_key": key,
         "source_version": message_id,
-        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id},
+        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id, "threads": [entry]},
         "model": model,
         "generated_at": generated_at,
     }
@@ -970,11 +1313,15 @@ def new_lead_item(
     company_id: str | None = None,
     deal_stage_hint: str | None = None,
 ) -> dict[str, Any]:
-    """Contracts §6.1 — a `new_lead` as `crm_review_upsert` takes it: with
-    no target, or linked to the existing company a duplicate check matched
-    (`link: true`). A public webmail address gives no domain (FR-CAP-DIS-09)."""
+    """Contracts §6.1, §7.4 — a `new_lead` as `crm_capture_group_upsert`
+    takes it: with no target, keyed by its company key (FR-CAP-GRP-01), or
+    linked to the existing company a duplicate check matched (`link: true`,
+    `capture:linked`). A public webmail address gives no domain
+    (FR-CAP-DIS-09)."""
     first, last = split_name(finding.get("person_name"), finding.get("person_email"))
     item = _base_item(
+        finding,
+        confidence=confidence,
         mailbox_id=mailbox_id,
         thread_id=thread_id,
         message_id=message_id,
@@ -984,8 +1331,10 @@ def new_lead_item(
     )
     domain = finding.get("domain")
     domain = domain_for(domain) if domain else None
+    key = LINKED_KEY if company_id else company_key(finding, source_key(mailbox_id, thread_id))
     item.update(
         type="new_lead",
+        source_key=key,
         record_type="company" if company_id else None,
         record_id=company_id,
         suggestion={
@@ -1003,7 +1352,7 @@ def new_lead_item(
         },
         dedupe_key=review_rules.dedupe_key(
             "email_thread",
-            item["source_key"],
+            key,
             "new_lead",
             "company" if company_id else None,
             company_id,
@@ -1042,6 +1391,8 @@ def discovered_signal_item(
     if open_deals and not choices:
         return None
     item = _base_item(
+        finding,
+        confidence=confidence,
         mailbox_id=mailbox_id,
         thread_id=thread_id,
         message_id=message_id,
@@ -1070,8 +1421,9 @@ def discovered_signal_item(
         record_type="company",
         record_id=company_id,
         suggestion=suggestion,
+        source_key=DEAL_KEY,
         dedupe_key=review_rules.dedupe_key(
-            "email_thread", item["source_key"], "deal_signal", "company", company_id
+            "email_thread", DEAL_KEY, "deal_signal", "company", company_id
         ),
         deal_choices=sorted(d["id"] for d in choices),
     )
@@ -1124,11 +1476,15 @@ def new_lead_title(suggestion: Mapping[str, Any]) -> str:
 
 
 def new_lead_detail(suggestion: Mapping[str, Any]) -> str:
-    """Contracts §6.1 — "2 emails · Asked for pricing; you replied."."""
+    """Contracts §6.1, §7.4 — "3 conversations · 9 emails · Asked for
+    pricing; you replied."; with one conversation, "2 emails · …" as
+    before (FR-CAP-GRP-03)."""
     evidence = suggestion.get("evidence") or {}
     n = int(evidence.get("message_count") or 0)
     count = f"{n} email" if n == 1 else f"{n} emails"
-    return " · ".join(p for p in (count, evidence.get("reason")) if p)
+    conversations = int(evidence.get("conversations") or 1)
+    talks = f"{conversations} conversations" if conversations > 1 else None
+    return " · ".join(p for p in (talks, count, evidence.get("reason")) if p)
 
 
 # ---------------------------------------------------------------------------

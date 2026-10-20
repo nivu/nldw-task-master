@@ -9,7 +9,8 @@ A `deal_signal` is approved through the deal routes' own services
 fields come from Edit and approve, Labs' tentative project is made by the
 move, Closed Won in Labs is refused with the handoff's sentence, and a deal
 already at or past the stage is refused before anything changes. Items are
-made through `review.upsert` as the sync makes them. Routes run on
+made through `review.capture_group_upsert` as the sync makes them (spec 010
+R1; `review.upsert` before 074). Routes run on
 `tests/crm_fake.py`; no Gmail and no Claude are involved.
 
 S3 (tasks T315): FR-CAP-REV-01 to -03 for `new_lead`; plan §5.9, PD-6, PD-8;
@@ -20,6 +21,10 @@ row, and queues `crm.capture_thread`; a refusal after the company exists
 keeps it on the item for the retry. Dismissing one may add its sender or
 domain to the ignore list. The end-to-end line (later mail filed with no
 Claude call) runs the discovery job on `FakeGmailThread` and `FakeClaude`.
+
+R1 (tasks T417): FR-CAP-GRP-04, -09 — approving a grouped item makes one
+person per sender and files every conversation; a new conversation refuses
+a form opened before it; plan R1.2, PD-35.
 """
 
 from __future__ import annotations
@@ -108,7 +113,7 @@ def _signal(fake, labs, company, deals_, *, stage="proposal", owner=OWNER["id"],
         generated_at=SENT_AT.isoformat(),
     )
     item.update(kw)
-    [made] = service.upsert(labs["id"], [item])
+    made = service.capture_group_upsert(labs["id"], item, item["source_link"]["threads"][0])
     return fake.rows["crm_review_items"][made["id"]]
 
 
@@ -354,7 +359,8 @@ class TestDealSignal:
             owner_id=OWNER["id"],
             generated_at=SENT_AT.isoformat(),
         )
-        assert service.upsert(labs["id"], [again]) == [{"id": None, "created": False}]
+        made = service.capture_group_upsert(labs["id"], again, again["source_link"]["threads"][0])
+        assert (made["id"], made["created"], made["skipped"]) == (None, False, True)
 
 
 FINDING = {
@@ -390,7 +396,7 @@ def _lead(fake, labs, *, owner=OWNER["id"], company_id=None, thread="t-lead", **
         generated_at=SENT_AT.isoformat(),
         duplicate_company_id=company_id,
     )
-    [made] = service.upsert(labs["id"], [item])
+    made = service.capture_group_upsert(labs["id"], item, item["source_link"]["threads"][0])
     return fake.rows["crm_review_items"][made["id"]]
 
 
@@ -606,7 +612,11 @@ class TestDismissWithIgnore:
     def test_capture_an_entry_already_there_is_reused(self, lead):
         http, fake, labs, _ = lead
         first = _lead(fake, labs, thread="t-1")
-        second = _lead(fake, labs, thread="t-2")
+        # Spec 010 R1: two conversations at one domain are one item, so the
+        # second lead is keyed by Claude's name (no domain) at the same
+        # address domain.
+        second = _lead(fake, labs, thread="t-2", domain=None)
+        assert second["id"] != first["id"]
         assert _dismiss(http, first, ignore="domain").status_code == 200
         r = _dismiss(http, second, ignore="domain")
         assert r.status_code == 200, r.text
@@ -618,7 +628,11 @@ class TestDismissWithIgnore:
         # meets crm_capture_ignores_once and reuses the first one's entry.
         http, fake, labs, _ = lead
         first = _lead(fake, labs, thread="t-1")
-        second = _lead(fake, labs, thread="t-2")
+        # Spec 010 R1: two conversations at one domain are one item, so the
+        # second lead is keyed by Claude's name (no domain) at the same
+        # address domain.
+        second = _lead(fake, labs, thread="t-2", domain=None)
+        assert second["id"] != first["id"]
         assert _dismiss(http, first, ignore="domain").status_code == 200
         real, seen = service_capture.find_ignore, {"n": 0}
 
@@ -727,3 +741,238 @@ class TestEndToEnd:
         assert got["outcome"] == "ok", got
         assert job.candidate("t2")["status"] == "ignored"
         assert job.gmail.text_reads == ["t1-m1"] and len(job.claude.calls) == 0
+
+
+class TestGroupedApproval:
+    """Spec 010 R1 FR-CAP-GRP-04, -09; plan R1.2, PD-35; spec §14.5 I1
+    ("approving it queues three filings"; "two webmail senders grouped by
+    Claude's company name both become people")."""
+
+    def test_capture_a_merged_item_shows_what_it_was_merged_into(self, lead):
+        """Contracts §7.4: a consolidated item is `expired` with
+        `result.superseded_by`; the queue passes only that id on (plan R1
+        Display: "Merged into another suggestion")."""
+        http, fake, labs, _ = lead
+        merged = _lead(fake, labs, thread="t-old")
+        kept = _lead(fake, labs, thread="t-new", domain="other.example.com")
+        fake.rows["crm_review_items"][merged["id"]].update(
+            status="expired",
+            decided_at=SENT_AT.isoformat(),
+            result={"superseded_by": kept["id"], "reason": "Merged into one suggestion."},
+        )
+        r = http.get(f"/api/v1/crm/review{LABS}&scope=all&status=decided", headers=as_(OWNER["id"]))
+        assert r.status_code == 200, r.text
+        [shown] = [i for i in r.json()["items"] if i["id"] == merged["id"]]
+        assert shown["result"] == {"superseded_by": kept["id"]}
+        opened = http.get(f"/api/v1/crm/review{LABS}", headers=as_(OWNER["id"])).json()["items"]
+        assert [i["result"] for i in opened if i["id"] == kept["id"]] == [None]
+
+    def test_capture_files_every_grouped_conversation(self, lead):
+        http, fake, labs, celery = lead
+        for n, who in enumerate(("priya", "ravi", "sam"), 1):
+            item = _lead(
+                fake,
+                labs,
+                thread=f"t-{n}",
+                person_email=f"{who}@acme-robotics.com",
+                person_name=f"{who.title()} Shah",
+                latest_at=f"2026-10-0{n}T11:40:00+05:30",
+            )
+        assert len(item["source_link"]["threads"]) == 3
+        # The queue shows every conversation (contracts §7.4).
+        listed = http.get(f"/api/v1/crm/review{LABS}", headers=as_(OWNER["id"])).json()["items"]
+        [shown] = [i for i in listed if i["id"] == item["id"]]
+        assert len(shown["source"]["link"]["threads"]) == 3
+        assert shown["source"]["link"]["thread_key"] == "mb-1:t-3"
+        r = _approve(http, item)
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (3, 3)
+        assert sorted(f["args"][2] for f in celery.named("crm.capture_thread")) == [
+            "t-1",
+            "t-2",
+            "t-3",
+        ]
+        people = {p["primary_email"]: p for p in _of(fake, "crm_people", labs)}
+        assert set(people) == {
+            "priya@acme-robotics.com",
+            "ravi@acme-robotics.com",
+            "sam@acme-robotics.com",
+        }
+        assert {p["company_id"] for p in people.values()} == {result["company_id"]}
+        # The latest conversation's sender is the suggestion's person.
+        assert fake.rows["crm_people"][result["person_id"]]["primary_email"] == (
+            "sam@acme-robotics.com"
+        )
+        assert people["ravi@acme-robotics.com"]["first_name"] == "Ravi"
+
+    def test_capture_webmail_senders_grouped_by_name_become_people_and_are_filed(self, lead):
+        http, fake, labs, celery = lead
+        for n, email in enumerate(("a.k@gmail.com", "b.r@gmail.com"), 1):
+            item = _lead(
+                fake,
+                labs,
+                thread=f"t-{n}",
+                domain=None,
+                company_name="Zeta Labs",
+                person_email=email,
+                person_name=None,
+                latest_at=f"2026-10-0{n}T11:40:00+05:30",
+            )
+        assert item["source_key"] == "capture:name:zeta labs"
+        r = _approve(http, item)
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (2, 2)
+        assert {p["primary_email"] for p in _of(fake, "crm_people", labs)} == {
+            "a.k@gmail.com",
+            "b.r@gmail.com",
+        }
+        assert len(celery.named("crm.capture_thread")) == 2
+
+    def test_capture_an_address_already_a_person_is_used_not_made(self, lead):
+        http, fake, labs, celery = lead
+        known = http.post(
+            f"/api/v1/crm/people{LABS}",
+            json={"first_name": "Ravi", "primary_email": "ravi@acme-robotics.com"},
+            headers=as_(OWNER["id"]),
+        ).json()
+        _lead(fake, labs, thread="t-1", person_email="ravi@acme-robotics.com")
+        item = _lead(
+            fake,
+            labs,
+            thread="t-2",
+            person_email="priya@acme-robotics.com",
+            latest_at="2026-10-05T11:40:00+05:30",
+        )
+        r = _approve(http, item)
+        assert r.status_code == 200, r.text
+        assert r.json()["result"]["people"] == 2
+        ravis = [p for p in _of(fake, "crm_people", labs) if p.get("first_name") == "Ravi"]
+        assert [p["id"] for p in ravis] == [known["id"]]
+        # Linked to the company, not only reused (FR-CAP-GRP-04).
+        company_id = r.json()["result"]["company_id"]
+        assert fake.rows["crm_people"][known["id"]]["company_id"] == company_id
+
+    def test_capture_a_person_of_another_company_stays_there(self, lead):
+        """FR-CAP-GRP-04 (decided): approval never moves a person between
+        companies; one under another company is reused as it is."""
+        http, fake, labs, celery = lead
+        other = http.post(
+            f"/api/v1/crm/companies{LABS}", json={"name": "Elsewhere"}, headers=as_(OWNER["id"])
+        ).json()
+        known = http.post(
+            f"/api/v1/crm/people{LABS}",
+            json={
+                "first_name": "Ravi",
+                "primary_email": "ravi@acme-robotics.com",
+                "company_id": other["id"],
+            },
+            headers=as_(OWNER["id"]),
+        ).json()
+        item = _lead(fake, labs, thread="t-1", person_email="ravi@acme-robotics.com")
+        r = _approve(http, item)
+        assert r.status_code == 200, r.text
+        assert r.json()["result"]["person_id"] == known["id"]
+        assert fake.rows["crm_people"][known["id"]]["company_id"] == other["id"]
+
+    def test_capture_an_edited_address_makes_one_person(self, lead):
+        """Plan R1.2: the newest conversation's sender is the suggestion's
+        person, so Edit and approve correcting the address makes no second
+        person under the old one."""
+        http, fake, labs, celery = lead
+        item = _lead(fake, labs, thread="t-1", person_email="info@acme-robotics.com")
+        assert item["source_link"]["threads"][0]["person_email"] == "info@acme-robotics.com"
+        r = _approve(http, item, edits={"email": "asha@acme-robotics.com", "first_name": "Asha"})
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (1, 1)
+        people = _of(fake, "crm_people", labs)
+        assert [(p["primary_email"], p["first_name"]) for p in people] == [
+            ("asha@acme-robotics.com", "Asha")
+        ]
+
+    def test_capture_an_edited_address_on_a_grouped_item_replaces_the_latest(self, lead):
+        http, fake, labs, celery = lead
+        _lead(fake, labs, thread="t-1", person_email="ravi@acme-robotics.com")
+        item = _lead(
+            fake,
+            labs,
+            thread="t-2",
+            person_email="info@acme-robotics.com",
+            latest_at="2026-10-05T11:40:00+05:30",
+        )
+        r = _approve(http, item, edits={"email": "asha@acme-robotics.com"})
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (2, 2)
+        assert {p["primary_email"] for p in _of(fake, "crm_people", labs)} == {
+            "asha@acme-robotics.com",
+            "ravi@acme-robotics.com",
+        }
+
+    def test_capture_an_edited_address_on_an_item_from_before_074(self, lead):
+        http, fake, labs, celery = lead
+        item = fake.add_review_item(
+            labs,
+            type="new_lead",
+            record_type=None,
+            record_id=None,
+            owner_id=OWNER["id"],
+            source_key="gmail:mb-1:t-old",
+            source_version="m-1",
+            source_link={"mailbox_id": "mb-1", "thread_id": "t-old"},
+            suggestion={
+                "company_name": "Acme Robotics",
+                "domain": "acme-robotics.com",
+                "lead_stage": "new",
+                "first_name": "Ravi",
+                "last_name": None,
+                "email": "ravi@acme-robotics.com",
+                "evidence": {"message_count": 1, "reason": "Asked."},
+            },
+        )
+        r = _approve(http, item, edits={"email": "ravi.k@acme-robotics.com"})
+        assert r.status_code == 200, r.text
+        assert r.json()["result"]["people"] == 1
+        assert [p["primary_email"] for p in _of(fake, "crm_people", labs)] == [
+            "ravi.k@acme-robotics.com"
+        ]
+
+    def test_capture_an_item_from_before_074_files_its_one_link(self, lead):
+        http, fake, labs, celery = lead
+        item = fake.add_review_item(
+            labs,
+            type="new_lead",
+            record_type=None,
+            record_id=None,
+            owner_id=OWNER["id"],
+            source_key="gmail:mb-1:t-old",
+            source_version="m-1",
+            source_link={"mailbox_id": "mb-1", "thread_id": "t-old"},
+            suggestion={
+                "company_name": "Acme Robotics",
+                "domain": "acme-robotics.com",
+                "lead_stage": "new",
+                "first_name": "Priya",
+                "last_name": None,
+                "email": "priya@acme-robotics.com",
+                "evidence": {"message_count": 1, "reason": "Asked."},
+            },
+        )
+        r = _approve(http, item)
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (1, 1)
+        [filed] = celery.named("crm.capture_thread")
+        assert filed["args"] == [labs["id"], "mb-1", "t-old"]
+
+    def test_capture_a_new_conversation_refuses_a_form_opened_before_it(self, lead):
+        http, fake, labs, celery = lead
+        item = _lead(fake, labs, thread="t-1")
+        shown = dict(item)
+        _lead(fake, labs, thread="t-2", latest_at="2026-10-09T11:40:00+05:30")
+        assert fake.rows["crm_review_items"][item["id"]]["revision"] == shown["revision"] + 1
+        r = _approve(http, shown)
+        assert (r.status_code, r.json()["detail"]) == (409, review_rules.SUGGESTION_CHANGED)
+        assert celery.named("crm.capture_thread") == []

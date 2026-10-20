@@ -28,14 +28,16 @@ e. the budget again, then the text of **only the messages left after a, b
 f. one call through `009`'s wrapper (`ai.call(..., "capture", None, ...)`):
    budgeted, logged in `crm_ai_usage`, schema-checked and masked;
 g. live, a high- or medium-confidence lead or deal signal first becomes a
-   Review Queue item (`review.upsert`, plan §5.10) after the duplicate check
+   Review Queue item (`review.capture_group_upsert`: one per company key
+   since spec 010 R1, plan R1.2) after the duplicate check
    (FR-CAP-DIS-08: the domain, a sibling domain, the name), while the
    candidate is still pending, so a fault there leaves it to be judged
    again; low confidence is recorded only (FR-CAP-DIS-07). Then the
    decision, recorded only while the candidate is still pending on the
    message judged (`crm_capture_record`); a lead or a deal signal keeps its
-   finding. Live, a judgement that makes no item expires the conversation's
-   open one from an earlier judgement (FR-CAP-DIS-06). A dry run writes
+   finding. Live, a judgement that makes no item takes the conversation out
+   of any open item of an earlier judgement, which expires when left empty
+   (FR-CAP-DIS-06, FR-CAP-GRP-07). A dry run writes
    nothing else: no item, no record (FR-CAP-RPT-01).
 
 Failures (PD-17): Claude answering off-schema twice, or a malformed thread,
@@ -60,6 +62,10 @@ run, or until an Admin **applies** it (FR-CAP-RPT-04): its high- and
 medium-confidence findings become items exactly as live ones do, with no
 second Claude call (only the mailboxes live reads, never a sender on the
 ignore list), and the mode becomes Live.
+
+**Consolidation** (spec 010 R1 FR-CAP-GRP-08): every run in Dry run or
+Live first regroups the open items made before 074 (one per conversation)
+one per company key, before any gate but Off.
 
 **The ignore list** (FR-CAP-DIS-03, FR-CAP-REV-03) is edited by Admins here
 and grows from dismissed new leads (`services/crm/review.py`).
@@ -104,6 +110,12 @@ COUNTS: Final = (
     "low_confidence",
     "failed_items",
     "pending_left",
+    # Spec 010 R1 (contracts §7.2): grouping by company.
+    "consolidated",
+    "rekeyed",
+    "consolidate_failed",
+    "items_skipped",
+    "released",
 )
 #: Plan §5.7 — the dry run's follow-up: at most one queued, a minute later.
 #: The key holds its task id until it starts; it outlives a follow-up that
@@ -221,25 +233,32 @@ def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     mode = rules.capture_mode(store.capture_setting(ws_id))
     if mode == rules.OFF:
         raise jobs.Skipped(rules.CAPTURE_OFF)
+    # Spec 010 R1 FR-CAP-GRP-08: after the Off check, before every other
+    # gate, since it calls neither Gmail nor Claude.
+    merged = _consolidate(workspace)
     off = email_sync.off_reason(ws_id)
     if off:
-        raise jobs.Skipped(off)
+        raise jobs.Skipped(off, merged)
     mailboxes = _capturing(workspace)
     if not mailboxes:
-        raise jobs.Skipped(rules.NO_CAPTURING_MAILBOX)
+        raise jobs.Skipped(rules.NO_CAPTURING_MAILBOX, merged)
     dry = mode == rules.DRY_RUN
     open_run = None
     if dry:
         open_run = store.latest_dry_run(ws_id)
         if open_run is None or open_run.get("finished_at"):
-            raise jobs.Skipped(rules.DRY_RUN_FINISHED)
+            raise jobs.Skipped(rules.DRY_RUN_FINISHED, merged)
     try:
         gmail._key()
     except gmail.NotConfigured:
-        raise jobs.Skipped(rules.GMAIL_KEY_MISSING) from None
-    ai.gate(workspace, None)
+        raise jobs.Skipped(rules.GMAIL_KEY_MISSING, merged) from None
+    try:
+        ai.gate(workspace, None)
+    except jobs.Skipped as skipped:
+        raise jobs.Skipped(skipped.reason, {**merged, **skipped.counts}) from None
 
     counts = dict.fromkeys(COUNTS, 0)
+    counts.update(merged)
     ids = sorted(mailboxes)
     pending = store.pending_candidates(ws_id, ids, newest_first=not dry, limit=rules.RUN_CAP)
     scans: dict[str, set[str]] = {}
@@ -530,13 +549,17 @@ def _judge(
         if item is not None:
             made = store_items(ws_id, [item])
             counts["items"] += sum(1 for m in made if m.get("created"))
+            counts["items_skipped"] += sum(1 for m in made if m.get("skipped"))
+            counts["released"] += sum(int(m.get("released") or 0) for m in made)
         else:
-            # FR-CAP-DIS-06: judged again from the start, the conversation
-            # makes no item now, so an open one of an earlier judgement
-            # (its evidence stale) expires.
-            store.capture_supersede(
+            # FR-CAP-DIS-06, FR-CAP-GRP-07: judged again from the start, the
+            # conversation makes no item now, so it leaves any open item of
+            # an earlier judgement (its evidence stale); an item left with
+            # no conversation expires.
+            released = store.capture_release_thread(
                 ws_id, rules.source_key(mailbox["id"], candidate["thread_id"]), ""
             )
+            counts["released"] += int(released.get("removed") or 0)
     recorded = _record(
         ws_id,
         candidate,
@@ -596,17 +619,69 @@ def duplicate_of(ws_id: str, finding: Mapping[str, Any]) -> str | None:
 
 
 def store_items(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`review.upsert`, then each stored item is its conversation's only
-    open capture item: another open `new_lead` or discovered `deal_signal`
-    under another dedupe key (made before a duplicate check linked it to a
-    company, before the company went, or before a re-judgement turned the
-    lead into a deal signal) expires (spec §13 S3 line 1). A deal-document
-    signal is the sync's and is left as it is."""
-    made = review.upsert(ws_id, items)
-    for item, done in zip(items, made, strict=True):
-        if item["type"] in ("new_lead", "deal_signal") and done.get("id"):
-            store.capture_supersede(ws_id, item["source_key"], item["dedupe_key"])
+    """Spec 010 R1 (FR-CAP-GRP-02, -07; plan R1.2): each item through
+    `review.capture_group_upsert` with its one conversation entry, so a
+    company keeps one open item, the conversation leaves any other open
+    capture item (one made before a duplicate check linked it to a company,
+    before the company went, or before a re-judgement turned the lead into
+    a deal signal), and a conversation a decided item listed is skipped. A
+    deal-document entry is the sync's and is never moved. The merge is in
+    SQL, so the order items arrive in does not matter. `[{id, created,
+    skipped, released}]`."""
+    made = []
+    for item in items:
+        [entry] = (item.get("source_link") or {}).get("threads") or [None]
+        made.append(review.capture_group_upsert(ws_id, item, entry))
     return made
+
+
+def _consolidate(workspace: Mapping[str, Any]) -> dict[str, int]:
+    """FR-CAP-GRP-08 (PD-26, PD-40) — the open capture items made before
+    074, one per conversation, regrouped one per company key: each keyed
+    from its conversation's stored finding when the candidate still has
+    one, else from its suggestion; `crm_capture_consolidate` re-reads every
+    member under the capture lock, so a decision made meanwhile is never
+    touched. Its counts, non-zero only; a failure is logged and counted, and
+    the run goes on (the next tick tries again)."""
+    ws_id = workspace["id"]
+    try:
+        items = store.open_capture_items(ws_id)
+        threads: dict[str, set[str]] = {}
+        for item in items:
+            link = item.get("source_link") or {}
+            if str(item.get("source_key") or "").startswith("gmail:") and link.get("thread_id"):
+                threads.setdefault(str(link.get("mailbox_id")), set()).add(link["thread_id"])
+        findings: dict[tuple[str, str], dict[str, Any]] = {}
+        for mailbox_id, ids in sorted(threads.items()):
+            for row in store.candidates_for_threads(ws_id, mailbox_id, sorted(ids)):
+                if row.get("finding"):
+                    findings[(mailbox_id, row["thread_id"])] = row["finding"]
+        plan = rules.consolidation_plan(items, findings)
+        if not plan:
+            return {}
+        companies = base.by_id(
+            ws_id, "crm_companies", {g["record_id"] for g in plan if g.get("record_id")}
+        )
+        for group in plan:
+            company = companies.get(group.get("record_id") or "")
+            if company and company.get("name"):
+                group["company_label"] = str(company["name"])[:200]
+        done = store.capture_consolidate(ws_id, plan)
+    except Exception as exc:  # noqa: BLE001 - the run goes on; the next tick retries
+        logger.warning(
+            '{"event": "crm_capture_consolidate_failed", "workspace": "%s", "error": "%s"}',
+            workspace.get("key", "-"),
+            type(exc).__name__,
+        )
+        return {"consolidate_failed": 1}
+    out = {"consolidated": int(done.get("expired") or 0), "rekeyed": int(done.get("rekeyed") or 0)}
+    logger.info(
+        '{"event": "crm_capture_consolidated", "workspace": "%s", "groups": %d, "expired": %d}',
+        workspace.get("key", "-"),
+        int(done.get("groups") or 0),
+        out["consolidated"],
+    )
+    return {k: v for k, v in out.items() if v}
 
 
 def _owner(workspace_id: str, mailbox: Mapping[str, Any]) -> str | None:

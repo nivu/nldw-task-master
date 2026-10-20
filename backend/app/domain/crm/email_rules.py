@@ -66,6 +66,19 @@ HEADERS: Final = (
     "Content-Type",
     # Spec 010 FR-CAP-SRC-03 (PD-2): captured bulk mail is skipped by it.
     "List-Unsubscribe",
+    # Spec 010 FR-CAP-INV-01 (PD-33): the organiser of an invitation Google
+    # Calendar sends for them.
+    "Reply-To",
+)
+
+#: Spec 010 FR-CAP-INV-01 (PD-33) — Google Calendar's sending address, and
+#: how its invitations' subjects start (lower case).
+CALENDAR_SENDER: Final = "calendar-notification@google.com"
+INVITATION_SUBJECTS: Final = (
+    "invitation:",
+    "updated invitation:",
+    "updated invitation with note:",
+    "invitation from google calendar:",
 )
 
 #: Senders that only ever send bounces and notices.
@@ -182,11 +195,24 @@ def _addresses(value: str | None) -> list[tuple[str, str]]:
     ]
 
 
+def _calendar_invitation(headers: list[dict[str, Any]], sender: str) -> bool:
+    """An invitation Google Calendar sent (spec 010 PD-33): its organiser is
+    in `Reply-To`."""
+    subject = (header(headers, "Subject") or "").strip().lower()
+    return sender == CALENDAR_SENDER and subject.startswith(INVITATION_SUBJECTS)
+
+
 def participants(headers: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """`[{email, name, role}]`, the sender first, each address once."""
+    """`[{email, name, role}]`, the sender first, each address once. Spec 010
+    FR-CAP-INV-01: an invitation from Google Calendar's sender adds its
+    `Reply-To` (the organiser), role `reply_to`."""
     out: list[dict[str, str]] = []
     seen: set[str] = set()
-    for role, name in (("from", "From"), ("to", "To"), ("cc", "Cc")):
+    fields = [("from", "From"), ("to", "To"), ("cc", "Cc")]
+    sender = parseaddr(header(headers, "From") or "")[1].strip().lower()
+    if _calendar_invitation(headers, sender):
+        fields.append(("reply_to", "Reply-To"))
+    for role, name in fields:
         for display, addr in _addresses(header(headers, name)):
             if addr not in seen:
                 seen.add(addr)

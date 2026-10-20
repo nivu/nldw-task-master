@@ -912,6 +912,8 @@ class ReviewItemOut(BaseModel):
     expires_on: date
     decided_at: str | None
     decided_by: dict[str, Any] | None
+    #: Spec 010 Revision 1: `{"superseded_by": id}` for a merged capture item.
+    result: dict[str, Any] | None = None
 
 
 #: FR-CRMAI-SUM-04 — a sentence ends at `.`, `!` or `?` before a space or

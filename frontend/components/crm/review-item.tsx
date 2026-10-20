@@ -139,7 +139,21 @@ function newLeadLines(item: CrmReviewItem): string {
     `Add ${name || "the person"}` +
     `${text(s.title) ? ` (${text(s.title)})` : ""}` +
     `${text(s.email) ? ` · ${text(s.email)}` : ""}`;
-  return `${company}\n${person}\nFile this conversation`;
+  return `${company}\n${person}\n${fileLabel(conversationCount(item))}`;
+}
+
+/** Spec 010 FR-CAP-GRP-03 — the approval of a new lead, in words. */
+function fileLabel(n: number): string {
+  return n > 1 ? `File these ${n} conversations` : "File this conversation";
+}
+
+/** Spec 010 Revision 1 (FR-CAP-GRP) — how many conversations a capture item
+ *  holds; a pre-074 item has one. */
+function conversationCount(item: CrmReviewItem): number {
+  const threads = item.source.link?.threads;
+  if (Array.isArray(threads) && threads.length > 0) return threads.length;
+  const e = item.suggestion.evidence as Record<string, unknown> | undefined;
+  return e && typeof e.conversations === "number" && e.conversations > 0 ? e.conversations : 1;
 }
 
 /** Spec 010 FR-CAP-REV-01 — the evidence a capture item carries, in words. */
@@ -154,6 +168,12 @@ function evidenceRows(item: CrmReviewItem, timeZone: CrmTimezone): { label: stri
     rows.push({ label: "When", value: `${formatDate(first, timeZone)} to ${formatDate(latest, timeZone)}` });
   } else if (latest || first) {
     rows.push({ label: "When", value: formatDate(latest || first, timeZone) });
+  }
+  if (typeof ev.conversations === "number") {
+    rows.push({
+      label: "Conversations",
+      value: `${ev.conversations} conversation${ev.conversations === 1 ? "" : "s"}`,
+    });
   }
   if (typeof ev.message_count === "number") {
     rows.push({ label: "Messages", value: `${ev.message_count} email${ev.message_count === 1 ? "" : "s"}` });
@@ -489,7 +509,13 @@ export function ReviewItemCard({
         <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           {item.type_label}
           {item.ai && <AiMarker ai={item.ai} timeZone={timeZone} label={item.source.label} />}
-          {!open && <Badge variant="secondary">{STATUS_TEXT[item.status]}</Badge>}
+          {!open && (
+            <Badge variant="secondary">
+              {item.status === "expired" && item.result?.superseded_by
+                ? "Merged into another suggestion"
+                : STATUS_TEXT[item.status]}
+            </Badge>
+          )}
           <span className="font-normal text-muted-foreground">
             ·{" "}
             {targetHref ? (
@@ -1004,7 +1030,7 @@ export function ReviewItemCard({
           <div className="flex flex-wrap gap-2">
             {!handoff && (
               <Button size="sm" onClick={() => approve(false)} disabled={busy || needsDeal || needsOption}>
-                Approve
+                {newLead ? fileLabel(conversationCount(item)) : "Approve"}
               </Button>
             )}
             {editable && (

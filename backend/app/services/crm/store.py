@@ -1604,11 +1604,13 @@ _MAILBOX_COLUMNS = (
     "id, workspace_id, email, owner_id, labels, is_active, history_id, page_token, "
     "backfilled_at, last_synced_at, created_at, updated_at, "
     # Spec 010 (071).
-    "capture_source, capture_start_date, docs_checked_at, reconcile_after"
+    "capture_source, capture_start_date, docs_checked_at, reconcile_after, "
+    # Spec 010 R1 (074).
+    "invites_rescanned_at, invite_rescan_token"
 )
 #: The cursor columns the sync writes itself; 039's audit trigger ignores a
 #: change to these alone (071 adds the deal-document cursor and the
-#: switch-back reconcile point).
+#: switch-back reconcile point; 074 the invitation rescan's progress).
 MAILBOX_PROGRESS = frozenset(
     {
         "history_id",
@@ -1617,6 +1619,8 @@ MAILBOX_PROGRESS = frozenset(
         "last_synced_at",
         "docs_checked_at",
         "reconcile_after",
+        "invites_rescanned_at",
+        "invite_rescan_token",
     }
 )
 
@@ -1928,6 +1932,82 @@ def capture_supersede(workspace_id: str, source_key: str, keep: str) -> int:
         )
         or 0
     )
+
+
+def _capture_actor(workspace_id: str) -> dict[str, Any]:
+    return {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
+
+
+def capture_group_upsert(
+    workspace_id: str, item: dict[str, Any], entry: dict[str, Any]
+) -> dict[str, Any]:
+    """074 `crm_capture_group_upsert` — one capture item per company key
+    (spec 010 FR-CAP-GRP-02): `{id, created, skipped, revision, released}`.
+    `{id: None, skipped: True}` when a decided item already lists this
+    conversation at this message (FR-CAP-GRP-05). Called only through
+    `review.capture_group_upsert`, which masks money first."""
+    return rpc(
+        "crm_capture_group_upsert",
+        {"p_actor": _capture_actor(workspace_id), "p_item": item, "p_entry": entry},
+    ) or {"id": None, "created": False, "skipped": False, "released": 0}
+
+
+def capture_release_thread(workspace_id: str, ref: str, keep: str) -> dict[str, int]:
+    """074 `crm_capture_release_thread` — the conversation `ref` leaves
+    every open capture item but the one keyed `keep` (`""` for all); an item
+    left with none expires (FR-CAP-GRP-07). `{removed, expired}`."""
+    return rpc(
+        "crm_capture_release_thread",
+        {"p_actor": _capture_actor(workspace_id), "p_ref": ref, "p_keep": keep},
+    ) or {"removed": 0, "expired": 0}
+
+
+def capture_consolidate(workspace_id: str, plan: list[dict[str, Any]]) -> dict[str, int]:
+    """074 `crm_capture_consolidate` — the open items of each planned group
+    become one, the newest surviving (FR-CAP-GRP-08). `{groups, expired,
+    rekeyed}`."""
+    return rpc(
+        "crm_capture_consolidate", {"p_actor": _capture_actor(workspace_id), "p_plan": plan}
+    ) or {"groups": 0, "expired": 0, "rekeyed": 0}
+
+
+def open_capture_items(workspace_id: str) -> list[dict[str, Any]]:
+    """The open capture items (`new_lead`, `deal_signal`, from an email
+    thread), oldest first; never a decided one (FR-CAP-GRP-08)."""
+    return (
+        supabase.table("crm_review_items")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("status", "open")
+        .eq("source_kind", "email_thread")
+        .in_("type", ["new_lead", "deal_signal"])
+        .order("created_at")
+        .order("id")
+        .limit(5000)
+        .execute()
+        .data
+        or []
+    )
+
+
+def candidates_for_threads(
+    workspace_id: str, mailbox_id: str, thread_ids: list[str]
+) -> list[dict[str, Any]]:
+    """The candidates of these threads of one mailbox, with their findings
+    (consolidation keys an old item from its finding, PD-40)."""
+    found: list[dict[str, Any]] = []
+    for batch in text_batches(sorted(set(thread_ids))):
+        found += (
+            supabase.table("crm_capture_candidates")
+            .select(_CANDIDATE_COLUMNS)
+            .eq("workspace_id", workspace_id)
+            .eq("mailbox_id", mailbox_id)
+            .in_("thread_id", batch)
+            .execute()
+            .data
+            or []
+        )
+    return found
 
 
 def list_ignores(workspace_id: str) -> list[dict[str, Any]]:

@@ -1689,7 +1689,13 @@ export interface CrmReviewItem {
   source: {
     kind: "email_thread" | "meeting" | "enrichment" | "rule";
     label: string;
-    link: { thread_key?: string; record_type?: ViewObjectKind; record_id?: string } | null;
+    link: {
+      thread_key?: string;
+      record_type?: ViewObjectKind;
+      record_id?: string;
+      /** 010 Revision 1 (contracts §7.4): a capture item's conversations. */
+      threads?: CrmCaptureThreadRef[];
+    } | null;
   };
   ai: AiProvenance | null;
   /** The last refusal of an approval; the item stays open (FR-CRMAI-REV-06). */
@@ -1698,6 +1704,27 @@ export interface CrmReviewItem {
   expires_on: string;
   decided_at: string | null;
   decided_by: { id: string; name: string | null } | null;
+  /** 010 Revision 1 (contracts §7.4): a capture item merged into another. */
+  result?: { superseded_by?: string } | null;
+}
+
+/** 010 Revision 1 (contracts §7.4) — one conversation of a capture item;
+ *  `reason` is generated plain text. */
+export interface CrmCaptureThreadRef {
+  ref: string;
+  mailbox_id?: string;
+  thread_id: string;
+  message_id: string;
+  first_at: string;
+  latest_at: string;
+  message_count: number;
+  owner_replied: boolean;
+  origin: string;
+  reason: string;
+  confidence: string;
+  person_email: string;
+  first_name?: string | null;
+  last_name?: string | null;
 }
 
 /** GET /crm/review — a Viewer gets no items. */
@@ -1738,6 +1765,9 @@ export interface ReviewApproveResult {
     person_id?: string;
     linked?: boolean;
     filed?: "queued";
+    /** 010 Revision 1 (contracts §7.4). */
+    people?: number;
+    threads_filed?: number;
   };
 }
 

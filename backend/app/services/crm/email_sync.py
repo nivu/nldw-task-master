@@ -680,7 +680,8 @@ def _deal_documents(
 ) -> tuple[dict[str, int], str | None]:
     """FR-CAP-SRC-06 — an SOW, proposal, quotation, MSA or purchase order
     sent to or received from a known company with an open deal becomes one
-    `deal_signal` item per thread and company: sent suggests Proposal (for a
+    `deal_signal` item per company (spec 010 R1 FR-CAP-GRP-06; per thread
+    and company before 074): sent suggests Proposal (for a
     deal before it), received suggests checking for Closed Won. Primary,
     Sent and labelled mail only, never Trash, Spam, internal or bulk mail,
     and only deals created on or before the document (PD-19). Returns the
@@ -728,16 +729,17 @@ def _deal_documents(
                 people.setdefault(address, person)
     domains = sorted({rules.domain_of(a) for a in addresses})
     by_domain = {d["domain"]: d["company_id"] for d in store.list_domains(ws_id, domains=domains)}
-    company_of: dict[str, set[str]] = {}
+    # Per document, each company with the first of its outside people:
+    # a company's signal names its own contact as the sender (PD-39).
+    company_of: dict[str, dict[str, str]] = {}
     for d in documents:
-        company_of[d["id"]] = {
-            c
-            for p in d["outside"]
-            if (
-                c := (people.get(p["email"]) or {}).get("company_id")
-                or by_domain.get(rules.domain_of(p["email"]))
+        company_of[d["id"]] = {}
+        for p in d["outside"]:
+            c = (people.get(p["email"]) or {}).get("company_id") or by_domain.get(
+                rules.domain_of(p["email"])
             )
-        }
+            if c:
+                company_of[d["id"]].setdefault(c, p["email"])
     company_ids = sorted({c for ids in company_of.values() for c in ids})
     found_deals = store.deals_of_companies(ws_id, company_ids) if company_ids else []
     deal_ids = {deal["id"] for deal in found_deals if deal["stage"] in flag_rules.OPEN_STAGES}
@@ -782,13 +784,20 @@ def _deal_documents(
                         message_at=d["sent_at"],
                         owner_id=owner,
                         generated_at=now.isoformat(),
+                        person_email=company_of[d["id"]][company_id],
                     )
                 )
     if items:
         # Imported here: the Review Queue reads this module's switch.
         from app.services.crm import review
 
-        made = review.upsert(ws_id, items)
+        # Spec 010 R1 (FR-CAP-GRP-06): one open signal per company, a
+        # discovered one included; the document is its `deal_document`
+        # entry, which discovery never moves.
+        made = [
+            review.capture_group_upsert(ws_id, item, item["source_link"]["threads"][0])
+            for item in items
+        ]
         counts["deal_signals"] = sum(1 for m in made if m.get("created"))
     return counts, now.isoformat()
 
