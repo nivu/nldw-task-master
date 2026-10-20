@@ -10,6 +10,11 @@ the CRM knows with no label, skips bulk mail, leaves one discovery
 candidate per unknown conversation and stores nothing about it, and turns
 deal documents sent to or received from known clients with open deals into
 `deal_signal` items. Gmail is always faked; nothing reads a body.
+
+R1 (tasks T464): FR-CAP-INV-01 to -03, -05 — an outside person's calendar
+invitation is mail, notices and internal invitations stay skipped, and the
+one rescan of past invitations; plan R1.5, PD-33, PD-34, PD-43; spec §14.5
+I4.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from test_crm_email_sync import (
 )
 
 from app.domain.crm import capture
-from app.services.crm import gmail
+from app.services.crm import email_sync, gmail
 
 PRIMARY = ("INBOX", "CATEGORY_PERSONAL")
 SENT = ("SENT",)
@@ -189,15 +194,18 @@ class TestTheSkip:
             labels=PRIMARY,
             thread="t-internal",
         )
+        # Spec 010 R1 FR-CAP-INV-03: an invitation between colleagues only
+        # (an outside person's invitation is mail: TestInvitations).
         mail.send(
             OWNER_ADDRESS,
             "invite",
-            sender="ravi@stranger.example",
+            sender="Google Calendar <calendar-notification@google.com>",
             to=OWNER_ADDRESS,
             at=NOW,
             labels=PRIMARY,
             thread="t-invite",
             subject="Invitation: Intro call @ Tue 21 Oct 2026",
+            Reply_To="Deepika <deepika@nunnarilabs.com>",
         )
         mail.send(
             OWNER_ADDRESS,
@@ -839,7 +847,8 @@ class TestDealDocuments:
             attachments=["SOW.pdf"],
         )
         _sync(queue)
-        searches = [q for kind, q in mail.calls if kind == "search"]
+        # Spec 010 R1: the invitation rescan searches too, without has:attachment.
+        searches = [q for kind, q in mail.calls if kind == "search" and "has:attachment" in q]
         assert len(searches) == len(capture.DEAL_DOC_QUERIES)
         after = int((NOW - timedelta(days=14)).timestamp())
         assert all(f"after:{after} " in q for q in searches)
@@ -875,7 +884,9 @@ class TestDealDocuments:
         _sync(queue)  # the backfill again
         before = len(mail.calls)
         _sync(queue)  # the history, then the search
-        searches = [q for kind, q in mail.calls[before:] if kind == "search"]
+        searches = [
+            q for kind, q in mail.calls[before:] if kind == "search" and "has:attachment" in q
+        ]
         assert len(searches) == len(capture.DEAL_DOC_QUERIES)
         after = int((NOW - timedelta(days=14)).timestamp())
         assert all(f"after:{after} " in q for q in searches)
@@ -1033,3 +1044,369 @@ class TestFilingAThread:
         assert tasks.capture_thread("w1", "m1", "t1") is None
         assert "crm_capture_thread_failed" in caplog.text
         assert "RuntimeError" in caplog.text and "ZQXSECRET" not in caplog.text
+
+
+CALENDAR = "Google Calendar <calendar-notification@google.com>"
+
+
+class TestInvitations:
+    """Spec 010 R1 FR-CAP-INV-01 to -03, PD-33; spec §14.5 I4 lines 1 to 3:
+    an invitation with someone outside is mail (known → filed, unknown →
+    candidate); notices, responses, reminders, internal invitations and
+    invitations carrying any other bulk sign stay skipped."""
+
+    def test_capture_an_outsider_s_invitation_is_a_candidate(self, crm):
+        _, fake, _, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        before = _record_counts(fake)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender="Ravi <ravi@stranger.example>",
+            to=OWNER_ADDRESS,
+            at=NOW - timedelta(hours=2),
+            labels=PRIMARY,
+            thread="t-inv",
+            subject="Invitation: Intro call @ Tue 21 Oct 2026",
+        )
+        _sync(queue)
+        assert _messages(fake) == []
+        [candidate] = _candidates(fake)
+        assert (candidate["thread_id"], candidate["latest_message_id"]) == ("t-inv", "m-inv")
+        assert _record_counts(fake) == (before[0], before[1], before[2], 1)
+        counts = _latest_run(fake)["counts"]
+        assert counts["skipped_bulk"] == 0 and counts["candidates"] == 1
+
+    def test_capture_a_calendar_sent_invitation_counts_its_reply_to_organiser(self, crm):
+        # PD-33: Google Calendar sends it, the organiser only in Reply-To,
+        # with its Auto-Submitted header; the calendar sender is never the
+        # outside person.
+        _, fake, _, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender=CALENDAR,
+            to=OWNER_ADDRESS,
+            at=NOW - timedelta(hours=2),
+            labels=PRIMARY,
+            thread="t-inv",
+            subject="Updated invitation: Intro call @ Tue 21 Oct 2026",
+            Reply_To="Ravi <ravi@stranger.example>",
+            Auto_Submitted="auto-generated",
+        )
+        _sync(queue)
+        assert _messages(fake) == []
+        [candidate] = _candidates(fake)
+        assert candidate["thread_id"] == "t-inv"
+
+    def test_capture_files_a_known_contact_s_invitation(self, crm):
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        acme = _company(fake, labs, "Acme", "acme.com")
+        priya = _person(fake, labs, "Priya", "priya@acme.com", acme)
+        at = NOW - timedelta(hours=2)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender=CALENDAR,
+            to=OWNER_ADDRESS,
+            at=at,
+            labels=PRIMARY,
+            thread="t-inv",
+            subject="Invitation: Pilot review @ Wed 22 Oct 2026",
+            Reply_To="Priya <priya@acme.com>",
+            Auto_Submitted="auto-generated",
+        )
+        _sync(queue)
+        [msg] = _messages(fake)
+        assert msg["gmail_message_id"] == "m-inv"
+        assert _links(fake, msg) == {("person", priya["id"]), ("company", acme["id"])}
+        assert _candidates(fake) == []
+        # FR-CAP-INV-02: like any message, it moves Last inbound.
+        assert fake.rows["crm_companies"][acme["id"]]["last_inbound_at"] == at.isoformat()
+        assert fake.rows["crm_people"][priya["id"]]["last_inbound_at"] == at.isoformat()
+
+    def test_capture_an_invitation_the_owner_sends_moves_new_to_contacted(self, crm):
+        # FR-CAP-INV-02: Last outbound and New → Contacted like any message.
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        acme = _company(fake, labs, "Acme", "acme.com", lead_stage="new")
+        at = NOW - timedelta(hours=2)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender=OWNER_ADDRESS,
+            to="Priya <priya@acme.com>",
+            at=at,
+            labels=SENT,
+            thread="t-inv",
+            subject="Invitation: Pilot review @ Wed 22 Oct 2026",
+        )
+        _sync(queue)
+        [msg] = _messages(fake)
+        assert msg["direction"] == "outbound"
+        company = fake.rows["crm_companies"][acme["id"]]
+        assert company["lead_stage"] == "contacted"
+        assert company["last_outbound_at"] == at.isoformat()
+
+    def test_capture_never_files_a_calendar_invitation_to_google(self, crm):
+        # FR-CAP-INV-01: Google Calendar's sending address is never the
+        # outside person, so a google.com company in the CRM does not make
+        # an outsider's invitation known mail; the organiser's is a candidate.
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        google = _company(fake, labs, "Google", "google.com")
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender=CALENDAR,
+            to=OWNER_ADDRESS,
+            at=NOW - timedelta(hours=2),
+            labels=PRIMARY,
+            thread="t-inv",
+            subject="Invitation: Intro call @ Tue 21 Oct 2026",
+            Reply_To="Ravi <ravi@stranger.example>",
+            Auto_Submitted="auto-generated",
+        )
+        _sync(queue)
+        assert _messages(fake) == []
+        [candidate] = _candidates(fake)
+        assert candidate["thread_id"] == "t-inv"
+        assert fake.rows["crm_companies"][google["id"]]["last_inbound_at"] is None
+
+    def test_capture_still_skips_calendar_notices(self, crm):
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        before = _record_counts(fake)
+        at = NOW - timedelta(hours=2)
+        sent = (
+            # A guest's response.
+            ("m-acc", "Ravi <ravi@stranger.example>", "Accepted: Intro call @ Tue", {}),
+            # A reminder.
+            ("m-rem", CALENDAR, "Notification: Intro call @ Tue", {}),
+            # A webinar titled as an invitation: List-Unsubscribe still wins.
+            (
+                "m-web",
+                "Events <events@stranger.example>",
+                "Invitation: AI Summit 2026",
+                {"List_Unsubscribe": "<mailto:u@stranger.example>"},
+            ),
+            # A no-reply sender other than Google Calendar's.
+            ("m-nr", "no-reply@stranger.example", "Invitation: Product webinar", {}),
+        )
+        for gmail_id, sender, subject, headers in sent:
+            mail.send(
+                OWNER_ADDRESS,
+                gmail_id,
+                sender=sender,
+                to=OWNER_ADDRESS,
+                at=at,
+                labels=PRIMARY,
+                thread=f"t-{gmail_id}",
+                subject=subject,
+                **headers,
+            )
+        # An invitation between colleagues only, sent by one of them.
+        mail.send(
+            OWNER_ADDRESS,
+            "m-int",
+            sender="deepika@nunnarilabs.com",
+            to=OWNER_ADDRESS,
+            at=at,
+            labels=PRIMARY,
+            thread="t-int",
+            subject="Invitation: Standup @ Mon",
+        )
+        _sync(queue)
+        assert _record_counts(fake) == before
+        counts = _latest_run(fake)["counts"]
+        assert counts["skipped_bulk"] == 4 and counts["skipped_internal"] == 1
+        assert counts["stored"] == 0 and counts["candidates"] == 0
+
+
+class TestInviteRescan:
+    """Spec 010 R1 FR-CAP-INV-05, PD-34, PD-43; spec §14.5 I4 line 4: once
+    per capturing mailbox, past invitations go through the filing, a page
+    at a time across syncs; the finish is recorded; a failure keeps the
+    token; a token Gmail refuses as invalid restarts the rescan."""
+
+    @staticmethod
+    def _ready(crm, monkeypatch, *, token=None):
+        """A capturing mailbox already backfilled (before 074, so its
+        invitations were skipped), its history read up to now; two pages of
+        two ids per sync are one page of two (patched)."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        acme = _company(fake, labs, "Acme", "acme.com")
+        _person(fake, labs, "Priya", "priya@acme.com", acme)
+        at = NOW - timedelta(days=30)
+        for gmail_id, sender, subject, headers in (
+            ("a-inv1", "Ravi <ravi@one.example>", "Invitation: Intro @ Mon", {}),
+            # The search matches the word; the prefix check drops it.
+            ("b-word", "Sam <sam@two.example>", "Thanks for the invitation", {}),
+            (
+                "c-inv2",
+                CALENDAR,
+                "Invitation: Pilot review @ Wed",
+                {"Reply_To": "Priya <priya@acme.com>", "Auto_Submitted": "auto-generated"},
+            ),
+            ("d-inv3", "Lee <lee@three.example>", "Updated invitation: Demo @ Fri", {}),
+        ):
+            mail.send(
+                OWNER_ADDRESS,
+                gmail_id,
+                sender=sender,
+                to=OWNER_ADDRESS,
+                at=at,
+                labels=PRIMARY,
+                thread=f"t-{gmail_id}",
+                subject=subject,
+                **headers,
+            )
+        row = _capturing(
+            fake,
+            mailbox,
+            backfilled_at="2026-10-01T00:00:00+00:00",
+            last_synced_at="2026-10-13T00:00:00+00:00",
+            history_id=str(mail.box(OWNER_ADDRESS)["history_id"]),
+            invite_rescan_token=token,
+        )
+        monkeypatch.setattr(capture, "INVITE_RESCAN_PAGES", 1)
+        monkeypatch.setattr(capture, "INVITE_RESCAN_PAGE_SIZE", 2)
+        return fake, mail, queue, row
+
+    @staticmethod
+    def _rescans(mail, since: int = 0) -> list[str]:
+        return [q for kind, q in mail.calls[since:] if kind == "search" and "subject:" in q]
+
+    def test_capture_rescans_invitations_once(self, crm, monkeypatch):
+        fake, mail, queue, row = self._ready(crm, monkeypatch)
+        _sync(queue)
+        [query] = self._rescans(mail)
+        start = int(capture._midnight("2026-04-01").timestamp())
+        assert query.startswith(f"after:{start} ") and query.endswith(" subject:invitation")
+        assert "-in:trash -in:spam" in query and 'label:"Sales"' in query
+        counts = _latest_run(fake)["counts"]
+        assert counts["invites_rescanned"] == 1 and counts["candidates"] == 1
+        assert row["invite_rescan_token"] == "2" and row["invites_rescanned_at"] is None
+        assert [c["thread_id"] for c in _candidates(fake)] == ["t-a-inv1"]
+
+        _sync(queue)
+        counts = _latest_run(fake)["counts"]
+        assert counts["invites_rescanned"] == 2
+        assert counts["stored"] == 1 and counts["candidates"] == 1
+        assert row["invites_rescanned_at"] == NOW.isoformat()
+        assert row["invite_rescan_token"] is None
+        [msg] = _messages(fake)
+        assert msg["gmail_message_id"] == "c-inv2"
+        # The word match never went through the filing.
+        assert sorted(c["thread_id"] for c in _candidates(fake)) == ["t-a-inv1", "t-d-inv3"]
+
+        before = len(mail.calls)
+        _sync(queue)
+        assert self._rescans(mail, before) == []
+        assert row["invites_rescanned_at"] == NOW.isoformat()
+
+    def test_capture_a_rescanned_page_stores_nothing_twice(self, crm, monkeypatch):
+        fake, mail, queue, row = self._ready(crm, monkeypatch)
+        monkeypatch.setattr(capture, "INVITE_RESCAN_PAGES", 5)
+        _sync(queue)
+        assert row["invites_rescanned_at"] == NOW.isoformat()
+        records = _record_counts(fake)
+        candidates = {c["id"]: dict(c) for c in _candidates(fake)}
+        # The same pages again (as after a restart).
+        row.update(invites_rescanned_at=None, invite_rescan_token=None)
+        _sync(queue)
+        assert _record_counts(fake) == records
+        assert {c["id"]: c for c in _candidates(fake)} == candidates
+        assert _latest_run(fake)["counts"]["stored"] == 0
+
+    def test_capture_a_failed_rescan_page_keeps_its_token(self, crm, monkeypatch):
+        fake, mail, queue, row = self._ready(crm, monkeypatch, token="2")
+        search = gmail.search
+
+        def refused(mailbox, q, **kwargs):
+            if "subject:" in q:
+                raise gmail.GmailError("Gmail search failed (503).", 503)
+            return search(mailbox, q, **kwargs)
+
+        monkeypatch.setattr(gmail, "search", refused)
+        history_before = row["history_id"]
+        mail.send(
+            OWNER_ADDRESS,
+            "m-new",
+            sender="Priya <priya@acme.com>",
+            to=OWNER_ADDRESS,
+            at=NOW - timedelta(hours=1),
+            labels=PRIMARY,
+            thread="t-new",
+        )
+        _sync(queue)
+        run = _latest_run(fake)
+        assert run["outcome"] == "ok"
+        assert run["counts"]["invite_rescan_failed"] == 1
+        assert run["counts"]["invite_rescan_restarted"] == 0
+        assert row["invite_rescan_token"] == "2" and row["invites_rescanned_at"] is None
+        # The history cursor moved on and its mail was filed.
+        assert row["history_id"] != history_before
+        assert "m-new" in {m["gmail_message_id"] for m in _messages(fake)}
+
+    def test_capture_labels_only_never_rescans(self, crm, monkeypatch):
+        # FR-CAP-INV-05, FR-CAP-SRC-02: only a Primary and Sent mailbox.
+        fake, mail, queue, row = self._ready(crm, monkeypatch)
+        row.update(capture_source="labels_only")
+        _sync(queue)
+        assert self._rescans(mail) == []
+        assert row["invites_rescanned_at"] is None and row["invite_rescan_token"] is None
+        assert _candidates(fake) == [] and _messages(fake) == []
+
+    def test_capture_the_rescan_stops_inside_the_page_s_time_budget(self, crm, monkeypatch):
+        # A page task shares its time limit: no rescan page starts after
+        # INVITE_RESCAN_SECONDS, and the saved token resumes next sync.
+        fake, mail, queue, row = self._ready(crm, monkeypatch)
+        monkeypatch.setattr(capture, "INVITE_RESCAN_PAGES", 5)
+        ticks = iter(range(0, 10_000, 70))
+        monkeypatch.setattr(email_sync.time, "monotonic", lambda: next(ticks))
+        _sync(queue)
+        # Started at 0; the first page at 70 s, none at 140 s.
+        assert len(self._rescans(mail)) == 1
+        counts = _latest_run(fake)["counts"]
+        assert counts["invites_rescanned"] == 1 and counts["invite_rescan_failed"] == 0
+        assert row["invite_rescan_token"] == "2" and row["invites_rescanned_at"] is None
+
+    def test_capture_the_rescan_reads_each_message_once(self, crm, monkeypatch):
+        fake, mail, queue, row = self._ready(crm, monkeypatch)
+        monkeypatch.setattr(capture, "INVITE_RESCAN_PAGES", 5)
+        before = len(mail.calls)
+        _sync(queue)
+        assert row["invites_rescanned_at"] == NOW.isoformat()
+        read = [i for kind, i in mail.calls[before:] if kind == "message"]
+        assert sorted(read) == ["a-inv1", "b-word", "c-inv2", "d-inv3"]
+        # Again from the start: what is stored is not read at all.
+        row.update(invites_rescanned_at=None, invite_rescan_token=None)
+        before = len(mail.calls)
+        _sync(queue)
+        read = [i for kind, i in mail.calls[before:] if kind == "message"]
+        assert "c-inv2" not in read and sorted(read) == ["a-inv1", "b-word", "d-inv3"]
+
+    @pytest.mark.parametrize("status", [400, 404])
+    def test_capture_an_invalid_saved_token_restarts_the_rescan(self, crm, monkeypatch, status):
+        fake, mail, queue, row = self._ready(crm, monkeypatch, token="stale")
+        search = gmail.search
+        tokens: list = []
+
+        def answer(mailbox, q, *, page_token, page_size):
+            if "subject:" in q:
+                tokens.append(page_token)
+                if page_token == "stale":
+                    raise gmail.GmailError(f"Gmail search failed ({status}).", status)
+            return search(mailbox, q, page_token=page_token, page_size=page_size)
+
+        monkeypatch.setattr(gmail, "search", answer)
+        _sync(queue)
+        assert tokens == ["stale", None]
+        counts = _latest_run(fake)["counts"]
+        assert counts["invite_rescan_restarted"] == 1 and counts["invite_rescan_failed"] == 0
+        # Read again from the start: the first page, its token saved.
+        assert counts["invites_rescanned"] == 1
+        assert row["invite_rescan_token"] == "2"

@@ -11,6 +11,8 @@ PD-33, PD-40. R1 (tasks T421, T424): FR-CAP-RPT-05 to -07, -10 (the recall
 fates, summary and line); plan R1.3, PD-27, PD-28. R1 (tasks T442, T445):
 FR-CAP-ACAD-01, -03, -04, -05 (the business answer, the Academy's switch,
 the Academy item, its note); contracts §7.3, §7.4; plan R1.4, PD-29, PD-30.
+R1 (tasks T461): FR-CAP-INV-04, -05 (meeting hosts, the invitation prompt
+part, the rescan query); plan R1.5, PD-34.
 
 No I/O: labels, headers, rows and the clock in, decisions out.
 """
@@ -248,6 +250,32 @@ class TestInvitations:
         assert capture.invite_parties(headers, CALENDAR, calendar_only) == []
         assert capture.is_bulk(headers, CALENDAR, calendar_only)
 
+    def test_capture_an_invitation_s_outside_people_leave_out_google_calendar(self):
+        # FR-CAP-INV-01: every later step (matching, the ignore list, the
+        # finding's person, grouping) sees the organiser only.
+        headers = _h(From=CALENDAR, Subject="Invitation: Demo", Reply_To="lee@webinarco.io")
+        outside = [{"email": CALENDAR, "name": ""}, {"email": "lee@webinarco.io", "name": ""}]
+        assert capture.outside_people(headers, outside) == [outside[1]]
+        assert capture.ignored(
+            capture.outside_people(headers, outside), [{"kind": "domain", "value": "webinarco.io"}]
+        )
+        # Any other message's participants are left as they are.
+        other = _h(From="priya@acme.com", Subject="Pricing")
+        assert capture.outside_people(other, outside) == outside
+
+    def test_capture_a_meeting_host_address_gives_no_domain(self):
+        # FR-CAP-INV-04: a meeting host is never a finding's domain.
+        assert capture.domain_of_finding(None, [], "someone@google.com", []) == (None, False)
+        assert capture.domain_of_finding(None, [], "lee@prospect.io", []) == (
+            "prospect.io",
+            False,
+        )
+
+    def test_capture_a_meeting_host_domain_is_never_a_company_key(self):
+        # FR-CAP-GRP-01, FR-CAP-INV-04: never grouped under a meeting host.
+        key = capture.company_key({"domain": "google.com", "person_email": "lee@prospect.io"})
+        assert key == "capture:email:lee@prospect.io"
+
     def test_capture_the_reply_to_organiser_of_a_calendar_invitation_counts(self):
         headers = _h(
             From=f"Google Calendar <{CALENDAR}>",
@@ -335,6 +363,15 @@ class TestDealDocuments:
         assert capture.deal_doc_scope(["Sales", 'Le"ads']) == (
             '(category:primary OR in:sent OR label:"Sales" OR label:"Leads") -in:trash -in:spam'
         )
+
+    def test_capture_invite_rescan_query(self):
+        # Spec 010 R1 FR-CAP-INV-05, PD-34: ids since the start date, in the
+        # deal documents' scope, five pages of 100 a sync.
+        scope = capture.deal_doc_scope(["Sales"])
+        assert capture.invite_rescan_query(1_775_000_000, scope) == (
+            f"after:1775000000 {scope} subject:invitation"
+        )
+        assert (capture.INVITE_RESCAN_PAGES, capture.INVITE_RESCAN_PAGE_SIZE) == (5, 100)
 
     def test_capture_deal_doc_query_puts_it_together(self):
         scope = capture.deal_doc_scope(["Sales"])
@@ -689,6 +726,23 @@ class TestThePrompt:
         ]
         assert parts[0][1].endswith("b" * 10_000)
 
+    def test_capture_says_when_the_conversation_is_an_invitation(self):
+        # Spec 010 R1 FR-CAP-INV-04: `_survivors` marks a kept invitation.
+        msgs = [
+            _msg("m1", "priya@acme.com", OWNER_BOX, T0),
+            {**_msg("m2", "priya@acme.com", OWNER_BOX, T0 + timedelta(hours=1)), "invite": True},
+        ]
+        parts = capture.prompt_parts(msgs, {}, websites=[], replied=False)
+        assert [label for label, _ in parts[2:]] == [
+            "Conversation type",
+            "Websites in this conversation",
+            "Mailbox owner replied",
+        ]
+        assert parts[2] == ("Conversation type", "meeting invitation")
+        assert "Conversation type" not in dict(
+            capture.prompt_parts(msgs[:1], {}, websites=[], replied=False)
+        )
+
     def test_capture_cuts_one_long_message_at_the_end(self):
         msgs = [_msg("m0", "priya@acme.com", OWNER_BOX, T0)]
         parts = capture.prompt_parts(msgs, {"m0": "x" * 30_000}, websites=[], replied=False)
@@ -712,6 +766,19 @@ class TestTheWebsite:
     def test_capture_at_most_ten_choices(self):
         text = " ".join(f"site{i}.com" for i in range(20))
         assert len(capture.website_choices([], [text], [])) == 10
+
+    def test_capture_never_offers_a_meeting_host(self):
+        # Spec 010 R1 FR-CAP-INV-04: the calendar sender's domain, Meet,
+        # Zoom (and its regional hosts), Teams and Webex are never a website.
+        outside = [
+            {"email": "calendar-notification@google.com"},
+            {"email": "priya@acme-robotics.com"},
+        ]
+        texts = [
+            "https://meet.google.com/abc-defg-hij https://us02web.zoom.us/j/1 zoom.us "
+            "https://teams.microsoft.com/l/x teams.live.com acme.webex.com calendar.google.com"
+        ]
+        assert capture.website_choices(outside, texts, []) == ["acme-robotics.com"]
 
     def test_capture_a_choice_by_number(self):
         outside = [{"email": "priya@acme.com"}]

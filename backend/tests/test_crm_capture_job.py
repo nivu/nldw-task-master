@@ -7,7 +7,9 @@ per company, order-independent, a moved conversation leaves its item, one
 deal signal per company, consolidation of the items made before 074; plan
 R1.2, PD-24, PD-26, PD-38 to PD-40; spec §14.5 I1. R1 (tasks T425):
 FR-CAP-RPT-05 to -07 — the recall's reasons, a failure not judged, the cap
-marker; plan R1.3; spec §14.5 I2.
+marker; plan R1.3; spec §14.5 I2. R1 (tasks T465): FR-CAP-INV-04 — an
+outside person's invitation judged as one, no meeting host as a website;
+plan R1.5; spec §14.5 I4.
 
 Every run is on `tests/crm_fake.py` with `FakeClaude` and `FakeGmailThread`
 (`tests/crm_ai_fakes.py`): no network. A `FakeClaude()` with no script fails
@@ -330,7 +332,14 @@ class TestNeverClaude:
         )
         cap.conversation("internal", sender="deepika@nunnarilabs.com")
         cap.conversation("news", sender="news@vendor.io", List_Unsubscribe="<mailto:x@vendor.io>")
-        cap.conversation("invite", sender="ravi@other.io", subject="Invitation: Sync @ Mon")
+        # Spec 010 R1 FR-CAP-INV-03: an invitation between colleagues only
+        # (an outside person's invitation is judged: TestInvitations).
+        cap.conversation(
+            "invite",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Sync @ Mon",
+            Reply_To="Deepika <deepika@nunnarilabs.com>",
+        )
         cap.conversation("noreply", sender="no-reply@saas.io")
         cap.conversation("known", sender="ravi@acme.com")
         cap.conversation("ignored", sender="sam@vendor.example")
@@ -776,6 +785,16 @@ class TestRecall:
             Reply_To="Deepika <deepika@nunnarilabs.com>",
         )
         self._labelled(cap, "r-new", primary_sales, "Priya Shah <priya@acme-robotics.com>")
+        # Spec 010 R1 FR-CAP-INV-01, -04 (T463): an outside person's
+        # invitation is judged like any conversation.
+        self._labelled(
+            cap,
+            "r-outside-invite",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu",
+            Reply_To="Lee <lee@prospect.io>",
+        )
         # A tie between a calendar notice and automated mail goes to calendar.
         self._labelled(
             cap,
@@ -802,7 +821,7 @@ class TestRecall:
             return {"id": thread_id, "messages": []} if thread_id == "r-empty" else got
 
         monkeypatch.setattr(gmail, "thread_meta", thread_meta)
-        cap.answer(LEAD)
+        cap.answer(LEAD, LEAD)
         got = cap.tick()
         assert got["outcome"] == "ok", got
         run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
@@ -815,9 +834,10 @@ class TestRecall:
             "r-baddate": "not_judged",
             "r-colleague-invite": "internal_only",
             "r-new": "found",
+            "r-outside-invite": "found",
             "r-tie": "calendar",
         }
-        assert cap.gmail.text_reads == ["r-new-m1"]
+        assert sorted(cap.gmail.text_reads) == ["r-new-m1", "r-outside-invite-m1"]
         summary = capture.overview(_Ctx(cap))["dry_run"]["recall"]["summary"]
         assert summary["untested"] == {
             "known": 0,
@@ -2422,3 +2442,76 @@ class TestAcademy:
         _ignore(cap, "address", "asha@college.example.edu")
         self._apply(cap)
         assert len(_in(cap, cap.academy)) == 1
+
+
+class TestInvitations:
+    """Spec 010 R1 FR-CAP-INV-04 (tasks T465); plan R1.5; spec §14.5 I4
+    line 1: an outside person's invitation is judged, Claude told it is an
+    invitation, and a meeting host is never offered as the website."""
+
+    def test_capture_tells_claude_it_is_an_invitation(self, cap):
+        cap.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu 23 Oct 2026",
+            Reply_To="Priya Shah <priya@acme-robotics.com>",
+            Auto_Submitted="auto-generated",
+            text=(
+                "Join with Google Meet: https://meet.google.com/abc-defg-hij\n"
+                "Or Zoom: https://us02web.zoom.us/j/123456\n"
+                "Teams: https://teams.microsoft.com/l/meetup-join/1\n"
+                "Agenda: pricing for 40 seats."
+            ),
+        )
+        cap.conversation("t-mail", sender="Sam Lee <sam@newco.io>")
+        cap.answer(LEAD, VENDOR)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        assert len(cap.claude.calls) == 2
+        [invite] = [p for p in cap.claude.prompts if "Agenda: pricing" in p]
+        [plain] = [p for p in cap.claude.prompts if "sam@newco.io" in p]
+        assert '<data source="Conversation type">\nmeeting invitation\n</data>' in invite
+        assert '<data source="Conversation type">' not in plain
+        websites = invite.split('<data source="Websites in this conversation">\n', 1)[1]
+        assert websites.split("\n</data>", 1)[0] == "1. acme-robotics.com"
+        assert cap.candidate("t-inv")["status"] != "skipped"
+
+    @pytest.mark.parametrize(
+        ("kind", "value"), [("address", "lee@webinarco.io"), ("domain", "webinarco.io")]
+    )
+    def test_capture_an_ignored_organiser_s_calendar_invitation_is_ignored(self, live, kind, value):
+        # FR-CAP-INV-01, FR-CAP-DIS-03: Google Calendar's sending address is
+        # never an outside participant, so an organiser on the ignore list
+        # stops their next calendar-sent invitation before any text read.
+        _ignore(live, kind, value)
+        live.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: AI Summit @ Thu 23 Oct 2026",
+            Reply_To="Lee <lee@webinarco.io>",
+            Auto_Submitted="auto-generated",
+        )
+        got = live.tick()  # FakeClaude() with no script: any call fails the test.
+        assert got["outcome"] == "ok", got
+        assert live.candidate("t-inv")["status"] == "ignored"
+        assert live.gmail.text_reads == [] and live.claude.calls == []
+
+    def test_capture_an_invitation_finding_names_the_organiser_not_google(self, live):
+        # FR-CAP-INV-01, -04: with no person or website from Claude, the
+        # finding falls back to the organiser in Reply-To, never Google
+        # Calendar's sending address, its domain or a google.com group.
+        live.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu 23 Oct 2026",
+            Reply_To="Lee <lee@prospect.io>",
+            Auto_Submitted="auto-generated",
+        )
+        live.answer({**LEAD, "person_email": None, "website_choice": None})
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        finding = live.candidate("t-inv")["finding"]
+        assert finding["person_email"] == "lee@prospect.io"
+        assert finding["domain"] == "prospect.io"
+        [item] = _items(live)
+        assert item["source_key"] == "capture:domain:prospect.io"

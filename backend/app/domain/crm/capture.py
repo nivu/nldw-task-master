@@ -207,6 +207,19 @@ def invite_parties(
     ]
 
 
+def outside_people(
+    headers: list[dict[str, Any]], outside: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Spec 010 R1 FR-CAP-INV-01 — an invitation's outside participants as
+    every later step sees them (matching, the ignore list, the person a
+    finding names, grouping): never Google Calendar's own sending address,
+    so the organiser in `Reply-To` stands for the invitation. Any other
+    message's participants are returned as they are."""
+    if not is_invitation(headers):
+        return list(outside)
+    return [p for p in outside if (p.get("email") or "").strip().lower() != _CALENDAR_SENDER]
+
+
 def is_calendar_notice(
     headers: list[dict[str, Any]], sender: str | None, outside: Iterable[Mapping[str, Any]] = ()
 ) -> bool:
@@ -310,6 +323,23 @@ def deal_doc_query(kind: str, after: int, scope: str) -> str:
     return f"has:attachment after:{after} {scope} ({DEAL_DOC_QUERIES[kind]})"
 
 
+#: Spec 010 R1 FR-CAP-INV-05 (plan R1.5, PD-34) — the one rescan of a
+#: mailbox's past invitations: pages of ids per sync, and ids per page.
+INVITE_RESCAN_PAGES: Final = 5
+INVITE_RESCAN_PAGE_SIZE: Final = 100
+#: Seconds since the page task started after which no rescan page starts:
+#: well inside the task's 240-second soft limit, leaving the rest of the
+#: page (progress, notices, the run's end, the next mailbox) its time.
+INVITE_RESCAN_SECONDS: Final = 120
+
+
+def invite_rescan_query(after: int, scope: str) -> str:
+    """The rescan's search since `after` (epoch seconds) in `scope`
+    (`deal_doc_scope`). `subject:` matches words, so the caller re-checks
+    each message with `is_invitation`."""
+    return f"after:{after} {scope} subject:invitation"
+
+
 def deal_doc_since(docs_checked_at: Any, start_date: date | str | None, now: datetime) -> datetime:
     """Where a search starts: the last check, or on the first one the later
     of the capture start date and 14 days back (PD-19)."""
@@ -381,7 +411,8 @@ def company_key(finding: Mapping[str, Any], ref: str | None = None) -> str:
     `capture:thread:<ref>`. Hashed when over 300 characters."""
     raw = finding.get("domain")
     domain = dedupe.normalise_domain(str(raw)) if raw else None
-    if domain and domain not in PUBLIC_WEBMAIL_DOMAINS:
+    if domain and domain not in PUBLIC_WEBMAIL_DOMAINS and not _meeting_host(domain):
+        # Spec 010 R1 FR-CAP-INV-04: never grouped under a meeting host.
         return _keyed(f"domain:{domain}")
     name = _name_key(finding.get("company_name"))
     if name:
@@ -852,7 +883,9 @@ def prompt_parts(
     """The quoted parts of the prompt (contracts §4): one per message, oldest
     first, at most the last 12, the oldest dropped until the texts total at
     most 24,000 characters (one message alone over it is cut at the end);
-    then the websites Claude may pick from and whether the owner replied.
+    then "Conversation type: meeting invitation" when a judged message is a kept
+    invitation (spec 010 R1 FR-CAP-INV-04), the websites Claude may pick
+    from and whether the owner replied.
 
     `messages` are `classify` answers with `id` and `attachments`; `texts`
     the plain text by message id. `ai.quote_untrusted` keeps only plain
@@ -878,6 +911,9 @@ def prompt_parts(
             f"to {to or 'nobody'} · {_when(m['sent_at'])} · attachments: {names}"
         )
         parts.append((f"Message {i} of {n} {m['direction']}", f"{head}\n\n{body}"))
+    if any(m.get("invite") for m in messages):
+        # Spec 010 R1 FR-CAP-INV-04: `_survivors` marks a kept invitation.
+        parts.append(("Conversation type", "meeting invitation"))
     listed = "\n".join(f"{i}. {host}" for i, host in enumerate(websites, 1))
     parts.append(("Websites in this conversation", listed or "none"))
     parts.append(("Mailbox owner replied", "yes" if replied else "no"))
@@ -892,6 +928,23 @@ _HOST: Final = re.compile(
 )
 #: Most hosts a prompt lists.
 MAX_WEBSITES: Final = 10
+#: Spec 010 R1 FR-CAP-INV-04 — meeting hosts an invitation names, never a
+#: company's website (nor any host under one, such as `us02web.zoom.us`).
+MEETING_HOSTS: Final = frozenset(
+    {
+        "google.com",
+        "meet.google.com",
+        "calendar.google.com",
+        "zoom.us",
+        "teams.microsoft.com",
+        "teams.live.com",
+        "webex.com",
+    }
+)
+
+
+def _meeting_host(host: str) -> bool:
+    return host in MEETING_HOSTS or any(host.endswith("." + h) for h in MEETING_HOSTS)
 
 
 def _plain_host(found: str) -> str | None:
@@ -909,7 +962,8 @@ def website_choices(
     """PD-20 — the hosts found verbatim in the conversation, which Claude
     picks the website from by number: the outside participants' domains,
     then hosts in the text (signatures, links), each once, never a public
-    webmail domain or one of the workspace's own, at most 10."""
+    webmail domain, a meeting host (spec 010 R1 FR-CAP-INV-04) or one of
+    the workspace's own, at most 10."""
     ours = {d.lower() for d in our_domains}
     found: list[str] = []
 
@@ -919,6 +973,7 @@ def website_choices(
             and host not in found
             and host not in ours
             and host not in PUBLIC_WEBMAIL_DOMAINS
+            and not _meeting_host(host)
             and len(found) < MAX_WEBSITES
         ):
             found.append(host)
@@ -946,6 +1001,9 @@ def domain_of_finding(
         host = choices[choice - 1]
         return host, host not in own
     domain = domain_for(person_email or "") if person_email else None
+    if domain and _meeting_host(domain):
+        # Spec 010 R1 FR-CAP-INV-04: a meeting host is never the company's.
+        domain = None
     return domain, False
 
 

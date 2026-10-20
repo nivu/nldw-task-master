@@ -373,7 +373,9 @@ def _survivors(
     workspace: dict[str, Any], messages: list[dict[str, Any]], scan: set[str] | tuple[str, ...]
 ) -> list[dict[str, Any]]:
     """Steps a and b: the messages in scope and neither internal-only nor
-    bulk, each as the sync classifies it, with its Gmail id."""
+    bulk, each as the sync classifies it, with its Gmail id. Spec 010 R1
+    FR-CAP-INV-01, -04: an invitation with an outside party is kept, marked
+    `invite`."""
     out = []
     for m in messages:
         if not m.get("id"):
@@ -386,9 +388,14 @@ def _survivors(
             )
         except (KeyError, TypeError, ValueError):
             raise MalformedThread() from None
-        if info["is_internal"] or rules.is_bulk(m["headers"], info["from_email"]):
+        info["outside"] = rules.outside_people(
+            m["headers"], [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        )
+        if info["is_internal"] or rules.is_bulk(m["headers"], info["from_email"], info["outside"]):
             continue
-        info["outside"] = [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        if rules.is_invitation(m["headers"]):
+            # Spec 010 R1 FR-CAP-INV-04: Claude is told (`prompt_parts`).
+            info["invite"] = True
         out.append({**info, "id": m["id"]})
     return out
 
@@ -416,7 +423,9 @@ def _drop_reason(
             )
         except (KeyError, TypeError, ValueError):
             raise MalformedThread() from None
-        outside = [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        outside = rules.outside_people(
+            m["headers"], [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        )
         sender = info["from_email"]
         if info["is_internal"] or (
             rules.is_invitation(m["headers"])

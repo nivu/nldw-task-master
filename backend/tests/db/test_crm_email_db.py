@@ -293,6 +293,44 @@ class TestMailboxAudit:
         assert last["action"] == "mailbox.updated"
         assert last["after"] == {"capture_source": "primary_sent"}
 
+    def test_capture_invite_rescan_columns_write_no_audit_row(self, stack, ws, owner, real):
+        """Spec 010 R1 (074, FR-CAP-INV-05): the invitation rescan's token
+        and finish are bookkeeping; a capture source change is still
+        audited."""
+        box = _mailbox(stack, ws, owner)
+        created = _audit(stack, box["id"])
+        real.mailbox_progress(ws, box["id"], {"invite_rescan_token": "x" * 512})
+        real.mailbox_progress(
+            ws,
+            box["id"],
+            {"invites_rescanned_at": "2026-10-21T06:30:00Z", "invite_rescan_token": None},
+        )
+        assert _audit(stack, box["id"]) == created
+        [row] = stack.sql(
+            "SELECT invites_rescanned_at IS NOT NULL AS done, invite_rescan_token "
+            f"FROM crm_mailboxes WHERE id = {stack.q(box['id'])}"
+        )
+        assert row == {"done": True, "invite_rescan_token": None}
+        _apply(
+            stack,
+            _actor(ws, owner),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_mailboxes",
+                    "id": box["id"],
+                    "values": {"capture_source": "primary_sent"},
+                }
+            ],
+        )
+        assert _audit(stack, box["id"]) == created + 1
+        [last] = stack.sql(
+            "SELECT action, after FROM audit_log "
+            f"WHERE target_id = {stack.q(box['id'])} ORDER BY id DESC LIMIT 1"
+        )
+        assert last["action"] == "mailbox.updated"
+        assert last["after"] == {"capture_source": "primary_sent"}
+
 
 class TestPurgeAndMerge:
     """Data-model §5.4 (039 crm_purge), §5.7 (039 crm_merge_companies)."""

@@ -105,6 +105,10 @@ COUNTS: Final = (
     "candidates",
     "deal_signals",
     "deal_doc_failed",
+    # Spec 010 R1 (contracts §7.2): the one rescan of past invitations.
+    "invites_rescanned",
+    "invite_rescan_failed",
+    "invite_rescan_restarted",
 )
 
 
@@ -440,6 +444,7 @@ def sync_page(
 ) -> tuple[bool, dict[str, int]]:
     """One page of one mailbox: `(mailbox finished, counts)`. The cursor is
     stored after the page's messages, so a page cut short is read again."""
+    started = time.monotonic()
     sub = mailbox["email"]
     source = mailbox.get("capture_source") or capture_rules.LABELS_ONLY
     capturing = source == capture_rules.PRIMARY_SENT
@@ -558,8 +563,103 @@ def sync_page(
             got[key] += value
         if checked is not None:
             progress["docs_checked_at"] = checked
+        if mailbox.get("invites_rescanned_at") is None:
+            # Spec 010 R1 FR-CAP-INV-05: the one rescan of past invitations,
+            # a secondary step failing alone, as the deal documents do.
+            try:
+                _rescan_invites(ws, mailbox, ours, configured, now, got, started)
+            except Exception as exc:  # noqa: BLE001 - a secondary step fails alone
+                logger.warning(
+                    '{"event": "crm_invite_rescan_failed", "workspace": "%s", "mailbox": "%s", '
+                    '"error": "%s"}',
+                    ws["key"],
+                    mailbox["id"],
+                    type(exc).__name__,
+                )
+                got["invite_rescan_failed"] = 1
     store.mailbox_progress(ws["id"], mailbox["id"], progress)
     return True, got
+
+
+def _rescan_invites(
+    ws: dict[str, Any],
+    mailbox: dict[str, Any],
+    ours: set[str],
+    configured: list[str],
+    now: datetime,
+    got: dict[str, int],
+    started: float | None = None,
+) -> None:
+    """Spec 010 R1 FR-CAP-INV-05 (plan R1.5, PD-34, PD-43) — invitations
+    were skipped before 074 without a marker, so once per capturing mailbox
+    its invitations since the capture start date (Primary, Sent and its
+    labels, never Trash or Spam) go through `_take` like new mail: stored
+    ids are skipped, known mail is filed, the rest marks candidates (which
+    only move forward). At most `INVITE_RESCAN_PAGES` pages a sync, the page
+    token saved after each; the last page records the finish. A failure
+    raises and leaves the saved token for the next sync; a saved token Gmail
+    refuses as invalid (400 or 404) is cleared and the rescan starts again
+    from its beginning in the same sync (that refusal is not one of the
+    pages). Counts go into `got`.
+
+    The rescan shares the page task's time limit with the history page and
+    the deal-document search: no page starts once `INVITE_RESCAN_SECONDS`
+    have passed since `started` (the task's `time.monotonic()`), the saved
+    token keeping the place for the next sync; ids stored already are
+    skipped before any metadata read, and the metadata read here is handed
+    to `_take`, so no message is fetched twice."""
+    sub = mailbox["email"]
+    after = int(
+        capture_rules._midnight(
+            mailbox.get("capture_start_date") or capture_rules.DEFAULT_START
+        ).timestamp()
+    )
+    query = capture_rules.invite_rescan_query(
+        after, capture_rules.deal_doc_scope(mailbox.get("labels") or [])
+    )
+    token = mailbox.get("invite_rescan_token")
+    started = time.monotonic() if started is None else started
+    pages = 0
+    while pages < capture_rules.INVITE_RESCAN_PAGES:
+        if time.monotonic() - started >= capture_rules.INVITE_RESCAN_SECONDS:
+            # The page task's budget: the saved token resumes next sync.
+            return
+        try:
+            listed = gmail.search(
+                sub, query, page_token=token, page_size=capture_rules.INVITE_RESCAN_PAGE_SIZE
+            )
+        except gmail.GmailError as exc:
+            if not token or exc.status not in (400, 404):
+                raise
+            token = None
+            store.mailbox_progress(ws["id"], mailbox["id"], {"invite_rescan_token": None})
+            got["invite_rescan_restarted"] = 1
+            continue
+        pages += 1
+        ids = [m["id"] for m in listed.get("messages") or []]
+        stored = store.stored_message_ids(ws["id"], mailbox["id"], ids) if ids else set()
+        invites = []
+        metas: dict[str, dict[str, Any]] = {}
+        for gmail_id in ids:
+            if gmail_id in stored:
+                continue
+            meta = gmail.message(sub, gmail_id)
+            # `subject:` matches words: the prefix is checked here.
+            if meta and capture_rules.is_invitation(meta.get("headers") or []):
+                invites.append(gmail_id)
+                metas[gmail_id] = meta
+        for key, value in _take(ws, mailbox, invites, ours, set(configured), metas).items():
+            got[key] += value
+        got["invites_rescanned"] += len(invites)
+        token = listed.get("nextPageToken")
+        if not token:
+            store.mailbox_progress(
+                ws["id"],
+                mailbox["id"],
+                {"invites_rescanned_at": now.isoformat(), "invite_rescan_token": None},
+            )
+            return
+        store.mailbox_progress(ws["id"], mailbox["id"], {"invite_rescan_token": token})
 
 
 def _reconcile(
@@ -702,9 +802,13 @@ def _deal_documents(
             info = rules.classify(
                 meta["headers"], ws.get("allowed_domains") or [], meta["internalDate"]
             )
-            if info["is_internal"] or capture_rules.is_bulk(meta["headers"], info["from_email"]):
+            outside = capture_rules.outside_people(
+                meta["headers"], [p for p in info["outside"] if _ADDRESS.match(p["email"])]
+            )
+            if info["is_internal"] or capture_rules.is_bulk(
+                meta["headers"], info["from_email"], outside
+            ):
                 continue
-            outside = [p for p in info["outside"] if _ADDRESS.match(p["email"])]
             if outside:
                 documents.append({**info, "outside": outside, "meta": meta, "id": gmail_id})
     except gmail.GmailError as exc:
@@ -858,6 +962,7 @@ def _take(
     gmail_ids: list[str],
     ours: set[str],
     configured: set[str] | None = None,
+    metas: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Fetches, classifies, matches, creates and stores the messages of a
     page that are not stored yet; then moves `last_*` forward, New to
@@ -867,7 +972,9 @@ def _take(
     `ours` when not given). A message that carries one is *labelled* and
     goes the way it always did. One reached through Primary or Sent alone
     is skipped when bulk, never runs automation 2, and, when it names nobody
-    the CRM knows, is not stored: its thread becomes a discovery candidate."""
+    the CRM knows, is not stored: its thread becomes a discovery candidate.
+    `metas` are messages' metadata the caller read already (the invitation
+    rescan), used instead of a second read."""
     ws_id = ws["id"]
     counts = dict.fromkeys(COUNTS, 0)
     if not gmail_ids:
@@ -879,7 +986,7 @@ def _take(
     for gmail_id in gmail_ids:
         if gmail_id in known:
             continue
-        meta = gmail.message(mailbox["email"], gmail_id)
+        meta = (metas or {}).get(gmail_id) or gmail.message(mailbox["email"], gmail_id)
         label_ids = set((meta or {}).get("labelIds") or [])
         # Gone meanwhile, or no longer labelled (spec 010: or in Trash or Spam).
         if not meta or not (
@@ -894,11 +1001,22 @@ def _take(
         if info["is_internal"]:
             counts["skipped_internal"] += 1
             continue
-        if not labelled and capture_rules.is_bulk(meta["headers"], info["from_email"]):
+        # Spec 010 R1 FR-CAP-INV-01: an invitation's outside people never
+        # include Google Calendar's sender, so matching sees the organiser.
+        info["outside"] = capture_rules.outside_people(
+            meta["headers"], [p for p in info["outside"] if _ADDRESS.match(p["email"])]
+        )
+        bulk = capture_rules.is_bulk(meta["headers"], info["from_email"], info["outside"])
+        if not labelled and bulk:
             # FR-CAP-SRC-03: captured bulk mail is skipped; nothing is kept.
+            # Spec 010 R1 FR-CAP-INV-01: an outside person's invitation is not.
             counts["skipped_bulk"] += 1
             continue
-        info["outside"] = [p for p in info["outside"] if _ADDRESS.match(p["email"])]
+        if not bulk and capture_rules.is_invitation(meta["headers"]):
+            # Spec 010 R1 FR-CAP-INV-02: such an invitation moves Last
+            # inbound or outbound like any message; the `Auto-Submitted`
+            # Google Calendar's sender adds marks no auto-reply.
+            info["is_auto"] = False
         found.append(
             {
                 **info,
