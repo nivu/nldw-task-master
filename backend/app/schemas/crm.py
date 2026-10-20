@@ -1179,6 +1179,10 @@ class DiscoveryOutput(BaseModel):
     deal_stage: Literal["discovery", "proposal", "closed_won"] | None = None
     website_choice: int | None = Field(default=None, ge=1, le=10)
     reason: str = Field(min_length=1, max_length=160)
+    #: Spec 010 R1 FR-CAP-ACAD-01 (contracts §7.3, PD-29): an Academy matter
+    #: (a course or training for individuals or students) or a Labs one; a
+    #: missing answer reads as Labs.
+    business: Literal["labs", "academy"] = "labs"
 
 
 class CaptureMailboxOut(BaseModel):
@@ -1204,6 +1208,11 @@ class CaptureFindingOut(BaseModel):
     owner_replied: bool
     reason: str | None
     duplicate_company: dict[str, Any] | None
+    #: Contracts §7.1 (FR-CAP-ACAD-02, -07): `labs` or `academy`; for an
+    #: Academy finding, `routed` is true when handed to an accepting Academy,
+    #: false when there was none, null before apply.
+    business: Literal["labs", "academy"] = "labs"
+    routed: bool | None = None
 
 
 class CaptureRecallRowOut(BaseModel):
@@ -1243,6 +1252,8 @@ class CaptureDryRunOut(BaseModel):
     cancelled: bool
     applied_at: str | None
     applicable: bool
+    #: `crm_capture_report`'s counts plus `academy` and `academy_unrouted`,
+    #: computed from the run's findings (contracts §7.1, FR-CAP-RPT-09).
     counts: dict[str, Any]
     estimated_cost_usd: str
     findings: list[CaptureFindingOut]

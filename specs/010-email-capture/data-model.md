@@ -590,12 +590,27 @@ updated (plan R1.2, PD-38).
     left, expire it instead of reopening (refusal kept, `review.expired`
     audit row), else reopen as 068 does.
 
+- **`crm_capture_apply_routed(p_actor jsonb, p_run uuid, p_routed jsonb,
+  p_counts jsonb) RETURNS boolean`** — the one 074 function a person calls
+  (actor kind `user`, as 073's `crm_capture_apply`; CRM22 otherwise);
+  `p_routed` an object `{candidate id: boolean}`, `p_counts` exactly
+  `{academy, academy_unrouted}`, non-negative numbers (CRM22 otherwise).
+  Takes the capture lock, then refuses as `crm_capture_apply` does (CRM04
+  no such run; CRM22 unless the latest, finished within 7 days, not
+  cancelled or applied). Each listed candidate of `ws` still `dry_run`,
+  `judged`, with `finding.business = 'academy'` gets `finding || {routed,
+  duplicate_company_id: null}`; the run's `counts` (or, if none were
+  stored, `crm_capture_report` now) gains `p_counts`. Python calls it just
+  before `crm_capture_apply` (plan R1.4); a retry after a failure between
+  the two rewrites the same values.
+
 ### 9.5 Grants and the sweep
 
 `REVOKE ALL ON FUNCTION … FROM PUBLIC, anon, authenticated; GRANT EXECUTE …
 TO service_role` for `crm_audit_row`, `crm_capture_group_upsert`,
 `crm_capture_release_thread`, `crm_capture_consolidate`,
-`crm_review_release`, `crm_workspaces_seed_ai` (as 072 granted it).
+`crm_review_release`, `crm_workspaces_seed_ai` (as 072 granted it),
+`crm_capture_apply_routed`.
 `test_crm_security_db._010_sql()` (071–079) reads 074 automatically; the
 function-name assertion gains the three names; `NOT_AUDITED_010` and
 `AUDITED_010` unchanged (no table); 074's `crm_review_release` keeps every

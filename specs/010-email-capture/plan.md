@@ -1214,14 +1214,26 @@ for a high- or medium-confidence `new_lead` or `deal_signal` with
 The Labs candidate's `finding` keeps `business` and `routed` and sets
 `duplicate_company_id = null`: no Academy id, and nothing the Academy
 decided, is ever written in Labs; Labs rows look the same for an enquiry
-the Academy filed, joined, skipped or ignored.
+the Academy filed, joined, skipped or ignored. Live, `_record` writes it
+with the judgement; on apply, `crm_capture_apply_routed` (074) writes it
+for every routed candidate just before `crm_capture_apply`, with the run's
+`academy` and `academy_unrouted` counts (an enquiry of a mailbox no longer
+captured counts as unrouted).
+
+**Ignore lists.** Live, the Labs ignore list is read before any text
+(FR-CAP-DIS-03), so a course enquiry whose every outside person is on it
+is recorded `ignored` and never judged or routed; only then can the
+Academy's list apply. On apply, a routed finding reads the Academy's list
+alone (the Labs list is not consulted for it).
 
 **Back to Labs** (FR-CAP-ACAD-09). The job does not rely on the candidate's
 previous finding: `crm_capture_mark` (071) clears `finding`, `outcome` and
 `judged_message_id` when a later message reopens the candidate, so by the
 time `_judge` runs again the earlier answer is gone. Instead, **whenever a
 Labs judgement of a conversation (live `_judge` or `apply`) ends as a Labs
-item or as no item, and an Academy target exists**, the job calls
+item or as no item, and the Academy workspace exists** (key `academy`; its
+Admins and its `accept_routed` switch do not matter here, they decide only
+routing), the job calls
 `crm_capture_release_thread(<academy sync actor>, "gmail:<mailbox
 email>:<thread_id>", '')`. It does nothing when the Academy holds no such
 entry; its result is not counted in Labs.
@@ -1234,6 +1246,8 @@ company, the person]})` (the `links` shape `records._targets` takes;
 verified in task T444), linked to the company and every person made or
 linked (one per distinct entry `person_email`, as in Labs), body "Email
 conversation in <mailbox email>: <n> emails, <first> to <latest>. <reason>"
+(each entry's own mailbox, from its `ref`; `evidence.mailbox_email` only
+when the ref names none)
 per entry, cut to the note's limit and passed through `_masked` (Academy
 Viewers read notes; FR-CRMAI-LLM-05); no `_queue_filing`; result
 `{company_id, person_id, people, note_id, linked, threads_filed: 0}`.
@@ -1242,7 +1256,11 @@ Viewers read notes; FR-CRMAI-LLM-05); no `_queue_filing`; result
 medium Academy findings of the run) and `academy_unrouted` (those with
 `routed = false`, or, for a run not yet applied, the whole count when there
 is no target now) to the counts, computed in Python from
-`dry_run_findings`; `crm_capture_report` (072) is not replaced. Live job
+`dry_run_findings`; once the run is applied (its candidates are live
+decisions then), from the counts `crm_capture_apply_routed` stored with the
+run, 0 for a run applied before 074; `crm_capture_report` (072) is not
+replaced. The page labels the first row "to be sent to the Academy" until
+the run is applied, and shows both rows only when `academy > 0`. Live job
 runs count `academy_routed` (handed over) and `academy_unrouted`; there is
 no Labs count of what the Academy did (PD-42).
 

@@ -3645,6 +3645,52 @@ class FakeCrmStore:
             return None
         return json.loads(json.dumps(run))
 
+    def capture_apply_routed(
+        self,
+        actor: dict[str, Any],
+        run_id: str,
+        routed: dict[str, bool],
+        counts: dict[str, int],
+    ) -> bool:
+        """074 crm_capture_apply_routed: refused as crm_capture_apply
+        refuses; each routed Academy candidate of the run's (still dry-run,
+        judged) gains `routed` and a null `duplicate_company_id`; the run's
+        stored counts (or the report as it stands) gain the Academy counts."""
+        assert actor["kind"] == "user", actor
+        ws_id = actor["workspace_id"]
+        routed = json.loads(json.dumps(routed))
+        counts = json.loads(json.dumps(counts))
+        assert isinstance(routed, dict) and all(isinstance(v, bool) for v in routed.values())
+        assert set(counts) == {"academy", "academy_unrouted"}
+        assert all(isinstance(v, int) and v >= 0 for v in counts.values())
+        run = self.rows["crm_capture_dry_runs"].get(run_id)
+        if run is None or run["workspace_id"] != ws_id:
+            raise store.refusal_for("CRM04", "No such dry run.")
+        latest = self.latest_dry_run(ws_id)
+        if (
+            not run.get("finished_at")
+            or run["cancelled"]
+            or run.get("applied_at")
+            or (latest or {}).get("id") != run_id
+        ):
+            raise store.refusal_for("CRM22", "This dry run cannot be applied.")
+        for c in self.rows["crm_capture_candidates"].values():
+            if (
+                c["workspace_id"] == ws_id
+                and c["id"] in routed
+                and c["dry_run"]
+                and c["status"] == "judged"
+                and (c.get("finding") or {}).get("business") == "academy"
+            ):
+                c["finding"] = {
+                    **c["finding"],
+                    "routed": routed[c["id"]],
+                    "duplicate_company_id": None,
+                }
+                c["updated_at"] = datetime.now(UTC).isoformat()
+        run["counts"] = {**self.capture_report(ws_id, run_id), **counts}
+        return True
+
     def apply_dry_run(self, actor: dict[str, Any], run_id: str) -> dict[str, Any]:
         """073 crm_capture_apply: the latest run only, finished, not
         cancelled or applied; its candidates live; the mode Live, audited.

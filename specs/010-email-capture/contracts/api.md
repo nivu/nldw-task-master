@@ -485,7 +485,8 @@ No route is added or removed; no MCP tool changes (count stays 21).
 ### 7.1 `GET /crm/capture` — FR-CAP-RPT-05 to -10
 
 `dry_run.counts` gains `academy` and `academy_unrouted` (computed from the
-run's findings, present for every run, 0 when none). `dry_run.findings[]`
+run's findings, or for an applied run as Apply stored them; present for
+every run, 0 when none). `dry_run.findings[]`
 gains `business` (`"labs"` | `"academy"`) and, for Academy, `routed`
 (boolean or `null` before apply; `true` means handed to an accepting
 Academy, whatever the Academy then did — nothing the Academy decided is

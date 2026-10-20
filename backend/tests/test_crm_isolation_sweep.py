@@ -18,6 +18,11 @@ remembering to list it:
 
 Academy's rows all carry the marker `Zqxacad` in their names and text, so a
 leak shows up whichever field carries it.
+
+Spec 010 R1 (tasks T448; FR-CAP-ACAD-04; plan R1.4 "Isolation argument"): a
+course enquiry routed from a Labs mailbox to the Academy holds no Labs
+mailbox, candidate, company or run id in any column, and only an Academy
+member ever sees it.
 """
 
 from __future__ import annotations
@@ -931,3 +936,101 @@ class TestThe009Surface:
             "/api/v1/crm/ai", params={"workspace": "academy"}, headers=as_(OWNER["id"])
         ).json()
         assert theirs["spend"]["total_usd"] == "7.25"
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 I3 — a course enquiry routed to the Academy (tasks T448)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def routed(monkeypatch):
+    """The discovery job's Labs in Live (test_crm_capture_job.py), a Labs
+    company named like the student's college, and one course enquiry routed
+    to the Academy. Vinita is an Admin of the Academy alone here; Tamil
+    (SELLER) a Member of Labs alone."""
+    from test_crm_capture_job import COURSE, STUDENT, Capture, _company
+
+    cap = Capture(monkeypatch)
+    cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]].update(
+        finished_at="2026-10-19T00:00:00+00:00", applied_at="2026-10-19T01:00:00+00:00"
+    )
+    cap.fake.set_capture(cap.labs, "live")
+    cap.fake.add_member(cap.academy, OUTSIDER["id"], "admin")
+    # Same name, no domain: the Labs duplicate check would match it, but an
+    # Academy finding is checked in the Academy only.
+    labs_company = _company(cap, "City College")
+    candidate = cap.conversation("c1", sender=STUDENT)
+    cap.answer(COURSE)
+    got = cap.tick()
+    assert got["counts"]["academy_routed"] == 1, got
+    [item] = [
+        i
+        for i in cap.fake.rows["crm_review_items"].values()
+        if i["workspace_id"] == cap.academy["id"]
+    ]
+    return (
+        cap,
+        item,
+        {
+            "labs workspace": cap.labs["id"],
+            "mailbox": cap.mailbox["id"],
+            "candidate": candidate["id"],
+            "company": labs_company["id"],
+            "dry run": cap.run["id"],
+        },
+    )
+
+
+class TestAcademyRoutingIsolation:
+    """FR-CAP-ACAD-02, -04; spec §14.5 I3 lines 1 and 7."""
+
+    def test_the_academy_item_holds_no_labs_id(self, routed):
+        cap, item, labs_ids = routed
+        # Checked against the Academy's own companies only: the Labs company
+        # of the same domain is never linked.
+        assert item["record_id"] is None and item["source_key"].startswith("capture:domain:")
+        for column, value in item.items():
+            held = str(value)
+            for name, labs_id in labs_ids.items():
+                assert labs_id not in held, (column, name)
+        audits = [a for a in cap.fake.audit if a.get("target_id") == item["id"]]
+        # Written as the Academy's `sync` (the database's audit row; the fake
+        # writes none for an insert).
+        assert all(a["workspace_id"] == cap.academy["id"] for a in audits)
+        for audit in audits:
+            for name, labs_id in labs_ids.items():
+                assert labs_id not in str(audit), name
+
+    @pytest.mark.parametrize("scope", ["mine", "all"])
+    @pytest.mark.parametrize("status", ["open", "decided"])
+    def test_only_an_academy_member_sees_the_routed_item(self, routed, scope, status):
+        cap, item, _ = routed
+        query = {"scope": scope, "status": status}
+        for who in (SELLER["id"], OWNER["id"]):
+            r = cap.http.get("/api/v1/crm/review", params={**LABS, **query}, headers=as_(who))
+            # A Labs Member asking for the whole queue is refused outright.
+            assert r.status_code in (200, 403), r.text
+            assert item["id"] not in r.text, (who, scope, status)
+        r = cap.http.get(
+            "/api/v1/crm/review",
+            params={"workspace": "academy", **query},
+            headers=as_(SELLER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (404, "No such workspace.")
+        # The owner's own item (he is an Academy Admin), in his queue.
+        r = cap.http.get(
+            "/api/v1/crm/review",
+            params={"workspace": "academy", **query},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert (item["id"] in r.text) is (status == "open"), (scope, status)
+        # Another Admin, of the Academy alone, sees it in the whole queue.
+        r = cap.http.get(
+            "/api/v1/crm/review",
+            params={"workspace": "academy", **query},
+            headers=as_(OUTSIDER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert (item["id"] in r.text) is (status == "open" and scope == "all"), (scope, status)

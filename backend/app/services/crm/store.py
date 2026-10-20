@@ -109,6 +109,8 @@ ACCOUNT_LEVEL = frozenset(
         "set_capture_mode",
         # Spec 010 (073): crm_capture_apply scopes by the actor's workspace.
         "apply_dry_run",
+        # Spec 010 R1 (074): crm_capture_apply_routed, as crm_capture_apply.
+        "capture_apply_routed",
     }
 )
 
@@ -1903,6 +1905,22 @@ def get_dry_run(workspace_id: str, run_id: str) -> dict[str, Any] | None:
         .data
     )
     return rows[0] if rows else None
+
+
+def capture_apply_routed(
+    actor: dict[str, Any], run_id: str, routed: dict[str, bool], counts: dict[str, int]
+) -> bool:
+    """074 `crm_capture_apply_routed` — before `crm_capture_apply`: each
+    routed candidate's `finding` gains `routed` (and `duplicate_company_id`
+    null), and the run's stored counts gain `academy` and
+    `academy_unrouted` (spec 010 R1 FR-CAP-ACAD-02, FR-CAP-RPT-09); refused
+    (422) as `crm_capture_apply` refuses a run it cannot apply."""
+    return bool(
+        rpc(
+            "crm_capture_apply_routed",
+            {"p_actor": actor, "p_run": run_id, "p_routed": routed, "p_counts": counts},
+        )
+    )
 
 
 def apply_dry_run(actor: dict[str, Any], run_id: str) -> dict[str, Any]:

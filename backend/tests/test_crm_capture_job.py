@@ -2081,3 +2081,344 @@ class TestConsolidation:
         assert live.fake.rows["crm_review_items"][old["id"]]["source_key"] == (
             "capture:name:hearsight"
         )
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 I3 — course enquiries to the Academy (tasks T446)
+# ---------------------------------------------------------------------------
+
+COURSE = {
+    **LEAD,
+    "company_name": "City College",
+    "person_name": "Asha Kumar",
+    "person_email": "asha@college.example.edu",
+    "person_title": None,
+    "reason": "Asked about the AI course for final-year students; you replied.",
+    "business": "academy",
+}
+STUDENT = "Asha Kumar <asha@college.example.edu>"
+
+
+def _in(cap, workspace) -> list[dict]:
+    return [i for i in _items(cap) if i["workspace_id"] == workspace["id"]]
+
+
+def _open_in(cap, workspace) -> list[dict]:
+    return [i for i in _in(cap, workspace) if i["status"] == "open"]
+
+
+def _academy_membership(cap, user_id):
+    return next(
+        m
+        for m in cap.fake.rows["crm_memberships"].values()
+        if m["workspace_id"] == cap.academy["id"] and m["user_id"] == user_id
+    )
+
+
+def _academy_setting(cap):
+    return next(
+        r
+        for r in cap.fake.rows["crm_workspace_settings"].values()
+        if r["workspace_id"] == cap.academy["id"] and r["key"] == "capture_routing"
+    )
+
+
+class TestAcademy:
+    """FR-CAP-ACAD-02 to -04, -07 to -10, FR-CAP-RPT-09; plan R1.4, PD-30,
+    PD-42; spec §14.5 I3."""
+
+    def test_capture_routes_a_course_enquiry_to_the_academy(self, live):
+        candidate = live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_routed"] == 1 and got["counts"]["items"] == 0
+        assert got["counts"]["academy_unrouted"] == 0
+        # FR-CAP-ACAD-02: nothing in Labs.
+        assert _in(live, live.labs) == []
+        [item] = _in(live, live.academy)
+        assert item["type"] == "new_lead" and item["status"] == "open"
+        # The mailbox owner is an Academy Admin: his item (FR-CAP-ACAD-03).
+        assert item["owner_id"] == OWNER["id"]
+        assert item["source_key"] == "capture:domain:college.example.edu"
+        assert item["source_link"].keys() == {"threads"}
+        [entry] = item["source_link"]["threads"]
+        assert entry["ref"] == f"gmail:{BOX}:c1" and "mailbox_id" not in entry
+        assert entry["origin"] == "academy_routing"
+        assert item["suggestion"]["evidence"]["mailbox_email"] == BOX
+        # No Labs id in any column (FR-CAP-ACAD-04).
+        held = json.dumps(item, default=str)
+        for labs_id in (live.labs["id"], live.mailbox["id"], candidate["id"], live.run["id"]):
+            assert labs_id not in held
+        row = live.candidate("c1")
+        assert row["finding"]["business"] == "academy" and row["finding"]["routed"] is True
+        assert row["finding"]["duplicate_company_id"] is None
+        assert row["classifier_version"] == "010.2"
+
+    def test_capture_the_academy_s_admins_own_it_when_the_owner_is_not_a_member(self, live):
+        live.fake.rows["crm_memberships"].pop(_academy_membership(live, OWNER["id"])["id"])
+        _academy_membership(live, MEMBER["id"])["role"] = "admin"
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        live.tick()
+        [item] = _in(live, live.academy)
+        assert item["owner_id"] is None
+
+    def test_capture_an_earlier_labs_item_lets_the_conversation_go(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer({**COURSE, "business": "labs"}, COURSE)
+        live.tick()
+        [labs_item] = _open_in(live, live.labs)
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="And dates?")
+        live.mark("c1", "c1-m2", later)
+        got = live.tick()
+        assert got["counts"]["released"] == 1 and got["counts"]["academy_routed"] == 1
+        assert live.fake.rows["crm_review_items"][labs_item["id"]]["status"] == "expired"
+        assert _open_in(live, live.labs) == []
+        assert len(_open_in(live, live.academy)) == 1
+
+    @pytest.mark.parametrize("gap", ["no_workspace", "no_admin", "inactive_admin", "switch_off"])
+    def test_capture_without_an_academy_admin_suggests_nothing(self, live, gap):
+        if gap == "no_workspace":
+            live.fake.rows["crm_workspaces"].pop(live.academy["id"])
+        elif gap == "no_admin":
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+        elif gap == "inactive_admin":
+            # The Academy's only Admin has an inactive account.
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+            _academy_membership(live, MEMBER["id"])["role"] = "admin"
+            live.fake.profiles[MEMBER["id"]]["is_active"] = False
+        else:
+            _academy_setting(live)["value"] = {"accept_routed": False}
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_unrouted"] == 1 and got["counts"]["academy_routed"] == 0
+        assert _items(live) == []
+        assert live.candidate("c1")["finding"]["routed"] is False
+
+    def test_capture_academy_ignore_list_stops_routing(self, live, caplog):
+        live.fake.add(
+            "crm_capture_ignores",
+            workspace_id=live.academy["id"],
+            kind="domain",
+            value="college.example.edu",
+            from_item_id=None,
+            created_by=OWNER["id"],
+            created_at=NOW.isoformat(),
+        )
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        with caplog.at_level("INFO", logger="nldw-task-master"):
+            got = live.tick()
+        # Handed over, whatever the Academy then did (PD-42).
+        assert got["counts"]["academy_routed"] == 1
+        assert _items(live) == []
+        assert live.candidate("c1")["finding"]["routed"] is True
+        skipped = [r.getMessage() for r in caplog.records if "capture.academy_skipped" in r.message]
+        assert skipped and '"reason": "ignored"' in skipped[0]
+        assert "college.example.edu" not in skipped[0]
+
+    def test_capture_rejudged_to_labs_leaves_the_academy_item(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE, {**COURSE, "business": "labs"})
+        live.tick()
+        [academy_item] = _open_in(live, live.academy)
+        # A later message reopens the candidate through the real mark, which
+        # clears the earlier finding (071 `crm_capture_mark`).
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="Pilot?")
+        live.mark("c1", "c1-m2", later)
+        assert live.candidate("c1")["status"] == "pending"
+        assert live.candidate("c1")["finding"] is None
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        assert live.fake.rows["crm_review_items"][academy_item["id"]]["status"] == "expired"
+        assert len(_open_in(live, live.labs)) == 1
+        assert _open_in(live, live.academy) == []
+
+    def test_capture_the_usage_row_is_labs(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        live.tick()
+        [usage] = live.fake.rows["crm_ai_usage"].values()
+        assert usage["workspace_id"] == live.labs["id"]
+
+    def test_capture_no_routing_outside_the_tva_linked_workspace(self, live):
+        # PD-29: only the TVA-linked workspace routes; elsewhere it is Labs.
+        live.conversation("c1", sender=STUDENT)
+        live.labs["tva_linked"] = False
+        live.fake.rows["crm_workspaces"][live.labs["id"]]["tva_linked"] = False
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["counts"]["academy_routed"] == 0 and got["counts"]["items"] == 1
+        assert live.candidate("c1")["finding"]["business"] == "labs"
+        assert _in(live, live.academy) == []
+
+    @pytest.mark.parametrize("target", [True, False])
+    def test_capture_a_dry_run_recall_row_for_a_course_enquiry(self, cap, target):
+        # Plan R1.3 step 7: `found` with an Academy target, else
+        # `academy_unrouted` (counted inside found, FR-CAP-RPT-07).
+        if not target:
+            _academy_setting(cap)["value"] = {"accept_routed": False}
+        cap.gmail.message(
+            "r-course",
+            "r-course-m1",
+            sender=STUDENT,
+            to=BOX,
+            at=NOW - timedelta(days=30),
+            labels=("INBOX", "Label_1", "CATEGORY_PERSONAL"),
+            text="Course dates?",
+        )
+        cap.answer(COURSE)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        [row] = run["recall"]
+        assert row["fate"] == ("found" if target else "academy_unrouted")
+        # A dry run routes nothing.
+        assert _items(cap) == []
+
+    def test_capture_the_report_counts_course_enquiries(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.conversation("t2", sender="ravi@robots.io")
+        cap.answer(COURSE, LEAD)
+        cap.tick()
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 0
+        academy = next(f for f in out["findings"] if f["business"] == "academy")
+        assert academy["routed"] is None and academy["duplicate_company"] is None
+        _academy_setting(cap)["value"] = {"accept_routed": False}
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy_unrouted"] == 1
+
+    def _finish(self, cap):
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = (
+            datetime.now(UTC) - timedelta(hours=1)
+        ).isoformat()
+
+    def _apply(self, cap):
+        r = cap.http.post(
+            f"/api/v1/crm/capture/dry-runs/{cap.run['id']}/apply?workspace=labs",
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_capture_apply_routes(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        cap.answer()  # no script: a Claude call fails the test
+        assert self._apply(cap)["items_created"] == 0
+        assert _in(cap, cap.labs) == []
+        [item] = _in(cap, cap.academy)
+        assert item["source_link"]["threads"][0]["ref"] == f"gmail:{BOX}:c1"
+        # FR-CAP-ACAD-02: the applied decision records the hand-over, as a
+        # live judgement does.
+        row = cap.candidate("c1")
+        assert row["dry_run"] is False
+        assert row["finding"]["routed"] is True and row["finding"]["duplicate_company_id"] is None
+        # FR-CAP-RPT-09: the applied run still counts it.
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["applied_at"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 0
+
+    def test_capture_apply_checks_the_target_again(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        _academy_setting(cap)["value"] = {"accept_routed": False}
+        self._apply(cap)
+        assert _items(cap) == []
+        assert cap.candidate("c1")["finding"]["routed"] is False
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 1
+        # Turning the switch on again does not rewrite what Apply recorded.
+        _academy_setting(cap)["value"] = {"accept_routed": True}
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 1
+
+    def test_capture_apply_keeps_the_run_s_other_counts(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.conversation("t2", sender="ravi@robots.io")
+        cap.answer(COURSE, LEAD)
+        cap.tick()
+        before = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        self._finish(cap)
+        self._apply(cap)
+        after = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        assert after == before
+        assert after["academy"] == 1 and after["judged"] == 2
+
+    def test_capture_an_applied_run_from_before_074_counts_no_course_enquiry(self, cap):
+        # Contracts §7.1: present for every run, 0 when none.
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]].update(
+            finished_at="2026-10-19T00:00:00+00:00",
+            applied_at="2026-10-19T01:00:00+00:00",
+            counts={"considered": 0},
+        )
+        counts = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        assert counts == {"considered": 0, "academy": 0, "academy_unrouted": 0}
+
+    def test_capture_apply_routed_is_refused_for_a_run_that_cannot_be_applied(self, cap):
+        from app.services.crm import CrmRefused, store
+
+        actor = {
+            "user_id": OWNER["id"],
+            "kind": "user",
+            "channel": "web",
+            "workspace_id": cap.labs["id"],
+        }
+        with pytest.raises(CrmRefused) as refused:
+            store.capture_apply_routed(
+                actor, cap.run["id"], {}, {"academy": 0, "academy_unrouted": 0}
+            )
+        assert refused.value.status == 422
+
+    @pytest.mark.parametrize("gap", ["switch_off", "no_admin"])
+    def test_capture_rejudged_to_labs_leaves_the_academy_item_without_a_target(self, live, gap):
+        # FR-CAP-ACAD-09: letting go depends only on the Academy existing,
+        # not on it still taking enquiries (FR-CAP-ACAD-03 is for routing).
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE, {**COURSE, "business": "labs"})
+        live.tick()
+        [academy_item] = _open_in(live, live.academy)
+        if gap == "switch_off":
+            _academy_setting(live)["value"] = {"accept_routed": False}
+        else:
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="Pilot?")
+        live.mark("c1", "c1-m2", later)
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        assert live.fake.rows["crm_review_items"][academy_item["id"]]["status"] == "expired"
+        assert len(_open_in(live, live.labs)) == 1
+
+    def test_capture_live_the_labs_ignore_list_applies_before_judging(self, live):
+        # FR-CAP-DIS-03 over §14.5 I3 (spec amended): live, the Labs ignore
+        # list is read before any text, so a course enquiry from a Labs-
+        # ignored domain is never judged nor routed; only an applied dry run
+        # reads the Academy's list alone.
+        _ignore(live, "domain", "college.example.edu")
+        live.conversation("c1", sender=STUDENT)
+        live.answer()  # no script: a Claude call fails the test
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["ignored"] == 1 and got["counts"].get("academy_routed", 0) == 0
+        assert live.candidate("c1")["status"] == "ignored"
+        assert _items(live) == []
+
+    def test_capture_apply_reads_the_academy_ignore_list_not_labs(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        _ignore(cap, "address", "asha@college.example.edu")
+        self._apply(cap)
+        assert len(_in(cap, cap.academy)) == 1

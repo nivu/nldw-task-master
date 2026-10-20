@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import {
   addCrmCaptureIgnore,
   applyCrmCaptureDryRun,
+  getCrmSettings,
   removeCrmCaptureIgnore,
   startCrmCaptureDryRun,
   updateCrmSetting,
@@ -22,9 +23,14 @@ import type {
   CrmCaptureOverview,
   CrmCaptureRecallFate,
   CrmCaptureRecallSummary,
+  CrmCaptureRouting,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { type CrmTimezone, formatDate } from "@/lib/crm/format";
+import { useAsync } from "@/lib/use-async";
+
+/** The workspace course enquiries are sent to (FR-CAP-ACAD-03). */
+const ACADEMY_KEY = "academy";
 
 /** Dry run is started by its button, never chosen here; Live is first
  *  entered through Apply, then may be chosen again (contracts §1.2). */
@@ -102,6 +108,11 @@ const usd = (amount: string) =>
  * and medium-confidence findings into Review Queue items with no new Claude
  * call and sets the mode to Live; Live can be chosen again once a dry run
  * was applied. The ignore list is edited here and grows from dismissals.
+ *
+ * Revision 1 (FR-CAP-RPT-09, FR-CAP-ACAD-03): when a run found course
+ * enquiries, the counts name those to be sent (sent, once applied) to the
+ * Academy and those with no Academy workspace to take them; in the Academy,
+ * the *Accept course enquiries from Labs* switch.
  */
 export function CaptureSettings({
   workspace,
@@ -216,6 +227,8 @@ export function CaptureSettings({
           {notice}
         </p>
       )}
+
+      {workspace === ACADEMY_KEY && <RoutingSwitch workspace={workspace} />}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -385,6 +398,23 @@ export function CaptureSettings({
               <CountRow label="Judged by Claude" value={run.counts.judged} />
               <CountRow label="Could not be judged" value={run.counts.failed} />
               <CountRow label="Conversations filed in all" value={run.counts.filed_known_threads} />
+              {run.counts.academy > 0 ? (
+                <>
+                  {/* A dry run routes nothing: only Apply hands enquiries over. */}
+                  <CountRow
+                    label={
+                      run.applied_at
+                        ? "Course enquiries sent to the Academy"
+                        : "Course enquiries to be sent to the Academy"
+                    }
+                    value={run.counts.academy - run.counts.academy_unrouted}
+                  />
+                  <CountRow
+                    label="Course enquiries with no Academy workspace"
+                    value={run.counts.academy_unrouted}
+                  />
+                </>
+              ) : null}
               <tr className="font-medium">
                 <td className="py-1.5">Estimated cost</td>
                 <td className="py-1.5 text-right tabular-nums">{usd(run.estimated_cost_usd)}</td>
@@ -472,6 +502,62 @@ export function CaptureSettings({
   );
 }
 
+/**
+ * The Academy's *Accept course enquiries from Labs* switch — spec 010
+ * FR-CAP-ACAD-03, contracts §7.4a. On by default; a missing value reads as
+ * on. Admins only; the server refuses everyone else.
+ */
+function RoutingSwitch({ workspace }: { workspace: string }) {
+  const { data, error, setError, reload } = useAsync(() => getCrmSettings(workspace), [workspace]);
+  const [busy, setBusy] = useState(false);
+  const routing = (data?.settings.capture_routing ?? null) as CrmCaptureRouting | null;
+  const on = data ? routing?.accept_routed !== false : true;
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await updateCrmSetting(workspace, "capture_routing", { accept_routed: next });
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      {error && (
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <div className="flex items-start gap-3">
+        <input
+          id="capture-routing"
+          type="checkbox"
+          className="mt-1 size-4"
+          checked={on}
+          disabled={!data || busy}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        <label htmlFor="capture-routing" className="text-sm">
+          <span className="block font-medium">
+            Accept course enquiries from Labs: {on ? "on" : "off"}
+          </span>
+          <span className="text-muted-foreground">
+            When Claude finds a course or training enquiry in a Labs mailbox, it is suggested in
+            this workspace&apos;s Review Queue instead. Only what came from the email crosses;
+            approving it creates the company, the people and a note. Switched off, nothing is sent
+            here.
+          </span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
 /** The recall line's numbers as a list; reasons with a zero count are left out (FR-CAP-RPT-08). */
 function RecallSummaryList({ summary }: { summary: CrmCaptureRecallSummary }) {
   const reasons = UNTESTED_TEXT.filter(([key]) => summary.untested[key] > 0);
@@ -532,6 +618,9 @@ function FindingsTable({
             <tr key={f.candidate_id} className="align-top">
               <td className="p-2 whitespace-nowrap">
                 {f.outcome === "new_lead" ? "New lead" : "Deal signal"}
+                {f.business === "academy" && (
+                  <span className="block text-xs text-muted-foreground">Course enquiry, for the Academy</span>
+                )}
               </td>
               <td className="p-2">
                 <span className="block">{f.company_name ?? "—"}</span>

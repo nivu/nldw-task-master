@@ -117,6 +117,10 @@ COUNTS: Final = (
     "consolidate_failed",
     "items_skipped",
     "released",
+    # Spec 010 R1 (contracts §7.2, PD-42): course enquiries handed to the
+    # Academy, and those it could not take; never what the Academy did.
+    "academy_routed",
+    "academy_unrouted",
 )
 #: Plan §5.7 — the dry run's follow-up: at most one queued, a minute later.
 #: The key holds its task id until it starts; it outlives a follow-up that
@@ -134,6 +138,8 @@ _OPEN: Final = ("discovery", "qualification", "proposal", "negotiation")
 
 #: The workspaces whose dry run stopped with work left, this task.
 _more: set[str] = set()
+#: Spec 010 R1 (plan R1.4): the Academy target, read once per run.
+_academy: dict[str, Any] = {}
 
 
 class MalformedThread(Exception):
@@ -231,6 +237,7 @@ def _capturing(workspace: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     """One `capture` run of one workspace (contracts §1.4 counts)."""
     ws_id = workspace["id"]
+    _academy.clear()
     mode = rules.capture_mode(store.capture_setting(ws_id))
     if mode == rules.OFF:
         raise jobs.Skipped(rules.CAPTURE_OFF)
@@ -560,11 +567,33 @@ def _judge(
             counts["skipped_rules"] += 1
         return
     answer, judged, choices = asked
-    finding = rules.finding_of(answer, judged, mailbox_email=mailbox["email"], choices=choices)
-    if finding is not None:
+    finding = rules.finding_of(
+        answer,
+        judged,
+        mailbox_email=mailbox["email"],
+        choices=choices,
+        tva_linked=bool(workspace.get("tva_linked")),
+    )
+    if finding is not None and finding["business"] != rules.ACADEMY:
         # FR-CAP-DIS-08: kept with the finding, so the report shows it too.
+        # An Academy finding holds none: no Academy id is written in Labs.
         finding["duplicate_company_id"] = duplicate_of(ws_id, finding)
-    if not dry:
+    if not dry and rules.routes_to_academy(finding, answer["confidence"]):
+        # Spec 010 R1 FR-CAP-ACAD-02: no Labs item; the Academy step.
+        assert finding is not None
+        _route_academy(
+            workspace,
+            mailbox,
+            thread_id=candidate["thread_id"],
+            message_id=candidate["latest_message_id"],
+            outcome=answer["outcome"],
+            confidence=answer["confidence"],
+            finding=finding,
+            outside=rules.outside_of(judged),
+            generated_at=_now().isoformat(),
+            counts=counts,
+        )
+    elif not dry:
         # Live: the item is built and stored while the candidate is still
         # pending, so a fault in the duplicate check, the owner or the upsert
         # leaves it pending to be judged again; a decision recorded first
@@ -598,6 +627,8 @@ def _judge(
                 ws_id, rules.source_key(mailbox["id"], candidate["thread_id"]), ""
             )
             counts["released"] += int(released.get("removed") or 0)
+        # FR-CAP-ACAD-09: a Labs item or no item, so no Academy item holds it.
+        _back_to_labs(mailbox, candidate["thread_id"])
     recorded = _record(
         ws_id,
         candidate,
@@ -771,6 +802,153 @@ def item_for(
 
 
 # ---------------------------------------------------------------------------
+# Course enquiries to the Academy — spec 010 R1 FR-CAP-ACAD-02 to -04, -07 to
+# -10; plan R1.4, PD-30, PD-42
+# ---------------------------------------------------------------------------
+
+
+def _academy_workspace_of() -> dict[str, Any] | None:
+    return next((w for w in store.list_workspaces() if w.get("key") == rules.ACADEMY), None)
+
+
+def _find_academy() -> dict[str, Any] | None:
+    workspace = _academy_workspace_of()
+    if workspace is None:
+        return None
+    roles = {m["user_id"]: m["role"] for m in store.list_members(workspace["id"])}
+    active = {p["id"] for p in db.list_profiles(include_crm_only=True) if p.get("is_active")}
+    if not any(role == "admin" and user in active for user, role in roles.items()):
+        return None
+    setting = next(
+        (r["value"] for r in store.list_settings(workspace["id"]) if r["key"] == "capture_routing"),
+        None,
+    )
+    if not rules.accepts_routed(setting):
+        return None
+    return {"workspace": workspace, "roles": roles, "active": active}
+
+
+def _academy_target() -> dict[str, Any] | None:
+    """FR-CAP-ACAD-03 — `{workspace, roles, active}` of the workspace keyed
+    `academy` when it has an active Admin and its *Accept course enquiries
+    from Labs* switch (`capture_routing.accept_routed`, PD-41) is on; else
+    None. Read once per run; a failure to read is no target for the run
+    (plan R1.8), so the finding is recorded unrouted."""
+    if "target" not in _academy:
+        try:
+            _academy["target"] = _find_academy()
+        except Exception as exc:  # noqa: BLE001 - no target this run
+            logger.warning(
+                '{"event": "crm_capture_academy_target_failed", "error": "%s"}',
+                type(exc).__name__,
+            )
+            _academy["target"] = None
+    return _academy["target"]
+
+
+def _academy_workspace() -> dict[str, Any] | None:
+    """FR-CAP-ACAD-09 — the workspace keyed `academy`, whatever its Admins
+    and its *Accept course enquiries* switch: letting a conversation go
+    depends only on the Academy existing, not on it taking new enquiries
+    (FR-CAP-ACAD-03 is for routing). Read once per run; a failure to read
+    is no release this run."""
+    if "workspace" not in _academy:
+        try:
+            _academy["workspace"] = _academy_workspace_of()
+        except Exception as exc:  # noqa: BLE001 - no release this run
+            logger.warning(
+                '{"event": "crm_capture_academy_workspace_failed", "error": "%s"}',
+                type(exc).__name__,
+            )
+            _academy["workspace"] = None
+    return _academy["workspace"]
+
+
+def _back_to_labs(mailbox: Mapping[str, Any], thread_id: str) -> None:
+    """FR-CAP-ACAD-09 — a Labs judgement that ends as a Labs item or as no
+    item lets the conversation go from any Academy item that held it (which
+    expires when left empty), under an Academy `sync` actor, even when the
+    Academy no longer accepts enquiries or has no active Admin. Nothing
+    comes back to Labs: the result is not counted."""
+    academy = _academy_workspace()
+    if academy is None:
+        return
+    store.capture_release_thread(academy["id"], rules.academy_ref(mailbox["email"], thread_id), "")
+
+
+def _route_academy(
+    workspace: Mapping[str, Any],
+    mailbox: Mapping[str, Any],
+    *,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    finding: dict[str, Any],
+    outside: list[dict[str, str]],
+    generated_at: str | None,
+    counts: dict[str, int],
+) -> bool:
+    """Plan R1.4 routing, live and on apply alike: (1) no Labs item, and a
+    Labs item that held the conversation lets it go; (2) with no Academy
+    target, `routed = false` (`academy_unrouted`) and nothing is suggested;
+    (3) otherwise `routed = true` (`academy_routed`, whatever the Academy
+    step does, PD-42) and the Academy step, as the Academy's `sync`: every
+    outside participant on the Academy's ignore list → no item; else an
+    Academy `new_lead` built from Gmail values only, checked against the
+    Academy's own companies, owned as `owner_for` says with Academy roles,
+    stored through `review.capture_group_upsert`. The step's outcome is
+    logged in the Academy only, never on a Labs row or count. The Labs call
+    was paid by Labs (FR-CAP-ACAD-08). Returns `routed`."""
+    released = store.capture_release_thread(
+        workspace["id"], rules.source_key(mailbox["id"], thread_id), ""
+    )
+    counts["released"] = counts.get("released", 0) + int(released.get("removed") or 0)
+    finding["duplicate_company_id"] = None
+    target = _academy_target()
+    if target is None:
+        finding["routed"] = False
+        counts["academy_unrouted"] = counts.get("academy_unrouted", 0) + 1
+        return False
+    finding["routed"] = True
+    counts["academy_routed"] = counts.get("academy_routed", 0) + 1
+    academy_id = target["workspace"]["id"]
+    if rules.ignored(outside, store.list_ignores(academy_id)):
+        logger.info(
+            '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "ignored"}',
+            academy_id,
+        )
+        return True
+    duplicate = duplicate_of(academy_id, finding)
+    item = rules.academy_lead_item(
+        {**finding, "duplicate_company_id": duplicate},
+        mailbox_email=mailbox["email"],
+        thread_id=thread_id,
+        message_id=message_id,
+        outcome=outcome,
+        confidence=confidence,
+        owner_id=review_rules.owner_for(
+            "new_lead",
+            roles=target["roles"],
+            active=target["active"],
+            mailbox_owner=mailbox.get("owner_id"),
+        ),
+        model=ai_rules.CRM_AI_MODEL,
+        generated_at=generated_at,
+        company_id=duplicate,
+    )
+    if item is None:
+        return True
+    made = review.capture_group_upsert(academy_id, item, item["source_link"]["threads"][0])
+    if made.get("skipped"):
+        logger.info(
+            '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "decided"}',
+            academy_id,
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # The recall check — FR-CAP-RPT-03; plan §5.7, PD-11
 # ---------------------------------------------------------------------------
 
@@ -876,15 +1054,15 @@ def _fate(
         # Claude failed on it, or every message was deleted meanwhile.
         return fate(failed=True), latest
     answer = asked[0]
-    # `routed` is I3's (T443: `_academy_target() is not None` for an Academy
-    # finding, plan R1.3 step 7 and R1.4); until then an Academy finding
-    # counts as found.
+    # Plan R1.3 step 7: an Academy finding is `found` when the Academy
+    # target exists, else `academy_unrouted`.
+    business = rules.business_of(answer, tva_linked=bool(workspace.get("tva_linked")))
     return (
         fate(
             outcome=answer["outcome"],
             confidence=answer["confidence"],
-            business=answer.get("business"),
-            routed=None,
+            business=business,
+            routed=(_academy_target() is not None) if business == rules.ACADEMY else None,
         ),
         latest,
     )
@@ -993,19 +1171,42 @@ def apply(ctx: Any, run_id: str) -> dict[str, Any]:
     # sender put on the ignore list since the run (FR-CAP-DIS-03).
     mailboxes = _capturing(ctx.workspace)
     ignores = store.list_ignores(ws_id)
+    _academy.clear()
+    counts: dict[str, int] = {}
     items = []
-    for row in store.dry_run_findings(ws_id):
+    findings = store.dry_run_findings(ws_id)
+    routed: dict[str, bool] = {}
+    for row in findings:
         mailbox = mailboxes.get(row["mailbox_id"])
         if mailbox is None or not row.get("finding"):
             continue
         email = row["finding"].get("person_email")
+        message_id = row["judged_message_id"] or row["latest_message_id"]
+        if rules.routes_to_academy(row["finding"], row["confidence"]):
+            # FR-CAP-ACAD-10: routed as live, the target checked again now;
+            # the Academy's ignore list is read there, not Labs'.
+            routed[row["id"]] = _route_academy(
+                ctx.workspace,
+                mailbox,
+                thread_id=row["thread_id"],
+                message_id=message_id,
+                outcome=row["outcome"],
+                confidence=row["confidence"],
+                finding=dict(row["finding"]),
+                outside=[{"email": email}] if email else [],
+                generated_at=str(row["judged_at"]) if row.get("judged_at") else None,
+                counts=counts,
+            )
+            continue
+        # FR-CAP-ACAD-09: a Labs item or no item.
+        _back_to_labs(mailbox, row["thread_id"])
         if email and rules.ignored([{"email": email}], ignores):
             continue
         item = item_for(
             ctx.workspace,
             mailbox,
             thread_id=row["thread_id"],
-            message_id=row["judged_message_id"] or row["latest_message_id"],
+            message_id=message_id,
             outcome=row["outcome"],
             confidence=row["confidence"],
             finding=row["finding"],
@@ -1014,11 +1215,29 @@ def apply(ctx: Any, run_id: str) -> dict[str, Any]:
         if item is not None:
             items.append(item)
     made = store_items(ws_id, items)
+    # FR-CAP-ACAD-02, FR-CAP-RPT-09: the Labs record keeps whether each
+    # course enquiry was handed over, as a live judgement does, and the run
+    # keeps its Academy counts, which its candidates (live decisions from
+    # here) no longer give. An enquiry of a mailbox no longer captured was
+    # not handed over.
+    academy = [r for r in findings if rules.routes_to_academy(r.get("finding"), r["confidence"])]
+    store.capture_apply_routed(
+        actor(ctx),
+        run_id,
+        routed,
+        {
+            "academy": len(academy),
+            "academy_unrouted": sum(1 for r in academy if not routed.get(r["id"])),
+        },
+    )
     done = store.apply_dry_run(actor(ctx), run_id)
     logger.info(
-        '{"event": "crm_capture_dry_run_applied", "workspace": "%s", "items": %d}',
+        '{"event": "crm_capture_dry_run_applied", "workspace": "%s", "items": %d, '
+        '"academy_routed": %d, "academy_unrouted": %d}',
         ctx.workspace["key"],
         len(items),
+        counts.get("academy_routed", 0),
+        counts.get("academy_unrouted", 0),
     )
     return {
         "applied_at": done.get("applied_at"),
@@ -1085,7 +1304,11 @@ def remove_ignore(ctx: Any, ignore_id: str) -> None:
 
 def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, Any]:
     found = row.get("finding") or {}
-    duplicate = companies.get(found.get("duplicate_company_id") or "")
+    business = rules.ACADEMY if found.get("business") == rules.ACADEMY else rules.LABS
+    # Contracts §7.1: an Academy finding names no company (FR-CAP-ACAD-02).
+    duplicate = (
+        companies.get(found.get("duplicate_company_id") or "") if business == rules.LABS else None
+    )
     return {
         "candidate_id": row["id"],
         "outcome": row["outcome"],
@@ -1103,7 +1326,36 @@ def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, 
         "duplicate_company": {"id": duplicate["id"], "name": duplicate.get("name")}
         if duplicate
         else None,
+        "business": business,
+        "routed": found.get("routed") if business == rules.ACADEMY else None,
     }
+
+
+def _academy_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """FR-CAP-RPT-09 (plan R1.4, PD-32) — `academy`, the run's high- and
+    medium-confidence Academy findings, and `academy_unrouted`, those the
+    Academy could not take: `routed` false, or not routed (a run not
+    applied) with no Academy target now. From the findings only: nothing the
+    Academy did."""
+    academy = [r for r in findings if rules.routes_to_academy(r.get("finding"), r["confidence"])]
+    unrouted = sum(1 for r in academy if (r.get("finding") or {}).get("routed") is False)
+    waiting = [r for r in academy if (r.get("finding") or {}).get("routed") is None]
+    if waiting and _academy_target() is None:
+        unrouted += len(waiting)
+    return {"academy": len(academy), "academy_unrouted": unrouted}
+
+
+def _run_counts(
+    ws_id: str, run: Mapping[str, Any], findings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """FR-CAP-RPT-09, contracts §7.1 — the report's counts with `academy`
+    and `academy_unrouted` for every run: an applied run's as Apply stored
+    them (its candidates are live decisions since), 0 for a run applied
+    before 074; any other run's from its findings now."""
+    counts = store.capture_report(ws_id, run["id"])
+    if run.get("applied_at"):
+        return {"academy": 0, "academy_unrouted": 0, **counts}
+    return {**counts, **_academy_counts(findings)}
 
 
 def _recall_rows(ws_id: str, recall: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1147,6 +1399,7 @@ def overview(ctx: Any) -> dict[str, Any]:
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     ignores = [_ignore_out(i, names) for i in store.list_ignores(ws_id)]
     dry_run = None
+    _academy.clear()
     if latest is not None:
         findings = store.dry_run_findings(ws_id)
         companies = base.by_id(
@@ -1167,7 +1420,7 @@ def overview(ctx: Any) -> dict[str, Any]:
             "cancelled": bool(latest.get("cancelled")),
             "applied_at": latest.get("applied_at"),
             "applicable": applicable(latest, latest["id"], now),
-            "counts": store.capture_report(ws_id, latest["id"]),
+            "counts": _run_counts(ws_id, latest, findings),
             "estimated_cost_usd": str(cost.quantize(Decimal("0.01"))),
             "findings": [_finding(r, companies) for r in findings],
             "recall": {

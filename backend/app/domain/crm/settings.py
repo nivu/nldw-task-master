@@ -232,6 +232,9 @@ VALIDATORS: Final = {
 VALIDATORS["ai"] = ai_rules.ai_refusal
 #: Spec 010 FR-CAP-DIS-01: email capture's discovery mode.
 VALIDATORS["capture"] = capture_rules.capture_refusal
+#: Spec 010 R1 FR-CAP-ACAD-03 (PD-41): whether the workspace takes course
+#: enquiries from Labs; read only in the Academy.
+VALIDATORS["capture_routing"] = capture_rules.routing_refusal
 
 
 def setting_refusal(key: str, value: Any) -> str | None:

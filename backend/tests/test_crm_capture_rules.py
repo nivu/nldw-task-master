@@ -8,7 +8,9 @@ plan §5.6, §5.7, PD-9, PD-11, PD-17, PD-20. S3 (tasks T313): FR-CAP-DIS-03,
 calendar notices, `Reply-To`), FR-CAP-GRP-01, -03, -06, -08 (company keys,
 conversation entries, the consolidation plan); plan R1.2, R1.5, PD-22,
 PD-33, PD-40. R1 (tasks T421, T424): FR-CAP-RPT-05 to -07, -10 (the recall
-fates, summary and line); plan R1.3, PD-27, PD-28.
+fates, summary and line); plan R1.3, PD-27, PD-28. R1 (tasks T442, T445):
+FR-CAP-ACAD-01, -03, -04, -05 (the business answer, the Academy's switch,
+the Academy item, its note); contracts §7.3, §7.4; plan R1.4, PD-29, PD-30.
 
 No I/O: labels, headers, rows and the clock in, decisions out.
 """
@@ -16,13 +18,17 @@ No I/O: labels, headers, rows and the clock in, decisions out.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 
 from app.domain.crm import capture
 from app.domain.crm import email_rules as rules
 from app.domain.crm import review as review_rules
+from app.domain.crm import settings as settings_rules
+from app.schemas.crm import DiscoveryOutput
 
 NOW = datetime(2026, 10, 20, 6, 30, tzinfo=UTC)
 IST = capture.ZONE
@@ -776,6 +782,8 @@ class TestTheFinding:
             "owner_replied": True,
             "attachments": ["brief.pdf", "quote.pdf"],
             "duplicate_company_id": None,
+            # Spec 010 R1 (data-model §9.3): no answer reads as Labs.
+            "business": "labs",
         }
 
     def test_capture_no_reply_suggests_new(self):
@@ -1601,3 +1609,245 @@ class TestConsolidationPlan:
         new.update(id="i9", created_at="2026-10-09T00:00:00+00:00")
         [group] = capture.consolidation_plan([_old_item(1), new], {})
         assert group["members"] == ["i9", "i1"]
+
+
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+class TestAcademyRules:
+    """Spec 010 R1 FR-CAP-ACAD-01, -03 to -05; contracts §7.3, §7.4;
+    plan R1.4, PD-29 to PD-31, PD-41."""
+
+    ANSWER = {
+        "outcome": "new_lead",
+        "confidence": "high",
+        "company_name": "City College",
+        "person_name": "Asha Kumar",
+        "person_email": "asha@college.example.edu",
+        "person_title": None,
+        "lead_stage": "contacted",
+        "deal_stage": None,
+        "website_choice": 1,
+        "reason": "Asked about the AI course for students; you replied.",
+    }
+
+    def _msgs(self):
+        return [
+            _msg("m1", "asha@college.example.edu", OWNER_BOX, T0),
+            _msg("m2", OWNER_BOX, "asha@college.example.edu", T0 + timedelta(days=1)),
+        ]
+
+    def test_capture_business_defaults_to_labs(self):
+        answer = DiscoveryOutput.model_validate(self.ANSWER)
+        assert answer.business == "labs"
+        assert DiscoveryOutput.model_validate({**self.ANSWER, "business": "academy"}).business == (
+            "academy"
+        )
+
+    def test_capture_business_takes_only_labs_or_academy(self):
+        with pytest.raises(ValidationError):
+            DiscoveryOutput.model_validate({**self.ANSWER, "business": "school"})
+        schema = DiscoveryOutput.model_json_schema()
+        assert schema["properties"]["business"]["enum"] == ["labs", "academy"]
+        assert "business" not in schema.get("required", [])
+
+    def test_capture_instruction_names_the_business_and_invitations(self):
+        assert (
+            "business: academy when the enquiry is about courses or training for individuals "
+            "or students" in capture.INSTRUCTION
+        )
+        assert "labs for AI services, products, software or staffing." in capture.INSTRUCTION
+        assert (
+            "A meeting invitation is a lead only when the conversation shows interest in buying"
+            in capture.INSTRUCTION
+        )
+
+    def test_capture_classifier_version_moves_for_the_business_answer(self):
+        assert capture.CLASSIFIER_VERSION == "010.2"
+
+    def test_capture_finding_keeps_the_academy_answer_in_labs(self):
+        found = capture.finding_of(
+            {**self.ANSWER, "business": "academy"},
+            self._msgs(),
+            mailbox_email=OWNER_BOX,
+            choices=["college.example.edu"],
+            tva_linked=True,
+        )
+        assert found["business"] == "academy" and found["duplicate_company_id"] is None
+        assert capture.routes_to_academy(found, "high") and capture.routes_to_academy(
+            found, "medium"
+        )
+        assert not capture.routes_to_academy(found, "low")
+
+    def test_capture_finding_is_labs_outside_the_tva_linked_workspace(self):
+        found = capture.finding_of(
+            {**self.ANSWER, "business": "academy"},
+            self._msgs(),
+            mailbox_email=OWNER_BOX,
+            choices=[],
+            tva_linked=False,
+        )
+        assert found["business"] == "labs"
+        assert not capture.routes_to_academy(found, "high")
+
+    def test_capture_missing_business_reads_as_labs(self):
+        assert capture.business_of({}, tva_linked=True) == "labs"
+        assert capture.business_of({"business": None}, tva_linked=True) == "labs"
+
+    def test_capture_academy_item_holds_no_uuid(self):
+        found = capture.finding_of(
+            {**self.ANSWER, "business": "academy"},
+            self._msgs(),
+            mailbox_email=OWNER_BOX,
+            choices=["college.example.edu"],
+            tva_linked=True,
+        )
+        item = capture.academy_lead_item(
+            found,
+            mailbox_email=OWNER_BOX,
+            thread_id="18c2f0a9b1",
+            message_id="18c2f0a9b2",
+            outcome="new_lead",
+            confidence="high",
+            owner_id=None,
+            model="claude-model",
+            generated_at="2026-10-20T06:00:00+00:00",
+        )
+        assert not _UUID.search(json.dumps(item))
+        assert "mailbox_id" not in item["source_link"]
+        [entry] = item["source_link"]["threads"]
+        assert "mailbox_id" not in entry
+        assert entry["ref"] == f"gmail:{OWNER_BOX}:18c2f0a9b1"
+        assert entry["origin"] == "academy_routing"
+        assert entry["person_email"] == "asha@college.example.edu"
+        assert item["source_key"] == "capture:domain:college.example.edu"
+        assert item["dedupe_key"] == (
+            "email_thread|capture:domain:college.example.edu|new_lead|thread"
+        )
+        assert item["type"] == "new_lead" and item["record_id"] is None
+        evidence = item["suggestion"]["evidence"]
+        assert evidence["origin"] == "academy_routing" and evidence["mailbox_email"] == OWNER_BOX
+
+    def test_capture_academy_deal_signal_is_a_lead_with_a_hint(self):
+        finding = {"company_name": "City College", "deal_stage": "proposal", "reason": "SOW"}
+        item = capture.academy_lead_item(
+            finding,
+            mailbox_email=OWNER_BOX,
+            thread_id="t1",
+            message_id="m1",
+            outcome="deal_signal",
+            confidence="medium",
+            owner_id=None,
+            model=None,
+            generated_at=None,
+            company_id="academy-company",
+        )
+        assert item["type"] == "new_lead"
+        assert item["suggestion"]["deal_stage_hint"] == "proposal"
+        assert item["source_key"] == capture.LINKED_KEY
+        assert item["dedupe_key"].endswith("|new_lead|company:academy-company")
+
+    def test_capture_academy_item_none_for_low_confidence(self):
+        assert (
+            capture.academy_lead_item(
+                {"company_name": "X"},
+                mailbox_email=OWNER_BOX,
+                thread_id="t1",
+                message_id="m1",
+                outcome="new_lead",
+                confidence="low",
+                owner_id=None,
+                model=None,
+                generated_at=None,
+            )
+            is None
+        )
+
+    def test_capture_academy_note_reads_like_the_spec(self):
+        entries = [
+            {
+                "message_count": 2,
+                "first_at": "2026-10-01T10:00:00+05:30",
+                "latest_at": "2026-10-02T10:00:00+05:30",
+                "message_id": "m2",
+                "reason": "Asked about the AI course for final-year students.",
+            },
+            {
+                "message_count": 1,
+                "first_at": "2026-09-30T10:00:00+05:30",
+                "latest_at": "2026-09-30T10:00:00+05:30",
+                "message_id": "m0",
+                "reason": None,
+            },
+        ]
+        assert capture.academy_note(entries, "navaneeth@nunnarilabs.com") == (
+            "Email conversation in navaneeth@nunnarilabs.com: 1 email, 30 Sep 2026.\n"
+            "Email conversation in navaneeth@nunnarilabs.com: 2 emails, 1 Oct to 2 Oct 2026. "
+            "Asked about the AI course for final-year students."
+        )
+
+    def test_capture_academy_note_names_each_conversation_s_own_mailbox(self):
+        # One Academy item groups one college's enquiries from every Labs
+        # mailbox; each line names the mailbox its `ref` carries, and the
+        # evidence's address only when the ref names none.
+        entries = [
+            {
+                "ref": capture.academy_ref("sales@nunnarilabs.com", "t-sales"),
+                "message_count": 1,
+                "first_at": "2026-10-02T10:00:00+05:30",
+                "latest_at": "2026-10-02T10:00:00+05:30",
+                "message_id": "m2",
+            },
+            {
+                "ref": capture.academy_ref("navaneeth@nunnarilabs.com", "t-nav"),
+                "message_count": 1,
+                "first_at": "2026-10-01T10:00:00+05:30",
+                "latest_at": "2026-10-01T10:00:00+05:30",
+                "message_id": "m1",
+            },
+            {
+                "ref": "gmail:not-an-address:t-x",
+                "message_count": 1,
+                "first_at": "2026-10-03T10:00:00+05:30",
+                "latest_at": "2026-10-03T10:00:00+05:30",
+                "message_id": "m3",
+            },
+        ]
+        assert capture.academy_note(entries, "sales@nunnarilabs.com") == (
+            "Email conversation in navaneeth@nunnarilabs.com: 1 email, 1 Oct 2026.\n"
+            "Email conversation in sales@nunnarilabs.com: 1 email, 2 Oct 2026.\n"
+            "Email conversation in sales@nunnarilabs.com: 1 email, 3 Oct 2026."
+        )
+
+    @pytest.mark.parametrize(
+        ("ref", "mailbox"),
+        [
+            ("gmail:sales@nunnarilabs.com:18c2f0a", "sales@nunnarilabs.com"),
+            ("gmail:5f0c6a2e-0000-4000-8000-000000000001:18c2f0a", None),
+            ("gmail:sales@nunnarilabs.com:", None),
+            ("gmail:sales@nunnarilabs.com", None),
+            ("capture:domain:college.example.edu", None),
+            (None, None),
+        ],
+    )
+    def test_capture_academy_ref_mailbox(self, ref, mailbox):
+        assert capture.academy_ref_mailbox(ref) == mailbox
+
+    @pytest.mark.parametrize(
+        ("value", "refused"),
+        [
+            ({"accept_routed": True}, False),
+            ({"accept_routed": False}, False),
+            ({"accept_routed": "yes"}, True),
+            ({}, True),
+            ({"accept_routed": True, "extra": 1}, True),
+            (True, True),
+        ],
+    )
+    def test_capture_routing_setting_is_one_boolean(self, value, refused):
+        assert (settings_rules.setting_refusal("capture_routing", value) is not None) is refused
+
+    def test_capture_routing_missing_row_reads_as_on(self):
+        assert capture.accepts_routed(None) is True
+        assert capture.accepts_routed({"accept_routed": False}) is False
+        assert capture.accepts_routed({"accept_routed": "no"}) is False

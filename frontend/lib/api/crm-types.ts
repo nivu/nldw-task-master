@@ -92,8 +92,18 @@ export interface CrmBootstrap {
 
 /** GET /crm/settings — Admin only. The allow-list is read-only here. */
 export interface CrmSettings {
-  settings: { stage_probabilities?: StageProbabilities } & Record<string, unknown>;
+  settings: {
+    stage_probabilities?: StageProbabilities;
+    /** 010 Revision 1 (contracts §7.4a): read only in the Academy. */
+    capture_routing?: CrmCaptureRouting;
+  } & Record<string, unknown>;
   allowed_domains: string[];
+}
+
+/** 010 Revision 1 (FR-CAP-ACAD-03): whether the workspace takes course
+ *  enquiries from Labs; on by default. */
+export interface CrmCaptureRouting {
+  accept_routed: boolean;
 }
 
 /** GET /crm/fx-rates — INR per one unit, for a month (FR-CRM-FX-02). */
@@ -1768,6 +1778,8 @@ export interface ReviewApproveResult {
     /** 010 Revision 1 (contracts §7.4). */
     people?: number;
     threads_filed?: number;
+    /** An Academy `new_lead`: the note recorded instead of mail (FR-CAP-ACAD-05). */
+    note_id?: string;
   };
 }
 
@@ -1982,7 +1994,13 @@ export interface CrmCaptureFinding {
   message_count: number;
   owner_replied: boolean;
   reason: string | null;
+  /** Null for an Academy finding (contracts §7.1). */
   duplicate_company: Record<string, unknown> | null;
+  /** 010 Revision 1 (FR-CAP-ACAD-01): which business the enquiry is for. */
+  business: "labs" | "academy";
+  /** An Academy finding: handed to an accepting Academy (true), none to take
+   *  it (false), or not yet applied (null). */
+  routed?: boolean | null;
 }
 
 export type CrmCaptureRecallFate =
@@ -2047,6 +2065,10 @@ export interface CrmCaptureCounts {
   judged: number;
   failed: number;
   filed_known_threads: number;
+  /** 010 Revision 1 (FR-CAP-RPT-09): high- and medium-confidence course
+   *  enquiries, and the part of them no Academy workspace could take. */
+  academy: number;
+  academy_unrouted: number;
   by_outcome: Record<CrmCaptureOutcome, Record<CrmCaptureConfidence, number>>;
 }
 

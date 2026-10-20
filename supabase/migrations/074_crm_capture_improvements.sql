@@ -47,6 +47,14 @@
 --    actor (audited `setting.created`), and `crm_workspaces_seed_ai()`
 --    replaced so a workspace created later is seeded too (FR-CAP-ACAD-03,
 --    PD-41).
+-- 9. `crm_capture_apply_routed(actor, run, routed, counts)`: called by
+--    Python just before 073's `crm_capture_apply`, under the same checks
+--    and the same capture lock. Each routed Academy candidate of the run
+--    (`routed` = `{candidate id: boolean}`) keeps whether it was handed
+--    over (`finding.routed`, `duplicate_company_id` null), as a live
+--    judgement records it (FR-CAP-ACAD-02), and the run's stored counts
+--    gain `academy` and `academy_unrouted`, which its candidates, live
+--    decisions once applied, no longer give (FR-CAP-RPT-09).
 --
 -- Every 074 function that changes items first takes the workspace's
 -- capture lock (072: `pg_advisory_xact_lock(hashtext('crm_capture:' ||
@@ -69,7 +77,8 @@
 -- revoked from PUBLIC, anon and authenticated and granted to service_role
 -- (data-model §9.5).
 --
--- Reversible: DROP FUNCTION crm_capture_group_upsert(jsonb, jsonb, jsonb),
+-- Reversible: DROP FUNCTION crm_capture_apply_routed(jsonb, uuid, jsonb, jsonb),
+-- crm_capture_group_upsert(jsonb, jsonb, jsonb),
 -- crm_capture_release_thread(jsonb, text, text),
 -- crm_capture_consolidate(jsonb, jsonb), crm_capture_link(jsonb, jsonb),
 -- crm_capture_evidence(jsonb, jsonb), crm_capture_merge(jsonb, jsonb),
@@ -1064,6 +1073,76 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 9. crm_capture_apply_routed — FR-CAP-ACAD-02, FR-CAP-RPT-09 (plan R1.4)
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION public.crm_capture_apply_routed(
+    p_actor jsonb, p_run uuid, p_routed jsonb, p_counts jsonb
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SET search_path = public, extensions
+AS $$
+DECLARE
+    ws        uuid := (p_actor ->> 'workspace_id')::uuid;
+    run       crm_capture_dry_runs%ROWTYPE;
+    latest_id uuid;
+BEGIN
+    IF p_actor ->> 'kind' IS DISTINCT FROM 'user' OR ws IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'A dry run is applied by a person.';
+    END IF;
+    -- Checked one step at a time: jsonb_each and jsonb_object_keys raise
+    -- on anything but an object.
+    IF jsonb_typeof(p_routed) IS DISTINCT FROM 'object'
+       OR jsonb_typeof(p_counts) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Malformed routing.';
+    END IF;
+    IF EXISTS (SELECT 1 FROM jsonb_each(p_routed) e WHERE jsonb_typeof(e.value) <> 'boolean')
+       OR (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(p_counts) AS k)
+          IS DISTINCT FROM ARRAY['academy', 'academy_unrouted']
+       OR jsonb_typeof(p_counts -> 'academy') <> 'number'
+       OR jsonb_typeof(p_counts -> 'academy_unrouted') <> 'number' THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Malformed routing.';
+    END IF;
+    IF (p_counts ->> 'academy')::numeric < 0
+       OR (p_counts ->> 'academy_unrouted')::numeric < 0 THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'Malformed routing.';
+    END IF;
+    -- 073 crm_capture_apply's lock and checks, so this and Apply see the
+    -- same run.
+    PERFORM pg_advisory_xact_lock(hashtext('crm_capture:' || ws::text));
+    SELECT * INTO run FROM crm_capture_dry_runs
+    WHERE workspace_id = ws AND id = p_run
+    FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM04', MESSAGE = 'No such dry run.';
+    END IF;
+    SELECT r.id INTO latest_id FROM crm_capture_dry_runs r
+    WHERE r.workspace_id = ws
+    ORDER BY r.started_at DESC, r.id DESC
+    LIMIT 1;
+    IF run.finished_at IS NULL OR run.cancelled OR run.applied_at IS NOT NULL
+       OR latest_id IS DISTINCT FROM run.id
+       OR run.finished_at < now() - interval '7 days' THEN
+        RAISE EXCEPTION USING ERRCODE = 'CRM22', MESSAGE = 'This dry run cannot be applied.';
+    END IF;
+
+    UPDATE crm_capture_candidates c SET
+        finding = c.finding || jsonb_build_object(
+            'routed', p_routed -> c.id::text, 'duplicate_company_id', NULL),
+        updated_at = now()
+    WHERE c.workspace_id = ws AND c.dry_run AND c.status = 'judged'
+      AND p_routed ? c.id::text
+      AND c.finding ->> 'business' = 'academy';
+
+    UPDATE crm_capture_dry_runs SET
+        counts = coalesce(counts, public.crm_capture_report(ws, p_run)) || p_counts
+    WHERE workspace_id = ws AND id = p_run;
+    RETURN true;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Grants — data-model §9.5
 -- ---------------------------------------------------------------------------
 
@@ -1085,6 +1164,8 @@ REVOKE ALL ON FUNCTION public.crm_capture_consolidate(jsonb, jsonb)
 REVOKE ALL ON FUNCTION public.crm_review_release(jsonb, uuid, text, jsonb)
     FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.crm_workspaces_seed_ai() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.crm_capture_apply_routed(jsonb, uuid, jsonb, jsonb)
+    FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.crm_audit_row() TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_capture_entries(jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_capture_newest(jsonb) TO service_role;
@@ -1097,3 +1178,5 @@ GRANT EXECUTE ON FUNCTION public.crm_capture_group_upsert(jsonb, jsonb, jsonb) T
 GRANT EXECUTE ON FUNCTION public.crm_capture_consolidate(jsonb, jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_review_release(jsonb, uuid, text, jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.crm_workspaces_seed_ai() TO service_role;
+GRANT EXECUTE ON FUNCTION public.crm_capture_apply_routed(jsonb, uuid, jsonb, jsonb)
+    TO service_role;

@@ -1424,6 +1424,68 @@ class TestApplying:
             real.apply_dry_run({**_actor(ws, owner), "kind": "system"}, run_id)
         assert refused.value.status == 422
 
+    def test_apply_routed_records_the_hand_over_and_the_counts(self, stack, ws, owner, real):
+        # 074 crm_capture_apply_routed — FR-CAP-ACAD-02, FR-CAP-RPT-09.
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1"), _row("t2", "m2")])
+        course, lead = _candidates(stack, box["id"])
+        for row, business in ((course, "academy"), (lead, "labs")):
+            real.record_candidate(
+                ws,
+                row["id"],
+                row["latest_message_id"],
+                {
+                    "status": "judged",
+                    "outcome": "new_lead",
+                    "confidence": "high",
+                    "dry_run": True,
+                    "finding": {"company_name": "City College", "business": business},
+                },
+            )
+        assert real.finish_dry_run(ws, run_id, [])
+        stored = _runs(stack, ws)[0]["counts"]
+        counts = {"academy": 1, "academy_unrouted": 0}
+        routed = {course["id"]: True, lead["id"]: True}
+        assert real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        course, lead = _candidates(stack, box["id"])
+        assert course["finding"]["routed"] is True
+        assert course["finding"]["duplicate_company_id"] is None
+        assert "routed" not in lead["finding"]  # a Labs finding is not touched
+        assert _runs(stack, ws)[0]["counts"] == {**stored, **counts}
+        assert real.capture_report(ws, run_id) == {**stored, **counts}
+        assert real.apply_dry_run(_actor(ws, owner), run_id)["applied_at"]
+        # Applied: refused like a second apply.
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        assert refused.value.status == 422
+
+    @pytest.mark.parametrize(
+        ("routed", "counts"),
+        [
+            ([], {"academy": 0, "academy_unrouted": 0}),
+            ({"x": "yes"}, {"academy": 0, "academy_unrouted": 0}),
+            ({}, {"academy": 0}),
+            ({}, {"academy": -1, "academy_unrouted": 0}),
+            ({}, {"academy": 0, "academy_unrouted": 0, "items": 1}),
+        ],
+    )
+    def test_apply_routed_refuses_a_malformed_payload_and_a_system_actor(
+        self, stack, ws, owner, real, routed, counts
+    ):
+        run_id = self._finished(stack, ws, owner, real)
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        assert refused.value.status == 422
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(
+                {**_actor(ws, owner), "kind": "system"},
+                run_id,
+                {},
+                {"academy": 0, "academy_unrouted": 0},
+            )
+        assert refused.value.status == 422
+
 
 class TestThePurge:
     """073 crm_capture_purge — FR-CAP-DIS-11; E12, PD-15."""

@@ -701,7 +701,9 @@ def deal_signal_title(suggestion: Mapping[str, Any]) -> str:
 
 #: Stored with every decision (FR-CAP-DIS-06): a change of rules or prompt
 #: that should be told apart moves it.
-CLASSIFIER_VERSION: Final = "010.1"
+#: Spec 010 R1 (PD-29): "010.2" adds the business answer; old decisions are
+#: not re-judged for the bump.
+CLASSIFIER_VERSION: Final = "010.2"
 #: What the discovery job records in the usage log and the job log.
 JOB: Final = "capture"
 #: Candidates a run judges at most (NFR-CAP-03).
@@ -730,6 +732,32 @@ def capture_refusal(value: Any) -> str | None:
     if not isinstance(value, dict) or set(value) != {"mode"} or value["mode"] not in MODES:
         return MODE_REFUSAL
     return None
+
+
+#: Spec 010 R1 FR-CAP-ACAD-03 (PD-41) — the Academy's `capture_routing`
+#: setting's sentence.
+ROUTING_REFUSAL: Final = 'Course enquiries from Labs take {"accept_routed": true} or false.'
+
+
+def routing_refusal(value: Any) -> str | None:
+    """Data-model §9.2a — the setting is exactly `{"accept_routed":
+    boolean}`."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"accept_routed"}
+        or not isinstance(value["accept_routed"], bool)
+    ):
+        return ROUTING_REFUSAL
+    return None
+
+
+def accepts_routed(value: Any) -> bool:
+    """Whether the workspace takes course enquiries from Labs: a missing
+    row reads as on (data-model §9.2a); a malformed one, which the validator
+    never lets in, as off, so nothing crosses on a value nobody set."""
+    if value is None:
+        return True
+    return routing_refusal(value) is None and value["accept_routed"]
 
 
 def capture_mode(value: Any) -> str:
@@ -980,12 +1008,16 @@ def finding_of(
     *,
     mailbox_email: str,
     choices: Sequence[str],
+    tva_linked: bool = False,
 ) -> dict[str, Any] | None:
     """Data-model §3.2 `finding` — what a lead or a deal signal keeps (the
     only place a name or an address is kept); none for *other business* or
     *not relevant*. `answer` is the masked `DiscoveryOutput`; `messages`
     the conversation's surviving messages (`classify` answers with `id` and
-    `attachments`)."""
+    `attachments`). Spec 010 R1 (FR-CAP-ACAD-01, PD-29): it keeps the
+    `business` answer, Labs outside the TVA-linked workspace (`tva_linked`
+    false), so nothing is ever routed from the Academy; an Academy finding
+    holds no duplicate company (the Academy checks its own)."""
     if answer.get("outcome") not in FINDING_OUTCOMES:
         return None
     outside = outside_of(messages)
@@ -1015,11 +1047,36 @@ def finding_of(
         "owner_replied": replied,
         "attachments": names,
         "duplicate_company_id": None,
+        "business": business_of(answer, tva_linked=tva_linked),
     }
     # The last attachment names go first until the finding fits (071).
     while names and finding_bytes(finding) > FINDING_BYTES:
         names.pop()
     return finding
+
+
+#: Spec 010 R1 FR-CAP-ACAD-01 — the two businesses a finding belongs to.
+BUSINESSES: Final = ("labs", "academy")
+LABS: Final = "labs"
+ACADEMY: Final = "academy"
+
+
+def business_of(answer: Mapping[str, Any], *, tva_linked: bool) -> str:
+    """PD-29 — Claude's `business` answer in the TVA-linked workspace (Labs);
+    a missing or unknown answer, and every answer anywhere else, is Labs."""
+    if not tva_linked:
+        return LABS
+    return ACADEMY if answer.get("business") == ACADEMY else LABS
+
+
+def routes_to_academy(finding: Mapping[str, Any] | None, confidence: str | None) -> bool:
+    """FR-CAP-ACAD-02 — a high- or medium-confidence Academy finding makes no
+    Labs item and goes to the Academy step instead."""
+    return (
+        finding is not None
+        and finding.get("business") == ACADEMY
+        and confidence in ("high", "medium")
+    )
 
 
 #: The job's instruction, after the fixed rules every prompt carries
@@ -1039,7 +1096,13 @@ INSTRUCTION: Final = (
     "website_choice, the number of the company's website in the websites list, or null "
     "when none of them is it; and reason, one line under 160 characters naming what "
     "was asked and whether the mailbox owner replied. Never quote the messages. Use "
-    "null for anything not known."
+    "null for anything not known. "
+    # Spec 010 R1 FR-CAP-ACAD-01 (plan R1.4) and FR-CAP-INV-04 (plan R1.5).
+    "business: academy when the enquiry is about courses or training for individuals "
+    "or students — a course enrolment, student training, a college or university "
+    "programme; labs for AI services, products, software or staffing. "
+    "A meeting invitation is a lead only when the conversation shows interest in "
+    "buying; an invitation to a webinar or event is not relevant."
 )
 
 
@@ -1406,7 +1469,6 @@ def new_lead_item(
     linked to the existing company a duplicate check matched (`link: true`,
     `capture:linked`). A public webmail address gives no domain
     (FR-CAP-DIS-09)."""
-    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
     item = _base_item(
         finding,
         confidence=confidence,
@@ -1417,15 +1479,38 @@ def new_lead_item(
         model=model,
         generated_at=generated_at,
     )
+    item.update(
+        _lead_fields(
+            finding,
+            confidence=confidence,
+            ref=source_key(mailbox_id, thread_id),
+            company_id=company_id,
+            deal_stage_hint=deal_stage_hint,
+        )
+    )
+    return item
+
+
+def _lead_fields(
+    finding: Mapping[str, Any],
+    *,
+    confidence: str,
+    ref: str,
+    company_id: str | None,
+    deal_stage_hint: str | None,
+) -> dict[str, Any]:
+    """A `new_lead`'s type, keys, target and suggestion (contracts §6.1,
+    §7.4), in Labs and in the Academy alike."""
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
     domain = finding.get("domain")
     domain = domain_for(domain) if domain else None
-    key = LINKED_KEY if company_id else company_key(finding, source_key(mailbox_id, thread_id))
-    item.update(
-        type="new_lead",
-        source_key=key,
-        record_type="company" if company_id else None,
-        record_id=company_id,
-        suggestion={
+    key = LINKED_KEY if company_id else company_key(finding, ref)
+    return {
+        "type": "new_lead",
+        "source_key": key,
+        "record_type": "company" if company_id else None,
+        "record_id": company_id,
+        "suggestion": {
             "company_name": _company_name(finding),
             "domain": domain,
             "domain_from_text": bool(finding.get("domain_from_text")) and domain is not None,
@@ -1438,16 +1523,143 @@ def new_lead_item(
             "deal_stage_hint": deal_stage_hint,
             "evidence": _evidence(finding, confidence),
         },
-        dedupe_key=review_rules.dedupe_key(
+        "dedupe_key": review_rules.dedupe_key(
             "email_thread",
             key,
             "new_lead",
             "company" if company_id else None,
             company_id,
         ),
-        deal_choices=[],
+        "deal_choices": [],
+    }
+
+
+#: An Academy entry's and item's origin (data-model §9.3).
+ACADEMY_ROUTING: Final = "academy_routing"
+
+
+def academy_ref(mailbox_email: str, thread_id: str) -> str:
+    """Data-model §9.3 — an Academy entry's `ref`, `gmail:<mailbox
+    email>:<thread_id>`: the mailbox's address, never its Labs id."""
+    return f"gmail:{mailbox_email}:{thread_id}"
+
+
+def academy_ref_mailbox(ref: Any) -> str | None:
+    """The mailbox address an Academy entry's `ref` (`academy_ref`) names,
+    or None when it is not one (a Labs `ref` names a mailbox id)."""
+    if not isinstance(ref, str) or not ref.startswith("gmail:"):
+        return None
+    mailbox, sep, thread = ref[len("gmail:") :].rpartition(":")
+    if not sep or not thread or "@" not in mailbox:
+        return None
+    return mailbox
+
+
+def academy_lead_item(
+    finding: Mapping[str, Any],
+    *,
+    mailbox_email: str,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+    company_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Spec 010 R1 FR-CAP-ACAD-04 (contracts §7.4, plan R1.4 step 3b, PD-30)
+    — the Academy's `new_lead` for a course enquiry found in a Labs mailbox:
+    only what came from Gmail (names, the address, dates, counts, whether
+    the owner replied, attachment names, Claude's reason and confidence, the
+    Gmail thread id with the mailbox's address). No `mailbox_id` anywhere,
+    so no link to open and nothing to file; no Labs id of any kind.
+    Grouped by company key within the Academy, or `capture:linked` with the
+    Academy's own company (`company_id`) its duplicate check matched. A
+    deal signal becomes a lead with the deal stage as a hint: Labs never
+    sees an Academy deal. None for low confidence or no finding."""
+    if outcome not in FINDING_OUTCOMES or confidence not in ("high", "medium"):
+        return None
+    ref = academy_ref(mailbox_email, thread_id)
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    entry = _entry(
+        ref=ref,
+        mailbox_id=None,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=finding.get("first_at"),
+        latest_at=finding.get("latest_at"),
+        message_count=int(finding.get("message_count") or 0),
+        owner_replied=bool(finding.get("owner_replied")),
+        origin=ACADEMY_ROUTING,
+        reason=finding.get("reason"),
+        confidence=confidence,
+        person_email=finding.get("person_email"),
+        first_name=first,
+        last_name=last,
     )
-    return item
+    fields = _lead_fields(
+        finding,
+        confidence=confidence,
+        ref=ref,
+        company_id=company_id,
+        deal_stage_hint=finding.get("deal_stage") if outcome == "deal_signal" else None,
+    )
+    fields["suggestion"]["evidence"].update(origin=ACADEMY_ROUTING, mailbox_email=mailbox_email)
+    return {
+        "owner_id": owner_id,
+        "current_values": {},
+        "source_kind": "email_thread",
+        "source_version": message_id,
+        "source_link": {"threads": [entry]},
+        "model": model,
+        "generated_at": generated_at,
+        **fields,
+    }
+
+
+#: `NoteFields.body`'s limit.
+NOTE_CAP: Final = 20_000
+
+
+def _day(value: Any) -> date | None:
+    at = _at(value)
+    if at is None:
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=ZONE)).astimezone(ZONE).date()
+
+
+def _span(first: date | None, latest: date | None) -> str | None:
+    """ "1 Oct to 2 Oct 2026"; one day, "2 Oct 2026"; a span across years
+    names both."""
+    if latest is None:
+        return None
+    end = f"{latest.day} {latest:%b %Y}"
+    if first is None or first == latest:
+        return end
+    start = f"{first.day} {first:%b}" + (f" {first:%Y}" if first.year != latest.year else "")
+    return f"{start} to {end}"
+
+
+def academy_note(entries: Sequence[Mapping[str, Any]], mailbox_email: str) -> str:
+    """FR-CAP-ACAD-05 — the note an Academy approval records instead of the
+    mail: "Email conversation in navaneeth@nunnarilabs.com: 2 emails, 1 Oct
+    to 2 Oct 2026. Asked about the AI course for final-year students.", one
+    line per conversation, oldest first, cut to the note's limit, each
+    naming its own mailbox from its `ref` (an item groups conversations of
+    every Labs mailbox), `mailbox_email` only when the ref names none. The
+    caller masks money in it (FR-CRMAI-LLM-05)."""
+    lines = []
+    for entry in sorted(entries, key=entry_order):
+        n = int(entry.get("message_count") or 0)
+        count = f"{n} email" if n == 1 else f"{n} emails"
+        span = _span(_day(entry.get("first_at")), _day(entry.get("latest_at")))
+        mailbox = academy_ref_mailbox(entry.get("ref")) or mailbox_email
+        line = f"Email conversation in {mailbox}: {count}" + (f", {span}." if span else ".")
+        if entry.get("reason"):
+            line += f" {entry['reason']}"
+        lines.append(line)
+    return "\n".join(lines)[:NOTE_CAP]
 
 
 def discovered_signal_item(

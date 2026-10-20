@@ -976,3 +976,160 @@ class TestGroupedApproval:
         r = _approve(http, shown)
         assert (r.status_code, r.json()["detail"]) == (409, review_rules.SUGGESTION_CHANGED)
         assert celery.named("crm.capture_thread") == []
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 I3 — course enquiries approved in the Academy (tasks T447)
+# ---------------------------------------------------------------------------
+
+ACADEMY = "?workspace=academy"
+BOX = "navaneeth@nunnarilabs.com"
+
+
+def _academy(fake):
+    return next(w for w in fake.rows["crm_workspaces"].values() if w["key"] == "academy")
+
+
+def _course(
+    fake, academy, *, thread="c1", email="asha@college.example.edu", mailbox=BOX, **finding
+):
+    """One Academy `new_lead`, as the Academy step of the job makes it."""
+    item = capture.academy_lead_item(
+        {
+            **FINDING,
+            "company_name": "City College",
+            "domain": "college.example.edu",
+            "person_name": "Asha Kumar",
+            "person_email": email,
+            "person_title": None,
+            "reason": "Asked about the AI course for final-year students, budget $5,000.",
+            **finding,
+        },
+        mailbox_email=mailbox,
+        thread_id=thread,
+        message_id=f"{thread}-m2",
+        outcome="new_lead",
+        confidence="high",
+        owner_id=OWNER["id"],
+        model="claude-sonnet-5-5",
+        generated_at=SENT_AT.isoformat(),
+    )
+    made = service.capture_group_upsert(academy["id"], item, item["source_link"]["threads"][0])
+    return fake.rows["crm_review_items"][made["id"]]
+
+
+class TestAcademyApproval:
+    """FR-CAP-ACAD-05, -06; contracts §7.4; plan R1.4, PD-31."""
+
+    def test_capture_academy_approval_records_a_note(self, lead):
+        http, fake, labs, celery = lead
+        academy = _academy(fake)
+        labs_before = {
+            t: [r for r in fake.rows[t].values() if r.get("workspace_id") == labs["id"]]
+            for t in ("crm_companies", "crm_people", "crm_notes", "crm_review_items")
+        }
+        item = _course(fake, academy)
+        r = http.post(
+            f"/api/v1/crm/review/{item['id']}/approve{ACADEMY}",
+            json={"version": item.get("revision") or 1},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert set(result) == {
+            "company_id",
+            "person_id",
+            "people",
+            "note_id",
+            "linked",
+            "threads_filed",
+        }
+        assert result["threads_filed"] == 0 and result["people"] == 1
+        [company] = _of(fake, "crm_companies", academy)
+        assert company["id"] == result["company_id"] and company["name"] == "City College"
+        assert company["lead_stage"] == "contacted"
+        [person] = _of(fake, "crm_people", academy)
+        assert person["primary_email"] == "asha@college.example.edu"
+        assert person["company_id"] == company["id"]
+        [note] = _of(fake, "crm_notes", academy)
+        assert note["id"] == result["note_id"] and note["kind"] == "note"
+        assert note["body"].startswith(
+            f"Email conversation in {BOX}: 2 emails, 1 Oct to 2 Oct 2026. "
+            "Asked about the AI course for final-year students"
+        )
+        assert "5,000" not in note["body"]  # FR-CRMAI-LLM-05
+        assert str(note["occurred_on"])[:10] == "2026-10-02"
+        links = {
+            (link["record_type"], link["record_id"])
+            for link in fake.rows["crm_note_links"].values()
+            if link["note_id"] == note["id"]
+        }
+        assert links == {("company", company["id"]), ("person", person["id"])}
+        # Nothing to file: the Academy has no mailbox.
+        assert celery.named("crm.capture_thread") == []
+        assert fake.rows["crm_email_messages"] == {}
+        # No Labs row changed.
+        assert {
+            t: [r for r in fake.rows[t].values() if r.get("workspace_id") == labs["id"]]
+            for t in labs_before
+        } == labs_before
+
+    def test_capture_academy_approval_makes_a_person_per_sender(self, lead):
+        http, fake, _, celery = lead
+        academy = _academy(fake)
+        _course(fake, academy, thread="c0", email="ravi@college.example.edu", person_name="Ravi")
+        item = _course(fake, academy)
+        assert len(item["source_link"]["threads"]) == 2
+        r = http.post(
+            f"/api/v1/crm/review/{item['id']}/approve{ACADEMY}",
+            json={"version": item["revision"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["result"]["people"] == 2
+        [note] = _of(fake, "crm_notes", academy)
+        assert note["body"].count("Email conversation in") == 2
+        linked = [
+            link for link in fake.rows["crm_note_links"].values() if link["note_id"] == note["id"]
+        ]
+        assert sorted(link["record_type"] for link in linked) == ["company", "person", "person"]
+        assert celery.named("crm.capture_thread") == []
+
+    def test_capture_academy_note_names_each_conversation_s_mailbox(self, lead):
+        # One college's enquiries reached two Labs mailboxes and were grouped
+        # into one Academy item; the note names the right mailbox for each.
+        http, fake, _, _ = lead
+        academy = _academy(fake)
+        _course(
+            fake,
+            academy,
+            thread="c0",
+            email="ravi@college.example.edu",
+            person_name="Ravi",
+            mailbox="sales@nunnarilabs.com",
+        )
+        item = _course(fake, academy)
+        assert item["suggestion"]["evidence"]["mailbox_email"] == BOX
+        r = http.post(
+            f"/api/v1/crm/review/{item['id']}/approve{ACADEMY}",
+            json={"version": item["revision"]},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        [note] = _of(fake, "crm_notes", academy)
+        assert note["body"].count("Email conversation in sales@nunnarilabs.com:") == 1
+        assert note["body"].count(f"Email conversation in {BOX}:") == 1
+
+    def test_capture_academy_dismiss_writes_the_academy_ignore(self, lead):
+        http, fake, labs, _ = lead
+        academy = _academy(fake)
+        item = _course(fake, academy)
+        r = http.post(
+            f"/api/v1/crm/review/{item['id']}/dismiss{ACADEMY}",
+            json={"ignore": "domain"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        [row] = _of(fake, "crm_capture_ignores", academy)
+        assert (row["kind"], row["value"]) == ("domain", "college.example.edu")
+        assert _of(fake, "crm_capture_ignores", labs) == []
