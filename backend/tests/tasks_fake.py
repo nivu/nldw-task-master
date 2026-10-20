@@ -712,7 +712,9 @@ class TaskWorld:
     (archived) TVA projects."""
 
     def __init__(self, monkeypatch) -> None:
-        self.fake = FakeCrmStore().install(monkeypatch)
+        # The whole portal in memory: the CRM dashboard's capacity panel and
+        # the TVA audit read TVA tables too (`crm_fake.TVA_WORLD`).
+        self.fake = FakeCrmStore().install(monkeypatch).install_tva(monkeypatch)
         self.labs = self.fake.add_workspace("labs", "Nunnari Labs", tva_linked=True)
         self.academy = self.fake.add_workspace("academy", "Nunnari Academy B2B")
         self.fake.add_deal_lists(self.labs)

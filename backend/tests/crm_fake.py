@@ -138,6 +138,10 @@ TABLES = (
     # claims still pending a decision.
     "bookings",
     "compoff_credits",
+    # TVA tables the CRM dashboard's capacity panel reads (`TVA_WORLD`).
+    "holidays",
+    "locations",
+    "cost_periods",
     # Spec 009: the AI usage log (060), a log with no audit trigger.
     "crm_ai_usage",
     # Spec 009: the Review Queue (061), a log with explicit audit rows.
@@ -171,6 +175,19 @@ TVA_READS = (
     "project_has_time_entries",
     "has_pending_decisions",
 )
+#: The rest of the TVA reads a whole-portal sweep reaches — the CRM
+#: dashboard's capacity panel (FR-CRM-CAP-02) and the TVA audit — faked over
+#: the same rows by `install_tva` (store name → fake method), which only a
+#: test that wants the whole portal in memory calls (`tasks_fake.TaskWorld`).
+TVA_WORLD = {
+    "list_projects": "list_projects",
+    "list_counting_allocations": "list_counting_allocations",
+    "list_bookings": "list_bookings",
+    "list_holidays": "list_holidays",
+    "default_location_id": "default_location_id",
+    "list_cost_periods": "list_cost_periods",
+    "list_audit": "list_tva_audit",
+}
 #: The soft-deletable record tables (data-model §2).
 RECORDS = (
     "crm_companies",
@@ -751,6 +768,12 @@ class FakeCrmStore:
         self.tasks = FakeTaskStore(self).install(monkeypatch)
         return self
 
+    def install_tva(self, monkeypatch) -> FakeCrmStore:
+        """`TVA_WORLD` too, so no TVA read a route makes leaves memory."""
+        for name, method in TVA_WORLD.items():
+            monkeypatch.setattr(db, name, getattr(self, method))
+        return self
+
     # -- TVA reads (services/supabase.py, S5) --------------------------------
 
     def has_pending_decisions(self, user_id: str) -> dict[str, bool]:
@@ -820,6 +843,81 @@ class FakeCrmStore:
 
     def project_has_time_entries(self, project_id: str) -> bool:
         return any(t["project_id"] == project_id for t in self.rows["time_entries"].values())
+
+    # -- TVA reads (services/supabase.py, `TVA_WORLD`) -----------------------
+
+    def list_projects(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        rows = [
+            dict(p)
+            for p in self.rows["projects"].values()
+            if include_archived or not p["is_archived"]
+        ]
+        return sorted(rows, key=lambda p: p["name"])
+
+    def list_counting_allocations(
+        self, *, user_ids: list[str] | None = None, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """As the store: no released row, nothing on an archived project."""
+        archived = {p["id"] for p in self.rows["projects"].values() if p["is_archived"]}
+        rows = [
+            dict(a)
+            for a in self.rows["allocations"].values()
+            if a.get("released_at") is None
+            and a["project_id"] not in archived
+            and (user_ids is None or a["user_id"] in user_ids)
+            and (project_id is None or a["project_id"] == project_id)
+        ]
+        return sorted(rows, key=lambda a: a["starts_on"])
+
+    def list_bookings(
+        self,
+        *,
+        user_ids: list[str] | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        statuses: list[str] | None = None,
+        columns: str = "*",
+    ) -> list[dict[str, Any]]:
+        rows = [
+            dict(b)
+            for b in self.rows["bookings"].values()
+            if (user_ids is None or b["user_id"] in user_ids)
+            and (start is None or b["date"] >= start.isoformat())
+            and (end is None or b["date"] <= end.isoformat())
+            and (statuses is None or b["status"] in statuses)
+        ]
+        return sorted(rows, key=lambda b: b["date"])
+
+    def list_holidays(self, start: date | None = None, end: date | None = None) -> list[dict]:
+        rows = [
+            dict(h)
+            for h in self.rows["holidays"].values()
+            if (start is None or h["date"] >= start.isoformat())
+            and (end is None or h["date"] <= end.isoformat())
+        ]
+        return sorted(rows, key=lambda h: h["date"])
+
+    def default_location_id(self) -> str | None:
+        return next((r["id"] for r in self.rows["locations"].values() if r.get("is_default")), None)
+
+    def list_cost_periods(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        rows = [
+            dict(c)
+            for c in self.rows["cost_periods"].values()
+            if user_id is None or c["user_id"] == user_id
+        ]
+        return sorted(rows, key=lambda c: c["starts_on"])
+
+    def list_tva_audit(self, limit: int = 200, *, tva_only: bool = True) -> list[dict[str, Any]]:
+        """`supabase.list_audit`: with `tva_only`, no row with a workspace and
+        no row of a task table (007 FR-CRM-AUD-04, 008 FR-TASK-VIS-05)."""
+        rows = [
+            dict(r)
+            for r in self.audit
+            if not tva_only
+            or (r["workspace_id"] is None and r["target_table"] not in db.TASK_AUDIT_TABLES)
+        ]
+        return sorted(rows, key=lambda r: r["id"], reverse=True)[:limit]
 
     # -- store: workspaces and memberships ----------------------------------
 
