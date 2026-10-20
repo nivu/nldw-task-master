@@ -1062,20 +1062,56 @@ def failure_counts(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The recall check — FR-CAP-RPT-03; plan §5.7, PD-11
+# The recall check — FR-CAP-RPT-03, -05 to -08, -10; plan §5.7, R1.3, PD-11,
+# PD-27, PD-28
 # ---------------------------------------------------------------------------
 
-#: Data-model §3.5 — a labelled conversation's fate in the recall check.
-#: `ignored` and `known_now` are never sent to Claude (G-5, NFR-CAP-02).
+#: Data-model §3.5, §9 — a labelled conversation's fate in the recall check.
+#: `ignored`, `known_now` and the three rule reasons are never sent to
+#: Claude (G-5, NFR-CAP-02). `skipped_rules` is read in runs stored before
+#: 074 and never written (FR-CAP-RPT-10).
 FATES: Final = (
     "filed_known",
+    "known_now",
     "found",
     "judged_otherwise",
-    "skipped_rules",
-    "outside_scope",
     "ignored",
-    "known_now",
+    "internal_only",
+    "calendar",
+    "automated",
+    "outside_scope",
+    "not_judged",
+    "academy_unrouted",
+    "skipped_rules",
 )
+#: Why the rules dropped every message of a conversation (plan R1.3 step 3).
+SKIP_REASONS: Final = ("internal_only", "calendar", "automated")
+#: FR-CAP-RPT-06 — the untested reasons, in display order; `known` is
+#: `filed_known` and `known_now` together (PD-28).
+UNTESTED: Final = (
+    "known",
+    "ignored",
+    "internal_only",
+    "calendar",
+    "automated",
+    "outside_scope",
+    "not_judged",
+    "skipped_rules",
+)
+#: FR-CAP-RPT-07 — each reason as the line says it: (one, many).
+_UNTESTED_TEXT: Final = {
+    "known": (
+        "involves contacts now in the CRM (filed automatically)",
+        "involve contacts now in the CRM (filed automatically)",
+    ),
+    "ignored": ("is on the ignore list", "are on the ignore list"),
+    "internal_only": ("was internal-only", "were internal-only"),
+    "calendar": ("was a calendar notification", "were calendar notifications"),
+    "automated": ("was automated mail", "were automated mail"),
+    "outside_scope": ("is outside Primary and Sent", "are outside Primary and Sent"),
+    "not_judged": ("could not be judged", "could not be judged"),
+    "skipped_rules": ("was skipped by the rules", "were skipped by the rules"),
+}
 #: Labelled mail is judged as if it had no label: through Primary and Sent alone.
 CAPTURED: Final = (PRIMARY, SENT)
 
@@ -1089,18 +1125,29 @@ def recall_fate(
     known_now: bool = False,
     outcome: str | None = None,
     confidence: str | None = None,
+    skip_reason: str | None = None,
+    failed: bool = False,
+    business: str | None = None,
+    routed: bool | None = None,
 ) -> str:
-    """PD-11 — what capture would have done with a labelled conversation:
-    outside Primary and Sent; skipped by the rules; every outside person on
-    the ignore list; filed as known through a person or company that
-    existed before it began; every message naming someone in the CRM now
-    (its record made later, often from the label itself), so not judged:
-    Claude never sees known-client mail (G-5); or judged, `found` only as a
-    high- or medium-confidence lead or deal signal."""
+    """PD-11, plan R1.3 — what capture would have done with a labelled
+    conversation, in the decision order of FR-CAP-RPT-06: could not be
+    judged (`failed`: Gmail returned it empty or malformed, or Claude
+    failed on it); outside Primary and Sent; dropped by the rules, for
+    `skip_reason` (`internal_only`, `calendar` or `automated`); every
+    outside person on the ignore list; filed as known through a person or
+    company that existed before it began; every message naming someone in
+    the CRM now (its record made later, often from the label itself), so
+    not judged: Claude never sees known-client mail (G-5); or judged,
+    `found` only as a high- or medium-confidence lead or deal signal, and
+    an Academy one the Academy could not take (`routed` false)
+    `academy_unrouted`."""
+    if failed:
+        return "not_judged"
     if not in_capture:
         return "outside_scope"
     if not survived:
-        return "skipped_rules"
+        return skip_reason if skip_reason in SKIP_REASONS else "skipped_rules"
     if ignored:
         return "ignored"
     if known_before:
@@ -1108,27 +1155,68 @@ def recall_fate(
     if known_now:
         return "known_now"
     if outcome in FINDING_OUTCOMES and confidence in ("high", "medium"):
+        if business == "academy" and routed is False:
+            return "academy_unrouted"
         return "found"
     return "judged_otherwise"
 
 
+def recall_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Contracts §7.1 — `{total, tested, found, capped, untested,
+    academy_unrouted}`: found is `found` and `academy_unrouted` (Claude
+    found both, PD-28), tested is found and `judged_otherwise`, and every
+    other conversation counts under one reason of `UNTESTED`. Rows without
+    a `thread_id` are markers, not conversations; `capped` is the
+    `{"capped": true}` marker's."""
+    fates = [r.get("fate") for r in rows if r.get("thread_id")]
+    count = fates.count
+    untested = {reason: count(reason) for reason in UNTESTED}
+    untested["known"] = count("filed_known") + count("known_now")
+    found = count("found") + count("academy_unrouted")
+    return {
+        "total": len(fates),
+        "tested": found + count("judged_otherwise"),
+        "found": found,
+        "capped": any(r.get("capped") is True and not r.get("thread_id") for r in rows),
+        "untested": untested,
+        "academy_unrouted": count("academy_unrouted"),
+    }
+
+
+def _conversations(n: int) -> str:
+    return f"{n} labelled conversation" if n == 1 else f"{n} labelled conversations"
+
+
 def recall_line(rows: Sequence[Mapping[str, Any]]) -> str:
-    """ "Found N of your M labelled conversations; K of the rest are outside
-    Primary and Sent." (spec §4.5), then, when there are any, how many were
-    not judged because they name only people already in the CRM."""
-    total = len(rows)
-    found = sum(1 for r in rows if r.get("fate") in ("filed_known", "found"))
-    outside = sum(1 for r in rows if r.get("fate") == "outside_scope")
-    known_now = sum(1 for r in rows if r.get("fate") == "known_now")
-    line = (
-        f"Found {found} of your {total} labelled conversations; "
-        f"{outside} of the rest are outside Primary and Sent."
+    """FR-CAP-RPT-07 — "None of your 60 labelled conversations could be
+    tested: 36 involve contacts now in the CRM (filed automatically), …" or
+    "Of the 18 that could be tested, the dry run found 15. 42 could not be
+    tested: …", reasons with no conversation left out, the Academy's
+    clause inside the found sentence, and "Only the first 500 were
+    checked." only when the check stopped at the cap."""
+    summary = recall_summary(rows)
+    untested = summary["untested"]
+    reasons = ", ".join(
+        f"{n} {_UNTESTED_TEXT[reason][0 if n == 1 else 1]}"
+        for reason in UNTESTED
+        if (n := untested[reason])
     )
-    if known_now:
-        line += (
-            f" {known_now} of the rest name only people added to the CRM after they began,"
-            " so they were not sent to Claude."
+    left = sum(untested.values())
+    if not summary["tested"]:
+        line = f"None of your {_conversations(summary['total'])} could be tested"
+        line += f": {reasons}." if reasons else "."
+    else:
+        line = (
+            f"Of the {summary['tested']} that could be tested, the dry run found {summary['found']}"
         )
+        if academy := summary["academy_unrouted"]:
+            what = "was a course enquiry" if academy == 1 else "were course enquiries"
+            line += f", of which {academy} {what} the Academy could not take"
+        line += "."
+        if left:
+            line += f" {left} could not be tested: {reasons}."
+    if summary["capped"]:
+        line += f" Only the first {RECALL_CAP} were checked."
     return line
 
 

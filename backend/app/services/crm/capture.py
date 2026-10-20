@@ -76,6 +76,7 @@ queued or put in an error (FR-CAP-CHG-05, NFR-CAP-02).
 
 from __future__ import annotations
 
+import functools
 import logging
 import uuid
 from collections.abc import Mapping
@@ -383,6 +384,43 @@ def _survivors(
         info["outside"] = [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
         out.append({**info, "id": m["id"]})
     return out
+
+
+#: Plan R1.3 — a tie between rule reasons goes to the first.
+_DROP_ORDER: Final = ("calendar", "automated", "internal_only")
+
+
+def _drop_reason(
+    workspace: dict[str, Any], messages: list[dict[str, Any]], scan: set[str] | tuple[str, ...]
+) -> str:
+    """FR-CAP-RPT-06, plan R1.3 step 3 — `_survivors`' sibling over the same
+    rules, for a conversation none of whose messages survived them: why the
+    in-scope messages were dropped, from headers only. Each is internal-only
+    (every participant ours, or an invitation between colleagues only), a
+    calendar notice, or automated mail; the conversation takes the reason
+    of most of them, calendar before automated before internal on a tie."""
+    tally = dict.fromkeys(_DROP_ORDER, 0)
+    for m in messages:
+        if not rules.in_scope(m.get("labelIds") or [], scan):
+            continue
+        try:
+            info = email_rules.classify(
+                m["headers"], workspace.get("allowed_domains") or [], m["internalDate"]
+            )
+        except (KeyError, TypeError, ValueError):
+            raise MalformedThread() from None
+        outside = [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        sender = info["from_email"]
+        if info["is_internal"] or (
+            rules.is_invitation(m["headers"])
+            and not rules.invite_parties(m["headers"], sender, outside)
+        ):
+            tally["internal_only"] += 1
+        elif rules.is_calendar_notice(m["headers"], sender, outside):
+            tally["calendar"] += 1
+        else:
+            tally["automated"] += 1
+    return max(_DROP_ORDER, key=lambda reason: (tally[reason], -_DROP_ORDER.index(reason)))
 
 
 def _known_ids(ws_id: str, kept: list[dict[str, Any]]) -> set[str]:
@@ -788,43 +826,46 @@ def _fate(
     ignores: list[dict[str, Any]],
 ) -> tuple[str, str | None]:
     """A labelled conversation judged as if it had no label: `(fate, latest
-    message time)`. Nothing is stored for it but the fate. Claude sees it
-    only after the same checks as live (G-5, NFR-CAP-02): the rules, the
-    ignore list (`ignored`) and the known-contact check, so a conversation
-    whose every message names someone in the CRM now is never read
-    (`known_now`, unless its record predates it: `filed_known`), and of the
-    rest only the messages naming nobody known are judged."""
+    message time)`. Nothing is stored for it but the fate. The reasons come
+    in the decision order of plan R1.3 (FR-CAP-RPT-06), from headers and
+    records only until Claude: Gmail returned it empty or malformed
+    (`not_judged`); no message in Primary or Sent; every message dropped by
+    the rules (`_drop_reason`); the ignore list (`ignored`); the known-
+    contact check, so a conversation whose every message names someone in
+    the CRM now is never read (`known_now`, unless its record predates it:
+    `filed_known`), and of the rest only the messages naming nobody known
+    are judged (G-5, NFR-CAP-02), a failure on it `not_judged`."""
     ws_id = workspace["id"]
+    fate = functools.partial(rules.recall_fate, in_capture=True, survived=True, known_before=False)
     messages = gmail.thread_meta(mailbox["email"], thread_id).get("messages") or []
-    if not messages:
-        return "outside_scope", None
-    times = [email_rules.sent_at(m["internalDate"]) for m in messages if m.get("internalDate")]
+    if not messages or any(not m.get("id") for m in messages):
+        return fate(failed=True), None
+    try:
+        times = [email_rules.sent_at(m["internalDate"]) for m in messages if m.get("internalDate")]
+    except (TypeError, ValueError):
+        # A date Gmail sent that is not a number: malformed, as in `_survivors`.
+        return fate(failed=True), None
     latest = max(times).isoformat() if times else None
     if not any(rules.in_scope(m.get("labelIds") or [], rules.CAPTURED) for m in messages):
-        return rules.recall_fate(in_capture=False, survived=False, known_before=False), latest
+        return fate(in_capture=False), latest
     try:
         kept = _survivors(workspace, messages, rules.CAPTURED)
+        if not kept:
+            reason = _drop_reason(workspace, messages, rules.CAPTURED)
+            return fate(survived=False, skip_reason=reason), latest
     except MalformedThread:
-        kept = []
-    if not kept:
-        return rules.recall_fate(in_capture=True, survived=False, known_before=False), latest
+        return fate(failed=True), latest
     if rules.ignored(rules.outside_of(kept), ignores):
         # FR-CAP-DIS-03: before any text is read.
-        return (
-            rules.recall_fate(in_capture=True, survived=True, known_before=False, ignored=True),
-            latest,
-        )
+        return fate(ignored=True), latest
     first = min(times) if times else min(m["sent_at"] for m in kept)
     if _known_before(ws_id, rules.outside_of(kept), first):
-        return rules.recall_fate(in_capture=True, survived=True, known_before=True), latest
+        return fate(known_before=True), latest
     known_ids = _known_ids(ws_id, kept)
     unknown = [m for m in kept if m["id"] not in known_ids]
     if not unknown:
         # G-5: a known client's mail never reaches Claude, even for recall.
-        return (
-            rules.recall_fate(in_capture=True, survived=True, known_before=False, known_now=True),
-            latest,
-        )
+        return fate(known_now=True), latest
     try:
         asked = _ask(workspace, mailbox, unknown, open_run)
     except ai.AiFailed as failed:
@@ -832,15 +873,18 @@ def _fate(
             raise
         asked = None
     if asked is None:
-        return rules.recall_fate(in_capture=True, survived=True, known_before=False), latest
+        # Claude failed on it, or every message was deleted meanwhile.
+        return fate(failed=True), latest
     answer = asked[0]
+    # `routed` is I3's (T443: `_academy_target() is not None` for an Academy
+    # finding, plan R1.3 step 7 and R1.4); until then an Academy finding
+    # counts as found.
     return (
-        rules.recall_fate(
-            in_capture=True,
-            survived=True,
-            known_before=False,
+        fate(
             outcome=answer["outcome"],
             confidence=answer["confidence"],
+            business=answer.get("business"),
+            routed=None,
         ),
         latest,
     )
@@ -853,20 +897,23 @@ def _recall(
     open_run: Mapping[str, Any],
 ) -> list[dict[str, Any]] | None:
     """Every Sales or Leads conversation of the capturing mailboxes since
-    their start date with its fate (at most 500 rows); None when the run's
+    their start date with its fate (at most 500 rows, then the marker row
+    `{"capped": true}` when a labelled conversation is left unchecked,
+    plan R1.3); None when the run's
     time ran out first. Each fate is kept on the open run as it is decided
     (`crm_capture_recall_add`), and a thread that has one already is not
     read or judged again, so the next tick resumes where this one stopped."""
     ws_id = workspace["id"]
-    rows: list[dict[str, Any]] = list(open_run.get("recall") or [])
+    rows: list[dict[str, Any]] = [r for r in open_run.get("recall") or [] if r.get("thread_id")]
     done = {(r["mailbox_id"], r["thread_id"]) for r in rows}
     ignores = store.list_ignores(ws_id)
     for mailbox in sorted(mailboxes.values(), key=lambda m: m["email"]):
         for thread_id in _labelled_threads(mailbox, now):
-            if len(rows) >= rules.RECALL_CAP:
-                return rows
             if (mailbox["id"], thread_id) in done:
                 continue
+            if len(rows) >= rules.RECALL_CAP:
+                # FR-CAP-RPT-07: stopped at the cap with this one unchecked.
+                return [*rows, {"capped": True}]
             if jobs.out_of_time():
                 return None
             try:
@@ -1060,7 +1107,9 @@ def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, 
 
 
 def _recall_rows(ws_id: str, recall: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The recall rows with the subject of a thread already stored."""
+    """The recall rows with the subject of a thread already stored; marker
+    rows (no `thread_id`, plan R1.3) are not conversations."""
+    recall = [r for r in recall if r.get("thread_id")]
     subjects: dict[tuple[str, str], str] = {}
     for mailbox_id in sorted({r["mailbox_id"] for r in recall}):
         threads = [r["thread_id"] for r in recall if r["mailbox_id"] == mailbox_id]
@@ -1124,6 +1173,7 @@ def overview(ctx: Any) -> dict[str, Any]:
             "recall": {
                 "line": rules.recall_line(recall),
                 "rows": _recall_rows(ws_id, recall),
+                "summary": rules.recall_summary(recall),
             },
         }
     live_allowed = store.has_applied_dry_run(ws_id) and any(

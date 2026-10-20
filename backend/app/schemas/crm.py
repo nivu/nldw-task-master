@@ -1210,20 +1210,30 @@ class CaptureRecallRowOut(BaseModel):
     thread_id: str
     latest_at: str | None
     subject: str | None
+    #: Contracts §7.1 — `skipped_rules` only in runs stored before 074
+    #: (FR-CAP-RPT-10).
     fate: Literal[
         "filed_known",
+        "known_now",
         "found",
         "judged_otherwise",
-        "skipped_rules",
-        "outside_scope",
         "ignored",
-        "known_now",
+        "internal_only",
+        "calendar",
+        "automated",
+        "outside_scope",
+        "not_judged",
+        "academy_unrouted",
+        "skipped_rules",
     ]
 
 
 class CaptureRecallOut(BaseModel):
     line: str
     rows: list[CaptureRecallRowOut]
+    #: Contracts §7.1 — `{total, tested, found, capped, untested,
+    #: academy_unrouted}` (FR-CAP-RPT-08).
+    summary: dict[str, Any] | None = None
 
 
 class CaptureDryRunOut(BaseModel):

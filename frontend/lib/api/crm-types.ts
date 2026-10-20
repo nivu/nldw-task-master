@@ -1994,7 +1994,17 @@ export type CrmCaptureRecallFate =
   /** Every outside person on the ignore list: never sent to Claude. */
   | "ignored"
   /** Names only people added to the CRM after it began: never sent to Claude (G-5). */
-  | "known_now";
+  | "known_now"
+  /** Every message dropped by the rules as internal mail (FR-CAP-RPT-06). */
+  | "internal_only"
+  /** Every message dropped by the rules as a Google Calendar notice. */
+  | "calendar"
+  /** Every message dropped by the rules as automated mail. */
+  | "automated"
+  /** Gmail returned it empty or malformed, or Claude failed. */
+  | "not_judged"
+  /** Found as a course enquiry with no Academy workspace to take it. */
+  | "academy_unrouted";
 
 /** One Sales- or Leads-labelled conversation of the recall check (FR-CAP-RPT-03). */
 export interface CrmCaptureRecallRow {
@@ -2003,6 +2013,28 @@ export interface CrmCaptureRecallRow {
   /** Only for a thread already stored as captured mail. */
   subject: string | null;
   fate: CrmCaptureRecallFate;
+}
+
+/** The recall line's numbers (contracts §7.1, FR-CAP-RPT-08). */
+export interface CrmCaptureRecallSummary {
+  total: number;
+  tested: number;
+  found: number;
+  /** The check stopped at 500 with labelled conversations still unchecked. */
+  capped: boolean;
+  untested: {
+    known: number;
+    ignored: number;
+    internal_only: number;
+    calendar: number;
+    automated: number;
+    outside_scope: number;
+    not_judged: number;
+    /** Runs before 074 only. */
+    skipped_rules: number;
+  };
+  /** The part of `found` the Academy could not take. */
+  academy_unrouted: number;
 }
 
 /** The report's counts, live while the dry run is open. */
@@ -2031,7 +2063,12 @@ export interface CrmCaptureDryRun {
   /** Decimal string, USD. */
   estimated_cost_usd: string;
   findings: CrmCaptureFinding[];
-  recall: { line: string; rows: CrmCaptureRecallRow[] };
+  recall: {
+    line: string;
+    rows: CrmCaptureRecallRow[];
+    /** Absent only from a run the backend has not summarised. */
+    summary?: CrmCaptureRecallSummary | null;
+  };
 }
 
 /** GET /crm/capture — Admin only. */

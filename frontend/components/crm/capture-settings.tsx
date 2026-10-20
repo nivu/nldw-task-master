@@ -21,6 +21,7 @@ import type {
   CrmCaptureOutcome,
   CrmCaptureOverview,
   CrmCaptureRecallFate,
+  CrmCaptureRecallSummary,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { type CrmTimezone, formatDate } from "@/lib/crm/format";
@@ -52,15 +53,33 @@ const CONFIDENCE_TEXT: Record<CrmCaptureConfidence, string> = {
   low: "Low",
 };
 
+/** Each recall row's reason as the page names it (contracts §7.1). */
 const FATE_TEXT: Record<CrmCaptureRecallFate, string> = {
+  found: "Found",
   filed_known: "Filed as known",
-  found: "Found as a lead or deal signal",
   judged_otherwise: "Judged otherwise",
-  skipped_rules: "Skipped by the rules",
+  known_now: "Contacts added later (not sent to Claude)",
+  ignored: "On the ignore list",
+  internal_only: "Skipped: internal only",
+  calendar: "Skipped: calendar notification",
+  automated: "Skipped: automated mail",
   outside_scope: "Outside Primary and Sent",
-  ignored: "Skipped by the ignore list",
-  known_now: "Not judged: its contact was added to the CRM later",
+  not_judged: "Not judged: Claude or Gmail failed",
+  academy_unrouted: "Course enquiry, no Academy workspace",
+  skipped_rules: "Skipped by the rules",
 };
+
+/** The untestable reasons in display order (FR-CAP-RPT-06). */
+const UNTESTED_TEXT: [keyof CrmCaptureRecallSummary["untested"], string][] = [
+  ["known", "contacts now in the CRM (filed automatically)"],
+  ["ignored", "on the ignore list"],
+  ["internal_only", "internal-only"],
+  ["calendar", "calendar notifications"],
+  ["automated", "automated mail"],
+  ["outside_scope", "outside Primary and Sent"],
+  ["not_judged", "could not be judged"],
+  ["skipped_rules", "skipped by the rules"],
+];
 
 /** The reason is Claude's; the marker says so (009 FR-CRMAI-LLM-04). */
 const REASON_AI: AiProvenance = { source_kind: "email_thread", model: null, generated_at: null };
@@ -420,6 +439,7 @@ export function CaptureSettings({
           <p className="text-sm">
             {recallReady ? run.recall.line : "Shown once the dry run finishes."}
           </p>
+          {recallReady && run.recall.summary && <RecallSummaryList summary={run.recall.summary} />}
           {recallReady && run.recall.rows.length > 0 && (
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
@@ -449,6 +469,29 @@ export function CaptureSettings({
         </section>
       )}
     </div>
+  );
+}
+
+/** The recall line's numbers as a list; reasons with a zero count are left out (FR-CAP-RPT-08). */
+function RecallSummaryList({ summary }: { summary: CrmCaptureRecallSummary }) {
+  const reasons = UNTESTED_TEXT.filter(([key]) => summary.untested[key] > 0);
+  return (
+    <table className="w-full max-w-md text-sm">
+      <tbody className="divide-y">
+        <CountRow label="Labelled conversations" value={summary.total} />
+        <CountRow label="Could be tested" value={summary.tested} />
+        <CountRow label="Found" value={summary.found} />
+        {summary.academy_unrouted > 0 && (
+          <CountRow
+            label="Of those, course enquiries the Academy could not take"
+            value={summary.academy_unrouted}
+          />
+        )}
+        {reasons.map(([key, label]) => (
+          <CountRow key={key} label={`Not tested: ${label}`} value={summary.untested[key]} />
+        ))}
+      </tbody>
+    </table>
   );
 }
 

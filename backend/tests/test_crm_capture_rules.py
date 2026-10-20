@@ -7,7 +7,8 @@ plan §5.6, §5.7, PD-9, PD-11, PD-17, PD-20. S3 (tasks T313): FR-CAP-DIS-03,
 §5.10, PD-4. R1 (tasks T404, T415): FR-CAP-INV-01, -03 (invitations and
 calendar notices, `Reply-To`), FR-CAP-GRP-01, -03, -06, -08 (company keys,
 conversation entries, the consolidation plan); plan R1.2, R1.5, PD-22,
-PD-33, PD-40.
+PD-33, PD-40. R1 (tasks T421, T424): FR-CAP-RPT-05 to -07, -10 (the recall
+fates, summary and line); plan R1.3, PD-27, PD-28.
 
 No I/O: labels, headers, rows and the clock in, decisions out.
 """
@@ -884,13 +885,148 @@ class TestRecall:
         )
         assert fate(in_capture=True, survived=True, known_before=False) == "judged_otherwise"
 
-    def test_capture_the_recall_line(self):
-        rows = [
-            {"fate": f}
-            for f in ("filed_known", "found", "outside_scope", "judged_otherwise", "outside_scope")
+    def test_capture_the_reasons_in_decision_order(self):
+        # Plan R1.3, FR-CAP-RPT-06: could not be judged first, then outside
+        # Primary and Sent, the rules' reason, ignored, known before, now.
+        fate = capture.recall_fate
+        assert fate(in_capture=False, survived=False, known_before=True, failed=True) == (
+            "not_judged"
+        )
+        assert fate(in_capture=False, survived=False, known_before=True) == "outside_scope"
+        for reason in ("internal_only", "calendar", "automated"):
+            assert (
+                fate(in_capture=True, survived=False, known_before=True, skip_reason=reason)
+                == reason
+            )
+        assert (
+            fate(in_capture=True, survived=True, known_before=True, ignored=True, known_now=True)
+            == "ignored"
+        )
+        assert fate(in_capture=True, survived=True, known_before=False, known_now=True) == (
+            "known_now"
+        )
+        # A Claude failure, after every other check passed.
+        assert fate(in_capture=True, survived=True, known_before=False, failed=True) == (
+            "not_judged"
+        )
+        assert set(capture.FATES) >= {
+            "internal_only",
+            "calendar",
+            "automated",
+            "not_judged",
+            "academy_unrouted",
+            "skipped_rules",
+        }
+        assert len(capture.FATES) == 12
+
+    def test_capture_an_academy_finding_it_could_not_take_is_still_found(self):
+        fate = capture.recall_fate
+        found = {"in_capture": True, "survived": True, "known_before": False}
+        lead = {**found, "outcome": "new_lead", "confidence": "high", "business": "academy"}
+        assert fate(**lead, routed=False) == "academy_unrouted"
+        assert fate(**lead, routed=True) == "found"
+        assert fate(**{**lead, "business": "labs"}, routed=False) == "found"
+        assert fate(**{**lead, "confidence": "low"}, routed=False) == "judged_otherwise"
+
+    @staticmethod
+    def _rows(**fates: int) -> list[dict]:
+        return [
+            {"mailbox_id": "mb", "thread_id": f"{fate}-{n}", "fate": fate}
+            for fate, count in fates.items()
+            for n in range(count)
         ]
+
+    def test_capture_recall_line_when_none_could_be_tested(self):
+        rows = self._rows(filed_known=20, known_now=16, internal_only=15, calendar=9)
         assert capture.recall_line(rows) == (
-            "Found 2 of your 5 labelled conversations; 2 of the rest are outside Primary and Sent."
+            "None of your 60 labelled conversations could be tested: 36 involve contacts "
+            "now in the CRM (filed automatically), 15 were internal-only, 9 were calendar "
+            "notifications."
+        )
+
+    def test_capture_recall_line_counts_only_tested(self):
+        rows = self._rows(
+            found=15, judged_otherwise=3, known_now=30, internal_only=8, outside_scope=4
+        )
+        assert capture.recall_line(rows) == (
+            "Of the 18 that could be tested, the dry run found 15. 42 could not be tested: "
+            "30 involve contacts now in the CRM (filed automatically), 8 were internal-only, "
+            "4 are outside Primary and Sent."
+        )
+        assert capture.recall_summary(rows) == {
+            "total": 60,
+            "tested": 18,
+            "found": 15,
+            "capped": False,
+            "untested": {
+                "known": 30,
+                "ignored": 0,
+                "internal_only": 8,
+                "calendar": 0,
+                "automated": 0,
+                "outside_scope": 4,
+                "not_judged": 0,
+                "skipped_rules": 0,
+            },
+            "academy_unrouted": 0,
+        }
+
+    def test_capture_recall_line_names_course_enquiries_inside_found(self):
+        rows = self._rows(found=13, academy_unrouted=2, judged_otherwise=3)
+        assert capture.recall_line(rows) == (
+            "Of the 18 that could be tested, the dry run found 15, of which 2 were course "
+            "enquiries the Academy could not take."
+        )
+        summary = capture.recall_summary(rows)
+        assert (summary["found"], summary["academy_unrouted"]) == (15, 2)
+
+    def test_capture_recall_line_reads_in_the_singular(self):
+        rows = self._rows(
+            found=1,
+            filed_known=1,
+            ignored=1,
+            internal_only=1,
+            calendar=1,
+            automated=1,
+            outside_scope=1,
+            not_judged=1,
+            academy_unrouted=1,
+        )
+        assert capture.recall_line(rows) == (
+            "Of the 2 that could be tested, the dry run found 2, of which 1 was a course "
+            "enquiry the Academy could not take. 7 could not be tested: 1 involves contacts "
+            "now in the CRM (filed automatically), 1 is on the ignore list, 1 was "
+            "internal-only, 1 was a calendar notification, 1 was automated mail, 1 is "
+            "outside Primary and Sent, 1 could not be judged."
+        )
+        assert capture.recall_line(self._rows(automated=1)) == (
+            "None of your 1 labelled conversation could be tested: 1 was automated mail."
+        )
+
+    def test_capture_recall_line_says_capped_only_with_the_marker(self):
+        rows = self._rows(found=500)
+        # Exactly 500 conversations, every one checked: not capped.
+        assert capture.recall_line(rows) == (
+            "Of the 500 that could be tested, the dry run found 500."
+        )
+        assert capture.recall_summary(rows)["capped"] is False
+        capped = [*rows, {"capped": True}]
+        assert capture.recall_line(capped) == (
+            "Of the 500 that could be tested, the dry run found 500. "
+            "Only the first 500 were checked."
+        )
+        summary = capture.recall_summary(capped)
+        assert (summary["total"], summary["capped"]) == (500, True)
+
+    def test_capture_a_run_before_074_renders_its_stored_fates(self):
+        # FR-CAP-RPT-10: `skipped_rules` stays unsplit; nothing re-computed.
+        rows = self._rows(
+            filed_known=1, found=1, outside_scope=2, judged_otherwise=1, skipped_rules=3
+        )
+        assert capture.recall_line(rows) == (
+            "Of the 2 that could be tested, the dry run found 1. 6 could not be tested: "
+            "1 involves contacts now in the CRM (filed automatically), 2 are outside "
+            "Primary and Sent, 3 were skipped by the rules."
         )
 
 

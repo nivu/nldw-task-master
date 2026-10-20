@@ -9,6 +9,9 @@ fake store; no Gmail or Claude is reached from the API.
 S3 (tasks T316): contracts §2.3 to §2.5; FR-CAP-DIS-03, FR-CAP-RPT-04 —
 applying a dry run (and each refusal), Live accepted once one was applied,
 and the ignore list's add and remove, Admin only.
+
+R1 (tasks T426): contracts §7.1; FR-CAP-RPT-08, -10 — the recall's summary,
+and a run stored before 074 still read.
 """
 
 from __future__ import annotations
@@ -216,13 +219,64 @@ class TestTheOverview:
         assert sorted(f["confidence"] for f in dry["findings"]) == ["high", "low"]
         assert {f["company_name"] for f in dry["findings"]} == {"Acme"}
         assert dry["recall"] == {
-            "line": "Found 1 of your 2 labelled conversations; 1 of the rest are outside "
-            "Primary and Sent.",
+            "line": "Of the 1 that could be tested, the dry run found 1. 1 could not be "
+            "tested: 1 is outside Primary and Sent.",
             "rows": [
                 {"thread_id": "s1", "latest_at": None, "subject": "Re: Proposal", "fate": "found"},
                 {"thread_id": "s2", "latest_at": None, "subject": None, "fate": "outside_scope"},
             ],
+            "summary": {
+                "total": 2,
+                "tested": 1,
+                "found": 1,
+                "capped": False,
+                "untested": {
+                    "known": 0,
+                    "ignored": 0,
+                    "internal_only": 0,
+                    "calendar": 0,
+                    "automated": 0,
+                    "outside_scope": 1,
+                    "not_judged": 0,
+                    "skipped_rules": 0,
+                },
+                "academy_unrouted": 0,
+            },
         }
+
+    def test_capture_overview_reads_a_run_before_074(self, crm):
+        # FR-CAP-RPT-10: a run stored with the old fates validates (no 500)
+        # and keeps `skipped_rules` unsplit; a cap marker is not a row.
+        http, fake, labs, mailbox = crm
+        old = ("filed_known", "found", "judged_otherwise", "skipped_rules", "known_now")
+        fake.add_dry_run(
+            labs,
+            started_at="2026-10-19T05:00:00+00:00",
+            finished_at="2026-10-19T09:00:00+00:00",
+            recall=[
+                *(
+                    {
+                        "mailbox_id": mailbox["id"],
+                        "thread_id": f"o{n}",
+                        "latest_at": None,
+                        "fate": f,
+                    }
+                    for n, f in enumerate(old)
+                ),
+                {"capped": True},
+            ],
+        )
+        r = _get(http)
+        assert r.status_code == 200, r.text
+        recall = r.json()["dry_run"]["recall"]
+        assert [row["fate"] for row in recall["rows"]] == list(old)
+        assert recall["line"] == (
+            "Of the 2 that could be tested, the dry run found 1. 3 could not be tested: "
+            "2 involve contacts now in the CRM (filed automatically), 1 was skipped by the "
+            "rules. Only the first 500 were checked."
+        )
+        assert recall["summary"]["untested"]["skipped_rules"] == 1
+        assert (recall["summary"]["total"], recall["summary"]["capped"]) == (5, True)
 
     def test_capture_a_report_older_than_seven_days_is_not_applicable(self, crm):
         http, fake, labs, _ = crm

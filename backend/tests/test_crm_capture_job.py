@@ -5,7 +5,9 @@ PD-11, PD-14, PD-17; spec §13 S2. S3 (tasks T314): FR-CAP-DIS-03, -07 to
 S3 lines 1, 3, 5 and 6. R1 (tasks T416): FR-CAP-GRP-01 to -08 — one item
 per company, order-independent, a moved conversation leaves its item, one
 deal signal per company, consolidation of the items made before 074; plan
-R1.2, PD-24, PD-26, PD-38 to PD-40; spec §14.5 I1.
+R1.2, PD-24, PD-26, PD-38 to PD-40; spec §14.5 I1. R1 (tasks T425):
+FR-CAP-RPT-05 to -07 — the recall's reasons, a failure not judged, the cap
+marker; plan R1.3; spec §14.5 I2.
 
 Every run is on `tests/crm_fake.py` with `FakeClaude` and `FakeGmailThread`
 (`tests/crm_ai_fakes.py`): no network. A `FakeClaude()` with no script fails
@@ -666,7 +668,8 @@ class TestTheChain:
 
 
 class TestRecall:
-    """FR-CAP-RPT-03, plan §5.7, PD-11; spec §13 S2 line 3."""
+    """FR-CAP-RPT-03, -05 to -07, plan §5.7, R1.3, PD-11, PD-27, PD-28; spec
+    §13 S2 line 3, §14.5 I2."""
 
     SALES = ("INBOX", "Label_1")
 
@@ -722,7 +725,7 @@ class TestRecall:
         fates = {r["thread_id"]: r["fate"] for r in run["recall"]}
         assert fates == {
             "r-out": "outside_scope",
-            "r-bulk": "skipped_rules",
+            "r-bulk": "automated",
             "r-known": "filed_known",
             "r-auto": "known_now",
             "r-new": "found",
@@ -736,12 +739,131 @@ class TestRecall:
         assert cap.fake.rows["crm_capture_candidates"] == {}
         assert len(cap.claude.calls) == 2
         assert sorted(cap.gmail.text_reads) == ["r-new-m1", "r-vendor-m1"]
-        line = capture.overview(_Ctx(cap))["dry_run"]["recall"]["line"]
-        assert line == (
-            "Found 2 of your 6 labelled conversations; 1 of the rest are outside Primary and "
-            "Sent. 1 of the rest name only people added to the CRM after they began, so they "
-            "were not sent to Claude."
+        recall = capture.overview(_Ctx(cap))["dry_run"]["recall"]
+        # FR-CAP-RPT-07: filed as known is not tested (PD-28).
+        assert recall["line"] == (
+            "Of the 2 that could be tested, the dry run found 1. 4 could not be tested: "
+            "2 involve contacts now in the CRM (filed automatically), 1 was automated mail, "
+            "1 is outside Primary and Sent."
         )
+        assert recall["summary"]["untested"]["known"] == 2
+
+    def test_capture_recall_names_each_reason(self, cap, monkeypatch):
+        # Plan R1.3: the rules' reasons from headers only; Gmail's empty or
+        # malformed answer is not judged; a lead is still judged.
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        self._labelled(cap, "r-internal", primary_sales, "deepika@nunnarilabs.com")
+        self._labelled(
+            cap,
+            "r-cal",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Accepted: Demo @ Tue",
+        )
+        self._labelled(cap, "r-bulk", primary_sales, "news@bulk.io", List_Unsubscribe="<x>")
+        self._labelled(cap, "r-empty", primary_sales, "sam@empty.io")
+        self._labelled(cap, "r-malformed", primary_sales, "sam@broken.io")
+        cap.gmail.threads["r-malformed"][0]["headers"] = None
+        # A date that is not a number is malformed too (plan R1.3 step 1).
+        self._labelled(cap, "r-baddate", primary_sales, "sam@baddate.io")
+        # FR-CAP-RPT-06: an invitation between colleagues only is internal-only.
+        self._labelled(
+            cap,
+            "r-colleague-invite",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Standup @ Mon",
+            Reply_To="Deepika <deepika@nunnarilabs.com>",
+        )
+        self._labelled(cap, "r-new", primary_sales, "Priya Shah <priya@acme-robotics.com>")
+        # A tie between a calendar notice and automated mail goes to calendar.
+        self._labelled(
+            cap,
+            "r-tie",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Declined: Demo",
+        )
+        cap.gmail.message(
+            "r-tie",
+            "r-tie-m2",
+            sender="news@bulk.io",
+            to=BOX,
+            at=NOW - timedelta(days=29),
+            labels=primary_sales,
+            List_Unsubscribe="<x>",
+        )
+        meta = gmail.thread_meta
+
+        def thread_meta(mailbox, thread_id):
+            got = meta(mailbox, thread_id)
+            if thread_id == "r-baddate":
+                got["messages"][0]["internalDate"] = "abc"
+            return {"id": thread_id, "messages": []} if thread_id == "r-empty" else got
+
+        monkeypatch.setattr(gmail, "thread_meta", thread_meta)
+        cap.answer(LEAD)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert {r["thread_id"]: r["fate"] for r in run["recall"]} == {
+            "r-internal": "internal_only",
+            "r-cal": "calendar",
+            "r-bulk": "automated",
+            "r-empty": "not_judged",
+            "r-malformed": "not_judged",
+            "r-baddate": "not_judged",
+            "r-colleague-invite": "internal_only",
+            "r-new": "found",
+            "r-tie": "calendar",
+        }
+        assert cap.gmail.text_reads == ["r-new-m1"]
+        summary = capture.overview(_Ctx(cap))["dry_run"]["recall"]["summary"]
+        assert summary["untested"] == {
+            "known": 0,
+            "ignored": 0,
+            "internal_only": 2,
+            "calendar": 2,
+            "automated": 1,
+            "outside_scope": 0,
+            "not_judged": 3,
+            "skipped_rules": 0,
+        }
+
+    def test_capture_recall_counts_a_failure_as_not_judged(self, cap):
+        # FR-CAP-RPT-06: Claude failing on a conversation is not a judgement.
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        self._labelled(cap, "r-new", primary_sales, "sam@newco.io")
+        cap.answer(default=INVALID)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert run["finished_at"] is not None
+        assert {r["thread_id"]: r["fate"] for r in run["recall"]} == {"r-new": "not_judged"}
+        assert capture.overview(_Ctx(cap))["dry_run"]["recall"]["line"] == (
+            "None of your 1 labelled conversation could be tested: 1 could not be judged."
+        )
+
+    def test_capture_recall_marks_a_run_capped_only_with_threads_left(self, cap, monkeypatch):
+        # Plan R1.3: the marker only when the check stops at the cap with a
+        # labelled conversation unchecked; a mailbox with exactly the cap is not.
+        monkeypatch.setattr(rules, "RECALL_CAP", 2)
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        for n in range(2):
+            self._labelled(cap, f"r{n}", primary_sales, f"news{n}@bulk.io", List_Unsubscribe="<x>")
+        cap.tick()
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert [r.get("thread_id") for r in run["recall"]] == ["r0", "r1"]
+        assert not capture.overview(_Ctx(cap))["dry_run"]["recall"]["summary"]["capped"]
+        self._labelled(cap, "r2", primary_sales, "news2@bulk.io", List_Unsubscribe="<x>")
+        run.update(finished_at=None, recall=[])
+        cap.tick()
+        assert run["recall"][-1] == {"capped": True}
+        assert len(run["recall"]) == 3
+        recall = capture.overview(_Ctx(cap))["dry_run"]["recall"]
+        assert [r["thread_id"] for r in recall["rows"]] == ["r0", "r1"]
+        assert recall["summary"]["capped"] is True
+        assert recall["line"].endswith(" Only the first 2 were checked.")
 
     def test_capture_recall_never_sends_an_ignored_or_known_client_message(self, cap):
         # PRIV-1, PRIV-2: the recall applies live's ignore list and known

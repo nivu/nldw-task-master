@@ -1111,13 +1111,15 @@ the TypeScript union and `FATE_TEXT` list all twelve.
 FR-CAP-RPT-06's list is the *display* order; headers and records only until
 step 7):
 
-1. Gmail returns no message, or `MalformedThread` → `not_judged`
+1. Gmail returns no message, or `MalformedThread` (a message with no id,
+   unreadable headers or a non-numeric `internalDate`) → `not_judged`
    (today `outside_scope` / `skipped_rules`);
 2. no message in Primary or Sent → `outside_scope`;
 3. nothing survives the rules → the new `_drop_reason(thread)`: for each
-   in-scope message, `internal` (`email_rules.classify(...).is_internal`),
-   `calendar` (`is_calendar_notice`, or an invitation with no outside
-   party), or `automated` (`is_bulk` otherwise); the thread takes the reason
+   in-scope message, `internal` (`email_rules.classify(...).is_internal`,
+   or an invitation with no outside party — FR-CAP-RPT-06: an invitation
+   between colleagues only is internal-only), `calendar`
+   (`is_calendar_notice` otherwise), or `automated` (`is_bulk` otherwise); the thread takes the reason
    with most messages, ties `calendar` > `automated` > `internal`; fates
    `internal_only`, `calendar`, `automated`. `_survivors` is unchanged for
    the live path; `_drop_reason` is its sibling over the same rules;
