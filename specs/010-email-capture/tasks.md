@@ -159,14 +159,14 @@ applied without new Claude calls; old decisions are purged.
 
 ## D — Docs, help, amendments, release
 
-- [ ] D01 [P] Architecture: email sync (capture source, scan labels, candidates, deal documents), intelligence layer (capture job, new item types), "Jobs, one line each" + `capture` and `crm.capture_thread` — `docs/architecture/crm.md`
-- [ ] D02 [P] Help: "Mailboxes and email sync" (capture source, start date) and a new "Email capture" section — `docs/guides/10-crm-admin.md`
-- [ ] D03 [P] Help: New lead and Deal signal items; dismiss with ignore — `docs/guides/12-crm-intelligence.md`
-- [ ] D04 Regenerate the help JSON (`pnpm build:guides`) — `frontend/lib/help-content.generated.json`
-- [ ] D05 [P] Deployment §9 "Email capture (spec 010)": migrations 071–073, services, release-day state, owner steps (plan §10.6, including "set `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-ai`, the same key as `worker-crm-sync`" before "start the dry run"), switching on and off; the settings table row for `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-ai` reads "Needed for email summaries, R-1 and email capture (010)"; fix §8's "060–068" to "060–070" — `docs/operations/deployment.md`
-- [ ] D06 [P] Spec amendments per FR-CAP-CHG-01 to -03 (`007` SYNC-02, -05, -08) — `specs/007-crm/spec.md`
-- [ ] D07 [P] Spec amendments per FR-CAP-CHG-04 to -06 (`009` REV, CHG-01, SUM-01 note) — `specs/009-crm-intelligence/spec.md`
-- [ ] D08 Mark spec status "Planned and built" with the commit; update `.specify` feature pointer if used — `specs/010-email-capture/spec.md`
+- [x] D01 [P] Architecture: email sync (capture source, scan labels, candidates, deal documents), intelligence layer (capture job, new item types), "Jobs, one line each" + `capture` and `crm.capture_thread` — `docs/architecture/crm.md`
+- [x] D02 [P] Help: "Mailboxes and email sync" (capture source, start date) and a new "Email capture" section — `docs/guides/10-crm-admin.md`
+- [x] D03 [P] Help: New lead and Deal signal items; dismiss with ignore — `docs/guides/12-crm-intelligence.md`
+- [x] D04 Regenerate the help JSON (`pnpm build:guides`) — `frontend/lib/help-content.generated.json`
+- [x] D05 [P] Deployment §9 "Email capture (spec 010)": migrations 071–073, services, release-day state, owner steps (plan §10.6, including "set `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-ai`, the same key as `worker-crm-sync`" before "start the dry run"), switching on and off; the settings table row for `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-ai` reads "Needed for email summaries, R-1 and email capture (010)"; fix §8's "060–068" to "060–070" — `docs/operations/deployment.md`
+- [x] D06 [P] Spec amendments per FR-CAP-CHG-01 to -03 (`007` SYNC-02, -05, -08) — `specs/007-crm/spec.md`
+- [x] D07 [P] Spec amendments per FR-CAP-CHG-04 to -06 (`009` REV, CHG-01, SUM-01 note) — `specs/009-crm-intelligence/spec.md`
+- [x] D08 Mark spec status "Planned and built" with the commit; update `.specify` feature pointer if used — `specs/010-email-capture/spec.md`
 - [ ] D09 Gates; commit "Document email capture (010)"; merge `010-email-capture` to `main`
 - [ ] D10 Release (plan §10): `npx supabase db push`; Railway `api`, `worker`, `beat`, `worker-crm-ai` (and `worker-crm-sync` if present) from the merge commit; Netlify with `--skip-functions-cache`; checks: `/health/jobs` ok after `capture` ticks, `/docs` and `/openapi.json` 404, every mailbox `labels`, every `capture.mode` off — no files
 - [ ] D11 Report the owner steps still open (plan §10.6); update the project memory note on production state — no repo files

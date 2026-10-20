@@ -441,6 +441,15 @@ class TestLeavingScope:
         _sync(queue)
         assert _messages(fake) == []
 
+    @pytest.mark.parametrize("bin_it", ["trash", "spam"])
+    def test_capture_removes_labelled_mail_put_in_trash_or_spam(self, crm, bin_it):
+        """FR-CAP-SRC-02, -08: Trash and Spam take a message out of scope
+        whatever labels it carries, unlike a move out of Primary."""
+        fake, mail, queue = self._filed(crm, labels=("INBOX", "CATEGORY_PERSONAL", "Label_1"))
+        getattr(mail, bin_it)(OWNER_ADDRESS, "m1")
+        _sync(queue)
+        assert _messages(fake) == []
+
     def test_capture_takes_untrashed_mail_again(self, crm):
         fake, mail, queue = self._filed(crm)
         mail.trash(OWNER_ADDRESS, "m1")

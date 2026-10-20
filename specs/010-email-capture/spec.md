@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Feature** | `010-email-capture` |
-| **Status** | Draft 20 October 2026. Owner decisions E1–E6 and E10–E12 are recorded in §12; E7–E9 are recommended refinements from the options analysis. |
+| **Status** | Planned and built 20 October 2026 on branch `010-email-capture`: S1 `324ee83`, S2 `6455071`, S3 `0f7b611`, then the docs commit "Document email capture (010)" (migrations `071`–`073`). Not yet merged or released. Owner decisions E1–E6 and E10–E12 are recorded in §12; E7–E9 are recommended refinements from the options analysis. |
 | **Source** | [`source.md`](source.md): the owner's brief of 19 October 2026 and the request for an options analysis on 20 October. Where this file and the source disagree, this file wins. |
 | **Depends on** | `007-crm` (Gmail sync, flags, automation 2); `009-crm-intelligence` (the AI worker, the one call wrapper, the budget, the Review Queue); constitution v1.3.0 |
 
@@ -142,7 +142,7 @@ a second time.
 | FR-CAP-SRC-05 | A message in scope with **no** known participant is **not** stored and does **not** run automation 2, whatever that switch says. Its conversation is marked a **discovery candidate** (mailbox, Gmail thread id, latest message id and time; no addresses, no subject). Automation 2 still runs for messages that carry a configured label (FR-CAP-SRC-02), so hand labels behave as today. |
 | FR-CAP-SRC-06 | **Deal documents.** Every sync, the mailbox is searched for messages since the last check whose attachments' names look like an SOW, statement of work, proposal, quotation, MSA or purchase order (Gmail search, ids only). For a known company with an open deal, a `deal_signal` Review Queue item is created (§7). Its direction gives the suggestion: sent by us means *Proposal, proposal sent on* that date; received means *possibly Closed Won, check the signed document*. |
 | FR-CAP-SRC-07 | **Backfill.** Switching a mailbox to *Primary and Sent* backfills known-contact capture from the mailbox's **capture start date**, default 1 April 2026, in the same resumable pages as today's 90-day backfill (`007` FR-CRM-SYNC-08). |
-| FR-CAP-SRC-08 | Removing a message from scope (moved out of Primary, deleted) removes the stored copy on the next run, as unlabelling does today. A message still carrying a configured label stays. |
+| FR-CAP-SRC-08 | Removing a message from scope (moved out of Primary, deleted) removes the stored copy on the next run, as unlabelling does today. A message moved out of Primary that still carries a configured label stays; one put in Trash or Spam does not (FR-CAP-SRC-02). |
 
 ## 6. Functional requirements — S2 and S3 discovery
 

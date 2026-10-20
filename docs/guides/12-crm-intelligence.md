@@ -1,13 +1,14 @@
 ---
 title: Review AI suggestions
-summary: For sellers and workspace admins — the CRM's Review Queue, what each AI suggestion does when approved, who sees which, and deciding them from Claude.
+summary: For sellers and workspace admins — the CRM's Review Queue, what each AI suggestion does when approved, new leads and deal signals from email, who sees which, and deciding them from Claude.
 order: 12
 ---
 
 # Review AI suggestions
 
 The CRM's AI reads labelled email threads, recorded client meetings and
-companies' own websites, and watches for deals and leads that need a nudge.
+companies' own websites, watches for deals and leads that need a nudge, and,
+with email capture on, looks for new leads in your Primary and Sent mail.
 It never changes a record by itself. Everything it would change waits in the
 **Review Queue** until a person approves it.
 
@@ -52,6 +53,8 @@ And three choices:
 | **Link meeting to a deal** | a meeting note whose deal was not clear | links the meeting note to the deal you choose |
 | **Use the enriched value** | a company's website, where the company's field already holds something different | replaces the field with the value from the website |
 | **Follow-up suggestion** | one of the follow-up rules | does what the rule suggests: move a lead stage, set a next touch, qualify a campaign member into a deal or close it out. For a follow-up email draft, it marks the draft as used; you send the email yourself, from your own mail |
+| **New lead** | email capture: a conversation in Primary or Sent with someone the CRM does not know, which the AI thinks is a sales conversation | creates the company at the suggested lead stage, the person under it and the company's domain, and files the conversation's emails on them. Later email from that domain is filed straight away, with no AI. When the company may already be in the CRM, the item offers to link the conversation to it instead |
+| **Deal signal** | email capture, or an SOW, proposal, quotation, MSA or purchase order attached to an email with a known company | moves the company's open deal to the suggested stage, or creates a deal at Discovery when it has none |
 
 Approving is the same as making the change by hand. Every rule still
 applies: a deal still needs its next step and date, a stage move still asks
@@ -68,10 +71,47 @@ fields, such as an email arriving, do not get in the way.
 The record's history shows the change as yours, marked **approved AI
 suggestion**.
 
+## New leads and deal signals from email
+
+With email capture on (see *Running a CRM workspace*), two kinds of item
+come from your email. Each shows its evidence: the dates of the
+conversation, how many emails it has, whether you replied, the names of any
+attachments, and the AI's one-line reason. The email's words are never
+shown, and never kept.
+
+**New lead.** Check the company name, domain, lead stage and person, and
+change any of them with **Edit and approve**. A company that was never
+replied to starts at New. When the person writes from a public webmail
+address such as gmail.com, the company has no domain unless you add one.
+When the domain came from a website mentioned in the email rather than the
+sender's own address, the item says so: check it before approving. If the
+company is already in the CRM, choose it to link the conversation there
+instead of creating a second one.
+
+**Deal signal.** Approving it goes through the pipeline rules like a move
+made by hand:
+
+- a new deal at **Discovery** needs its next step and date;
+- **Proposal** needs the amount, currency and expected close date (and a
+  point of contact if Qualification was skipped); in Nunnari Labs it also
+  creates the tentative TVA project, and only then;
+- **Closed Won** in Nunnari Labs is done through the deal's handoff, so the
+  item links to it instead of offering Approve.
+
+A deal already at or past the suggested stage is refused.
+
+**Dismissing a new lead** gives you a choice: dismiss only, **ignore this
+sender**, or **ignore this whole domain**. Ignoring adds the address or the
+domain to the workspace's ignore list, and email from it never reaches the
+AI again. A public webmail domain can only be ignored by sender. Dismissing
+a deal signal changes nothing else.
+
 ## Who sees which suggestion
 
 - Each suggestion belongs to one person: the deal's or company's owner, or,
-  for a task, the person who made the promise or owns the action.
+  for a task, the person who made the promise or owns the action. New leads
+  and deal signals from email belong to the owner of the mailbox they were
+  found in.
 - **Members** see and decide their own.
 - **Admins** see the whole workspace: **Mine**, **All**, and **Decided**
   (what was approved, dismissed or expired recently). A suggestion whose
@@ -86,11 +126,13 @@ restored.
 
 A suggestion left untouched for two weeks **expires** and leaves the queue.
 Like a dismissal, it is not suggested again from the same source unless
-something new happens.
+something new happens. An expired new lead comes back only if a new email
+arrives in the conversation.
 
 ## From Claude
 
 If you have connected Claude (see *Connecting Claude*), ask it what you have
 to review: it lists your suggestions, and decides one only after showing you
 exactly what it will do and getting your yes. Admins can ask for the whole
-workspace's queue.
+workspace's queue. When Claude dismisses a new lead for you, it can also
+ignore the sender or the whole domain, if you ask it to.
