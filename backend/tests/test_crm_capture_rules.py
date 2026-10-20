@@ -2,7 +2,9 @@
 FR-CAP-CHG-01, -03, FR-CAP-REV-01 (`deal_signal`), -04; data-model §3.1;
 plan §5.3 to §5.5, §5.10, PD-2, PD-3, PD-5, PD-19. S2 (tasks T212):
 FR-CAP-DIS-01, -04, -05, -07, -09, FR-CAP-RPT-03; data-model §3.2, §3.4;
-plan §5.6, §5.7, PD-9, PD-11, PD-17, PD-20.
+plan §5.6, §5.7, PD-9, PD-11, PD-17, PD-20. S3 (tasks T313): FR-CAP-DIS-03,
+-07 to -09, FR-CAP-REV-01, -03, -04, FR-CAP-RPT-04; contracts §6; plan §5.8,
+§5.10, PD-4.
 
 No I/O: labels, headers, rows and the clock in, decisions out.
 """
@@ -763,3 +765,330 @@ class TestRecall:
         assert capture.recall_line(rows) == (
             "Found 2 of your 5 labelled conversations; 2 of the rest are outside Primary and Sent."
         )
+
+
+FINDING = {
+    "company_name": "Acme Robotics",
+    "domain": "acme-robotics.com",
+    "domain_from_text": False,
+    "person_name": "Priya Shah",
+    "person_email": "priya@acme-robotics.com",
+    "person_title": "Head of Ops",
+    "lead_stage": "contacted",
+    "deal_stage": None,
+    "reason": "Asked for pricing; you replied.",
+    "first_at": "2026-10-01T09:12:00+05:30",
+    "latest_at": "2026-10-02T11:40:00+05:30",
+    "message_count": 2,
+    "owner_replied": True,
+    "attachments": ["Nunnari pricing.pdf"],
+    "duplicate_company_id": None,
+}
+ITEM_ARGS = {
+    "mailbox_id": "mb",
+    "thread_id": "t1",
+    "message_id": "m2",
+    "owner_id": "u-owner",
+    "model": "claude-sonnet-5-5",
+    "generated_at": "2026-10-20T06:00:00+00:00",
+}
+
+
+class TestTheIgnoreList:
+    """FR-CAP-DIS-03, REV-03; contracts §2.4."""
+
+    IGNORES = [
+        {"kind": "address", "value": "priya@acme.com"},
+        {"kind": "domain", "value": "vendor.io"},
+    ]
+
+    def test_capture_every_outside_participant_must_be_ignored(self):
+        assert capture.ignored([{"email": "sales@vendor.io"}], self.IGNORES)
+        assert capture.ignored(
+            [{"email": "priya@acme.com"}, {"email": "a@vendor.io"}], self.IGNORES
+        )
+        assert not capture.ignored(
+            [{"email": "priya@acme.com"}, {"email": "ravi@acme.com"}], self.IGNORES
+        )
+
+    def test_capture_nobody_outside_is_not_ignored(self):
+        assert not capture.ignored([], self.IGNORES)
+        assert not capture.ignored([{"email": "a@vendor.io"}], [])
+
+    def test_capture_the_value_is_trimmed_and_lower_cased(self):
+        assert capture.ignore_value("  Sales@Vendor.IO ") == "sales@vendor.io"
+
+    @pytest.mark.parametrize(
+        ("kind", "value", "why"),
+        [
+            ("address", "priya@acme.com", None),
+            ("address", "not-an-address", capture.ENTER_ADDRESS),
+            ("address", "deepika@nunnarilabs.com", capture.OWN_DOMAIN),
+            ("domain", "vendor.io", None),
+            ("domain", "a@vendor.io", capture.ENTER_DOMAIN),
+            ("domain", "vendor", capture.ENTER_DOMAIN),
+            ("domain", "gmail.com", capture.WEBMAIL_IGNORE),
+            ("domain", "nunnarilabs.com", capture.OWN_DOMAIN),
+        ],
+    )
+    def test_capture_an_entry_is_refused_in_one_sentence(self, kind, value, why):
+        assert capture.ignore_refusal(kind, value, ["nunnarilabs.com"]) == why
+
+
+class TestDuplicates:
+    """FR-CAP-DIS-08 — a sibling domain is the same name on another suffix."""
+
+    def test_capture_sibling_domains_share_the_first_label(self):
+        known = ["acme.com", "acme.io", "acmecorp.com", "other.io", "acme.com"]
+        assert capture.sibling_domains("acme.io", known) == ["acme.com"]
+        assert capture.sibling_domains("acme.co.uk", known) == ["acme.com", "acme.io"]
+        assert capture.sibling_domains(None, known) == []
+        assert capture.sibling_domains("acme", known) == []
+
+    def test_capture_a_subdomain_has_no_sibling(self):
+        # The first label of a subdomain names no company (S3-C5, S3-01).
+        assert capture.sibling_domains("uk.sony.com", ["uk.fujitsu.com"]) == []
+        assert capture.sibling_domains("mail.foo.com", ["mail.bar.io", "mail.foo.io"]) == []
+        assert capture.sibling_domains("acme.com", ["acme.robotics.com", "mail.acme.io"]) == []
+        assert capture.sibling_domains("acme.com.au", ["acme.co.uk", "co.uk"]) == ["acme.co.uk"]
+        assert capture.registrable_name("acme.co.uk") == "acme"
+        assert capture.registrable_name("uk.sony.com") is None
+
+
+class TestItems:
+    """Contracts §6.1, §6.2; plan §5.10, PD-4; FR-CAP-DIS-07, -09."""
+
+    def test_capture_a_lead_makes_an_item_with_no_target(self):
+        item = capture.to_item(FINDING, outcome="new_lead", confidence="high", **ITEM_ARGS)
+        assert (item["type"], item["record_type"], item["record_id"]) == ("new_lead", None, None)
+        assert item["dedupe_key"] == "email_thread|gmail:mb:t1|new_lead|thread"
+        assert item["source_version"] == "m2" and item["source_key"] == "gmail:mb:t1"
+        assert item["source_link"] == {"mailbox_id": "mb", "thread_id": "t1"}
+        s = item["suggestion"]
+        assert (s["company_name"], s["domain"], s["lead_stage"]) == (
+            "Acme Robotics",
+            "acme-robotics.com",
+            "contacted",
+        )
+        assert (s["first_name"], s["last_name"], s["email"], s["title"]) == (
+            "Priya",
+            "Shah",
+            "priya@acme-robotics.com",
+            "Head of Ops",
+        )
+        assert s["link"] is False and s["deal_stage_hint"] is None
+        assert s["evidence"] == {
+            "first_at": "2026-10-01T09:12:00+05:30",
+            "latest_at": "2026-10-02T11:40:00+05:30",
+            "message_count": 2,
+            "owner_replied": True,
+            "attachments": ["Nunnari pricing.pdf"],
+            "reason": "Asked for pricing; you replied.",
+            "confidence": "high",
+            "origin": "discovery",
+        }
+        assert item["owner_id"] == "u-owner" and item["deal_choices"] == []
+
+    def test_capture_low_confidence_or_no_finding_makes_nothing(self):
+        assert capture.to_item(FINDING, outcome="new_lead", confidence="low", **ITEM_ARGS) is None
+        assert capture.to_item(None, outcome="new_lead", confidence="high", **ITEM_ARGS) is None
+        assert (
+            capture.to_item(FINDING, outcome="other_business", confidence="high", **ITEM_ARGS)
+            is None
+        )
+
+    def test_capture_a_duplicate_links_the_lead(self):
+        item = capture.to_item(
+            FINDING,
+            outcome="new_lead",
+            confidence="medium",
+            duplicate_company_id="c-1",
+            **ITEM_ARGS,
+        )
+        assert (item["type"], item["record_type"], item["record_id"]) == (
+            "new_lead",
+            "company",
+            "c-1",
+        )
+        assert item["dedupe_key"] == "email_thread|gmail:mb:t1|new_lead|company:c-1"
+        assert item["suggestion"]["link"] is True
+
+    def test_capture_a_webmail_lead_has_no_domain(self):
+        webmail = {**FINDING, "domain": "gmail.com", "person_email": "priya@gmail.com"}
+        item = capture.to_item(webmail, outcome="new_lead", confidence="high", **ITEM_ARGS)
+        assert item["suggestion"]["domain"] is None
+        assert item["suggestion"]["domain_from_text"] is False
+
+    def test_capture_a_deal_signal_on_an_unknown_company_is_a_lead_with_a_hint(self):
+        signal = {**FINDING, "deal_stage": "proposal"}
+        item = capture.to_item(signal, outcome="deal_signal", confidence="high", **ITEM_ARGS)
+        assert item["type"] == "new_lead"
+        assert item["suggestion"]["deal_stage_hint"] == "proposal"
+
+    def test_capture_a_deal_signal_on_a_matched_company_moves_its_open_deal(self):
+        signal = {**FINDING, "deal_stage": "proposal"}
+        deals = [
+            {"id": "d-2", "stage": "qualification"},
+            {"id": "d-1", "stage": "discovery"},
+            {"id": "d-3", "stage": "negotiation"},
+        ]
+        item = capture.to_item(
+            signal,
+            outcome="deal_signal",
+            confidence="high",
+            duplicate_company_id="c-1",
+            open_deals=deals,
+            **ITEM_ARGS,
+        )
+        assert (item["type"], item["record_type"], item["record_id"]) == (
+            "deal_signal",
+            "company",
+            "c-1",
+        )
+        assert item["deal_choices"] == ["d-1", "d-2"]
+        assert item["suggestion"]["action"] == "move"
+        assert item["suggestion"]["stage"] == "proposal"
+        assert item["suggestion"]["proposal_sent_on"] == "2026-10-02"
+        assert item["suggestion"]["evidence"]["origin"] == "discovery"
+        assert item["dedupe_key"] == "email_thread|gmail:mb:t1|deal_signal|company:c-1"
+
+    def test_capture_a_deal_signal_with_no_open_deal_creates_one_at_discovery(self):
+        signal = {**FINDING, "deal_stage": "proposal"}
+        item = capture.to_item(
+            signal,
+            outcome="deal_signal",
+            confidence="high",
+            duplicate_company_id="c-1",
+            open_deals=[],
+            **ITEM_ARGS,
+        )
+        assert item["suggestion"]["action"] == "create"
+        assert item["suggestion"]["stage"] == "discovery"
+        assert item["deal_choices"] == []
+
+    def test_capture_a_deal_signal_past_every_open_deal_makes_nothing(self):
+        signal = {**FINDING, "deal_stage": "proposal"}
+        assert (
+            capture.to_item(
+                signal,
+                outcome="deal_signal",
+                confidence="high",
+                duplicate_company_id="c-1",
+                open_deals=[{"id": "d-3", "stage": "negotiation"}],
+                **ITEM_ARGS,
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("stage", ["discovery", None])
+    def test_capture_a_discovery_signal_on_a_company_with_an_open_deal_makes_nothing(self, stage):
+        # S3-C2: `create` only for a company with no open deal; a second open
+        # deal would be a duplicate.
+        assert (
+            capture.to_item(
+                {**FINDING, "deal_stage": stage},
+                outcome="deal_signal",
+                confidence="high",
+                duplicate_company_id="c-1",
+                open_deals=[{"id": "d-1", "stage": "qualification"}],
+                **ITEM_ARGS,
+            )
+            is None
+        )
+
+    def test_capture_a_discovered_signal_says_what_matched_the_company(self):
+        # S3-PRIV-3: a match made through a website in the text says so.
+        signal = {
+            **FINDING,
+            "deal_stage": "closed_won",
+            "domain": "bigclient.com",
+            "domain_from_text": True,
+            "person_email": "x@unknown-evil.com",
+        }
+        item = capture.to_item(
+            signal,
+            outcome="deal_signal",
+            confidence="high",
+            duplicate_company_id="c-1",
+            open_deals=[{"id": "d-1", "stage": "qualification"}],
+            **ITEM_ARGS,
+        )
+        evidence = item["suggestion"]["evidence"]
+        assert (evidence["domain"], evidence["domain_from_text"], evidence["email"]) == (
+            "bigclient.com",
+            True,
+            "x@unknown-evil.com",
+        )
+
+    def test_capture_a_lead_with_no_company_name_falls_back_to_its_domain(self):
+        item = capture.to_item(
+            {**FINDING, "company_name": None}, outcome="new_lead", confidence="high", **ITEM_ARGS
+        )
+        assert item["suggestion"]["company_name"] == "acme-robotics.com"
+
+    def test_capture_a_name_alone_or_an_address_alone_gives_a_first_name(self):
+        assert capture.split_name("Priya Devi Shah", None) == ("Priya", "Devi Shah")
+        assert capture.split_name(None, "priya@acme.com") == ("priya", None)
+
+    def test_capture_what_today_calls_a_new_lead(self):
+        item = capture.to_item(FINDING, outcome="new_lead", confidence="high", **ITEM_ARGS)
+        assert capture.new_lead_title(item["suggestion"]) == "New lead: Acme Robotics · Priya Shah"
+        assert capture.new_lead_detail(item["suggestion"]) == (
+            "2 emails · Asked for pricing; you replied."
+        )
+
+    def test_capture_the_thread_dedupe_key(self):
+        assert (
+            review_rules.dedupe_key("email_thread", "gmail:mb:t1", "new_lead", None, None)
+            == "email_thread|gmail:mb:t1|new_lead|thread"
+        )
+        assert review_rules.TYPES["new_lead"] == "New lead"
+
+    def test_capture_a_new_lead_is_the_mailbox_owners(self):
+        roles = {"u-owner": "admin", "u-viewer": "viewer"}
+        active = {"u-owner", "u-viewer"}
+        assert (
+            review_rules.owner_for("new_lead", roles=roles, active=active, mailbox_owner="u-owner")
+            == "u-owner"
+        )
+        assert (
+            review_rules.owner_for("new_lead", roles=roles, active=active, mailbox_owner="u-viewer")
+            is None
+        )
+
+    def test_capture_an_item_fits_the_suggestion_cap(self):
+        long = {**FINDING, "attachments": ["x" * 200] * 10, "reason": "r" * 160}
+        item = capture.to_item(long, outcome="new_lead", confidence="high", **ITEM_ARGS)
+        assert len(json.dumps(item["suggestion"])) <= 8192
+
+
+class TestApplying:
+    """FR-CAP-RPT-04; contracts §2.3 — when a dry run can be applied."""
+
+    RUN = {
+        "id": "r1",
+        "finished_at": (NOW - timedelta(days=1)).isoformat(),
+        "cancelled": False,
+        "applied_at": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("change", "latest", "refused"),
+        [
+            ({}, "r1", None),
+            ({"finished_at": None}, "r1", (422, capture.NOT_FINISHED)),
+            ({"cancelled": True}, "r1", (422, capture.STOPPED)),
+            ({"applied_at": NOW.isoformat()}, "r1", (409, capture.ALREADY_APPLIED)),
+            ({}, "r2", (422, capture.NOT_LATEST)),
+            (
+                {"finished_at": (NOW - timedelta(days=7, minutes=1)).isoformat()},
+                "r1",
+                (422, capture.TOO_OLD),
+            ),
+        ],
+    )
+    def test_capture_apply_refusals(self, change, latest, refused):
+        assert capture.apply_refusal({**self.RUN, **change}, latest, NOW) == refused
+
+    def test_capture_an_unknown_run_is_not_found(self):
+        assert capture.apply_refusal(None, "r1", NOW) == (404, capture.NO_SUCH_RUN)

@@ -329,8 +329,11 @@ def _009_sql() -> str:
 
 
 #: Spec 010 data-model §5: the logs 071–073 add without the trigger (S1:
-#: the discovery candidates; S2: the dry runs).
+#: the discovery candidates; S2: the dry runs). Complete: S3's ignore list
+#: is audited configuration, not a log.
 NOT_AUDITED_010 = {"crm_capture_candidates", "crm_capture_dry_runs"}
+#: Spec 010 data-model §3.6 (073): the one table 010 audits.
+AUDITED_010 = {"crm_capture_ignores"}
 
 
 def _010_sql() -> str:
@@ -407,9 +410,10 @@ class TestThe009Additions:
 class TestThe010Additions:
     """Spec 010 data-model §5; plan PD-1; tasks T116 (S1): the sweeps above
     re-run over 071–079. `NOT_AUDITED` is 007's, 009's and 010's lists;
-    every table 010 creates is a log of that list, with RLS on and no
-    browser grant; every function it creates or replaces is a `crm_` one
-    with EXECUTE revoked; and 010 makes no new `uuid[]` column."""
+    every table 010 creates is a log of that list or the ignore list (S3,
+    audited, tasks T318), with RLS on and no browser grant; every function
+    it creates or replaces is a `crm_` one with EXECUTE revoked; and 010
+    makes no new `uuid[]` column."""
 
     def test_not_audited_is_007s_009s_and_010s(self):
         assert NOT_AUDITED == NOT_AUDITED_007 | NOT_AUDITED_009 | NOT_AUDITED_010
@@ -417,7 +421,7 @@ class TestThe010Additions:
 
     def test_every_010_table_is_swept(self, stack):
         made = set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)", _010_sql()))
-        assert made == NOT_AUDITED_010
+        assert made == NOT_AUDITED_010 | AUDITED_010
         rows = stack.sql(
             "SELECT c.relname, c.relrowsecurity FROM pg_class c "
             "JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -437,6 +441,16 @@ class TestThe010Additions:
                 )
                 assert row["any"] is False, (role, table)
 
+    def test_the_ignore_list_carries_the_audit_and_touch_triggers(self, stack):
+        rows = stack.sql(
+            "SELECT t.tgname, p.proname FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid "
+            "WHERE t.tgrelid = 'public.crm_capture_ignores'::regclass AND NOT t.tgisinternal"
+        )
+        assert {(r["tgname"], r["proname"]) for r in rows} == {
+            ("crm_capture_ignores_crm_audit", "crm_audit_row"),
+            ("crm_capture_ignores_touch", "crm_touch_updated_at"),
+        }
+
     def test_every_010_function_is_swept_and_revoked(self, stack):
         names = set(re.findall(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(", _010_sql()))
         assert {
@@ -451,6 +465,10 @@ class TestThe010Additions:
             "crm_capture_recall_add",
             "crm_capture_report",
             "crm_job_latest",
+            # 073 (S3).
+            "crm_capture_apply",
+            "crm_capture_purge",
+            "crm_capture_supersede",
         } <= names
         assert {n for n in names if not n.startswith("crm_")} == set()
         rows = stack.sql(

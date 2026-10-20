@@ -473,14 +473,32 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   S3's step g).
 - Live: step g of §5.6 turns each high/medium `new_lead`/`deal_signal` into
   an item through `review.upsert` (actor kind `sync`). Low confidence: the
-  decision and finding only (FR-CAP-DIS-07).
+  decision and finding only (FR-CAP-DIS-07). The item is built and upserted
+  **before** `crm_capture_record`, while the candidate is still pending: a
+  fault in the duplicate check, the owner lookup or the upsert ends the run
+  with the conversation still pending, to be judged again (a decision
+  recorded first would never be read again, and the lead would be lost).
+  The retry makes no second item: the upsert is idempotent per dedupe key
+  and source version. A newer message arriving meanwhile refreshes that
+  item at the next judgement. After a `new_lead` upsert,
+  `crm_capture_supersede` expires any other open `new_lead` of the same
+  conversation under another dedupe key (made before a later duplicate check
+  linked it, or unlinked it), so a conversation keeps one open new lead.
 - **Duplicates (FR-CAP-DIS-08)**, before a `new_lead` item: exact domain
-  (`store.list_domains`), a sibling domain (same first label, other suffix:
-  `acme.io` ↔ `acme.com`), and `records.duplicates`'s name match. One match →
+  (`store.list_domains`), a sibling domain (the same name on another public
+  suffix: `acme.io` ↔ `acme.com` ↔ `acme.co.uk`; both must be bare
+  `name.suffix` domains, so a subdomain such as `mail.foo.com` has no
+  sibling; read with `store.domains_named`, a `LIKE 'name.%'` paged on the
+  id, never the whole domain list), and `records.duplicates`'s name match. One match →
   the item targets that company (`record_type = company`) with `link: true`;
   a Claude `deal_signal` on an unknown company becomes a `new_lead` carrying
   `deal_stage` as a hint, unless a duplicate matched, in which case it is a
-  `deal_signal` on the matched company (PD-4).
+  `deal_signal` on the matched company (PD-4). That `deal_signal` moves the
+  company's open deals still before Claude's stage, or creates one at
+  Discovery only when the company has no open deal (none when it has one
+  and Claude suggested Discovery or no stage); its evidence carries the
+  sender's address, the domain and `domain_from_text`, and the card warns
+  when the match came from a website named in the text.
 - **Ignore list.** `crm_capture_ignores` (address or domain, lower-case).
   Admins add and remove entries in Settings → Email capture; a dismissal of a
   `new_lead` adds one (§5.9). Public webmail domains are refused as domain
@@ -490,8 +508,10 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   more than 7 days ago (the report's age; a run paused by the monthly
   budget can take longer than 7 days to finish), is not the latest, or was
   already applied. `capture.apply` builds items from the run's
-  high/medium findings exactly as live does (no Claude call), `review.upsert`s
-  them, then `crm_capture_apply(p_actor, p_run)` marks the run applied, sets
+  high/medium findings exactly as live does (no Claude call): only for the
+  mailboxes the live job reads (active, `primary_sent`, owner still a
+  member), and never for a person whose address or domain is on the ignore
+  list now; `review.upsert`s them, then `crm_capture_apply(p_actor, p_run)` marks the run applied, sets
   those candidates `dry_run = false`, and sets `capture.mode = live`. A crash
   in between is safe to repeat: the upsert is idempotent per dedupe key.
 
@@ -524,7 +544,8 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
      "person", {first_name, last_name, primary_email, title, company_id})`.
   4. Queue `crm.capture_thread(workspace_id, mailbox_id, thread_id)`.
   5. Result `{company_id, person_id, filed: "queued"}`.
-  A refusal at step 2 or 3, after the company exists, releases the item with
+  A refusal or any other failure (a timeout, a database fault) at step 2
+  or 3, after the company exists, releases the item with
   `review_release(..., result={company_id})` (it already takes a result),
   so the retry reuses it instead of creating a second company of the same
   name.
@@ -546,6 +567,9 @@ it is used by the duplicate check (FR-CAP-DIS-08; PD-20).
   `suggestion.email`, the domain its domain (refused 422 for a public
   webmail domain). The ignore row is written through `store.apply` as the
   dismisser (audited `capture_ignore.created`), `from_item_id` = the item.
+  An entry already there is reused, including one another dismissal added
+  between the read and the insert (`crm_capture_ignores_once`: read again).
+  The response always has `ignore` (`null` when none was asked for).
   `ignore` on any other type is refused 422. Members who may decide the item
   may add to the list this way (PD-6).
 - **Owner (FR-CAP-REV-04).** `owner_for("new_lead"|"deal_signal",

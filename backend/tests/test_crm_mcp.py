@@ -998,6 +998,17 @@ class TestDashboardAndCsvImport:
         # crm_thread_summary (FR-CRMAI-MCP-01).
         assert len([n for n in _tools() if n.startswith("crm_")]) == 21
 
+    def test_review_decide_takes_an_ignore_for_a_new_lead(self):
+        # Spec 010 contracts §3 (PD-18): no new tool; crm_review_decide gains
+        # `ignore`, and its description names the two new item types.
+        tool = _tools()["crm_review_decide"]
+        assert tool.input_schema["properties"]["ignore"]["anyOf"][0]["enum"] == [
+            "address",
+            "domain",
+        ]
+        assert "New lead: approving creates the company" in tool.description
+        assert "in Labs, Closed Won is done with" in tool.description
+
     @pytest.mark.parametrize(
         ("call", "expected"),
         [

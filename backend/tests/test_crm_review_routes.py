@@ -40,9 +40,11 @@ from tasks_fake import ID, TaskWorld
 from tasks_fake import NOW as TASKS_NOW
 
 from app.domain.crm import ai_rules
+from app.domain.crm import capture as capture_rules
 from app.domain.crm import review as rules
 from app.mcp import crm as tools
 from app.mcp import tasks as task_tools
+from app.mcp.server import ToolError
 from app.services.crm import notifications
 from app.services.crm import review as service
 from app.services.crm import today as crm_today
@@ -817,6 +819,52 @@ class TestThroughClaude:
             tools.crm_review_decide(Ctx(ASHA["id"]), two["id"], "dismiss", workspace="labs")
         )
         assert two["status"] == "dismissed"
+
+    def test_review_a_new_lead_dismissed_with_ignore_from_claude(self, queue):
+        # Spec 010 FR-CAP-REV-03, contracts §3 (tasks T317).
+        item = capture_rules.to_item(
+            {
+                "company_name": "Vendorly",
+                "domain": "vendorly.io",
+                "person_name": "Sam",
+                "person_email": "sam@vendorly.io",
+                "message_count": 1,
+            },
+            outcome="new_lead",
+            confidence="high",
+            mailbox_id="mb",
+            thread_id="t1",
+            message_id="m1",
+            owner_id=ASHA["id"],
+            model="claude-sonnet-5-5",
+            generated_at=datetime(2026, 10, 20, tzinfo=UTC).isoformat(),
+        )
+        [made] = service.upsert(queue.labs["id"], [item])
+        done = asyncio.run(
+            tools.crm_review_decide(
+                Ctx(ASHA["id"]), made["id"], "dismiss", ignore="domain", workspace="labs"
+            )
+        )
+        assert done["item"]["status"] == "dismissed"
+        assert (done["ignore"]["kind"], done["ignore"]["value"]) == ("domain", "vendorly.io")
+        [row] = [
+            r
+            for r in queue.fake.rows["crm_capture_ignores"].values()
+            if r["workspace_id"] == queue.labs["id"]
+        ]
+        assert (row["created_by"], row["from_item_id"]) == (ASHA["id"], made["id"])
+        [audit] = [a for a in queue.fake.audit if a["target_table"] == "crm_capture_ignores"]
+        assert audit["channel"] == "mcp"
+
+    def test_review_ignore_is_only_for_a_dismissal(self, queue):
+        item = queue.next_step(queue.pilot)
+        with pytest.raises(ToolError, match="ignore applies to dismissing a new lead only."):
+            asyncio.run(
+                tools.crm_review_decide(
+                    Ctx(ASHA["id"]), item["id"], "approve", 1, ignore="address", workspace="labs"
+                )
+            )
+        assert queue.item(item["id"])["status"] == "open"
 
 
 # ---------------------------------------------------------------------------

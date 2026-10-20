@@ -5,6 +5,10 @@ FR-CAP-DIS-01, -10, FR-CAP-RPT-01 to -03; plan §5.7, PD-13.
 only; `PATCH /crm/settings/capture` takes Off (cancelling an open dry run)
 and refuses Dry run (started from Email capture) and, in S2, Live. On the
 fake store; no Gmail or Claude is reached from the API.
+
+S3 (tasks T316): contracts §2.3 to §2.5; FR-CAP-DIS-03, FR-CAP-RPT-04 —
+applying a dry run (and each refusal), Live accepted once one was applied,
+and the ignore list's add and remove, Admin only.
 """
 
 from __future__ import annotations
@@ -324,3 +328,206 @@ class TestTheJobsList:
         assert {"job": "capture", "label": "Email capture", "every_minutes": 60} in got.json()[
             "jobs"
         ]
+
+
+def _apply(http, run_id, user=OWNER["id"]):
+    return http.post(f"{API}/capture/dry-runs/{run_id}/apply", params=LABS, headers=as_(user))
+
+
+def _finished(fake, labs, **values):
+    return fake.add_dry_run(
+        labs,
+        **{
+            "started_at": (NOW - timedelta(days=1, hours=2)).isoformat(),
+            "finished_at": (NOW - timedelta(days=1)).isoformat(),
+            **values,
+        },
+    )
+
+
+class TestApplying:
+    """Contracts §2.3; FR-CAP-RPT-04."""
+
+    def test_capture_apply_sets_live(self, crm):
+        http, fake, labs, _ = crm
+        fake.set_capture(labs, "dry_run")
+        run = _finished(fake, labs)
+        r = _apply(http, run["id"])
+        assert r.status_code == 200, r.text
+        assert r.json()["mode"] == "live" and r.json()["items_created"] == 0
+        assert fake.capture_setting(labs["id"]) == {"mode": "live"}
+        setting = [
+            a
+            for a in fake.audit
+            if a["action"] == "setting.updated" and a["after"] == {"value": {"mode": "live"}}
+        ]
+        assert [a["actor_id"] for a in setting] == [OWNER["id"]]
+        assert _get(http).json()["dry_run"]["applicable"] is False
+
+    @pytest.mark.parametrize(
+        ("values", "status", "detail"),
+        [
+            ({"finished_at": None}, 422, "This dry run has not finished."),
+            (
+                {"cancelled": True},
+                422,
+                "This dry run was stopped before it finished; run it again.",
+            ),
+            (
+                {
+                    "started_at": (NOW - timedelta(days=9)).isoformat(),
+                    "finished_at": (NOW - timedelta(days=8)).isoformat(),
+                },
+                422,
+                "This dry run finished more than 7 days ago; run it again.",
+            ),
+            ({"applied_at": NOW.isoformat()}, 409, "This dry run was already applied."),
+        ],
+    )
+    def test_capture_apply_refusals(self, crm, values, status, detail):
+        http, fake, labs, _ = crm
+        run = _finished(fake, labs, **values)
+        r = _apply(http, run["id"])
+        assert (r.status_code, r.json()["detail"]) == (status, detail)
+        assert fake.capture_setting(labs["id"]) == {"mode": "off"}
+
+    def test_capture_only_the_latest_run_applies(self, crm):
+        http, fake, labs, _ = crm
+        old = _finished(fake, labs)
+        _finished(
+            fake,
+            labs,
+            started_at=(NOW - timedelta(hours=3)).isoformat(),
+            finished_at=(NOW - timedelta(hours=1)).isoformat(),
+        )
+        r = _apply(http, old["id"])
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "A newer dry run exists; apply that one.",
+        )
+
+    def test_capture_a_run_paused_long_but_finished_recently_applies(self, crm):
+        # Data-model §3.7: the window counts from the report's end.
+        http, fake, labs, _ = crm
+        run = _finished(
+            fake,
+            labs,
+            started_at=(NOW - timedelta(days=10)).isoformat(),
+            finished_at=(NOW - timedelta(days=1)).isoformat(),
+        )
+        assert _apply(http, run["id"]).status_code == 200
+
+    @pytest.mark.parametrize("run_id", ["not-a-uuid", "00000000-0000-0000-0000-000000000000"])
+    def test_capture_an_unknown_run_is_not_found(self, crm, run_id):
+        http, *_ = crm
+        r = _apply(http, run_id)
+        assert (r.status_code, r.json()["detail"]) == (404, "No such dry run.")
+
+    def test_capture_live_is_accepted_after_an_apply(self, crm):
+        http, fake, labs, _ = crm
+        run = _finished(fake, labs)
+        assert _apply(http, run["id"]).status_code == 200
+        assert _mode(http, {"mode": "off"}).status_code == 200
+        r = _mode(http, {"mode": "live"})
+        assert r.status_code == 200, r.text
+        assert fake.capture_setting(labs["id"]) == {"mode": "live"}
+
+    def test_capture_live_still_needs_a_primary_and_sent_mailbox(self, crm):
+        http, fake, labs, mailbox = crm
+        run = _finished(fake, labs)
+        assert _apply(http, run["id"]).status_code == 200
+        fake.rows["crm_mailboxes"][mailbox["id"]]["capture_source"] = "labels"
+        r = _mode(http, {"mode": "live"})
+        assert (r.status_code, r.json()["detail"]) == (
+            422,
+            "Set a mailbox to Primary and Sent first.",
+        )
+
+    @pytest.mark.parametrize(
+        ("user", "status"), [(MEMBER["id"], 403), (VIEWER["id"], 403), (OUTSIDER["id"], 404)]
+    )
+    def test_capture_apply_is_admin_only(self, crm, user, status):
+        http, fake, labs, _ = crm
+        run = _finished(fake, labs)
+        assert _apply(http, run["id"], user).status_code == status
+        assert fake.rows["crm_capture_dry_runs"][run["id"]]["applied_at"] is None
+
+
+def _add(http, kind, value, user=OWNER["id"]):
+    return http.post(
+        f"{API}/capture/ignores",
+        params=LABS,
+        json={"kind": kind, "value": value},
+        headers=as_(user),
+    )
+
+
+class TestTheIgnoreList:
+    """Contracts §2.4, §2.5; FR-CAP-DIS-03."""
+
+    def test_capture_add_lists_and_removes_an_entry(self, crm):
+        http, fake, labs, _ = crm
+        r = _add(http, "domain", "  Vendor.IO ")
+        assert r.status_code == 201, r.text
+        made = r.json()["ignore"]
+        assert (made["kind"], made["value"]) == ("domain", "vendor.io")
+        [shown] = _get(http).json()["ignores"]
+        assert shown["id"] == made["id"] and shown["created_by_name"] == "Owner"
+        assert shown["from_item_id"] is None
+        [audit] = [a for a in fake.audit if a["target_table"] == "crm_capture_ignores"]
+        assert (audit["action"], audit["actor_id"]) == ("capture_ignore.created", OWNER["id"])
+        r = http.delete(
+            f"{API}/capture/ignores/{made['id']}", params=LABS, headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 204, r.text
+        assert _get(http).json()["ignores"] == []
+        assert [a["action"] for a in fake.audit if a["target_table"] == "crm_capture_ignores"] == [
+            "capture_ignore.created",
+            "capture_ignore.purged",
+        ]
+
+    @pytest.mark.parametrize(
+        ("kind", "value", "status", "detail"),
+        [
+            ("address", "nobody", 422, "Enter an email address."),
+            ("domain", "a@b.io", 422, "Enter a domain such as example.com."),
+            (
+                "domain",
+                "gmail.com",
+                422,
+                "A public email domain cannot be ignored; ignore the sender instead.",
+            ),
+            ("domain", "nunnarilabs.com", 422, "Your own domains cannot be ignored."),
+        ],
+    )
+    def test_capture_add_refusals(self, crm, kind, value, status, detail):
+        http, fake, labs, _ = crm
+        r = _add(http, kind, value)
+        assert (r.status_code, r.json()["detail"]) == (status, detail)
+        assert fake.list_ignores(labs["id"]) == []
+
+    def test_capture_a_second_entry_for_the_same_value_is_refused(self, crm):
+        http, *_ = crm
+        assert _add(http, "address", "priya@acme.com").status_code == 201
+        r = _add(http, "address", "Priya@Acme.com")
+        assert (r.status_code, r.json()["detail"]) == (409, "That is already on the ignore list.")
+
+    def test_capture_an_unknown_entry_is_not_found(self, crm):
+        http, *_ = crm
+        r = http.delete(
+            f"{API}/capture/ignores/00000000-0000-0000-0000-000000000000",
+            params=LABS,
+            headers=as_(OWNER["id"]),
+        )
+        assert (r.status_code, r.json()["detail"]) == (404, "No such ignore entry.")
+
+    @pytest.mark.parametrize(
+        ("user", "status"), [(MEMBER["id"], 403), (VIEWER["id"], 403), (OUTSIDER["id"], 404)]
+    )
+    def test_capture_editing_the_list_is_admin_only(self, crm, user, status):
+        http, fake, labs, _ = crm
+        assert _add(http, "domain", "vendor.io", user).status_code == status
+        made = _add(http, "domain", "vendor.io").json()["ignore"]
+        r = http.delete(f"{API}/capture/ignores/{made['id']}", params=LABS, headers=as_(user))
+        assert r.status_code == status
+        assert len(fake.list_ignores(labs["id"])) == 1

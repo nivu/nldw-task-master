@@ -28,6 +28,16 @@ counts, live while the run is open and as they stood once it finished or
 was cancelled; and the job and usage CHECKs and `crm_job_latest` know
 `capture`.
 
+S3 (migration 073, tasks T318; FR-CAP-DIS-03, -11, FR-CAP-REV-03,
+FR-CAP-RPT-04; data-model §3.6, §3.7): the ignore list holds lower-case
+addresses and domains of the right shape, once each, audited as the
+person, and forgets the item it came from when that item is purged;
+`crm_capture_apply` applies only the latest run finished within 7 days
+(counted from its end), not cancelled or applied, turns its decisions
+live and sets the mode Live with an audit row; `crm_capture_purge` deletes
+every decided row older than the cutoff, findings included, and keeps
+pending and newer rows.
+
 Each test works in a workspace of its own.
 """
 
@@ -427,11 +437,13 @@ class TestDealSignalItems:
         assert row == {"type": "deal_signal", "record_type": "company", "model": None}
 
     def test_capture_another_type_is_still_refused(self, stack):
+        # 073 (S3) widened the list with `new_lead`; nothing else is taken.
         [row] = stack.sql(
             "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
             "WHERE conname = 'crm_review_items_type_check'"
         )
-        assert "'deal_signal'" in row["d"] and "'new_lead'" not in row["d"]
+        assert "'deal_signal'" in row["d"] and "'new_lead'" in row["d"]
+        assert "'lead_suggestion'" not in row["d"]
 
 
 # ---------------------------------------------------------------------------
@@ -925,3 +937,406 @@ class TestTheStoreReads:
             ],
         )
         assert real.thread_subjects(ws, box["id"], ["s1", "s2"]) == {"s1": "Re: Proposal"}
+
+
+# ---------------------------------------------------------------------------
+# S3 — migration 073 (tasks T318)
+# ---------------------------------------------------------------------------
+
+
+def _ignores(stack, ws: str) -> list[dict]:
+    return stack.sql(
+        f"SELECT * FROM crm_capture_ignores WHERE workspace_id = {stack.q(ws)} ORDER BY value"
+    )
+
+
+def _ignore_op(kind: str, value: str, **values) -> dict:
+    return {
+        "op": "insert",
+        "table": "crm_capture_ignores",
+        "values": {"kind": kind, "value": value, **values},
+    }
+
+
+def _new_lead(stack, ws: str, mailbox_id: str = "mb") -> str:
+    item = capture.to_item(
+        {"company_name": "Acme", "person_email": "priya@acme.com", "message_count": 1},
+        outcome="new_lead",
+        confidence="high",
+        mailbox_id=mailbox_id,
+        thread_id=f"t{uuid.uuid4().hex[:8]}",
+        message_id="m1",
+        owner_id=None,
+        model="claude-sonnet-5-5",
+        generated_at=_at(),
+    )
+    sync = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": ws}
+    [made] = stack.sql(f"SELECT crm_review_upsert({_j(stack, sync)}, {_j(stack, [item])}) AS r")[0][
+        "r"
+    ]
+    return made["id"]
+
+
+class TestTheIgnoreList:
+    """073 crm_capture_ignores — FR-CAP-DIS-03, REV-03; data-model §3.6."""
+
+    def test_ignore_entries_are_audited_as_the_person(self, stack, ws, owner):
+        made = _apply(stack, _actor(ws, owner), [_ignore_op("domain", "vendor.io")])[0]["row"]
+        assert made["created_by"] == owner and made["from_item_id"] is None
+        [audit] = stack.sql(
+            "SELECT action, actor_id, actor_label FROM audit_log "
+            f"WHERE target_table = 'crm_capture_ignores' AND target_id = {stack.q(made['id'])}"
+        )
+        assert audit == {
+            "action": "capture_ignore.created",
+            "actor_id": owner,
+            "actor_label": "user",
+        }
+        _apply(
+            stack,
+            _actor(ws, owner),
+            [{"op": "delete", "table": "crm_capture_ignores", "id": made["id"]}],
+        )
+        assert _ignores(stack, ws) == []
+        actions = [
+            r["action"]
+            for r in stack.sql(
+                "SELECT action FROM audit_log WHERE target_table = 'crm_capture_ignores' "
+                f"AND target_id = {stack.q(made['id'])} ORDER BY id"
+            )
+        ]
+        assert actions == ["capture_ignore.created", "capture_ignore.purged"]
+
+    @pytest.mark.parametrize(
+        ("kind", "value"),
+        [
+            ("domain", "Vendor.io"),
+            ("domain", "a@vendor.io"),
+            ("address", "@vendor.io"),
+            ("address", "vendor.io"),
+            ("domain", "ab"),
+            ("sender", "a@vendor.io"),
+        ],
+    )
+    def test_ignore_checks(self, stack, ws, owner, kind, value):
+        with pytest.raises(stack.SqlError) as raised:
+            _apply(stack, _actor(ws, owner), [_ignore_op(kind, value)])
+        assert raised.value.code == "23514", raised.value.message
+        assert _ignores(stack, ws) == []
+
+    def test_ignore_an_entry_is_listed_once(self, stack, ws, owner):
+        _apply(stack, _actor(ws, owner), [_ignore_op("address", "priya@acme.com")])
+        with pytest.raises(stack.SqlError) as raised:
+            _apply(stack, _actor(ws, owner), [_ignore_op("address", "priya@acme.com")])
+        assert raised.value.code == "23505"
+        # The same value in another workspace is its own entry.
+        other = _workspace(stack, owner)
+        _apply(stack, _actor(other, owner), [_ignore_op("address", "priya@acme.com")])
+        assert len(_ignores(stack, ws)) == len(_ignores(stack, other)) == 1
+
+    def test_ignore_from_item_is_of_the_workspace_and_cleared_on_purge(self, stack, ws, owner):
+        item = _new_lead(stack, ws)
+        made = _apply(
+            stack, _actor(ws, owner), [_ignore_op("domain", "acme.com", from_item_id=item)]
+        )[0]["row"]
+        assert made["from_item_id"] == item
+        other = _workspace(stack, owner)
+        with pytest.raises(stack.SqlError) as raised:
+            _apply(
+                stack, _actor(other, owner), [_ignore_op("domain", "acme.com", from_item_id=item)]
+            )
+        assert raised.value.code == "23503"
+        # An item is deleted only by a purge (crm_purge, as its actor).
+        _as_system(stack, f"DELETE FROM crm_review_items WHERE id = {stack.q(item)}")
+        [row] = _ignores(stack, ws)
+        assert row["from_item_id"] is None
+        [audit] = stack.sql(
+            "SELECT action, before, after FROM audit_log WHERE target_table = "
+            f"'crm_capture_ignores' AND target_id = {stack.q(row['id'])} AND action = "
+            "'capture_ignore.updated'"
+        )
+        assert audit["before"] == {"from_item_id": item} and audit["after"] == {
+            "from_item_id": None
+        }
+
+
+class TestTheTargetlessItem:
+    """073 crm_review_items_target — data-model §3.3."""
+
+    def test_review_a_new_lead_may_have_no_target(self, stack, ws):
+        item = _new_lead(stack, ws)
+        [row] = stack.sql(
+            "SELECT type, record_type, record_id, dedupe_key FROM crm_review_items "
+            f"WHERE id = {stack.q(item)}"
+        )
+        assert (row["type"], row["record_type"], row["record_id"]) == ("new_lead", None, None)
+        assert row["dedupe_key"].endswith("|new_lead|thread")
+
+    def test_review_only_a_new_lead_has_no_target_and_never_half_of_one(self, stack, ws, owner):
+        company = _apply(
+            stack,
+            _actor(ws, owner),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": "Acme", "owner_id": owner},
+                }
+            ],
+        )[0]["id"]
+        base_row = (
+            "INSERT INTO crm_review_items (workspace_id, type, record_type, record_id, "
+            "source_kind, source_key, source_version, dedupe_key) VALUES "
+            f"({stack.q(ws)}, "
+        )
+        for values in (
+            "'deal_signal', NULL, NULL",
+            "'new_lead', 'company', NULL",
+            f"'new_lead', NULL, {stack.q(company)}",
+        ):
+            _refused(
+                stack,
+                base_row + values + ", 'email_thread', 'gmail:mb:t', 'm1', "
+                f"{stack.q('k' + uuid.uuid4().hex)})",
+            )
+        stack.sql(
+            base_row + f"'new_lead', 'company', {stack.q(company)}, 'email_thread', "
+            f"'gmail:mb:t', 'm1', 'k-linked')"
+        )
+
+
+class TestSupersede:
+    """073 crm_capture_supersede — one open new lead a conversation (spec §13
+    S3 line 1); data-model §3.7."""
+
+    def test_supersede_expires_the_conversations_other_open_new_leads(self, stack, ws, owner):
+        company = _apply(
+            stack,
+            _actor(ws, owner),
+            [
+                {
+                    "op": "insert",
+                    "table": "crm_companies",
+                    "values": {"name": "Acme", "owner_id": owner},
+                }
+            ],
+        )[0]["id"]
+        sync = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": ws}
+
+        def lead(thread: str, company_id: str | None) -> dict:
+            return capture.to_item(
+                {"company_name": "Acme", "person_email": "priya@acme.com", "message_count": 1},
+                outcome="new_lead",
+                confidence="high",
+                mailbox_id="mb",
+                thread_id=thread,
+                message_id="m1",
+                owner_id=None,
+                model="claude-sonnet-5-5",
+                generated_at=_at(),
+                duplicate_company_id=company_id,
+            )
+
+        unlinked, other = lead("t-1", None), lead("t-2", None)
+        made = stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, sync)}, {_j(stack, [unlinked, other])}) AS r"
+        )[0]["r"]
+        linked = lead("t-1", company)
+        stack.sql(f"SELECT crm_review_upsert({_j(stack, sync)}, {_j(stack, [linked])}) AS r")
+        [n] = stack.sql(
+            f"SELECT crm_capture_supersede({_j(stack, sync)}, {stack.q(linked['source_key'])}, "
+            f"{stack.q(linked['dedupe_key'])}) AS n"
+        )
+        assert n["n"] == 1
+        rows = {
+            r["dedupe_key"]: r["status"]
+            for r in stack.sql(
+                "SELECT dedupe_key, status FROM crm_review_items "
+                f"WHERE workspace_id = {stack.q(ws)}"
+            )
+        }
+        assert rows == {
+            unlinked["dedupe_key"]: "expired",
+            other["dedupe_key"]: "open",
+            linked["dedupe_key"]: "open",
+        }
+        [audit] = stack.sql(
+            "SELECT action, actor_label FROM audit_log WHERE target_table = 'crm_review_items' "
+            f"AND target_id = {stack.q(made[0]['id'])} AND action = 'review.expired'"
+        )
+        assert audit == {"action": "review.expired", "actor_label": "sync"}
+        person = {"user_id": owner, "kind": "user", "channel": "web", "workspace_id": ws}
+        with pytest.raises(stack.SqlError) as raised:
+            stack.sql(
+                f"SELECT crm_capture_supersede({_j(stack, person)}, 'gmail:mb:t-2', 'k') AS n"
+            )
+        assert raised.value.code == "CRM22"
+
+
+class TestTheSiblingRead:
+    """store.domains_named against PostgREST (S3-C4): a LIKE on the name,
+    paged on the id, so no row limit cuts the sibling check short."""
+
+    def test_domains_named_reads_every_page_and_only_that_name(
+        self, stack, ws, owner, real, monkeypatch
+    ):
+        ops = [
+            {
+                "op": "insert",
+                "table": "crm_companies",
+                "ref": "c",
+                "values": {"name": "Acme", "owner_id": owner},
+            }
+        ]
+        ops += [
+            {
+                "op": "insert",
+                "table": "crm_company_domains",
+                "values": {"company_id": "$ref:c", "domain": d, "is_primary": n == 0},
+            }
+            for n, d in enumerate(("acme.com", "acme.io", "acme.co.uk", "acmecorp.com", "xacme.io"))
+        ]
+        _apply(stack, _actor(ws, owner), ops)
+        monkeypatch.setattr(store, "_PAGE", 2)
+        assert [d["domain"] for d in real.domains_named(ws, "acme")] == [
+            "acme.com",
+            "acme.co.uk",
+            "acme.io",
+        ]
+        assert real.domains_named(ws, "acme_") == []
+
+
+class TestApplying:
+    """073 crm_capture_apply — FR-CAP-RPT-04; data-model §3.7."""
+
+    def _finished(self, stack, ws, owner, real, **values) -> str:
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1")])
+        [row] = _candidates(stack, box["id"])
+        real.record_candidate(
+            ws,
+            row["id"],
+            "m1",
+            {"status": "judged", "outcome": "new_lead", "confidence": "high", "dry_run": True},
+        )
+        assert real.finish_dry_run(ws, run_id, [])
+        if values:
+            sets = ", ".join(f"{k} = {v}" for k, v in values.items())
+            stack.sql(f"UPDATE crm_capture_dry_runs SET {sets} WHERE id = {stack.q(run_id)}")
+        return run_id
+
+    def test_apply_marks_the_run_and_sets_live(self, stack, ws, owner, real):
+        run_id = self._finished(stack, ws, owner, real)
+        done = real.apply_dry_run(_actor(ws, owner), run_id)
+        assert done["applied_at"]
+        [run] = _runs(stack, ws)
+        assert run["applied_at"] is not None and run["applied_by"] == owner
+        assert {
+            r["dry_run"]
+            for r in stack.sql(
+                f"SELECT dry_run FROM crm_capture_candidates WHERE workspace_id = {stack.q(ws)}"
+            )
+        } == {False}
+        assert _setting(stack, ws) == {"mode": "live"}
+        last = _audit(stack, ws)[-1]
+        assert (last["action"], last["actor_label"]) == ("setting.updated", "user")
+        assert last["after"] == {"value": {"mode": "live"}}
+        # Live is accepted from here; a second apply is not.
+        assert real.set_capture_mode(_actor(ws, owner), ws, "off")["mode"] == "off"
+        assert real.set_capture_mode(_actor(ws, owner), ws, "live")["mode"] == "live"
+        with pytest.raises(CrmRefused) as refused:
+            real.apply_dry_run(_actor(ws, owner), run_id)
+        assert refused.value.status == 422
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {"finished_at": "now() - interval '8 days'"},
+            {"cancelled": "true", "finished_at": "now()"},
+        ],
+    )
+    def test_apply_refuses_an_old_or_cancelled_run(self, stack, ws, owner, real, values):
+        run_id = self._finished(stack, ws, owner, real, **values)
+        with pytest.raises(CrmRefused) as refused:
+            real.apply_dry_run(_actor(ws, owner), run_id)
+        assert (refused.value.status, refused.value.detail) == (
+            422,
+            "This dry run cannot be applied.",
+        )
+        assert _setting(stack, ws) == {"mode": "dry_run"}
+        assert _runs(stack, ws)[0]["applied_at"] is None
+
+    def test_apply_counts_the_window_from_the_end(self, stack, ws, owner, real):
+        run_id = self._finished(
+            stack,
+            ws,
+            owner,
+            real,
+            started_at="now() - interval '10 days'",
+            finished_at="now() - interval '1 day'",
+        )
+        assert real.apply_dry_run(_actor(ws, owner), run_id)["applied_at"]
+
+    def test_apply_refuses_an_open_run_an_older_run_and_another_workspace(
+        self, stack, ws, owner, real
+    ):
+        older = self._finished(stack, ws, owner, real)
+        newer = real.start_dry_run(_actor(ws, owner))
+        for run_id in (older, newer):
+            with pytest.raises(CrmRefused) as refused:
+                real.apply_dry_run(_actor(ws, owner), run_id)
+            assert refused.value.status == 422
+        other = _workspace(stack, owner)
+        with pytest.raises(CrmRefused) as refused:
+            real.apply_dry_run(_actor(other, owner), newer)
+        assert (refused.value.status, refused.value.detail) == (404, "No such dry run.")
+
+    def test_apply_is_a_persons(self, stack, ws, owner, real):
+        run_id = self._finished(stack, ws, owner, real)
+        with pytest.raises(CrmRefused) as refused:
+            real.apply_dry_run({**_actor(ws, owner), "kind": "system"}, run_id)
+        assert refused.value.status == 422
+
+
+class TestThePurge:
+    """073 crm_capture_purge — FR-CAP-DIS-11; E12, PD-15."""
+
+    def test_purge_deletes_decided_rows_older_than_the_cutoff(self, stack, ws, owner, real):
+        box = _mailbox(stack, ws, owner)
+        old = "now() - interval '400 days'"
+        finding = {"company_name": "Acme", "person_email": "priya@acme.com"}
+        _insert(stack, ws, box["id"], thread_id="old-skipped", status="skipped")
+        _insert(
+            stack,
+            ws,
+            box["id"],
+            thread_id="old-lead",
+            status="judged",
+            outcome="new_lead",
+            confidence="high",
+            judged_message_id="m1",
+            judged_at=_at(),
+            finding=finding,
+        )
+        _insert(stack, ws, box["id"], thread_id="old-pending")
+        _insert(stack, ws, box["id"], thread_id="new-skipped", status="skipped")
+        stack.sql(
+            f"UPDATE crm_capture_candidates SET updated_at = {old} "
+            f"WHERE mailbox_id = {stack.q(box['id'])} AND thread_id LIKE 'old-%'"
+        )
+        other = _workspace(stack, owner)
+        other_box = _mailbox(stack, other, owner)
+        _insert(stack, other, other_box["id"], thread_id="old-elsewhere", status="known")
+        stack.sql(
+            f"UPDATE crm_capture_candidates SET updated_at = {old} "
+            f"WHERE mailbox_id = {stack.q(other_box['id'])}"
+        )
+        cutoff = datetime.now(UTC) - timedelta(days=365)
+        assert real.purge_capture(ws, cutoff) == 2
+        assert [r["thread_id"] for r in _candidates(stack, box["id"])] == [
+            "new-skipped",
+            "old-pending",
+        ]
+        assert len(_candidates(stack, other_box["id"])) == 1
+        assert real.purge_capture(ws, cutoff) == 0

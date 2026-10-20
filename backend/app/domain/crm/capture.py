@@ -36,6 +36,13 @@ whether the owner replied), the website Claude picks from (`website_choices`;
 Claude never types one, PD-20), the finding a lead or a deal signal keeps,
 which failures count against a conversation (PD-17), and the recall check's
 fates and its line.
+
+Spec 010 S3 (FR-CAP-DIS-03, -07 to -09, FR-CAP-REV-01 to -04, FR-CAP-RPT-04;
+plan §5.8 to §5.10, PD-4, PD-21) adds the ignore list (`ignored`,
+`ignore_refusal`), sibling domains for the duplicate check, the items a
+finding makes (`to_item`: none for low confidence; a `new_lead`, linked to
+a matched company; a Claude `deal_signal` on an unknown company is a
+`new_lead` with a deal-stage hint), and when a dry run can be applied.
 """
 
 from __future__ import annotations
@@ -765,3 +772,370 @@ def recall_line(rows: Sequence[Mapping[str, Any]]) -> str:
         f"Found {found} of your {total} labelled conversations; "
         f"{outside} of the rest are outside Primary and Sent."
     )
+
+
+# ---------------------------------------------------------------------------
+# The ignore list — FR-CAP-DIS-03, FR-CAP-REV-03; contracts §1.3, §2.4; PD-21
+# ---------------------------------------------------------------------------
+
+#: Contracts §1.3, §2.4, §2.5 — the sentences.
+ENTER_ADDRESS: Final = "Enter an email address."
+ENTER_DOMAIN: Final = "Enter a domain such as example.com."
+WEBMAIL_IGNORE: Final = "A public email domain cannot be ignored; ignore the sender instead."
+OWN_DOMAIN: Final = "Your own domains cannot be ignored."
+ALREADY_IGNORED: Final = "That is already on the ignore list."
+NO_SUCH_IGNORE: Final = "No such ignore entry."
+ONLY_NEW_LEAD: Final = "Only a new lead can add to the ignore list."
+#: What an entry holds (073's CHECK).
+IGNORE_KINDS: Final = ("address", "domain")
+_ADDRESS: Final = re.compile(
+    r"^[a-z0-9._%+'-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+)
+_DOMAIN: Final = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+
+
+def ignore_value(value: str | None) -> str:
+    """An entry as stored: trimmed and lower case."""
+    return (value or "").strip().lower()
+
+
+def ignore_refusal(kind: str, value: str, own_domains: Iterable[str]) -> str | None:
+    """Contracts §2.4 — an address or a domain of the right shape (3 to 320
+    characters), never a public webmail domain (its sender is ignored
+    instead) and never one of the workspace's own domains."""
+    ours = {d.lower() for d in own_domains}
+    if kind == "address":
+        if not (3 <= len(value) <= 320) or not _ADDRESS.match(value):
+            return ENTER_ADDRESS
+        return OWN_DOMAIN if email_rules.domain_of(value) in ours else None
+    if kind != "domain" or not (3 <= len(value) <= 320) or not _DOMAIN.match(value):
+        return ENTER_DOMAIN
+    if value in PUBLIC_WEBMAIL_DOMAINS:
+        return WEBMAIL_IGNORE
+    return OWN_DOMAIN if value in ours else None
+
+
+def ignored(outside: Sequence[Mapping[str, str]], ignores: Iterable[Mapping[str, Any]]) -> bool:
+    """FR-CAP-DIS-03 — every outside participant is on the ignore list, by
+    address or by domain. A conversation with nobody outside is not."""
+    ignores = list(ignores or [])
+    addresses = {i["value"] for i in ignores if i["kind"] == "address"}
+    domains = {i["value"] for i in ignores if i["kind"] == "domain"}
+    people = [(p.get("email") or "").lower() for p in outside]
+    return bool(people) and all(
+        a in addresses or email_rules.domain_of(a) in domains for a in people
+    )
+
+
+# ---------------------------------------------------------------------------
+# Duplicates — FR-CAP-DIS-08 (plan §5.8)
+# ---------------------------------------------------------------------------
+
+
+#: The labels that make a two-label suffix under a country code (`co.uk`,
+#: `com.au`, `ac.in`); every other suffix is the last label alone.
+_SECOND_LEVEL: Final = frozenset({"ac", "co", "com", "edu", "gov", "net", "org"})
+
+
+def registrable_name(domain: str | None) -> str | None:
+    """The name of a bare `name.suffix` domain (`acme` for `acme.com` and
+    `acme.co.uk`); None for a domain with a subdomain (`mail.foo.com`,
+    `uk.sony.com`), whose first label names no company."""
+    labels = (domain or "").split(".")
+    if len(labels) < 2 or not all(labels):
+        return None
+    suffix = 2 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SECOND_LEVEL else 1
+    return labels[0] if len(labels) == suffix + 1 else None
+
+
+def sibling_domains(domain: str | None, known: Iterable[str]) -> list[str]:
+    """The known domains with the same name on another public suffix
+    (`acme.io` and `acme.com`, `acme.co.uk`), each once, in order. Both
+    must be bare `name.suffix` domains: a subdomain has no sibling."""
+    name = registrable_name(domain)
+    if name is None:
+        return []
+    out: list[str] = []
+    for other in known:
+        if other != domain and registrable_name(other) == name and other not in out:
+            out.append(other)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Items from findings — FR-CAP-REV-01, -04, FR-CAP-DIS-07 to -09; contracts
+# §6.1, §6.2; plan §5.10, PD-4
+# ---------------------------------------------------------------------------
+
+#: Contracts §1.3 — a lead stage to approve at.
+LEAD_STAGES: Final = ("new", "contacted", "qualified")
+CHOOSE_LEAD_STAGE: Final = "Choose a lead stage: New, Contacted or Qualified."
+#: The stages a discovered deal signal moves an open deal to, by rank.
+_MOVE_RANK: Final = {"discovery": 0, "qualification": 1, "proposal": 2, "negotiation": 3}
+_TARGET_RANK: Final = {"proposal": 2, "closed_won": 4}
+
+
+def split_name(name: str | None, email: str | None) -> tuple[str, str | None]:
+    """`(first, last)` from a person's name; with none, the address's local
+    part, so a person always has a first name."""
+    words = (name or "").split()
+    if words:
+        return words[0][:100], (" ".join(words[1:])[:100] or None)
+    local = (email or "").split("@", 1)[0] or "Unknown"
+    return local[:100], None
+
+
+def _company_name(finding: Mapping[str, Any]) -> str:
+    """Claude's company name; else the domain; else the person."""
+    return (
+        finding.get("company_name")
+        or finding.get("domain")
+        or finding.get("person_name")
+        or finding.get("person_email")
+        or "Unknown company"
+    )[:200]
+
+
+def _evidence(finding: Mapping[str, Any], confidence: str) -> dict[str, Any]:
+    return {
+        "first_at": finding.get("first_at"),
+        "latest_at": finding.get("latest_at"),
+        "message_count": int(finding.get("message_count") or 0),
+        "owner_replied": bool(finding.get("owner_replied")),
+        "attachments": list(finding.get("attachments") or []),
+        "reason": finding.get("reason"),
+        "confidence": confidence,
+        "origin": "discovery",
+    }
+
+
+def _base_item(
+    *,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+) -> dict[str, Any]:
+    key = source_key(mailbox_id, thread_id)
+    return {
+        "owner_id": owner_id,
+        "current_values": {},
+        "source_kind": "email_thread",
+        "source_key": key,
+        "source_version": message_id,
+        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id},
+        "model": model,
+        "generated_at": generated_at,
+    }
+
+
+def new_lead_item(
+    finding: Mapping[str, Any],
+    *,
+    confidence: str,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+    company_id: str | None = None,
+    deal_stage_hint: str | None = None,
+) -> dict[str, Any]:
+    """Contracts §6.1 — a `new_lead` as `crm_review_upsert` takes it: with
+    no target, or linked to the existing company a duplicate check matched
+    (`link: true`). A public webmail address gives no domain (FR-CAP-DIS-09)."""
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    item = _base_item(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_id=owner_id,
+        model=model,
+        generated_at=generated_at,
+    )
+    domain = finding.get("domain")
+    domain = domain_for(domain) if domain else None
+    item.update(
+        type="new_lead",
+        record_type="company" if company_id else None,
+        record_id=company_id,
+        suggestion={
+            "company_name": _company_name(finding),
+            "domain": domain,
+            "domain_from_text": bool(finding.get("domain_from_text")) and domain is not None,
+            "lead_stage": finding.get("lead_stage") or "new",
+            "first_name": first,
+            "last_name": last,
+            "email": finding.get("person_email"),
+            "title": finding.get("person_title"),
+            "link": company_id is not None,
+            "deal_stage_hint": deal_stage_hint,
+            "evidence": _evidence(finding, confidence),
+        },
+        dedupe_key=review_rules.dedupe_key(
+            "email_thread",
+            item["source_key"],
+            "new_lead",
+            "company" if company_id else None,
+            company_id,
+        ),
+        deal_choices=[],
+    )
+    return item
+
+
+def discovered_signal_item(
+    finding: Mapping[str, Any],
+    *,
+    confidence: str,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+    company_id: str,
+    open_deals: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Contracts §6.2 — a discovered `deal_signal` on a matched company:
+    Proposal or Closed Won for its open deals still before that stage, or a
+    new deal at Discovery only when the company has no open deal. None when
+    every open deal is already at or past the stage, or when Claude
+    suggested Discovery (or no stage) for a company with an open deal: a
+    second open deal would be a duplicate."""
+    stage = finding.get("deal_stage")
+    target = _TARGET_RANK.get(str(stage))
+    choices = (
+        [d for d in open_deals if _MOVE_RANK.get(d.get("stage"), 9) < target]
+        if target is not None
+        else []
+    )
+    if open_deals and not choices:
+        return None
+    item = _base_item(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_id=owner_id,
+        model=model,
+        generated_at=generated_at,
+    )
+    if choices:
+        suggestion: dict[str, Any] = {"action": "move", "stage": stage}
+        if stage == "proposal" and finding.get("latest_at"):
+            suggestion["proposal_sent_on"] = str(finding["latest_at"])[:10]
+    else:
+        suggestion = {"action": "create", "stage": "discovery"}
+    domain = finding.get("domain")
+    domain = domain_for(domain) if domain else None
+    suggestion["evidence"] = {
+        **_evidence(finding, confidence),
+        # What tied the conversation to this company, so a match made only
+        # through a website named in the email's text can be checked.
+        "email": finding.get("person_email"),
+        "domain": domain,
+        "domain_from_text": bool(finding.get("domain_from_text")) and domain is not None,
+    }
+    item.update(
+        type="deal_signal",
+        record_type="company",
+        record_id=company_id,
+        suggestion=suggestion,
+        dedupe_key=review_rules.dedupe_key(
+            "email_thread", item["source_key"], "deal_signal", "company", company_id
+        ),
+        deal_choices=sorted(d["id"] for d in choices),
+    )
+    return item
+
+
+def to_item(
+    finding: Mapping[str, Any] | None,
+    *,
+    outcome: str,
+    confidence: str,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+    duplicate_company_id: str | None = None,
+    open_deals: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any] | None:
+    """FR-CAP-DIS-07, PD-4 — the item a judged conversation makes: none for
+    low confidence or an outcome without a finding; a `new_lead` (linked
+    when a duplicate matched); a Claude `deal_signal` on an unknown company
+    becomes a `new_lead` with the deal stage as a hint, and a `deal_signal`
+    on the matched company when a duplicate matched."""
+    if finding is None or outcome not in FINDING_OUTCOMES or confidence == "low":
+        return None
+    common = {
+        "confidence": confidence,
+        "mailbox_id": mailbox_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "owner_id": owner_id,
+        "model": model,
+        "generated_at": generated_at,
+    }
+    if outcome == "deal_signal" and duplicate_company_id:
+        return discovered_signal_item(
+            finding, company_id=duplicate_company_id, open_deals=open_deals, **common
+        )
+    hint = finding.get("deal_stage") if outcome == "deal_signal" else None
+    return new_lead_item(finding, company_id=duplicate_company_id, deal_stage_hint=hint, **common)
+
+
+def new_lead_title(suggestion: Mapping[str, Any]) -> str:
+    """Contracts §6.1 — "New lead: Acme Robotics · Priya Shah"."""
+    person = " ".join(p for p in (suggestion.get("first_name"), suggestion.get("last_name")) if p)
+    name = suggestion.get("company_name") or "Unknown company"
+    return f"New lead: {name} · {person}" if person else f"New lead: {name}"
+
+
+def new_lead_detail(suggestion: Mapping[str, Any]) -> str:
+    """Contracts §6.1 — "2 emails · Asked for pricing; you replied."."""
+    evidence = suggestion.get("evidence") or {}
+    n = int(evidence.get("message_count") or 0)
+    count = f"{n} email" if n == 1 else f"{n} emails"
+    return " · ".join(p for p in (count, evidence.get("reason")) if p)
+
+
+# ---------------------------------------------------------------------------
+# Applying a dry run — FR-CAP-RPT-04; contracts §2.3
+# ---------------------------------------------------------------------------
+
+NO_SUCH_RUN: Final = "No such dry run."
+NOT_FINISHED: Final = "This dry run has not finished."
+STOPPED: Final = "This dry run was stopped before it finished; run it again."
+TOO_OLD: Final = "This dry run finished more than 7 days ago; run it again."
+NOT_LATEST: Final = "A newer dry run exists; apply that one."
+ALREADY_APPLIED: Final = "This dry run was already applied."
+#: A dry run's report can be applied for this long after it finished.
+APPLY_DAYS: Final = 7
+
+
+def apply_refusal(
+    run: Mapping[str, Any] | None, latest_id: str | None, now: datetime
+) -> tuple[int, str] | None:
+    """`(status, sentence)` when the run cannot be applied: not found, not
+    finished, cancelled, applied already, not the latest, or finished more
+    than 7 days ago (the report's age, not the start's)."""
+    if run is None:
+        return 404, NO_SUCH_RUN
+    finished = _at(run.get("finished_at"))
+    if finished is None:
+        return 422, NOT_FINISHED
+    if run.get("cancelled"):
+        return 422, STOPPED
+    if run.get("applied_at"):
+        return 409, ALREADY_APPLIED
+    if run["id"] != latest_id:
+        return 422, NOT_LATEST
+    if now - finished > timedelta(days=APPLY_DAYS):
+        return 422, TOO_OLD
+    return None

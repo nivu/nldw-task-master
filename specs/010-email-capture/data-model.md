@@ -19,7 +19,7 @@ range `010`'s security sweep reads (plan PD-1).
 |---|---|---|
 | `071_crm_capture_sync.sql` | S1 | `crm_mailboxes` + `capture_source`, `capture_start_date`, `docs_checked_at`, `reconcile_after`; `crm_capture_candidates` (log); `crm_capture_mark()`; `crm_audit_row()` replaced (skip `docs_checked_at`); `crm_review_items_type_check` + `deal_signal` |
 | `072_crm_capture_discovery.sql` | S2 | `crm_workspace_settings_key_check` + `capture`; `capture` row seeded `{"mode":"off"}` in every workspace; `crm_workspaces_seed_ai()` replaced (seeds `capture`); `crm_capture_dry_runs` (log); `crm_capture_record()`, `crm_capture_start_dry_run()`, `crm_capture_set_mode()`, `crm_capture_finish_dry_run()`, `crm_capture_recall_add()`, `crm_capture_report()`; `crm_job_runs_job_check` + `capture` and `crm_job_latest()` replaced; `crm_ai_usage_job_check` + `capture` |
-| `073_crm_capture_live.sql` | S3 | `crm_capture_ignores` (audited configuration); `crm_review_items`: `record_type`/`record_id` nullable for `new_lead` only, `crm_review_items_type_check` + `new_lead`; `crm_capture_apply()`; `crm_capture_purge()` |
+| `073_crm_capture_live.sql` | S3 | `crm_capture_ignores` (audited configuration); `crm_review_items`: `record_type`/`record_id` nullable for `new_lead` only, `crm_review_items_type_check` + `new_lead`; `crm_capture_apply()`; `crm_capture_purge()`; `crm_capture_supersede()` |
 
 **Replacing a function.** Each `CREATE OR REPLACE` is copied from its latest
 definition in the tree (`grep -l "CREATE OR REPLACE FUNCTION public.<fn>("
@@ -290,6 +290,15 @@ Functions (072):
   Rows with a finding go too: any item made from one expired after 14 days
   and was tombstoned by `009` at 90, so a lead's name and address are not
   kept without limit after a person decided (NFR-CAP-02).
+- **`crm_capture_supersede(p_actor jsonb, p_source_key text, p_keep text)
+  RETURNS integer`** — actor kind `sync` or `system`. Expires (`status =
+  'expired'`, `decided_at = now()`, one `review.expired` audit row each, as
+  `crm_review_expire` does) every open `new_lead` item of the workspace with
+  `source_kind = 'email_thread'`, that `source_key` and a dedupe key other
+  than `p_keep`. Called by `services/crm/capture.py::store_items` after each
+  `new_lead` upsert, so a conversation whose duplicate check changed (a
+  company created, or trashed, after its first item) keeps one open new lead
+  (spec §13 S3 line 1). Returns how many.
 
 ---
 
@@ -317,7 +326,7 @@ Functions (072):
   `crm_workspaces_seed_ai`, `crm_capture_record`, `crm_capture_start_dry_run`, `crm_capture_set_mode`,
   `crm_capture_finish_dry_run`, `crm_capture_recall_add`, `crm_capture_report`,
   `crm_job_latest` (072);
-  `crm_capture_apply`, `crm_capture_purge` (073).
+  `crm_capture_apply`, `crm_capture_purge`, `crm_capture_supersede` (073).
 - `tests/db/test_crm_security_db.py`: `_009_sql()` reads `060`–`070` only;
   new `_010_sql()` reads `071`–`079`; `NOT_AUDITED_010 = {"crm_capture_candidates",
   "crm_capture_dry_runs"}` (logs: one row per thread / per run, written by
@@ -369,7 +378,8 @@ After a fresh `db reset`: every mailbox `labels`, every workspace `capture.mode
   `crm_job_latest`; delete `capture` job runs and usage rows and re-add the
   `066`/`060` CHECKs.
 - **073**: `DROP FUNCTION crm_capture_apply(jsonb, uuid),
-  crm_capture_purge(uuid, timestamptz)`; `DROP TABLE crm_capture_ignores`;
+  crm_capture_purge(uuid, timestamptz), crm_capture_supersede(jsonb, text,
+  text)`; `DROP TABLE crm_capture_ignores`;
   delete `new_lead` items, drop `crm_review_items_target`, restore NOT NULL on
   `record_type`/`record_id`, re-add `071`'s type CHECK.
 

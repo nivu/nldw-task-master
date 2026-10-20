@@ -107,6 +107,8 @@ ACCOUNT_LEVEL = frozenset(
         # workspace; crm_capture_set_mode takes it and checks the actor's.
         "start_dry_run",
         "set_capture_mode",
+        # Spec 010 (073): crm_capture_apply scopes by the actor's workspace.
+        "apply_dry_run",
     }
 )
 
@@ -630,6 +632,27 @@ def list_domains(
     else:
         rows = query_for().execute().data or []
     return sorted(rows, key=lambda r: (not r["is_primary"], r["domain"]))
+
+
+def domains_named(workspace_id: str, name: str) -> list[dict[str, Any]]:
+    """Company domains starting `name.` (the candidates for a sibling of
+    `name.<suffix>`, FR-CAP-DIS-08), paged on the id so a workspace with
+    more domains than PostgREST returns at once is read in full."""
+    pattern = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ".%"
+    rows: list[dict[str, Any]] = []
+    while True:
+        query = (
+            supabase.table("crm_company_domains")
+            .select("id, company_id, domain, is_primary, created_at")
+            .eq("workspace_id", workspace_id)
+            .like("domain", pattern)
+        )
+        if rows:
+            query = query.gt("id", rows[-1]["id"])
+        page = query.order("id").limit(_PAGE).execute().data or []
+        rows += page
+        if len(page) < _PAGE:
+            return sorted(rows, key=lambda r: (not r["is_primary"], r["domain"]))
 
 
 def similar(workspace_id: str, kind: str, name: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -1858,6 +1881,62 @@ def dry_run_findings(workspace_id: str) -> list[dict[str, Any]]:
         .eq("status", "judged")
         .in_("outcome", ["new_lead", "deal_signal"])
         .order("latest_message_at")
+        .order("id")
+        .execute()
+        .data
+        or []
+    )
+
+
+def get_dry_run(workspace_id: str, run_id: str) -> dict[str, Any] | None:
+    """One dry run of the workspace, or None (spec 010 contracts §2.3)."""
+    rows = (
+        supabase.table("crm_capture_dry_runs")
+        .select(_DRY_RUN_COLUMNS)
+        .eq("workspace_id", workspace_id)
+        .eq("id", run_id)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def apply_dry_run(actor: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """073 `crm_capture_apply` — `{applied_at}`: the run applied, its
+    candidates live decisions, the mode Live (audited); refused (422) unless
+    it is the latest, finished within 7 days, not cancelled or applied."""
+    return rpc("crm_capture_apply", {"p_actor": actor, "p_run": run_id}) or {}
+
+
+def purge_capture(workspace_id: str, before: datetime) -> int:
+    """073 `crm_capture_purge` — deletes every decided candidate last
+    updated before `before` (FR-CAP-DIS-11); the rows deleted."""
+    return int(
+        rpc("crm_capture_purge", {"p_workspace": workspace_id, "p_before": before.isoformat()}) or 0
+    )
+
+
+def capture_supersede(workspace_id: str, source_key: str, keep: str) -> int:
+    """073 `crm_capture_supersede` — expires the conversation's other open
+    `new_lead` items (dedupe key not `keep`), as the sync; how many."""
+    actor = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
+    return int(
+        rpc(
+            "crm_capture_supersede",
+            {"p_actor": actor, "p_source_key": source_key, "p_keep": keep},
+        )
+        or 0
+    )
+
+
+def list_ignores(workspace_id: str) -> list[dict[str, Any]]:
+    """The workspace's ignore list (073 `crm_capture_ignores`, FR-CAP-DIS-03),
+    in the order added. Written only through `apply`."""
+    return (
+        supabase.table("crm_capture_ignores")
+        .select("id, workspace_id, kind, value, from_item_id, created_by, created_at")
+        .eq("workspace_id", workspace_id)
+        .order("created_at")
         .order("id")
         .execute()
         .data

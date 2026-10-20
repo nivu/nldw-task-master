@@ -448,7 +448,12 @@ replied." (from the suggestion, since there is no target name).
 
 - `action`: `move` (the company has open deals; `deals` are the choices) or
   `create` (Discovery, from discovery on a matched company with no open deal;
-  `deals` empty).
+  `deals` empty). Discovery suggesting Discovery, or no stage, for a company
+  with an open deal makes no item.
+- From discovery, `evidence` also has `email` (the sender), `domain` and
+  `domain_from_text`; the card warns "taken from the text of an email from
+  …, not an address" when the company was matched through a website named
+  only in the text.
 - `stage`: `discovery` (create only), `proposal`, `closed_won`. Inbound
   deal documents suggest `closed_won` with reason "Check the signed document."
 - From discovery: `origin: "discovery"`, `confidence` set, `attachments` from

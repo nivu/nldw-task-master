@@ -15,17 +15,23 @@ a. the conversation's metadata (`gmail.thread_meta`); messages outside
    none left, or the thread is gone → `skipped`;
 b. internal-only and bulk messages drop out (the sync's rules); none left →
    `skipped`;
-c. (S3: the ignore list);
+c. every outside participant on the ignore list → `ignored` (after the
+   metadata read alone, PD-21);
 d. an outside participant now a person or a company domain → `known`, and
    `crm.capture_thread` files it on `worker-crm-sync`;
 e. the budget again, then the text of **only the messages left after a and
    b** (`gmail.thread_text`), in memory;
 f. one call through `009`'s wrapper (`ai.call(..., "capture", None, ...)`):
    budgeted, logged in `crm_ai_usage`, schema-checked and masked;
-g. the decision, recorded only while the candidate is still pending on the
+g. live, a high- or medium-confidence lead or deal signal first becomes a
+   Review Queue item (`review.upsert`, plan §5.10) after the duplicate check
+   (FR-CAP-DIS-08: the domain, a sibling domain, the name), while the
+   candidate is still pending, so a fault there leaves it to be judged
+   again; low confidence is recorded only (FR-CAP-DIS-07). Then the
+   decision, recorded only while the candidate is still pending on the
    message judged (`crm_capture_record`); a lead or a deal signal keeps its
-   finding. A dry run writes nothing else: no item, no record (FR-CAP-RPT-01;
-   S3 adds live items).
+   finding. A dry run writes nothing else: no item, no record
+   (FR-CAP-RPT-01).
 
 Failures (PD-17): Claude answering off-schema twice, or a malformed thread,
 counts against the conversation (`attempts`; `failed` at the third). Any
@@ -44,7 +50,13 @@ judges each conversation labelled Sales or Leads since the start date **as
 if it had no label**, storing only its fate, on the open run as each is
 decided, so a run out of time resumes where it stopped; with every thread
 given a fate, the run finishes. After that the job skips until a new dry
-run.
+run, or until an Admin **applies** it (FR-CAP-RPT-04): its high- and
+medium-confidence findings become items exactly as live ones do, with no
+second Claude call (only the mailboxes live reads, never a sender on the
+ignore list), and the mode becomes Live.
+
+**The ignore list** (FR-CAP-DIS-03, FR-CAP-REV-03) is edited by Admins here
+and grows from dismissed new leads (`services/crm/review.py`).
 
 The text lives only in this module's local variables: never stored, logged,
 queued or put in an error (FR-CAP-CHG-05, NFR-CAP-02).
@@ -55,15 +67,18 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Final
 
 from app.config import settings
+from app.domain.crm import ai_rules, email_rules
 from app.domain.crm import capture as rules
-from app.domain.crm import email_rules
-from app.schemas.crm import CaptureOverviewOut, DiscoveryOutput
-from app.services.crm import CrmRefused, ai, email_sync, gmail, jobs, store
+from app.domain.crm import review as review_rules
+from app.schemas.crm import CaptureIgnoreIn, CaptureOverviewOut, DiscoveryOutput
+from app.services import supabase as db
+from app.services.crm import CrmRefused, ai, email_sync, gmail, jobs, review, store
 from app.services.crm import records as base
 from app.services.crm.context import actor
 
@@ -92,7 +107,9 @@ NEXT_COUNTDOWN: Final = 60
 LIST_SIZE: Final = 500
 #: A dry run's report can be applied for this long after it finished
 #: (FR-CAP-RPT-04).
-APPLY_DAYS: Final = 7
+APPLY_DAYS: Final = rules.APPLY_DAYS
+#: The open stages a discovered deal signal may move (contracts §6.2).
+_OPEN: Final = ("discovery", "qualification", "proposal", "negotiation")
 
 #: The workspaces whose dry run stopped with work left, this task.
 _more: set[str] = set()
@@ -218,6 +235,7 @@ def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     ids = sorted(mailboxes)
     pending = store.pending_candidates(ws_id, ids, newest_first=not dry, limit=rules.RUN_CAP)
     scans: dict[str, set[str]] = {}
+    ignores = store.list_ignores(ws_id) if pending else []
     for candidate in pending:
         if jobs.out_of_time():
             # The rest wait for the next tick, or the dry run's follow-up.
@@ -225,7 +243,7 @@ def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
         mailbox = mailboxes[candidate["mailbox_id"]]
         counts["considered"] += 1
         try:
-            _judge(workspace, mailbox, candidate, scans, open_run, counts)
+            _judge(workspace, mailbox, candidate, scans, open_run, counts, ignores)
         except jobs.Skipped as skipped:
             # A gate closed (the budget): the run stops and keeps its counts.
             raise jobs.Skipped(skipped.reason, counts) from None
@@ -412,6 +430,7 @@ def _judge(
     scans: dict[str, set[str]],
     open_run: Mapping[str, Any] | None,
     counts: dict[str, int],
+    ignores: list[dict[str, Any]],
 ) -> None:
     """Steps a to g for one candidate (plan §5.6); `open_run` is the dry
     run being judged, None live."""
@@ -426,6 +445,11 @@ def _judge(
         if _record(ws_id, candidate, {**base_values, "status": "skipped"}):
             counts["skipped_rules"] += 1
         return
+    if rules.ignored(rules.outside_of(kept), ignores):
+        # FR-CAP-DIS-03: before any text is read.
+        if _record(ws_id, candidate, {**base_values, "status": "ignored"}):
+            counts["ignored"] += 1
+        return
     if _known(ws_id, rules.outside_of(kept)):
         if _record(ws_id, candidate, {**base_values, "status": "known"}):
             counts["known"] += 1
@@ -438,6 +462,28 @@ def _judge(
         return
     answer, judged, choices = asked
     finding = rules.finding_of(answer, judged, mailbox_email=mailbox["email"], choices=choices)
+    if finding is not None:
+        # FR-CAP-DIS-08: kept with the finding, so the report shows it too.
+        finding["duplicate_company_id"] = duplicate_of(ws_id, finding)
+    if not dry and finding is not None:
+        # Live: the item is built and stored while the candidate is still
+        # pending, so a fault in the duplicate check, the owner or the upsert
+        # leaves it pending to be judged again; a decision recorded first
+        # would never be picked up again. The upsert is idempotent per dedupe
+        # key and source version, so the retry makes no second item.
+        item = item_for(
+            workspace,
+            mailbox,
+            thread_id=candidate["thread_id"],
+            message_id=candidate["latest_message_id"],
+            outcome=answer["outcome"],
+            confidence=answer["confidence"],
+            finding=finding,
+            generated_at=_now().isoformat(),
+        )
+        if item is not None:
+            made = store_items(ws_id, [item])
+            counts["items"] += sum(1 for m in made if m.get("created"))
     recorded = _record(
         ws_id,
         candidate,
@@ -450,12 +496,110 @@ def _judge(
         },
     )
     if not recorded:
-        # A message arrived meanwhile: it is judged again, from the start.
+        # A message arrived meanwhile: it is judged again, from the start
+        # (live, refreshing the item just stored).
         return
     counts["judged"] += 1
     if finding is not None and answer["confidence"] == "low":
         # FR-CAP-DIS-07: recorded, never an item; the report lists it apart.
         counts["low_confidence"] += 1
+
+
+# ---------------------------------------------------------------------------
+# Items — FR-CAP-DIS-07, -08, -09, FR-CAP-REV-01, -04; plan §5.8, §5.10
+# ---------------------------------------------------------------------------
+
+
+def _live_company(ws_id: str, company_id: str) -> bool:
+    row = base.by_id(ws_id, "crm_companies", [company_id]).get(company_id)
+    return row is not None and not row.get("deleted_at")
+
+
+def duplicate_of(ws_id: str, finding: Mapping[str, Any]) -> str | None:
+    """FR-CAP-DIS-08 — an existing company the lead is: one holding the
+    finding's domain (one Claude chose from the text included), one holding
+    a sibling domain (`acme.io` for `acme.com`), or one whose name is alike
+    (`007`'s duplicate check). Trashed companies are not offered."""
+    domain = finding.get("domain")
+    if domain:
+        for row in store.list_domains(ws_id, domains=[domain]):
+            if _live_company(ws_id, row["company_id"]):
+                return row["company_id"]
+        name = rules.registrable_name(domain)
+        # Only the domains of that name are read, never the whole list.
+        known = store.domains_named(ws_id, name) if name else []
+        for sibling in rules.sibling_domains(domain, [d["domain"] for d in known]):
+            company_id = next(d["company_id"] for d in known if d["domain"] == sibling)
+            if _live_company(ws_id, company_id):
+                return company_id
+    name = finding.get("company_name")
+    if name:
+        alike = base.duplicates(
+            SimpleNamespace(workspace_id=ws_id), "company", name=name, domain=None, email=None
+        )["similar"]
+        if alike:
+            return alike[0]["id"]
+    return None
+
+
+def store_items(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`review.upsert`, then each stored `new_lead`'s conversation keeps it
+    as its only open new lead: one under another dedupe key (made before a
+    duplicate check linked it to a company, or before the company went)
+    expires (spec §13 S3 line 1)."""
+    made = review.upsert(ws_id, items)
+    for item, done in zip(items, made, strict=True):
+        if item["type"] == "new_lead" and done.get("id"):
+            store.capture_supersede(ws_id, item["source_key"], item["dedupe_key"])
+    return made
+
+
+def _owner(workspace_id: str, mailbox: Mapping[str, Any]) -> str | None:
+    """FR-CAP-REV-04 — the mailbox owner when an active Admin or Member,
+    else the Admins (PD-5)."""
+    roles = {m["user_id"]: m["role"] for m in store.list_members(workspace_id)}
+    active = {p["id"] for p in db.list_profiles(include_crm_only=True) if p.get("is_active")}
+    return review_rules.owner_for(
+        "new_lead", roles=roles, active=active, mailbox_owner=mailbox.get("owner_id")
+    )
+
+
+def item_for(
+    workspace: Mapping[str, Any],
+    mailbox: Mapping[str, Any],
+    *,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    finding: Mapping[str, Any],
+    generated_at: str | None,
+) -> dict[str, Any] | None:
+    """The Review Queue item a judged conversation makes (plan §5.10), live
+    or from an applied dry run alike; None for low confidence. The
+    duplicate check is made again, since records may have changed."""
+    if confidence == "low" or outcome not in rules.FINDING_OUTCOMES:
+        return None
+    ws_id = workspace["id"]
+    duplicate = duplicate_of(ws_id, finding)
+    open_deals: list[dict[str, Any]] = []
+    if duplicate and outcome == "deal_signal":
+        open_deals = [
+            d for d in store.deals_of_companies(ws_id, [duplicate]) if d["stage"] in _OPEN
+        ]
+    return rules.to_item(
+        {**finding, "duplicate_company_id": duplicate},
+        outcome=outcome,
+        confidence=confidence,
+        mailbox_id=mailbox["id"],
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_id=_owner(ws_id, mailbox),
+        model=ai_rules.CRM_AI_MODEL,
+        generated_at=generated_at,
+        duplicate_company_id=duplicate,
+        open_deals=open_deals,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -628,18 +772,118 @@ def _at(value: Any) -> datetime | None:
 def applicable(run: Mapping[str, Any], latest_id: str, now: datetime) -> bool:
     """FR-CAP-RPT-04 — finished, not cancelled, not applied, the latest, and
     finished within 7 days."""
-    finished = _at(run.get("finished_at"))
-    return (
-        finished is not None
-        and not run.get("cancelled")
-        and not run.get("applied_at")
-        and run["id"] == latest_id
-        and now - finished <= timedelta(days=APPLY_DAYS)
+    return rules.apply_refusal(run, latest_id, now) is None
+
+
+def apply(ctx: Any, run_id: str) -> dict[str, Any]:
+    """`POST /crm/capture/dry-runs/{id}/apply` (contracts §2.3) — the run's
+    high- and medium-confidence findings become Review Queue items exactly
+    as live ones do, with no Claude call; then `crm_capture_apply` marks it
+    applied and sets the mode to Live. Repeating it after a failure in
+    between is safe: the upsert is idempotent per dedupe key."""
+    ws_id = ctx.workspace_id
+    run = store.get_dry_run(ws_id, run_id) if base._uuid(run_id) else None
+    latest = store.latest_dry_run(ws_id)
+    refused = rules.apply_refusal(run, (latest or {}).get("id"), _now())
+    if refused is not None:
+        raise CrmRefused(*refused)
+    # As live: only the mailboxes the job reads (NFR-CAP-05), and never a
+    # sender put on the ignore list since the run (FR-CAP-DIS-03).
+    mailboxes = _capturing(ctx.workspace)
+    ignores = store.list_ignores(ws_id)
+    items = []
+    for row in store.dry_run_findings(ws_id):
+        mailbox = mailboxes.get(row["mailbox_id"])
+        if mailbox is None or not row.get("finding"):
+            continue
+        email = row["finding"].get("person_email")
+        if email and rules.ignored([{"email": email}], ignores):
+            continue
+        item = item_for(
+            ctx.workspace,
+            mailbox,
+            thread_id=row["thread_id"],
+            message_id=row["judged_message_id"] or row["latest_message_id"],
+            outcome=row["outcome"],
+            confidence=row["confidence"],
+            finding=row["finding"],
+            generated_at=str(row["judged_at"]) if row.get("judged_at") else None,
+        )
+        if item is not None:
+            items.append(item)
+    made = store_items(ws_id, items)
+    done = store.apply_dry_run(actor(ctx), run_id)
+    logger.info(
+        '{"event": "crm_capture_dry_run_applied", "workspace": "%s", "items": %d}',
+        ctx.workspace["key"],
+        len(items),
+    )
+    return {
+        "applied_at": done.get("applied_at"),
+        "items_created": sum(1 for m in made if m.get("created")),
+        "mode": rules.LIVE,
+    }
+
+
+def _ignore_out(row: Mapping[str, Any], names: Mapping[str, str] | None = None) -> dict[str, Any]:
+    out = {
+        "id": row["id"],
+        "kind": row["kind"],
+        "value": row["value"],
+        "created_at": str(row["created_at"]) if row.get("created_at") else None,
+    }
+    if names is not None:
+        out["from_item_id"] = row.get("from_item_id")
+        out["created_by_name"] = names.get(row.get("created_by") or "")
+    return out
+
+
+def find_ignore(ws_id: str, kind: str, value: str) -> dict[str, Any] | None:
+    """The entry for this address or domain, if the list has it."""
+    return next(
+        (i for i in store.list_ignores(ws_id) if i["kind"] == kind and i["value"] == value), None
     )
 
 
-def _finding(row: Mapping[str, Any]) -> dict[str, Any]:
+def write_ignore(
+    ctx: Any, kind: str, value: str, *, from_item_id: str | None = None
+) -> dict[str, Any]:
+    """One entry, written through `crm_apply` as the person (audited
+    `capture_ignore.created`)."""
+    values: dict[str, Any] = {"kind": kind, "value": value}
+    if from_item_id:
+        values["from_item_id"] = from_item_id
+    done = store.apply(
+        actor(ctx), [{"op": "insert", "table": "crm_capture_ignores", "values": values}]
+    )
+    return done[0]["row"]
+
+
+def add_ignore(ctx: Any, body: CaptureIgnoreIn) -> dict[str, Any]:
+    """`POST /crm/capture/ignores` (contracts §2.4) — `{ignore}`; 422 for a
+    malformed value, a public webmail domain or one of the workspace's own
+    domains, 409 when it is listed already."""
+    value = rules.ignore_value(body.value)
+    why = rules.ignore_refusal(body.kind, value, ctx.workspace.get("allowed_domains") or [])
+    if why:
+        raise CrmRefused(422, why)
+    if find_ignore(ctx.workspace_id, body.kind, value) is not None:
+        raise CrmRefused(409, rules.ALREADY_IGNORED)
+    return {"ignore": _ignore_out(write_ignore(ctx, body.kind, value))}
+
+
+def remove_ignore(ctx: Any, ignore_id: str) -> None:
+    """`DELETE /crm/capture/ignores/{id}` (contracts §2.5). Candidates already
+    `ignored` stay so until a new message arrives."""
+    found = next((i for i in store.list_ignores(ctx.workspace_id) if i["id"] == ignore_id), None)
+    if found is None:
+        raise CrmRefused(404, rules.NO_SUCH_IGNORE)
+    store.apply(actor(ctx), [{"op": "delete", "table": "crm_capture_ignores", "id": ignore_id}])
+
+
+def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, Any]:
     found = row.get("finding") or {}
+    duplicate = companies.get(found.get("duplicate_company_id") or "")
     return {
         "candidate_id": row["id"],
         "outcome": row["outcome"],
@@ -654,7 +898,9 @@ def _finding(row: Mapping[str, Any]) -> dict[str, Any]:
         "message_count": int(found.get("message_count") or 0),
         "owner_replied": bool(found.get("owner_replied")),
         "reason": found.get("reason"),
-        "duplicate_company": None,
+        "duplicate_company": {"id": duplicate["id"], "name": duplicate.get("name")}
+        if duplicate
+        else None,
     }
 
 
@@ -677,8 +923,8 @@ def _recall_rows(ws_id: str, recall: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def overview(ctx: Any) -> dict[str, Any]:
-    """`GET /crm/capture` — the mode, the mailboxes, the ignore list (S3)
-    and the latest dry run's report with its live counts, estimated cost,
+    """`GET /crm/capture` — the mode, the mailboxes, the ignore list and
+    the latest dry run's report with its live counts, estimated cost,
     findings and recall check (FR-CAP-RPT-02, -03)."""
     ws_id = ctx.workspace_id
     now = _now()
@@ -693,8 +939,16 @@ def overview(ctx: Any) -> dict[str, Any]:
         for m in store.list_mailboxes(ws_id)
     ]
     latest = store.latest_dry_run(ws_id)
+    names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
+    ignores = [_ignore_out(i, names) for i in store.list_ignores(ws_id)]
     dry_run = None
     if latest is not None:
+        findings = store.dry_run_findings(ws_id)
+        companies = base.by_id(
+            ws_id,
+            "crm_companies",
+            {(r.get("finding") or {}).get("duplicate_company_id") for r in findings} - {None},
+        )
         started = _at(latest["started_at"])
         assert started is not None
         spend = store.ai_spend(ws_id, started)
@@ -710,7 +964,7 @@ def overview(ctx: Any) -> dict[str, Any]:
             "applicable": applicable(latest, latest["id"], now),
             "counts": store.capture_report(ws_id, latest["id"]),
             "estimated_cost_usd": str(cost.quantize(Decimal("0.01"))),
-            "findings": [_finding(r) for r in store.dry_run_findings(ws_id)],
+            "findings": [_finding(r, companies) for r in findings],
             "recall": {
                 "line": rules.recall_line(recall),
                 "rows": _recall_rows(ws_id, recall),
@@ -719,6 +973,6 @@ def overview(ctx: Any) -> dict[str, Any]:
     return CaptureOverviewOut(
         mode=rules.capture_mode(store.capture_setting(ws_id)),
         mailboxes=mailboxes,
-        ignores=[],
+        ignores=ignores,
         dry_run=dry_run,
     ).model_dump(mode="json")

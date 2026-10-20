@@ -31,6 +31,8 @@ TYPES: Final = {
     "rule_suggestion": "Follow-up suggestion",
     # Spec 010 FR-CAP-REV-01: a deal document or discovery on a known company.
     "deal_signal": "Deal signal",
+    # Spec 010 FR-CAP-REV-01: a conversation with someone the CRM does not know.
+    "new_lead": "New lead",
 }
 #: Spec 010 FR-CAP-REV-04: the item types capture makes, owned by the
 #: mailbox owner (PD-5).
@@ -147,15 +149,17 @@ def dedupe_key(
     source_kind: str,
     source_key: str,
     item_type: str,
-    record_type: str,
-    record_id: str,
+    record_type: str | None,
+    record_id: str | None,
     *,
     member_id: str | None = None,
     fingerprint: str | None = None,
 ) -> str:
     """`<source_kind>|<source_key>|<type>|<record_type>:<record_id>`, with
-    `:<member id>` for R-4 and `#<fingerprint>` for a task item."""
-    target = f"{record_type}:{record_id}"
+    `:<member id>` for R-4 and `#<fingerprint>` for a task item. An item with
+    no target (a `new_lead` of spec 010 that matched no company) ends in
+    `|thread`: one per conversation (plan §5.10)."""
+    target = f"{record_type}:{record_id}" if record_type and record_id else "thread"
     if member_id:
         target += f":{member_id}"
     if fingerprint:

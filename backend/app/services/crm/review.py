@@ -16,7 +16,13 @@ manual edit uses:
   draft is marked used);
 - `deal_signal` (spec 010 FR-CAP-REV-02): `deals.create` at Discovery, or
   `deals.move` of the chosen deal, as the deal routes do, so Proposal's
-  fields, Labs' tentative project and Closed Won's handoff all apply.
+  fields, Labs' tentative project and Closed Won's handoff all apply;
+- `new_lead` (spec 010 FR-CAP-REV-02): `records.create` of the company (at
+  New, then `records.update` to the suggested lead stage) and of the person,
+  as the record routes do; then `crm.capture_thread` files the conversation
+  on `worker-crm-sync`. A `new_lead` may have no target (it matched no
+  company); it is live while it is open. Dismissing one may add its sender
+  or its domain to the ignore list (FR-CAP-REV-03).
 
 So every validation, permission check, pipeline rule, audit entry and
 optimistic lock of the manual path applies (FR-CRMAI-REV-04). The change is
@@ -40,6 +46,7 @@ again.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -47,7 +54,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from app.domain.crm import ai_rules
+from app.domain.crm import ai_rules, dedupe, email_rules
 from app.domain.crm import capture as capture_rules
 from app.domain.crm import review as rules
 from app.domain.crm import today as today_rules
@@ -57,6 +64,7 @@ from app.schemas.crm import (
     ConvertIn,
     MoveChanges,
     ReviewApproveIn,
+    ReviewDismissIn,
     ReviewItemOut,
     StageMoveIn,
 )
@@ -65,6 +73,8 @@ from app.services import supabase as db
 from app.services.crm import CrmRefused, campaigns, deals, store
 from app.services.crm import records as base
 from app.services.crm.context import actor
+
+logger = logging.getLogger("nldw-task-master")
 
 #: The target tables of an item (data-model §3.2 `record_type`).
 TARGET_TABLES = {
@@ -95,6 +105,18 @@ EDITABLE = {
             "proposal_sent_on",
             "point_of_contact_id",
             "project_name",
+        }
+    ),
+    "new_lead": frozenset(
+        {
+            "company_name",
+            "domain",
+            "lead_stage",
+            "first_name",
+            "last_name",
+            "email",
+            "title",
+            "link_company_id",
         }
     ),
 }
@@ -181,12 +203,14 @@ def _targets(ws_id: str, items: list[dict[str, Any]]) -> dict[tuple[str, str], d
 
 
 def _untrashed(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """FR-CRMAI-CHG-11 — an item whose target is in the Trash is left out."""
+    """FR-CRMAI-CHG-11 — an item whose target is in the Trash is left out. A
+    spec 010 `new_lead` with no target is kept."""
     targets = _targets(ws_id, items)
     return [
         i
         for i in items
-        if (row := targets.get((i["record_type"], i["record_id"]))) and not row.get("deleted_at")
+        if (i["record_id"] is None and i["type"] == "new_lead")
+        or ((row := targets.get((i["record_type"], i["record_id"]))) and not row.get("deleted_at"))
     ]
 
 
@@ -244,7 +268,9 @@ def present(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "record_type": item["record_type"],
                     "record_id": item["record_id"],
                     "name": _name(item["record_type"], target),
-                },
+                }
+                if item["record_id"]
+                else None,
                 deal_choices=[
                     {
                         "id": d["id"],
@@ -346,11 +372,16 @@ def _title(item: dict[str, Any]) -> str:
     would do (spec 010 contracts §6.2)."""
     if item["type"] == "deal_signal":
         return capture_rules.deal_signal_title(item.get("suggestion") or {})
+    if item["type"] == "new_lead":
+        return capture_rules.new_lead_title(item.get("suggestion") or {})
     return rules.TYPES[item["type"]]
 
 
 def _detail(item: dict[str, Any], target: dict[str, Any] | None) -> str:
-    """The target's name; a deal signal adds its reason (contracts §6.2)."""
+    """The target's name; a deal signal adds its reason (contracts §6.2); a
+    new lead says how many emails and why (contracts §6.1)."""
+    if item["type"] == "new_lead":
+        return capture_rules.new_lead_detail(item.get("suggestion") or {})
     name = _name(item["record_type"], target) or ""
     if item["type"] == "deal_signal":
         reason = ((item.get("suggestion") or {}).get("evidence") or {}).get("reason")
@@ -376,6 +407,8 @@ def _open_and_live(ctx: Any, item: dict[str, Any]) -> dict[str, Any]:
     """An item still open whose target is not in the Trash; its target."""
     if item["status"] != "open":
         raise CrmRefused(409, rules.ALREADY_DECIDED)
+    if item["record_id"] is None and item["type"] == "new_lead":
+        return {}
     target = _targets(ctx.workspace_id, [item]).get((item["record_type"], item["record_id"]))
     if target is None or target.get("deleted_at"):
         raise CrmRefused(422, rules.TRASHED)
@@ -709,6 +742,116 @@ def _deal_signal(
     return move
 
 
+def _queue_filing(workspace_id: str, link: dict[str, Any]) -> None:
+    """`crm.capture_thread` on `worker-crm-sync` (plan §5.9 step 4): ids only.
+    A failure to queue is logged; the conversation is filed when its next
+    message arrives (PD-10)."""
+    if not (link.get("mailbox_id") and link.get("thread_id")):
+        return
+    try:
+        from app.tasks.crm import capture_thread
+        from app.worker import CRM_SYNC_QUEUE
+
+        capture_thread.apply_async(
+            args=[workspace_id, link["mailbox_id"], link["thread_id"]], queue=CRM_SYNC_QUEUE
+        )
+    except Exception as exc:  # noqa: BLE001 - the records exist; filing waits
+        logger.warning('{"event": "crm_capture_file_failed", "error": "%s"}', type(exc).__name__)
+
+
+def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
+    """Spec 010 FR-CAP-REV-02 (plan §5.9) — as the approver, through the
+    record routes' services: (1) the company: the one chosen
+    (`link_company_id`) or matched (the target), the one an earlier
+    approval of this item made, the one holding the domain, or a new one at
+    New owned by the mailbox owner; (2) the suggested lead stage, from New;
+    (3) the person, unless one has the address; (4) the conversation queued
+    for filing. A refusal or a fault after the company exists keeps its id
+    on the item, so a retry does not make a second company of that name."""
+    edits = _edits(item, body)
+    suggestion = item.get("suggestion") or {}
+    stage = edits.get("lead_stage", suggestion.get("lead_stage") or "new")
+    if stage not in capture_rules.LEAD_STAGES:
+        raise CrmRefused(422, capture_rules.CHOOSE_LEAD_STAGE)
+    ws_id = ctx.workspace_id
+    chosen = edits.get("link_company_id") or (
+        item["record_id"] if item["record_type"] == "company" else None
+    )
+    if chosen:
+        base.live(ws_id, "company", str(chosen))
+    name = edits.get("company_name", suggestion.get("company_name"))
+    domain = edits.get("domain", suggestion.get("domain"))
+    email = edits.get("email", suggestion.get("email"))
+    email = email.strip().lower() if isinstance(email, str) and email.strip() else None
+    first = edits.get("first_name", suggestion.get("first_name"))
+    last = edits.get("last_name", suggestion.get("last_name"))
+    title = edits.get("title", suggestion.get("title"))
+
+    def earlier() -> str | None:
+        made = (item.get("result") or {}).get("company_id")
+        row = base.by_id(ws_id, "crm_companies", [made]).get(made) if made else None
+        return made if row and not row.get("deleted_at") else None
+
+    def holding_domain() -> str | None:
+        if not domain:
+            return None
+        normal = dedupe.normalise_domain(str(domain))
+        for d in store.list_domains(ws_id, domains=[normal] if normal else []):
+            row = base.by_id(ws_id, "crm_companies", [d["company_id"]]).get(d["company_id"])
+            if row and not row.get("deleted_at"):
+                return d["company_id"]
+        return None
+
+    def change(approver: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        made_before = earlier()
+        existing = chosen or (None if made_before else holding_domain())
+        company_id = existing or made_before
+        # Linked: an existing company was used, not one this item made.
+        linked = existing is not None
+        if company_id is None:
+            values: dict[str, Any] = {"name": name}
+            if item.get("owner_id"):
+                values["owner_id"] = item["owner_id"]
+            if domain:
+                values["domain"] = domain
+            company_id = base.create(approver, "company", values, check_duplicates=False)["id"]
+        try:
+            row = base.live(ws_id, "company", company_id)
+            if stage != "new" and row.get("lead_stage") == "new":
+                base.update(
+                    approver,
+                    "company",
+                    company_id,
+                    {"lead_stage": stage, "expect_updated_at": row["updated_at"]},
+                )
+            held = store.people_by_emails(ws_id, [email]) if email else []
+            if held:
+                person_id = held[0]["id"]
+            else:
+                person: dict[str, Any] = {"first_name": first, "company_id": company_id}
+                for key, value in (("last_name", last), ("primary_email", email)):
+                    if value:
+                        person[key] = value
+                if title:
+                    person["job_title"] = title
+                person_id = base.create(approver, "person", person, check_duplicates=False)["id"]
+        except Exception:  # noqa: BLE001 - a refusal or a fault alike: re-raised
+            # Kept on the item while it is claimed, before it opens again
+            # (approve's handler then opens it with the right sentence).
+            store.review_release(actor(ctx), item["id"], None, {"company_id": company_id})
+            raise
+        _queue_filing(ws_id, item.get("source_link") or {})
+        result = {
+            "company_id": company_id,
+            "person_id": person_id,
+            "linked": linked,
+            "filed": "queued",
+        }
+        return result, dict(result)
+
+    return change
+
+
 def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
     """Contracts §2.2 `POST /crm/review/{id}/approve` — `{item, result}`.
 
@@ -733,6 +876,8 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
         change = _rule(ctx, item, body)
     elif kind == "deal_signal":
         change = _deal_signal(ctx, item, body, target)
+    elif kind == "new_lead":
+        change = _new_lead(ctx, item, body)
     else:
         raise CrmRefused(422, rules.NOT_YET)
 
@@ -756,14 +901,49 @@ def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:
     return {"item": present(ctx.workspace_id, [after])[0], "result": shown}
 
 
-def dismiss(ctx: Any, item_id: str) -> dict[str, Any]:
+def _ignore_for(ctx: Any, item: dict[str, Any], ignore: str) -> tuple[str, str]:
+    """Spec 010 FR-CAP-REV-03 — `(kind, value)` a dismissal adds: the new
+    lead's sender, or that sender's whole domain (never a public webmail
+    domain, PD-6)."""
+    if item["type"] != "new_lead":
+        raise CrmRefused(422, capture_rules.ONLY_NEW_LEAD)
+    address = capture_rules.ignore_value((item.get("suggestion") or {}).get("email"))
+    value = address if ignore == "address" else email_rules.domain_of(address)
+    why = capture_rules.ignore_refusal(ignore, value, ctx.workspace.get("allowed_domains") or [])
+    if why:
+        raise CrmRefused(422, why)
+    return ignore, value
+
+
+def dismiss(ctx: Any, item_id: str, body: ReviewDismissIn | None = None) -> dict[str, Any]:
     """Contracts §2.2 `POST /crm/review/{id}/dismiss` — `{item}`. A dismissed
-    item is not made again from the same source (FR-CRMAI-REV-08)."""
+    item is not made again from the same source (FR-CRMAI-REV-08). Spec 010
+    (contracts §1.3): a `new_lead` may add its sender or its domain to the
+    ignore list, as the dismisser (audited), reusing an entry already
+    there; the response always has `ignore` (null when none was added)."""
+    from app.services.crm import capture
+
     item = _load(ctx, item_id)
     _open_and_live(ctx, item)
+    wanted = _ignore_for(ctx, item, body.ignore) if body and body.ignore else None
     store.review_claim(actor(ctx), item_id, "dismissed")
     after = store.get_review_item(ctx.workspace_id, item_id) or item
-    return {"item": present(ctx.workspace_id, [after])[0]}
+    out: dict[str, Any] = {"item": present(ctx.workspace_id, [after])[0]}
+    out["ignore"] = None
+    if wanted is not None:
+        kind, value = wanted
+        row = capture.find_ignore(ctx.workspace_id, kind, value)
+        if row is None:
+            try:
+                row = capture.write_ignore(ctx, kind, value, from_item_id=item_id)
+            except CrmRefused:
+                # Added by another dismissal meanwhile (crm_capture_ignores_once):
+                # that entry is reused, not an error.
+                row = capture.find_ignore(ctx.workspace_id, kind, value)
+                if row is None:
+                    raise
+        out["ignore"] = {"id": row["id"], "kind": row["kind"], "value": row["value"]}
+    return out
 
 
 # ---------------------------------------------------------------------------

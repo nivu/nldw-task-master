@@ -8,7 +8,7 @@ three failures in a row alert the admins.
 
 | Task | Beat | Jobs it records |
 |---|---|---|
-| `crm.purge_trash` | 01:10 daily | `trash_purge` |
+| `crm.purge_trash` | 01:10 daily | `trash_purge` (with spec 010's capture decisions older than 12 months) |
 | `crm.recompute_flags` | every 30 min | `flags`, then `automations` (stale-deal notices, follow-up rules) |
 | `crm.digest_tick` | every 15 min | `digests` (no workspace), then `reminders` |
 | `crm.email_sync_tick` | every 15 min | `email_sync` (a run or a skip per workspace) |
@@ -19,18 +19,35 @@ three failures in a row alert the admins.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.domain.crm.followups import SWITCHES as RULES
-from app.services.crm import digests, email_sync, flags, followups, jobs, notifications, records
+from app.services.crm import (
+    digests,
+    email_sync,
+    flags,
+    followups,
+    jobs,
+    notifications,
+    records,
+    store,
+)
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
 
 
+#: Spec 010 FR-CAP-DIS-11 (E12, PD-15): a capture decision is kept 12 months.
+CAPTURE_KEEP = timedelta(days=365)
+
+
 @jobs.crm_job("trash_purge")
 def _purge(workspace: dict, now: datetime) -> dict:
-    return {"purged": records.purge_expired(workspace["id"], now)}
+    purged = records.purge_expired(workspace["id"], now)
+    return {
+        "purged": purged,
+        "capture_decisions": store.purge_capture(workspace["id"], now - CAPTURE_KEEP),
+    }
 
 
 @celery_app.task(name="crm.purge_trash")

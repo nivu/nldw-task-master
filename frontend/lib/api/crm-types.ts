@@ -1655,7 +1655,9 @@ export type ReviewItemType =
   | "enrichment_conflict"
   | "rule_suggestion"
   /** 010 S1 (FR-CAP-REV-01): a deal document or discovery on a known company. */
-  | "deal_signal";
+  | "deal_signal"
+  /** 010 S3 (FR-CAP-REV-01, -02): an unknown conversation judged a lead. */
+  | "new_lead";
 
 export type ReviewItemStatus = "open" | "approved" | "dismissed" | "expired";
 
@@ -1679,7 +1681,8 @@ export interface CrmReviewItem {
   version: number;
   /** Null: the item belongs to the workspace's Admins (FR-CRMAI-REV-02). */
   owner: { id: string; name: string } | null;
-  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string };
+  /** Null for a 010 `new_lead` that matched no company (contracts §1.3). */
+  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string } | null;
   deal_choices: ReviewDealChoice[];
   suggestion: Record<string, unknown>;
   current: Record<string, unknown>;
@@ -1730,7 +1733,21 @@ export interface ReviewApproveResult {
     task?: CrmTask;
     note?: CrmNote;
     used?: boolean;
+    /** 010 `new_lead` (contracts §1.3). */
+    company_id?: string;
+    person_id?: string;
+    linked?: boolean;
+    filed?: "queued";
   };
+}
+
+/** POST /crm/review/{id}/dismiss — 010 contracts §1.3: a `new_lead` may add
+ *  its sender or its whole domain to the ignore list. */
+export type ReviewDismissIgnore = "address" | "domain";
+
+export interface ReviewDismissResult {
+  item: CrmReviewItem;
+  ignore?: { id: string; kind: ReviewDismissIgnore; value: string } | null;
 }
 
 /** One line of To review: an item, opening the queue. */
@@ -1908,7 +1925,7 @@ export type CrmCaptureMode = "off" | "dry_run" | "live";
 export type CrmCaptureOutcome = "new_lead" | "deal_signal" | "other_business" | "not_relevant";
 export type CrmCaptureConfidence = "high" | "medium" | "low";
 
-/** An ignore-list entry (FR-CAP-DIS-03); always empty before S3. */
+/** An ignore-list entry (FR-CAP-DIS-03). */
 export interface CrmCaptureIgnore {
   id: string;
   kind: "address" | "domain";
@@ -2001,4 +2018,27 @@ export interface CrmCaptureOverview {
 /** POST /crm/capture/dry-run — 202. */
 export interface CrmCaptureDryRunStarted {
   dry_run: { id: string; started_at: string };
+}
+
+// ---------------------------------------------------------------------------
+// 010 S3 — Apply and the ignore list (010 contracts §2.3 to §2.5; FR-CAP-RPT-04,
+// FR-CAP-DIS-03)
+// ---------------------------------------------------------------------------
+
+/** POST /crm/capture/dry-runs/{id}/apply — 200. */
+export interface CrmCaptureApplied {
+  applied_at: string;
+  items_created: number;
+  mode: "live";
+}
+
+/** POST /crm/capture/ignores — trimmed and lower-cased by the server. */
+export interface CrmCaptureIgnoreIn {
+  kind: "address" | "domain";
+  value: string;
+}
+
+/** POST /crm/capture/ignores — 201. */
+export interface CrmCaptureIgnoreAdded {
+  ignore: { id: string; kind: "address" | "domain"; value: string; created_at: string };
 }

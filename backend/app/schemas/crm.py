@@ -848,6 +848,7 @@ ReviewItemType = Literal[
     "enrichment_conflict",
     "rule_suggestion",
     "deal_signal",
+    "new_lead",
 ]
 ReviewStatus = Literal["open", "approved", "dismissed", "expired"]
 
@@ -879,6 +880,16 @@ class ReviewApproveIn(BaseModel):
     edits: dict[str, Any] | None = None
 
 
+class ReviewDismissIn(BaseModel):
+    """`POST /crm/review/{id}/dismiss` (spec 010 contracts §1.3) — for a
+    `new_lead`, optionally add its sender or its whole domain to the ignore
+    list (FR-CAP-REV-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ignore: Literal["address", "domain"] | None = None
+
+
 class ReviewItemOut(BaseModel):
     """One Review Queue item as the queue shows it (contracts §2.2.1)."""
 
@@ -889,7 +900,8 @@ class ReviewItemOut(BaseModel):
     #: Counts each refresh of the item; an approval sends it back (069).
     version: int
     owner: dict[str, Any] | None
-    target: dict[str, Any]
+    #: None for a spec 010 `new_lead` that matched no company.
+    target: dict[str, Any] | None
     deal_choices: list[dict[str, Any]]
     suggestion: dict[str, Any]
     current: dict[str, Any]
@@ -1215,6 +1227,16 @@ class CaptureDryRunOut(BaseModel):
     estimated_cost_usd: str
     findings: list[CaptureFindingOut]
     recall: CaptureRecallOut
+
+
+class CaptureIgnoreIn(BaseModel):
+    """`POST /crm/capture/ignores` (contracts §2.4): an address or a domain,
+    trimmed and lower-cased before it is checked (FR-CAP-DIS-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["address", "domain"]
+    value: str = Field(max_length=400)
 
 
 class CaptureOverviewOut(BaseModel):

@@ -1,6 +1,8 @@
 """Email capture's discovery job — spec 010 FR-CAP-DIS-01, -02, -04 to -07,
 -10, FR-CAP-RPT-01, -03, FR-CAP-CHG-05, NFR-CAP-01 to -04; plan §5.6, §5.7,
-PD-11, PD-14, PD-17; spec §13 S2.
+PD-11, PD-14, PD-17; spec §13 S2. S3 (tasks T314): FR-CAP-DIS-03, -07 to
+-10 (live), FR-CAP-REV-04, FR-CAP-RPT-04; plan §5.8, §5.10, PD-4; spec §13
+S3 lines 1, 3, 5 and 6.
 
 Every run is on `tests/crm_fake.py` with `FakeClaude` and `FakeGmailThread`
 (`tests/crm_ai_fakes.py`): no network. A `FakeClaude()` with no script fails
@@ -15,8 +17,9 @@ from decimal import Decimal
 
 import pytest
 from crm_ai_fakes import FAIL, INVALID, TIMEOUT, CapturedCelery, FakeClaude, FakeGmailThread
-from crm_fake import DEFAULTS, MEMBER, OWNER, FakeCrmStore, two_workspaces
+from crm_fake import DEFAULTS, MEMBER, OWNER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
+from postgrest.exceptions import APIError
 
 from app.config import settings as config
 from app.domain.crm import capture as rules
@@ -303,10 +306,11 @@ class TestGates:
 
 
 class TestNeverClaude:
-    """NFR-CAP-02; spec §13 S2 line 2 — internal, automated and known
-    conversations never reach Claude (the ignore list arrives in S3)."""
+    """NFR-CAP-02; spec §13 S2 line 2 — internal, automated, known and
+    ignored conversations never reach Claude (the ignore list from S3)."""
 
     def test_capture_keeps_filtered_candidates_from_claude(self, cap):
+        _ignore(cap, "domain", "vendor.example")
         acme = cap.fake.add(
             "crm_companies",
             **{**DEFAULTS["crm_companies"], "workspace_id": cap.labs["id"], "name": "Acme"},
@@ -323,11 +327,12 @@ class TestNeverClaude:
         cap.conversation("invite", sender="ravi@other.io", subject="Invitation: Sync @ Mon")
         cap.conversation("noreply", sender="no-reply@saas.io")
         cap.conversation("known", sender="ravi@acme.com")
+        cap.conversation("ignored", sender="sam@vendor.example")
         got = cap.tick()  # FakeClaude() with no script: any call fails the test.
         assert got["outcome"] == "ok", got
         status = {
             t: cap.candidate(t)["status"]
-            for t in ("internal", "news", "invite", "noreply", "known")
+            for t in ("internal", "news", "invite", "noreply", "known", "ignored")
         }
         assert status == {
             "internal": "skipped",
@@ -335,7 +340,11 @@ class TestNeverClaude:
             "invite": "skipped",
             "noreply": "skipped",
             "known": "known",
+            "ignored": "ignored",
         }
+        # S3-04: the dry run's report counts it (FR-CAP-RPT-02).
+        assert got["counts"]["ignored"] == 1
+        assert cap.fake.capture_report(cap.labs["id"], cap.run["id"])["ignored"] == 1
         assert cap.gmail.text_reads == [] and cap.claude.calls == []
         [filed] = cap.celery.named("crm.capture_thread")
         assert filed["args"] == [cap.labs["id"], cap.mailbox["id"], "known"]
@@ -724,3 +733,376 @@ class TestRecall:
         assert (before["considered"], before["pending"]) == (1, 0)
         cap.conversation("later", sender="ravi@robots.io")
         assert capture.overview(_Ctx(cap))["dry_run"]["counts"] == before
+
+
+def _ignore(cap, kind: str, value: str) -> None:
+    cap.fake.add(
+        "crm_capture_ignores",
+        workspace_id=cap.labs["id"],
+        kind=kind,
+        value=value,
+        from_item_id=None,
+        created_by=OWNER["id"],
+        created_at=NOW.isoformat(),
+    )
+
+
+def _items(cap) -> list[dict]:
+    return sorted(cap.fake.rows["crm_review_items"].values(), key=lambda i: i["created_at"])
+
+
+def _company(cap, name, domain=None):
+    company = cap.fake.add(
+        "crm_companies",
+        **{**DEFAULTS["crm_companies"], "workspace_id": cap.labs["id"], "name": name},
+    )
+    if domain:
+        cap.fake.add(
+            "crm_company_domains",
+            workspace_id=cap.labs["id"],
+            company_id=company["id"],
+            domain=domain,
+            is_primary=True,
+        )
+    return company
+
+
+@pytest.fixture
+def live(cap) -> Capture:
+    """Labs in Live: a dry run was applied before."""
+    cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]].update(
+        finished_at="2026-10-19T00:00:00+00:00", applied_at="2026-10-19T01:00:00+00:00"
+    )
+    cap.fake.set_capture(cap.labs, "live")
+    return cap
+
+
+class TestLive:
+    """FR-CAP-DIS-07, -10 (live), REV-04; spec §13 S3 line 1."""
+
+    def test_capture_makes_one_new_lead_per_conversation(self, live):
+        # Live takes the newest first: t1, t2, then t3.
+        live.conversation("t1", at=NOW - timedelta(days=1))
+        live.conversation("t2", sender="ravi@robots.io", at=NOW - timedelta(days=2))
+        live.conversation("t3", sender="sam@widgets.io", at=NOW - timedelta(days=3))
+        live.answer(LEAD, {**LEAD, "confidence": "medium"}, {**LEAD, "confidence": "low"})
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["items"] == 2 and got["counts"]["low_confidence"] == 1
+        items = _items(live)
+        assert len(items) == 2
+        assert {i["type"] for i in items} == {"new_lead"}
+        assert {i["record_id"] for i in items} == {None}
+        assert {i["owner_id"] for i in items} == {OWNER["id"]}
+        assert {i["source_link"]["thread_id"] for i in items} == {"t1", "t2"}
+        low = live.candidate("t3")
+        assert (low["confidence"], low["status"]) == ("low", "judged")
+        assert low["finding"] is not None
+        assert {c["dry_run"] for c in live.fake.rows["crm_capture_candidates"].values()} == {False}
+        # Nothing but the queue: no company, no person, no stored mail.
+        assert live.fake.rows["crm_companies"] == {} and live.fake.rows["crm_people"] == {}
+        assert live.fake.rows["crm_email_messages"] == {}
+
+    def test_capture_live_judges_a_new_candidate_before_older_ones(self, live, monkeypatch):
+        for n in range(3):
+            live.conversation(f"old{n}", sender=f"a{n}@old{n}.io", at=NOW - timedelta(days=30 + n))
+        live.conversation("new", at=NOW - timedelta(minutes=20))
+        live.answer(LEAD)
+        seen = {"n": 0}
+
+        def out_of_time():
+            seen["n"] += 1
+            return seen["n"] > 1
+
+        monkeypatch.setattr(jobs, "out_of_time", out_of_time)
+        live.tick()
+        assert live.candidate("new")["status"] == "judged"
+        assert {live.candidate(f"old{n}")["status"] for n in range(3)} == {"pending"}
+        [item] = _items(live)
+        assert item["source_link"]["thread_id"] == "new"
+
+    def test_capture_a_second_run_makes_no_second_item(self, live):
+        live.conversation("t1")
+        live.answer(LEAD)
+        live.tick()
+        got = live.tick()  # FakeClaude has no second answer: a call would fail.
+        assert got["outcome"] == "ok" and got["counts"]["items"] == 0
+        assert len(_items(live)) == 1 and len(live.claude.calls) == 1
+
+    def test_capture_a_newer_message_refreshes_the_open_item(self, live):
+        live.conversation("t1")
+        live.answer(LEAD, {**LEAD, "reason": "Asked again for pricing."})
+        live.tick()
+        [item] = _items(live)
+        assert (item["revision"], item["source_version"]) == (1, "t1-m1")
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya@acme-robotics.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        got = live.tick()
+        assert got["counts"]["items"] == 0
+        [item] = _items(live)
+        assert (item["revision"], item["source_version"]) == (2, "t1-m2")
+        assert item["suggestion"]["evidence"]["reason"] == "Asked again for pricing."
+        assert item["suggestion"]["evidence"]["message_count"] == 2
+
+    def test_capture_an_expired_item_is_not_made_again_for_the_same_message(self, live):
+        live.conversation("t1")
+        live.answer(LEAD, LEAD)
+        live.tick()
+        [item] = _items(live)
+        item.update(status="expired", decided_at=NOW.isoformat())
+        # A restart that re-judges the same latest message (FR-CAP-REV-04).
+        live.candidate("t1").update(DEFAULTS["crm_capture_candidates"])
+        got = live.tick()
+        assert got["counts"]["judged"] == 1 and got["counts"]["items"] == 0
+        assert len(_items(live)) == 1
+
+    def test_capture_a_claude_deal_signal_on_an_unknown_company_is_a_new_lead(self, live):
+        live.conversation("t1")
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _items(live)
+        assert item["type"] == "new_lead"
+        assert item["suggestion"]["deal_stage_hint"] == "proposal"
+
+    def test_capture_a_webmail_lead_proposes_no_domain(self, live):
+        live.conversation("t1", sender="Priya Shah <priya.shah@gmail.com>")
+        live.answer({**LEAD, "person_email": "priya.shah@gmail.com", "website_choice": None})
+        live.tick()
+        [item] = _items(live)
+        assert item["suggestion"]["domain"] is None
+        assert item["suggestion"]["email"] == "priya.shah@gmail.com"
+
+    def test_capture_a_fault_storing_the_item_leaves_the_candidate_pending(self, live, monkeypatch):
+        # S3-C1: the item is stored before the decision, so a fault in the
+        # upsert ends the run with the conversation still to be judged.
+        live.conversation("t1")
+        live.answer(LEAD, LEAD)
+        real = capture.review.upsert
+
+        def fails(*args, **kwargs):
+            raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
+
+        monkeypatch.setattr(capture.review, "upsert", fails)
+        assert live.tick()["outcome"] == "failed"
+        assert live.candidate("t1")["status"] == "pending" and _items(live) == []
+        monkeypatch.setattr(capture.review, "upsert", real)
+        got = live.tick()
+        assert got["outcome"] == "ok" and got["counts"]["items"] == 1
+        assert live.candidate("t1")["status"] == "judged"
+        assert len(_items(live)) == 1
+
+    def test_capture_a_later_match_keeps_one_open_new_lead(self, live):
+        # S3-02: an unlinked item is open; a company is then made by hand;
+        # the next message links the lead, and the unlinked item expires.
+        live.conversation("t1")
+        live.answer(LEAD, LEAD)
+        live.tick()
+        [first] = _items(live)
+        assert first["dedupe_key"].endswith("|new_lead|thread")
+        company = _company(live, "Acme Robotics")
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya@acme-robotics.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        live.tick()
+        open_leads = [i for i in _items(live) if i["status"] == "open" and i["type"] == "new_lead"]
+        assert len(open_leads) == 1
+        assert open_leads[0]["record_id"] == company["id"]
+        assert live.fake.rows["crm_review_items"][first["id"]]["status"] == "expired"
+        assert any(
+            a["action"] == "review.expired" and a["target_id"] == first["id"]
+            for a in live.fake.audit
+        )
+
+
+class TestIgnore:
+    """FR-CAP-DIS-03; spec §13 S3 line 3."""
+
+    def test_capture_ignored_domain_never_reaches_claude(self, live):
+        live.fake.add(
+            "crm_capture_ignores",
+            workspace_id=live.labs["id"],
+            kind="domain",
+            value="acme-robotics.com",
+            from_item_id=None,
+            created_by=OWNER["id"],
+            created_at=NOW.isoformat(),
+        )
+        live.conversation("t1")
+        live.conversation("t2", sender="ravi@acme-robotics.com")
+        got = live.tick()  # FakeClaude() with no script: any call fails the test.
+        assert got["outcome"] == "ok", got
+        assert {live.candidate(t)["status"] for t in ("t1", "t2")} == {"ignored"}
+        assert got["counts"]["ignored"] == 2
+        assert live.gmail.text_reads == [] and live.claude.calls == []
+        assert _items(live) == []
+
+    def test_capture_an_ignored_address_spares_the_rest_of_its_domain(self, live):
+        live.fake.add(
+            "crm_capture_ignores",
+            workspace_id=live.labs["id"],
+            kind="address",
+            value="priya@acme-robotics.com",
+            from_item_id=None,
+            created_by=OWNER["id"],
+            created_at=NOW.isoformat(),
+        )
+        live.conversation("t1")
+        live.conversation("t2", sender="ravi@acme-robotics.com")
+        live.answer(LEAD)
+        live.tick()
+        assert live.candidate("t1")["status"] == "ignored"
+        assert live.candidate("t2")["status"] == "judged"
+
+
+class TestDuplicateLeads:
+    """FR-CAP-DIS-08 — a lead that is an existing company links to it."""
+
+    @pytest.mark.parametrize("match", ["domain_from_text", "sibling", "name"])
+    def test_capture_a_duplicate_makes_a_linked_item(self, live, match):
+        if match == "domain_from_text":
+            company = _company(live, "Robotics Co", "acme-robotics.com")
+            live.conversation(
+                "t1",
+                sender="Priya <priya.shah@gmail.com>",
+                text="Pricing please. Our site is acme-robotics.com",
+            )
+            answer = {**LEAD, "company_name": "Zz", "person_email": "priya.shah@gmail.com"}
+        elif match == "sibling":
+            company = _company(live, "Robotics Co", "acme-robotics.io")
+            live.conversation("t1")
+            answer = {**LEAD, "company_name": "Zz"}
+        else:
+            company = _company(live, "Acme Robotics")
+            live.conversation("t1")
+            answer = LEAD
+        live.answer(answer)
+        live.tick()
+        [item] = _items(live)
+        assert (item["type"], item["record_type"], item["record_id"]) == (
+            "new_lead",
+            "company",
+            company["id"],
+        )
+        assert item["suggestion"]["link"] is True
+        assert item["dedupe_key"].endswith(f"|new_lead|company:{company['id']}")
+        assert live.candidate("t1")["finding"]["duplicate_company_id"] == company["id"]
+
+    def test_capture_the_sibling_check_reads_only_domains_of_that_name(self, live, monkeypatch):
+        # S3-C4: an unfiltered read is cut at PostgREST's row limit; the
+        # check reads the domains of the lead's name only.
+        company = _company(live, "Robotics Co", "acme-robotics.io")
+        for n in range(5):
+            _company(live, f"Other {n}", f"other{n}.com")
+        real = live.fake.list_domains
+
+        def filtered_only(workspace_id, *, company_ids=None, domains=None):
+            assert company_ids is not None or domains is not None, "an unfiltered read"
+            return real(workspace_id, company_ids=company_ids, domains=domains)
+
+        monkeypatch.setattr(capture.store, "list_domains", filtered_only)
+        live.conversation("t1")
+        live.answer({**LEAD, "company_name": "Zz"})
+        live.tick()
+        [item] = _items(live)
+        assert item["record_id"] == company["id"]
+
+    def test_capture_a_shared_subdomain_label_is_no_match(self, live):
+        # S3-C5, S3-01: mail.foo.com and mail.bar.io are different companies.
+        _company(live, "Bar", "mail.bar.io")
+        live.conversation("t1", sender="Sam <sam@mail.foo.com>")
+        live.answer({**LEAD, "company_name": "Zz", "person_email": "sam@mail.foo.com"})
+        live.tick()
+        [item] = _items(live)
+        assert (item["record_id"], item["suggestion"]["link"]) == (None, False)
+
+    def test_capture_a_deal_signal_on_a_duplicate_is_a_deal_signal(self, live):
+        company = _company(live, "Acme Robotics")
+        live.conversation("t1")
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _items(live)
+        assert (item["type"], item["record_id"]) == ("deal_signal", company["id"])
+        assert item["suggestion"]["action"] == "create"
+        assert item["suggestion"]["stage"] == "discovery"
+
+
+class TestApply:
+    """FR-CAP-RPT-04; spec §13 S3 line 6 — applying a dry run makes items
+    with no new Claude call and sets Live."""
+
+    def test_capture_applying_a_dry_run_makes_items_without_claude(self, cap):
+        # A dry run takes the oldest first: t1, t2, then t3.
+        cap.conversation("t1", at=NOW - timedelta(days=3))
+        cap.conversation("t2", sender="ravi@robots.io", at=NOW - timedelta(days=2))
+        cap.conversation("t3", sender="sam@widgets.io", at=NOW - timedelta(days=1))
+        cap.answer(LEAD, {**LEAD, "confidence": "low"}, VENDOR)
+        cap.tick()
+        assert cap.records() == (0, 0, 0)
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = (
+            datetime.now(UTC) - timedelta(hours=1)
+        ).isoformat()
+        cap.answer()  # no script: a Claude call fails the test
+        r = cap.http.post(
+            f"/api/v1/crm/capture/dry-runs/{cap.run['id']}/apply?workspace=labs",
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert (body["items_created"], body["mode"]) == (1, "live")
+        assert body["applied_at"]
+        assert cap.claude.calls == []
+        [item] = _items(cap)
+        assert item["type"] == "new_lead" and item["source_link"]["thread_id"] == "t1"
+        assert item["source_version"] == "t1-m1"
+        assert cap.fake.capture_setting(cap.labs["id"]) == {"mode": "live"}
+        assert {c["dry_run"] for c in cap.fake.rows["crm_capture_candidates"].values()} == {False}
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert run["applied_by"] == OWNER["id"]
+        # Live from here: an applied run is not applied twice.
+        again = cap.http.post(
+            f"/api/v1/crm/capture/dry-runs/{cap.run['id']}/apply?workspace=labs",
+            headers=as_(OWNER["id"]),
+        )
+        assert again.status_code == 409, again.text
+        assert len(_items(cap)) == 1
+
+    def _finished_run(self, cap) -> None:
+        cap.conversation("t1")
+        cap.answer(LEAD)
+        cap.tick()
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = (
+            datetime.now(UTC) - timedelta(hours=1)
+        ).isoformat()
+
+    def _apply(self, cap):
+        r = cap.http.post(
+            f"/api/v1/crm/capture/dry-runs/{cap.run['id']}/apply?workspace=labs",
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    @pytest.mark.parametrize(
+        ("kind", "value"), [("domain", "acme-robotics.com"), ("address", "priya@acme-robotics.com")]
+    )
+    def test_capture_an_ignore_added_before_applying_makes_no_item(self, cap, kind, value):
+        # S3-PRIV-1: apply makes items as live would, ignore list included.
+        self._finished_run(cap)
+        _ignore(cap, kind, value)
+        assert self._apply(cap)["items_created"] == 0
+        assert _items(cap) == []
+
+    @pytest.mark.parametrize("change", ["labels", "inactive", "owner_gone"])
+    def test_capture_a_mailbox_no_longer_capturing_makes_no_item(self, cap, change):
+        # S3-PRIV-2: only the mailboxes the live job reads (NFR-CAP-05).
+        self._finished_run(cap)
+        row = cap.fake.rows["crm_mailboxes"][cap.mailbox["id"]]
+        if change == "labels":
+            row["capture_source"] = "labels"
+        elif change == "inactive":
+            row["is_active"] = False
+        else:
+            row["owner_id"] = "u-nobody"
+        assert self._apply(cap)["items_created"] == 0
+        assert _items(cap) == []

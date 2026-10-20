@@ -155,6 +155,8 @@ TABLES = (
     "crm_capture_candidates",
     # Spec 010: dry runs (072), a log with no audit trigger.
     "crm_capture_dry_runs",
+    # Spec 010: the ignore list (073), audited configuration.
+    "crm_capture_ignores",
 )
 #: The TVA reads the CRM makes (`services/supabase.py`, S5), faked over the
 #: rows above. Only names the CRM alone calls, so a test that fakes the rest
@@ -207,8 +209,9 @@ REVIEW_TYPES = (
     "deal_link",
     "enrichment_conflict",
     "rule_suggestion",
-    # Spec 010 (071).
+    # Spec 010 (071, 073).
     "deal_signal",
+    "new_lead",
 )
 
 
@@ -1177,6 +1180,15 @@ class FakeCrmStore:
             rows = [r for r in rows if r["company_id"] in company_ids]
         if domains is not None:
             rows = [r for r in rows if r["domain"] in domains]
+        return sorted(rows, key=lambda r: (not r["is_primary"], r["domain"]))
+
+    def domains_named(self, workspace_id: str, name: str) -> list[dict[str, Any]]:
+        """The domains starting `name.` (store.domains_named's LIKE)."""
+        rows = [
+            r
+            for r in self._of("crm_company_domains", workspace_id)
+            if r["domain"].startswith(f"{name}.")
+        ]
         return sorted(rows, key=lambda r: (not r["is_primary"], r["domain"]))
 
     def similar(self, workspace_id: str, kind: str, name: str, limit: int = 5) -> list[dict]:
@@ -3507,6 +3519,77 @@ class FakeCrmStore:
                     found[e["thread_id"]] = (str(e["sent_at"]), e["subject"])
         return {t: subject for t, (_, subject) in found.items()}
 
+    # -- store: email capture, live (spec 010, 073) ---------------------------
+
+    def get_dry_run(self, workspace_id: str, run_id: str) -> dict[str, Any] | None:
+        run = self.rows["crm_capture_dry_runs"].get(run_id)
+        if run is None or run["workspace_id"] != workspace_id:
+            return None
+        return json.loads(json.dumps(run))
+
+    def apply_dry_run(self, actor: dict[str, Any], run_id: str) -> dict[str, Any]:
+        """073 crm_capture_apply: the latest run only, finished, not
+        cancelled or applied; its candidates live; the mode Live, audited.
+        The 7-day window is left to the API's own clock, which refuses
+        first (contracts §2.3), so a fixed test clock is not compared with
+        the wall clock here; tests/db holds the database's window."""
+        assert actor["kind"] == "user", actor
+        ws_id = actor["workspace_id"]
+        run = self.rows["crm_capture_dry_runs"].get(run_id)
+        if run is None or run["workspace_id"] != ws_id:
+            raise store.refusal_for("CRM04", "No such dry run.")
+        latest = self.latest_dry_run(ws_id)
+        finished = _at(run["finished_at"]) if run.get("finished_at") else None
+        if (
+            finished is None
+            or run["cancelled"]
+            or run.get("applied_at")
+            or (latest or {}).get("id") != run_id
+        ):
+            raise store.refusal_for("CRM22", "This dry run cannot be applied.")
+        applied = datetime.now(UTC).isoformat()
+        run.update(applied_at=applied, applied_by=actor["user_id"])
+        for c in self.rows["crm_capture_candidates"].values():
+            if c["workspace_id"] == ws_id and c["dry_run"]:
+                c.update(dry_run=False, updated_at=datetime.now(UTC).isoformat())
+        self._write_capture(actor, ws_id, "live")
+        return {"applied_at": applied}
+
+    def purge_capture(self, workspace_id: str, before: datetime) -> int:
+        """073 crm_capture_purge: every decided candidate updated before."""
+        gone = [
+            k
+            for k, c in self.rows["crm_capture_candidates"].items()
+            if c["workspace_id"] == workspace_id
+            and c["status"] != "pending"
+            and _at(c["updated_at"]) < before
+        ]
+        for k in gone:
+            del self.rows["crm_capture_candidates"][k]
+        return len(gone)
+
+    def capture_supersede(self, workspace_id: str, source_key: str, keep: str) -> int:
+        """073 crm_capture_supersede: the conversation's other open new leads
+        expire, one review.expired audit row each, as the sync."""
+        actor = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
+        gone = [
+            r
+            for r in self._of("crm_review_items", workspace_id)
+            if r["status"] == "open"
+            and r["type"] == "new_lead"
+            and r["source_kind"] == "email_thread"
+            and r["source_key"] == source_key
+            and r["dedupe_key"] != keep
+        ]
+        for r in gone:
+            self.rows["crm_review_items"][r["id"]].update(status="expired", decided_at=_now())
+            self._review_audit(actor, "review.expired", r["id"], "open", "expired")
+        return len(gone)
+
+    def list_ignores(self, workspace_id: str) -> list[dict[str, Any]]:
+        rows = [json.loads(json.dumps(r)) for r in self._of("crm_capture_ignores", workspace_id)]
+        return sorted(rows, key=lambda r: (str(r["created_at"]), r["id"]))
+
     def stored_message_ids(self, workspace_id: str, mailbox_id: str, gmail_ids: list) -> set:
         return {
             m["gmail_message_id"]
@@ -4040,10 +4123,29 @@ class FakeCrmStore:
                     raise store.refusal_for("CRM04", "No such option in this workspace.")
 
     def _check_rows(self, table: str, row: dict[str, Any]) -> None:
-        """030's CHECK constraints on deals, tasks and notes."""
+        """030's CHECK constraints on deals, tasks and notes; 073's on the
+        ignore list."""
 
         def broken(name: str) -> None:
             raise CheckViolation(f"{table} violates {name}: {row}")
+
+        if table == "crm_capture_ignores":
+            value = row["value"]
+            if row["kind"] not in ("address", "domain"):
+                broken("crm_capture_ignores_kind_check")
+            if not (3 <= len(value) <= 320) or value != value.lower():
+                broken("crm_capture_ignores_value_check")
+            if row["kind"] == "domain" and "@" in value:
+                broken("crm_capture_ignores_domain")
+            if row["kind"] == "address" and value.find("@") < 1:
+                broken("crm_capture_ignores_address")
+            item = row.get("from_item_id")
+            if (
+                item
+                and (self.rows["crm_review_items"].get(item) or {}).get("workspace_id")
+                != row["workspace_id"]
+            ):
+                raise store.refusal_for("23503", "crm_capture_ignores_item")
 
         if table == "crm_opportunities":
             live = row.get("deleted_at") is None
@@ -4156,6 +4258,11 @@ class FakeCrmStore:
             "crm_note_mentions": (("note_id", "member_id"), "crm_note_mentions_pair"),
             # 065.
             "crm_ai_fields": (("workspace_id", "key"), "crm_ai_fields_key"),
+            # 073.
+            "crm_capture_ignores": (
+                ("workspace_id", "kind", "value"),
+                "crm_capture_ignores_once",
+            ),
         }
         if table == "task_links" and row["record_type"] == "tva_project":
             # 047 (TP-13): one project per task.
@@ -4417,10 +4524,9 @@ class FakeCrmStore:
             "revision": 1,
             **values,
         }
+        target = f"{row['record_type']}:{row['record_id']}" if row.get("record_id") else "thread"
         row.setdefault(
-            "dedupe_key",
-            f"{row['source_kind']}|{row['source_key']}|{row['type']}|"
-            f"{row['record_type']}:{row['record_id']}",
+            "dedupe_key", f"{row['source_kind']}|{row['source_key']}|{row['type']}|{target}"
         )
         self.rows["crm_review_items"][row["id"]] = row
         for deal_id in choices:
@@ -4531,12 +4637,17 @@ class FakeCrmStore:
             ):
                 out.append({"id": None, "created": False})
                 continue
-            target = TARGETS.get(given["record_type"])
-            found = target and self.rows[target].get(given["record_id"])
-            if not found or found["workspace_id"] != ws:
-                raise store.refusal_for(
-                    "CRM04", f"No such {given['record_type']} in this workspace."
-                )
+            # 073 crm_review_items_target: both or neither, neither only for
+            # a new lead that matched no company.
+            assert (given.get("record_type") is None) == (given.get("record_id") is None), given
+            assert given.get("record_id") is not None or given["type"] == "new_lead", given
+            if given.get("record_id") is not None:
+                target = TARGETS.get(given["record_type"])
+                found = target and self.rows[target].get(given["record_id"])
+                if not found or found["workspace_id"] != ws:
+                    raise store.refusal_for(
+                        "CRM04", f"No such {given['record_type']} in this workspace."
+                    )
             for deal_id in given.get("deal_choices") or []:
                 deal = self.rows["crm_opportunities"].get(deal_id)
                 if (
@@ -4575,7 +4686,11 @@ class FakeCrmStore:
                 row, created = (
                     self.add_review_item(
                         self.rows["crm_workspaces"][ws],
-                        **{k: v for k, v in given.items() if v is not None or k == "owner_id"},
+                        **{
+                            k: v
+                            for k, v in given.items()
+                            if v is not None or k in ("owner_id", "record_type", "record_id")
+                        },
                     ),
                     True,
                 )

@@ -16,7 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 
 from app.api.crm.deps import CrmReadDep, CrmWriteDep
-from app.schemas.crm import ReviewApproveIn
+from app.schemas.crm import ReviewApproveIn, ReviewDismissIn
 from app.services.crm import review as service
 
 router = APIRouter(prefix="/crm/review", tags=["crm"])
@@ -44,6 +44,8 @@ def approve(item_id: str, payload: ReviewApproveIn, ctx: CrmWriteDep) -> dict:
 
 
 @router.post("/{item_id}/dismiss")
-def dismiss(item_id: str, ctx: CrmWriteDep) -> dict:
-    """`{item}`; 409 when it was already decided."""
-    return service.dismiss(ctx, item_id)
+def dismiss(item_id: str, ctx: CrmWriteDep, payload: ReviewDismissIn | None = None) -> dict:
+    """`{item}`; 409 when it was already decided. Spec 010: a new lead's
+    dismissal may add its sender or domain to the ignore list
+    (`{"ignore": "address" | "domain"}`), then `{item, ignore}`."""
+    return service.dismiss(ctx, item_id, payload)

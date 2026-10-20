@@ -660,6 +660,7 @@ async def crm_review_decide(
     deal_id: str | None = None,
     option: str | None = None,
     edits: dict[str, Any] | None = None,
+    ignore: Literal["address", "domain"] | None = None,
     workspace: str | None = None,
 ) -> dict:
     """WORKSPACE ADMINS AND MEMBERS. CONFIRM FIRST: say exactly what will change
@@ -671,14 +672,29 @@ async def crm_review_decide(
     as shown to the person: a suggestion refreshed since is refused (list it
     again and show the new one). deal_id picks the deal when the suggestion
     lists several; edit sends edits, the suggestion's fields as the person
-    changed them."""
+    changed them.
+    New lead: approving creates the company (at New, then the suggested lead
+    stage), the person, and files the conversation. Deal signal: creates a
+    Discovery deal or moves the chosen deal; Proposal needs amount, currency,
+    expected close and the next step; in Labs, Closed Won is done with
+    crm_handoff. CONFIRM FIRST. Dismissing a new lead with ignore "address"
+    or "domain" also adds its sender, or the sender's whole domain, to the
+    workspace's ignore list."""
     try:
         item = str(uuid.UUID(item_id))
     except ValueError:
         raise ToolError("No such suggestion.") from None
     params = {"workspace": workspace}
+    if ignore is not None and decision != "dismiss":
+        raise ToolError("ignore applies to dismissing a new lead only.")
     if decision == "dismiss":
-        return await _api(ctx, "POST", f"/crm/review/{item}/dismiss", params=params)
+        return await _api(
+            ctx,
+            "POST",
+            f"/crm/review/{item}/dismiss",
+            params=params,
+            body={"ignore": ignore} if ignore is not None else None,
+        )
     if decision == "edit" and not edits:
         raise ToolError("Say what changes: edits.")
     if version is None:

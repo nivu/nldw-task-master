@@ -4,11 +4,19 @@ import { useState } from "react";
 
 import { AiMarker } from "@/components/crm/ai-marker";
 import { Button } from "@/components/ui/button";
-import { startCrmCaptureDryRun, updateCrmSetting } from "@/lib/api/crm";
+import { Input } from "@/components/ui/input";
+import {
+  addCrmCaptureIgnore,
+  applyCrmCaptureDryRun,
+  removeCrmCaptureIgnore,
+  startCrmCaptureDryRun,
+  updateCrmSetting,
+} from "@/lib/api/crm";
 import type {
   AiProvenance,
   CrmCaptureConfidence,
   CrmCaptureFinding,
+  CrmCaptureIgnoreIn,
   CrmCaptureMode,
   CrmCaptureOutcome,
   CrmCaptureOverview,
@@ -17,12 +25,12 @@ import type {
 import { errorMessage } from "@/lib/api/portal";
 import { type CrmTimezone, formatDate } from "@/lib/crm/format";
 
-const MODES: { value: CrmCaptureMode; label: string; disabled: boolean }[] = [
-  { value: "off", label: "Off", disabled: false },
-  // Started by its button, never chosen here (contracts §1.2).
-  { value: "dry_run", label: "Dry run (started with Run dry run)", disabled: true },
-  // Entered through Apply once a dry run can be applied (S3, T319).
-  { value: "live", label: "Live (after a dry run is applied)", disabled: true },
+/** Dry run is started by its button, never chosen here; Live is first
+ *  entered through Apply, then may be chosen again (contracts §1.2). */
+const MODES: { value: CrmCaptureMode; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "dry_run", label: "Dry run (started with Run dry run)" },
+  { value: "live", label: "Live" },
 ];
 
 const OUTCOMES: { key: CrmCaptureOutcome; label: string }[] = [
@@ -66,9 +74,13 @@ const usd = (amount: string) =>
  * the estimated cost, every lead and deal signal Claude found (low
  * confidence listed apart) and the recall check over the labelled
  * conversations. A dry run writes decisions only: no record and no Review
- * Queue item. Live, Apply and the ignore list arrive in S3. No message text
- * is ever shown; the reason is generated plain text. Admins only; the server
- * refuses everyone else.
+ * Queue item. No message text is ever shown; the reason is generated plain
+ * text. Admins only; the server refuses everyone else.
+ *
+ * S3 (FR-CAP-RPT-04, FR-CAP-DIS-03): Apply turns a finished dry run's high-
+ * and medium-confidence findings into Review Queue items with no new Claude
+ * call and sets the mode to Live; Live can be chosen again once a dry run
+ * was applied. The ignore list is edited here and grows from dismissals.
  */
 export function CaptureSettings({
   workspace,
@@ -83,15 +95,25 @@ export function CaptureSettings({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [ignoreKind, setIgnoreKind] = useState<CrmCaptureIgnoreIn["kind"]>("domain");
+  const [ignoreValue, setIgnoreValue] = useState("");
   const run = overview.dry_run;
   const running = run !== null && run.finished_at === null;
   const capturing = overview.mailboxes.filter((m) => m.capture_source === "primary_sent");
 
+  // The server holds the full rule (any applied dry run); the latest run
+  // being applied, or Live already on, is what this page can see.
+  const liveAllowed = overview.mode === "live" || (run !== null && run.applied_at !== null);
+
+  /** Runs one change; a string it returns is shown once it succeeds. */
   async function act(work: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      await work();
+      const done = await work();
+      if (typeof done === "string") setNotice(done);
       onChanged();
     } catch (err) {
       setError(errorMessage(err));
@@ -114,6 +136,35 @@ export function CaptureSettings({
     act(() => updateCrmSetting(workspace, "capture", { mode: next }));
   }
 
+  function apply() {
+    if (run === null) return;
+    if (
+      !window.confirm(
+        "Apply this dry run? Its high- and medium-confidence leads and deal signals become " +
+          "Review Queue items (no new Claude calls), and email capture switches to Live."
+      )
+    ) {
+      return;
+    }
+    act(async () => {
+      const made = (await applyCrmCaptureDryRun(workspace, run.id)).items_created;
+      return `Applied: ${made} Review Queue item${made === 1 ? "" : "s"} made. Email capture is Live.`;
+    });
+  }
+
+  function addIgnore(e: React.FormEvent) {
+    e.preventDefault();
+    act(async () => {
+      await addCrmCaptureIgnore(workspace, { kind: ignoreKind, value: ignoreValue });
+      setIgnoreValue("");
+    });
+  }
+
+  function removeIgnore(id: string, value: string) {
+    if (!window.confirm(`Remove ${value} from the ignore list? New mail from it will be judged again.`)) return;
+    act(() => removeCrmCaptureIgnore(workspace, id));
+  }
+
   const leads = run?.findings.filter((f) => f.confidence !== "low") ?? [];
   const low = run?.findings.filter((f) => f.confidence === "low") ?? [];
 
@@ -123,6 +174,11 @@ export function CaptureSettings({
         <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
           {error}
         </div>
+      )}
+      {notice && (
+        <p role="status" className="rounded-md bg-muted p-3 text-sm">
+          {notice}
+        </p>
       )}
 
       <section className="space-y-3">
@@ -136,8 +192,12 @@ export function CaptureSettings({
               onChange={(e) => changeMode(e.target.value as CrmCaptureMode)}
             >
               {MODES.map((m) => (
-                <option key={m.value} value={m.value} disabled={m.disabled}>
-                  {m.label}
+                <option
+                  key={m.value}
+                  value={m.value}
+                  disabled={m.value === "dry_run" || (m.value === "live" && !liveAllowed)}
+                >
+                  {m.value === "live" && !liveAllowed ? "Live (after a dry run is applied)" : m.label}
                 </option>
               ))}
             </select>
@@ -173,6 +233,85 @@ export function CaptureSettings({
         )}
       </section>
 
+      <section className="space-y-3">
+        <h3 className="text-sm font-medium">Ignore list</h3>
+        <p className="text-sm text-muted-foreground">
+          Conversations whose outside people are all on this list are skipped before anything is
+          read. Dismissing a new lead can add its sender or its domain here.
+        </p>
+        {overview.ignores.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing is ignored.</p>
+        ) : (
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-muted-foreground">
+                  <th className="p-2 font-normal">Ignored</th>
+                  <th className="p-2 font-normal">Kind</th>
+                  <th className="p-2 font-normal">Added</th>
+                  <th className="p-2 font-normal">
+                    <span className="sr-only">Remove</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {overview.ignores.map((entry) => (
+                  <tr key={entry.id}>
+                    <td className="p-2 break-all">{entry.value}</td>
+                    <td className="p-2">{entry.kind === "domain" ? "Domain" : "Address"}</td>
+                    <td className="p-2 whitespace-nowrap">
+                      {formatDate(entry.created_at, timeZone)}
+                      {entry.created_by_name ? ` by ${entry.created_by_name}` : ""}
+                      {entry.from_item_id ? " · from a dismissal" : ""}
+                    </td>
+                    <td className="p-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => removeIgnore(entry.id, entry.value)}
+                      >
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <form className="flex flex-wrap items-end gap-2" onSubmit={addIgnore}>
+          <label className="space-y-1 text-sm">
+            <span className="block text-muted-foreground">Kind</span>
+            <select
+              className="h-8 rounded-md border bg-background px-2 text-sm"
+              value={ignoreKind}
+              disabled={busy}
+              onChange={(e) => setIgnoreKind(e.target.value as CrmCaptureIgnoreIn["kind"])}
+            >
+              <option value="domain">Domain</option>
+              <option value="address">Address</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-muted-foreground">
+              {ignoreKind === "domain" ? "Domain" : "Email address"}
+            </span>
+            <Input
+              className="h-8 w-64 max-w-full"
+              value={ignoreValue}
+              maxLength={400}
+              placeholder={ignoreKind === "domain" ? "example.com" : "name@example.com"}
+              onChange={(e) => setIgnoreValue(e.target.value)}
+              required
+            />
+          </label>
+          <Button type="submit" size="sm" disabled={busy || ignoreValue.trim() === ""}>
+            Add
+          </Button>
+        </form>
+      </section>
+
       {run === null && <p className="text-sm text-muted-foreground">No dry run yet.</p>}
 
       {run !== null && (
@@ -187,6 +326,18 @@ export function CaptureSettings({
                 : ` · finished ${formatDate(run.finished_at, timeZone)}.`}
             {run.applied_at ? ` Applied ${formatDate(run.applied_at, timeZone)}.` : ""}
           </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={busy || !run.applicable} onClick={apply}>
+              Apply
+            </Button>
+            <p className="text-sm text-muted-foreground">
+              {run.applicable
+                ? "Makes Review Queue items from the high- and medium-confidence findings below, with no new Claude calls, and switches capture to Live."
+                : run.applied_at
+                  ? "This dry run was applied."
+                  : "Only the latest dry run can be applied, once it has finished, within 7 days; a stopped one is run again."}
+            </p>
+          </div>
 
           <table className="w-full max-w-md text-sm">
             <tbody className="divide-y">
