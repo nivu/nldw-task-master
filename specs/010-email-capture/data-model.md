@@ -20,6 +20,7 @@ range `010`'s security sweep reads (plan PD-1).
 | `071_crm_capture_sync.sql` | S1 | `crm_mailboxes` + `capture_source`, `capture_start_date`, `docs_checked_at`, `reconcile_after`; `crm_capture_candidates` (log); `crm_capture_mark()`; `crm_audit_row()` replaced (skip `docs_checked_at`); `crm_review_items_type_check` + `deal_signal` |
 | `072_crm_capture_discovery.sql` | S2 | `crm_workspace_settings_key_check` + `capture`; `capture` row seeded `{"mode":"off"}` in every workspace; `crm_workspaces_seed_ai()` replaced (seeds `capture`); `crm_capture_dry_runs` (log); `crm_capture_record()`, `crm_capture_start_dry_run()`, `crm_capture_set_mode()`, `crm_capture_finish_dry_run()`, `crm_capture_recall_add()`, `crm_capture_report()`; `crm_job_runs_job_check` + `capture` and `crm_job_latest()` replaced; `crm_ai_usage_job_check` + `capture` |
 | `073_crm_capture_live.sql` | S3 | `crm_capture_ignores` (audited configuration); `crm_review_items`: `record_type`/`record_id` nullable for `new_lead` only, `crm_review_items_type_check` + `new_lead`; `crm_capture_apply()`; `crm_capture_purge()`; `crm_capture_supersede()` |
+| `074_crm_capture_improvements.sql` | R1 | Revision 1 (spec §14): mailbox rescan columns; `crm_audit_row()` from 071; `crm_capture_group_upsert()`, `crm_capture_release_thread()`, `crm_capture_consolidate()`; `crm_review_release()` from 068; `capture_routing` settings key (key CHECK and `crm_workspaces_seed_ai()` from 072) (§9) |
 
 **Replacing a function.** Each `CREATE OR REPLACE` is copied from its latest
 definition in the tree (`grep -l "CREATE OR REPLACE FUNCTION public.<fn>("
@@ -397,3 +398,220 @@ After a fresh `db reset`: every mailbox `labels`, every workspace `capture.mode
 
 Switching off without a rollback (NFR-CAP-05): every mailbox to `labels` and
 `capture.mode` to `off`. The tables stay and nothing reads them.
+
+---
+
+## 9. Revision 1 — migration 074 (spec §14; plan "Revision 1")
+
+### 9.1 Migration
+
+| File | Contents |
+|---|---|
+| `074_crm_capture_improvements.sql` | `crm_mailboxes` + `invites_rescanned_at`, `invite_rescan_token`; `crm_audit_row()` replaced from **071** (both columns in the mailbox skip, `-- 074`); `crm_capture_group_upsert()` (body of `069`'s `crm_review_upsert` copied and extended, `-- 074`); `crm_capture_release_thread()`; `crm_capture_consolidate()`; `crm_review_release()` replaced from **068** (`-- 074`); `crm_workspace_settings_key_check` replaced from **072** + `capture_routing`, seeded in every workspace, `crm_workspaces_seed_ai()` replaced from **072** (`-- 074`); grants |
+
+Header in the 071–073 style: numbered list, provenance (`crm_audit_row` →
+071, `crm_review_upsert` body → 069, which is **not** replaced,
+`crm_review_release` → 068, key CHECK and `crm_workspaces_seed_ai` → 072),
+Reversible. No new table, no `uuid[]` column. `crm_capture_supersede` (073)
+stays as it is.
+
+### 9.2 `crm_mailboxes` (074) — FR-CAP-INV-05
+
+| Column | Type | Constraints |
+|---|---|---|
+| `invites_rescanned_at` | timestamptz | NULL; set once when the invitation rescan finishes; never reset by the API |
+| `invite_rescan_token` | text | NULL `CHECK (char_length(invite_rescan_token) <= 512)`; the rescan's Gmail page token between syncs |
+
+Both are progress, not configuration: `crm_audit_row` skips them as it skips
+`history_id`, `page_token`, `docs_checked_at`, `reconcile_after` (no audit
+row when only they change). Python: `store._MAILBOX_COLUMNS`,
+`MAILBOX_PROGRESS`; `crm_fake.DEFAULTS["crm_mailboxes"]`.
+
+### 9.2a `crm_workspace_settings` key `capture_routing` (074) — FR-CAP-ACAD-03
+
+- `crm_workspace_settings_key_check` re-created from 072 with
+  `capture_routing` added (`-- 074`).
+- Seed: `INSERT … SELECT w.id, 'capture_routing', '{"accept_routed":true}'
+  FROM crm_workspaces w ON CONFLICT DO NOTHING` (system actor, audited
+  `setting.updated` as 072's seed); `crm_workspaces_seed_ai()` replaced
+  from 072 with the same insert, so later workspaces are seeded.
+- Value exactly `{"accept_routed": boolean}`; validated by
+  `VALIDATORS["capture_routing"]`; a missing row reads as `true`. Read only
+  for the workspace with key `academy` (`capture._academy_target`); changed
+  only by that workspace's Admins through the generic `PATCH
+  /crm/settings/capture_routing`. Audited like every setting.
+
+### 9.3 Shapes in existing jsonb columns (no schema change)
+
+**`crm_review_items.source_link`** of a capture item (`new_lead`,
+`deal_signal`):
+
+```json
+{"mailbox_id": "<latest entry's, Labs only>", "thread_id": "<latest entry's>",
+ "threads": [{"ref": "gmail:<mailbox_id>:<thread_id>", "mailbox_id": "…", "thread_id": "…",
+              "message_id": "…", "first_at": "…", "latest_at": "…",
+              "message_count": 3, "owner_replied": true,
+              "origin": "discovery" | "deal_document" | "academy_routing",
+              "reason": "…", "confidence": "high" | "medium" | null,
+              "person_email": "…", "first_name": "…" | null, "last_name": "…" | null}]}
+```
+
+`person_email`, `first_name`, `last_name` are the entry's sender (the
+finding's person); approval makes one person per distinct `person_email`
+(FR-CAP-GRP-04). A pre-074 entry built by consolidation takes them from the
+suggestion. "Newest entry" is the greatest `(latest_at, message_id)`.
+
+An Academy item has no `mailbox_id` anywhere: its top level is `{"threads":
+[…]}` and each entry's `ref` is `gmail:<mailbox email>:<thread_id>`. Unique
+by `ref` within an item. `source_link` has no size CHECK (061); entries are
+about 300 bytes. A pre-074 item has no `threads`; its one conversation is
+`source_key` (`gmail:<mb>:<thread>`) + `source_version`.
+
+**`crm_review_items.suggestion.evidence`** gains `conversations` (integer)
+and holds the totals: `first_at` (min), `latest_at` (max), `message_count`
+(sum), `owner_replied` (any), and the newest entry's `reason`,
+`confidence`, `attachments`; Academy items add `mailbox_email`. The 8 KB
+CHECK is unaffected (no list in `suggestion`).
+
+**`crm_review_items.result`** of a consolidated loser:
+`{"superseded_by": "<survivor id>", "reason": "Merged into one suggestion
+for <company>."}` (≤ 500 characters). Of an approved `new_lead`:
+`people` and `threads_filed` (entries whose sender is a known person after
+approval); in the Academy also `note_id`.
+
+**Keys** (plan R1.2):
+
+| Item | `source_key` (≤ 300) | `dedupe_key` (≤ 400) |
+|---|---|---|
+| `new_lead`, unmatched | `capture:domain:<d>` \| `capture:name:<n>` \| `capture:email:<e>` (`capture:sha256:<hex>` when longer) | `email_thread\|<source_key>\|new_lead\|thread` |
+| `new_lead`, matched company | `capture:linked` | `email_thread\|capture:linked\|new_lead\|company:<id>` |
+| `deal_signal` | `capture:deal` | `email_thread\|capture:deal\|deal_signal\|company:<id>` |
+
+**`crm_capture_candidates.finding`** gains `business` (`labs` \| `academy`;
+missing = `labs`) and, for `academy`, `routed` (boolean: true when handed to
+an accepting Academy target, whatever the Academy then did; false when
+there was none); `duplicate_company_id` is null for an Academy finding.
+Nothing the Academy decided is written here. Still ≤ 4096 bytes.
+
+**`crm_capture_dry_runs.recall[].fate`** values (no CHECK, 072):
+`filed_known`, `known_now`, `found`, `judged_otherwise`, `ignored`,
+`internal_only`, `calendar`, `automated`, `outside_scope`, `not_judged`,
+`academy_unrouted`; `skipped_rules` remains in rows written before 074.
+A finished run's recall may end with one marker row `{"capped": true}` (no
+`thread_id`), written only when the check stopped at 500 with a labelled
+conversation unchecked; readers skip rows without `thread_id`.
+
+### 9.4 Functions (074)
+
+All `SET search_path = public, extensions`, actor kind `sync` or `system`
+(CRM22 otherwise), `crm.actor` set from `p_actor`, and first
+`pg_advisory_xact_lock(hashtext('crm_capture:' || ws))` (072's capture
+lock), where `ws = p_actor ->> 'workspace_id'`. Approvals and refusals do
+not take that lock, so every row a function changes is first read `SELECT …
+FOR UPDATE` and re-checked `status = 'open'`; a row no longer open is never
+updated (plan R1.2, PD-38).
+
+- **`crm_capture_group_upsert(p_actor jsonb, p_item jsonb, p_entry jsonb)
+  RETURNS jsonb`** — `p_item` as `crm_review_upsert` takes it (`type`,
+  `owner_id`, `record_type`, `record_id`, `suggestion`, `current_values`,
+  `source_kind`, `source_key`, `dedupe_key`, `deal_choices`, `model`,
+  `generated_at`); `p_entry` one conversation entry (§9.3). In order:
+  1. **skip** with `{id: null, skipped: true}` when an item of `ws` with
+     `status <> 'open'`, `type IN ('new_lead','deal_signal')`, not
+     `result ? 'superseded_by'`, not (`status = 'expired' AND refusal IS
+     NOT NULL`), has an entry in `source_link -> 'threads'`
+     with the same `ref` and `message_id`, or has `source_key = p_entry ->>
+     'ref'` and `source_version = p_entry ->> 'message_id'`;
+  2. **release** `p_entry ->> 'ref'` from every other open capture item
+     (as `crm_capture_release_thread` with `p_keep = dedupe_key`); not done
+     at all when `p_entry.origin = 'deal_document'`, and an entry of origin
+     `deal_document` is never removed (PD-39);
+  3. **upsert** by `(workspace_id, dedupe_key) WHERE status = 'open'`,
+     the open row read `FOR UPDATE`: none (including one claimed since) →
+     insert as 069 does with `source_link = {top, threads: [p_entry]}`,
+     `source_version = message_id`, `crm_review_item_deals` from
+     `deal_choices`; else merge `p_entry` into the open row's `threads`
+     (replace the same `ref` unless older), recompute `suggestion.evidence`
+     totals, and **only when `p_entry` is the newest entry** take
+     `p_item.suggestion`'s other fields, `p_item.current_values` and
+     replace `crm_review_item_deals` from `deal_choices`; otherwise those
+     stay as they are. Set `source_key`, `source_link` (top level from the
+     newest entry), `source_version`, `revision + 1` when changed;
+     `owner_id`, `record_id` unchanged on update.
+  Returns `{id, created, revision, released: n}`.
+- **`crm_capture_release_thread(p_actor jsonb, p_ref text, p_keep text)
+  RETURNS jsonb`** — for every open capture item of `ws` whose `dedupe_key
+  <> p_keep` and that lists `p_ref` (or, pre-074, has `source_key =
+  p_ref`; `new_lead`, or `deal_signal` of origin `discovery` as 073), each
+  read `FOR UPDATE` and skipped unless still open: remove the entry (never
+  one of origin `deal_document`), recompute totals and top level from the newest
+  remaining entry, `revision + 1`; an item left with none is expired
+  (`status = 'expired'`, `decided_at = now()`, one `review.expired` audit
+  row, as `crm_review_expire`). Returns `{removed, expired}`.
+- **`crm_capture_consolidate(p_actor jsonb, p_plan jsonb) RETURNS jsonb`**
+  — `p_plan`: `[{source_key, dedupe_key, record_type, record_id,
+  company_label, members: [uuid]}]`, computed in Python (plan R1.2, keys
+  from the candidate's finding first, PD-40). Per group: members read `FOR
+  UPDATE`, kept only when still `open` in `ws` (others ignored, never
+  changed); add the open item already holding `dedupe_key`, if any; none
+  left → next group; survivor = newest `created_at`, then `id`; entries =
+  union of members' (a pre-074 member contributes one built from
+  `source_link`, `source_version`, `suggestion.evidence`); each
+  non-survivor first: `status = 'expired'`, `decided_at = now()`, `result
+  = {superseded_by, reason}`, audit `review.expired` with `before =
+  {status: open}`, `after = {status: expired, superseded_by}`,
+  `suggestion_id = id`; then the survivor: `source_key`, `dedupe_key`,
+  `source_link`, totals, `revision + 1`. CRM22 for a plan that is not an
+  array. Returns `{groups, expired, rekeyed}`. Idempotent: a group of one
+  already on its key changes nothing.
+- **`crm_review_release(p_actor, p_item_id, p_refusal, p_result)`**
+  replaced from 068 (signature, actor rule and every other path unchanged,
+  lines marked `-- 074`). For a capture item (`type IN
+  ('new_lead','deal_signal')`, `source_kind = 'email_thread'`,
+  `source_key LIKE 'capture:%' OR source_key LIKE 'gmail:%'`) with a
+  refusal, it first takes the capture lock, then:
+  - **expire path** (another open item holds the key): before expiring,
+    merge the refused item's entries (its `threads`, or one built from a
+    pre-074 item's `source_link`) into that open item, read `FOR UPDATE`,
+    as the upsert's merge does (newest-entry rule, totals, `revision + 1`);
+    then expire as 068 does (refusal kept, `review.expired`);
+  - **reopen path**: remove from the item every entry whose `ref` another
+    open capture item lists, recompute totals and top level; when none is
+    left, expire it instead of reopening (refusal kept, `review.expired`
+    audit row), else reopen as 068 does.
+
+### 9.5 Grants and the sweep
+
+`REVOKE ALL ON FUNCTION … FROM PUBLIC, anon, authenticated; GRANT EXECUTE …
+TO service_role` for `crm_audit_row`, `crm_capture_group_upsert`,
+`crm_capture_release_thread`, `crm_capture_consolidate`,
+`crm_review_release`, `crm_workspaces_seed_ai` (as 072 granted it).
+`test_crm_security_db._010_sql()` (071–079) reads 074 automatically; the
+function-name assertion gains the three names; `NOT_AUDITED_010` and
+`AUDITED_010` unchanged (no table); 074's `crm_review_release` keeps every
+068 branch (a body-kept assertion like `TestThe048BodiesAreKept`). `TestThe048BodiesAreKept`: 074's
+`crm_audit_row` names every table 071's does.
+
+### 9.6 Lifecycle additions
+
+| Event | Effect |
+|---|---|
+| Each capture tick, mode Dry run or Live | `crm_capture_consolidate` for open items not on their key (never with capture Off) |
+| Conversation re-judged elsewhere, or to no item | `crm_capture_release_thread`; empty item expires |
+| Labs judgement ends as a Labs item or no item, Academy target exists | `crm_capture_release_thread(<academy sync>, 'gmail:<mailbox email>:<thread>', '')`, every time, not from the earlier finding (071's reopen clears it); no-op when the Academy holds no such entry |
+| Capture item refused while a newer open item holds its key | replaced `crm_review_release` merges its threads into the open item, then expires it |
+| Refused capture item reopened | entries another open item holds are dropped; empty → expired, not reopened |
+| Company merged (065) | linked and deal keys re-keyed (`company:` head); a collision expires the moved item as today |
+| 90-day tombstone (061) | blanks `source_link` with its `threads`; the re-suggestion check then no longer sees them (accepted) |
+| Rescan finished | `invites_rescanned_at` set, token null, never reset |
+
+### 9.7 Reversibility (074)
+
+`DROP FUNCTION crm_capture_group_upsert(jsonb, jsonb, jsonb),
+crm_capture_release_thread(jsonb, text, text), crm_capture_consolidate(jsonb,
+jsonb)`; re-run 071's `crm_audit_row`, 068's `crm_review_release` and 072's
+`crm_workspaces_seed_ai` with their grants; delete the `capture_routing`
+rows (system actor) and re-create 072's key CHECK; `ALTER TABLE
+crm_mailboxes DROP COLUMN invite_rescan_token, DROP COLUMN
+invites_rescanned_at`. Grouped items stay valid for 073's code (top-level
+`mailbox_id`/`thread_id` kept); consolidated losers stay expired.

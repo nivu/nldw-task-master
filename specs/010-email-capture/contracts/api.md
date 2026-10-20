@@ -475,3 +475,183 @@ replied." (from the suggestion, since there is no target name).
 - Today title: "Move to Proposal, proposal sent on 20 Oct" / "Possibly Closed Won:
   check the signed document" / "New deal at Discovery"; detail: company name
   and the reason.
+
+---
+
+## 7. Revision 1 (spec §14; plan "Revision 1"; data-model §9)
+
+No route is added or removed; no MCP tool changes (count stays 21).
+
+### 7.1 `GET /crm/capture` — FR-CAP-RPT-05 to -10
+
+`dry_run.counts` gains `academy` and `academy_unrouted` (computed from the
+run's findings, present for every run, 0 when none). `dry_run.findings[]`
+gains `business` (`"labs"` | `"academy"`) and, for Academy, `routed`
+(boolean or `null` before apply; `true` means handed to an accepting
+Academy, whatever the Academy then did — nothing the Academy decided is
+returned here); `duplicate_company` is `null` for an
+Academy finding. `dry_run.recall` becomes:
+
+```json
+{
+  "line": "Of the 18 that could be tested, the dry run found 15. 42 could not be tested: 30 involve contacts now in the CRM (filed automatically), 8 were internal-only, 4 are outside Primary and Sent.",
+  "summary": {
+    "total": 60, "tested": 18, "found": 15, "capped": false,
+    "untested": {"known": 30, "ignored": 0, "internal_only": 8, "calendar": 0,
+                 "automated": 0, "outside_scope": 4, "not_judged": 0,
+                 "skipped_rules": 0},
+    "academy_unrouted": 0
+  },
+  "rows": [{"thread_id": "…", "latest_at": "…", "subject": null, "fate": "internal_only"}]
+}
+```
+
+- `summary.untested.known` = rows with fate `filed_known` or `known_now`.
+- `found` = rows with fate `found` or `academy_unrouted` (Claude found
+  both); `tested` = `found` + rows with fate `judged_otherwise`;
+  `summary.academy_unrouted` is the part of `found` the Academy could not
+  take.
+- `capped` is true only when the stored recall carries the `{"capped":
+  true}` marker row (the check stopped at 500 with conversations still
+  unchecked); marker rows are never returned in `rows`.
+- `fate` ∈ `filed_known`, `known_now`, `found`, `judged_otherwise`,
+  `ignored`, `internal_only`, `calendar`, `automated`, `outside_scope`,
+  `not_judged`, `academy_unrouted`, and `skipped_rules` (runs before 074
+  only).
+- With none tested: `"None of your 60 labelled conversations could be
+  tested: 36 involve contacts now in the CRM (filed automatically), 15 were
+  internal-only, 9 were calendar notifications."`
+- Optional clauses: inside the found sentence, `"…the dry run found 15,
+  of which 2 were course enquiries the Academy could not take."`; at the
+  end, `" Only the first 500 were checked."` when `capped`.
+- Page text per fate (`FATE_TEXT`): Found · Filed as known · Judged
+  otherwise · Contacts added later (not sent to Claude) · On the ignore
+  list · Skipped: internal only · Skipped: calendar notification · Skipped:
+  automated mail · Outside Primary and Sent · Not judged: Claude or Gmail
+  failed · Course enquiry, no Academy workspace · Skipped by the rules.
+
+### 7.2 Job counts — §1.4 amended
+
+`capture` runs add `consolidated`, `rekeyed`, `consolidate_failed`,
+`items_skipped`, `released`, `academy_routed` (handed over),
+`academy_unrouted`. There is no Labs count of the Academy step's outcome
+(an ignored or already decided enquiry is logged in the Academy only).
+Email sync runs add `invites_rescanned`, `invite_rescan_failed`,
+`invite_rescan_restarted`.
+
+### 7.3 `DiscoveryOutput` — §4 amended (FR-CAP-ACAD-01, FR-CAP-INV-04)
+
+```python
+    business: Literal["labs", "academy"] = "labs"
+```
+
+JSON schema adds `"business": {"type": "string", "enum": ["labs",
+"academy"]}` (not required). `INSTRUCTION` adds the two sentences of plan
+R1.4 and R1.5 (business; meeting invitations). `parts` may add
+`("Conversation type", "meeting invitation")`. `website_choices` never
+lists a `MEETING_HOSTS` host. `CLASSIFIER_VERSION = "010.2"`. Outside the
+TVA-linked workspace the answer is replaced by `labs`.
+
+### 7.4 Review payloads — §6 amended (FR-CAP-GRP)
+
+`new_lead` from Labs discovery, grouped:
+
+```json
+{
+  "type": "new_lead",
+  "source_kind": "email_thread",
+  "source_key": "capture:domain:acme-robotics.com",
+  "dedupe_key": "email_thread|capture:domain:acme-robotics.com|new_lead|thread",
+  "source_version": "<newest entry's message id>",
+  "source_link": {
+    "mailbox_id": "<newest>", "thread_id": "<newest>",
+    "threads": [
+      {"ref": "gmail:<mb>:<t1>", "mailbox_id": "<mb>", "thread_id": "<t1>", "message_id": "…",
+       "first_at": "2026-09-02T10:00:00+05:30", "latest_at": "2026-09-03T12:00:00+05:30",
+       "message_count": 2, "owner_replied": false, "origin": "discovery",
+       "reason": "Asked about a pilot.", "confidence": "medium",
+       "person_email": "ravi@acme-robotics.com", "first_name": "Ravi", "last_name": null},
+      {"ref": "gmail:<mb>:<t2>", "…": "…", "message_count": 3, "owner_replied": true}
+    ]
+  },
+  "suggestion": {
+    "company_name": "Acme Robotics", "domain": "acme-robotics.com", "…": "as §6.1",
+    "evidence": {"first_at": "2026-09-02T10:00:00+05:30", "latest_at": "2026-10-02T11:40:00+05:30",
+                 "message_count": 5, "conversations": 2, "owner_replied": true,
+                 "attachments": ["Nunnari pricing.pdf"],
+                 "reason": "Asked for pricing; you replied.", "confidence": "high",
+                 "origin": "discovery"}
+  }
+}
+```
+
+- Linked: `source_key: "capture:linked"`, `dedupe_key:
+  "email_thread|capture:linked|new_lead|company:<id>"`.
+- `deal_signal` (either origin): `source_key: "capture:deal"`,
+  `dedupe_key: "email_thread|capture:deal|deal_signal|company:<id>"`,
+  `source_link.threads` as above with `origin` per entry.
+- `GET /crm/review` returns `source.link` as stored plus `thread_key` (from
+  the top level, unchanged); `threads` is passed through.
+- Title unchanged; `detail` "2 conversations · 5 emails · Asked for
+  pricing; you replied." (one conversation: "5 emails · …" as today).
+- Approve result: `{company_id, person_id, people: 2, linked, filed:
+  "queued", threads_filed: 2}`: one person made or linked per distinct
+  entry `person_email` (`person_id` is the latest sender's);
+  `threads_filed` counts the entries whose sender is a known person after
+  approval.
+- Money figures are masked in `suggestion` strings and in every
+  `threads[].reason` before save (FR-CRMAI-LLM-05).
+- A consolidated item: `status: "expired"`, `result: {"superseded_by":
+  "<id>", "reason": "Merged into one suggestion for HearSight."}`.
+
+`new_lead` in the Academy (FR-CAP-ACAD-04):
+
+```json
+{
+  "type": "new_lead", "owner_id": "<mailbox owner if Academy admin/member, else null>",
+  "record_type": null, "record_id": null,
+  "source_kind": "email_thread",
+  "source_key": "capture:domain:college.example.edu",
+  "dedupe_key": "email_thread|capture:domain:college.example.edu|new_lead|thread",
+  "source_version": "<gmail message id>",
+  "source_link": {"threads": [{"ref": "gmail:navaneeth@nunnarilabs.com:<thread>",
+                               "thread_id": "<thread>", "message_id": "…",
+                               "first_at": "…", "latest_at": "…", "message_count": 2,
+                               "owner_replied": true, "origin": "academy_routing",
+                               "reason": "Asked about the AI course for students.",
+                               "confidence": "high", "person_email": "…",
+                               "first_name": "…", "last_name": "…"}]},
+  "suggestion": {"company_name": "…", "domain": "college.example.edu", "domain_from_text": false,
+                 "lead_stage": "contacted", "first_name": "…", "last_name": "…",
+                 "email": "…", "title": null, "link": false, "deal_stage_hint": null,
+                 "evidence": {"…": "totals as above", "origin": "academy_routing",
+                              "mailbox_email": "navaneeth@nunnarilabs.com"}}
+}
+```
+
+- No Labs uuid in any field; `source.link` has no `thread_key`.
+- Approve result: `{company_id, person_id, people, note_id, linked,
+  threads_filed: 0}`; the note (masked) is linked to the company and every
+  person. The card shows "From the Labs mailbox navaneeth@nunnarilabs.com; no
+  conversation is stored in the Academy." instead of "Open conversation".
+- Dismiss with `ignore` writes the Academy's ignore list (§1.3 unchanged).
+
+### 7.4a Settings — §1.2 amended (FR-CAP-ACAD-03)
+
+`GET /crm/settings` (Admin) includes `"capture_routing": {"accept_routed":
+true}` in every workspace; it is read only in the Academy. `PATCH
+/crm/settings/capture_routing` (Admin of that workspace) — `{ "value": {
+"accept_routed": true | false } }`, through the generic settings route and
+`VALIDATORS["capture_routing"]`; audited. The Academy's Settings → Email
+capture shows it as *Accept course enquiries from Labs*.
+
+### 7.5 Frontend types — §5 amended
+
+`CrmCaptureRecallFate` + `internal_only | calendar | automated |
+not_judged | academy_unrouted`; `CrmCaptureRecall` + `summary`;
+`CrmCaptureFinding` + `business`, `routed`; capture counts + `academy`,
+`academy_unrouted`; `CrmReviewItem.source.link` + `threads?:
+CrmCaptureThreadRef[]`; evidence + `conversations?`, `mailbox_email?`;
+result + `threads_filed?`, `people?`, `note_id?`, `superseded_by?`;
+`CrmCaptureThreadRef` + `person_email`, `first_name?`, `last_name?`;
+settings + `capture_routing: {accept_routed: boolean}`.
