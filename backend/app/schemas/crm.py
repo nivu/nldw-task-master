@@ -724,6 +724,10 @@ class NotificationsRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: Spec 010 FR-CAP-SRC-01 — *Labels only* or *Primary and Sent*.
+CaptureSource = Literal["labels", "primary_sent"]
+
+
 class MailboxIn(BaseModel):
     """A mailbox to sync: its address, its owner (a member) and its labels."""
 
@@ -733,6 +737,9 @@ class MailboxIn(BaseModel):
     owner_id: str = Field(min_length=1, max_length=64)
     labels: list[str] = Field(min_length=1, max_length=20)
     is_active: bool = True
+    # Spec 010 FR-CAP-SRC-01, -07 (contracts §1.1).
+    capture_source: CaptureSource = "labels"
+    capture_start_date: date = date(2026, 4, 1)
 
 
 class MailboxUpdate(BaseModel):
@@ -742,6 +749,9 @@ class MailboxUpdate(BaseModel):
     owner_id: str | None = Field(default=None, min_length=1, max_length=64)
     labels: list[str] | None = Field(default=None, min_length=1, max_length=20)
     is_active: bool | None = None
+    # Spec 010: optional, and refused when sent as null (contracts §1.1).
+    capture_source: CaptureSource | None = None
+    capture_start_date: date | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +847,8 @@ ReviewItemType = Literal[
     "deal_link",
     "enrichment_conflict",
     "rule_suggestion",
+    "deal_signal",
+    "new_lead",
 ]
 ReviewStatus = Literal["open", "approved", "dismissed", "expired"]
 
@@ -868,6 +880,16 @@ class ReviewApproveIn(BaseModel):
     edits: dict[str, Any] | None = None
 
 
+class ReviewDismissIn(BaseModel):
+    """`POST /crm/review/{id}/dismiss` (spec 010 contracts §1.3) — for a
+    `new_lead`, optionally add its sender or its whole domain to the ignore
+    list (FR-CAP-REV-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ignore: Literal["address", "domain"] | None = None
+
+
 class ReviewItemOut(BaseModel):
     """One Review Queue item as the queue shows it (contracts §2.2.1)."""
 
@@ -878,7 +900,8 @@ class ReviewItemOut(BaseModel):
     #: Counts each refresh of the item; an approval sends it back (069).
     version: int
     owner: dict[str, Any] | None
-    target: dict[str, Any]
+    #: None for a spec 010 `new_lead` that matched no company.
+    target: dict[str, Any] | None
     deal_choices: list[dict[str, Any]]
     suggestion: dict[str, Any]
     current: dict[str, Any]
@@ -1118,3 +1141,122 @@ class FollowupDraftOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     draft: str = Field(min_length=1, max_length=2000)
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 — email capture's discovery (contracts §1.2, §2.1, §4)
+# ---------------------------------------------------------------------------
+
+CaptureMode = Literal["off", "dry_run", "live"]
+
+
+class CaptureSettingsValue(BaseModel):
+    """FR-CAP-DIS-01 — the `capture` setting's value; `PATCH
+    /crm/settings/capture` takes `off` or `live` (Dry run is started from
+    Email capture)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: CaptureMode
+
+
+class DiscoveryOutput(BaseModel):
+    """FR-CAP-DIS-05 — what the model must answer for one conversation. The
+    website is chosen by number from the hosts found in the thread, never
+    typed (PD-20)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["new_lead", "deal_signal", "other_business", "not_relevant"]
+    confidence: Literal["high", "medium", "low"]
+    company_name: str | None = Field(default=None, max_length=200)
+    person_name: str | None = Field(default=None, max_length=200)
+    person_email: str | None = Field(default=None, max_length=320)
+    person_title: str | None = Field(default=None, max_length=200)
+    lead_stage: Literal["contacted", "qualified"] | None = None
+    deal_stage: Literal["discovery", "proposal", "closed_won"] | None = None
+    website_choice: int | None = Field(default=None, ge=1, le=10)
+    reason: str = Field(min_length=1, max_length=160)
+
+
+class CaptureMailboxOut(BaseModel):
+    id: str
+    email: str
+    capture_source: Literal["labels", "primary_sent"]
+    capture_start_date: str
+    backfilled_at: str | None
+
+
+class CaptureFindingOut(BaseModel):
+    candidate_id: str
+    outcome: Literal["new_lead", "deal_signal"]
+    confidence: Literal["high", "medium", "low"]
+    company_name: str | None
+    domain: str | None
+    domain_from_text: bool
+    person_name: str | None
+    person_email: str | None
+    first_at: str | None
+    latest_at: str | None
+    message_count: int
+    owner_replied: bool
+    reason: str | None
+    duplicate_company: dict[str, Any] | None
+
+
+class CaptureRecallRowOut(BaseModel):
+    thread_id: str
+    latest_at: str | None
+    subject: str | None
+    fate: Literal[
+        "filed_known",
+        "found",
+        "judged_otherwise",
+        "skipped_rules",
+        "outside_scope",
+        "ignored",
+        "known_now",
+    ]
+
+
+class CaptureRecallOut(BaseModel):
+    line: str
+    rows: list[CaptureRecallRowOut]
+
+
+class CaptureDryRunOut(BaseModel):
+    id: str
+    started_at: str
+    finished_at: str | None
+    cancelled: bool
+    applied_at: str | None
+    applicable: bool
+    counts: dict[str, Any]
+    estimated_cost_usd: str
+    findings: list[CaptureFindingOut]
+    recall: CaptureRecallOut
+
+
+class CaptureIgnoreIn(BaseModel):
+    """`POST /crm/capture/ignores` (contracts §2.4): an address or a domain,
+    trimmed and lower-cased before it is checked (FR-CAP-DIS-03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["address", "domain"]
+    value: str = Field(max_length=400)
+
+
+class CaptureOverviewOut(BaseModel):
+    """`GET /crm/capture` — Settings, Email capture, for the workspace's
+    Admins only (FR-CAP-RPT-02, -03). No message text; a recall row's
+    subject only for a thread already stored as captured mail."""
+
+    mode: CaptureMode
+    #: Whether `PATCH /crm/settings/capture {"mode": "live"}` would pass its
+    #: own checks: a dry run of the workspace was ever applied and an active
+    #: mailbox is on Primary and Sent (contracts §1.2).
+    live_allowed: bool
+    mailboxes: list[CaptureMailboxOut]
+    ignores: list[dict[str, Any]]
+    dry_run: CaptureDryRunOut | None

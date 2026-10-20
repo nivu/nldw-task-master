@@ -561,7 +561,7 @@ budget and switches a phase on.**
 
 ### First release
 
-1. **Migrations `060`–`068`** with `npx supabase db push`, **after every
+1. **Migrations `060`–`070`** with `npx supabase db push`, **after every
    `008` migration** (`046`–`059`, section 7) is applied; never in the same push
    ahead of them, because several of them replace CRM functions
    (`crm_audit_row`, `crm_purge`, `crm_merge_companies`, …) starting from
@@ -600,7 +600,7 @@ budget and switches a phase on.**
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `worker-crm-ai` **only** | The Claude API key (secret). Never on `api`, `worker` or `beat`; never in Netlify |
 | `FIREFLIES_API_KEY` | `worker-crm-ai` **only** | The Fireflies API key (secret). It sees only the meetings of the Fireflies account it belongs to; record which account that is |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | `worker-crm-ai`, as well as `worker-crm-sync` | The same service-account key as sync (section 6), for the summariser's read of stored messages. Needed only for email summaries and R-1 |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | `worker-crm-ai`, as well as `worker-crm-sync` | The same service-account key as sync (section 6), for the summariser's read of stored messages and email capture's read of candidate conversations (section 9). Needed for email summaries, R-1 and email capture (010) |
 | `CRM_GMAIL_CONFIGURED` | `worker-crm-ai`, as well as `api`, `beat` and `worker` | `true` once the key above is set. The summariser treats email sync as off without it |
 | `CRM_AI_INPUT_USD_PER_MTOK`, `CRM_AI_OUTPUT_USD_PER_MTOK` | `worker-crm-ai` **and `api`** | The rate table the owner confirms (US dollars per million input and output tokens). Not secret. `worker-crm-ai` uses them to estimate each call's cost; `api` needs them too, or `GET /crm/ai` reports `rates_configured: false` and Settings → AI keeps saying the rates are not set |
 
@@ -633,6 +633,145 @@ or sets the budget to zero. To stop it everywhere, stop `worker-crm-ai`: the
 ticks then wait on the queue, and AI jobs that have run before show as late
 under Settings → Jobs and on `/health/jobs`. Stored summaries, notes and
 values are kept either way.
+
+## 9. Email capture (spec 010)
+
+Email capture reads a mailbox's Gmail **Primary** tab and **Sent** mail
+with no label, files mail from known people and companies on their records,
+and asks Claude about the rest; findings wait in the Review Queue. It ships
+in the same image and frontend, with **no new service, no new variable and
+no new dependency**. Read "Email sync and capture" and "Email capture's
+discovery" in [`docs/architecture/crm.md`](../architecture/crm.md#email-sync-and-capture)
+first. Nothing changes for anyone on release day: **every mailbox stays on
+*Labels only* and every workspace's capture mode is *Off*.**
+
+### First release
+
+1. **Migrations `071`–`073`** with `npx supabase db push`, **after `060`–`070`**
+   (section 8); never ahead of them, because they replace `crm_audit_row`,
+   `crm_workspaces_seed_ai`, `crm_job_latest` and other functions starting
+   from their `009` versions. They add `capture_source` (seeded `labels`),
+   `capture_start_date` (2026-04-01), `docs_checked_at` and
+   `reconcile_after` to `crm_mailboxes`; the tables
+   `crm_capture_candidates`, `crm_capture_dry_runs` and `crm_capture_ignores`
+   (RLS on, no browser grants); the `capture` workspace setting (seeded
+   `{"mode": "off"}`); the `new_lead` and `deal_signal` review item types;
+   and the `capture` job name.
+2. **`api`, `worker`, `beat`, `worker-crm-ai` and `worker-crm-sync` (if it
+   exists) from the same commit**, after the migrations:
+
+   ```bash
+   cd backend && railway up . --path-as-root --service <name>
+   ```
+
+   Beat gains `crm-ai-capture` (`crm_ai.capture` at minute 7 of every hour,
+   on the `crm-ai` queue). `worker-crm-sync` gains `crm.capture_thread`
+   (filing one conversation that became known) and the Primary and Sent
+   scan; `worker-crm-ai` gains the discovery job. A worker left on the old
+   commit drops these tasks silently.
+3. **Netlify**, with `--skip-functions-cache`:
+
+   ```bash
+   cd frontend && NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=false netlify deploy --build --prod --skip-functions-cache
+   ```
+
+   Settings gains the **Email capture** tab; Settings → Mailboxes gains the
+   capture source and start date; the help guides *Running a CRM workspace*
+   and *Review AI suggestions* gain their capture sections.
+4. **Check**:
+
+   ```bash
+   curl -s https://<railway-domain>/health/jobs        # {"status":"ok",…} once capture has ticked; a skipped run counts
+   curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/docs           # 404
+   curl -s -o /dev/null -w '%{http_code}\n' https://<railway-domain>/openapi.json   # 404
+   ```
+
+   and, in the database, that nothing captures yet:
+
+   ```sql
+   select count(*) from crm_mailboxes where capture_source <> 'labels';           -- 0
+   select count(*) from crm_workspace_settings
+    where key = 'capture' and value->>'mode' <> 'off';                            -- 0
+   ```
+
+   Settings → Jobs lists **Email capture** as skipped "Email capture is off."
+
+### Release-day state
+
+| Switch | Where | Released as |
+|---|---|---|
+| Capture source | each mailbox, Settings → Mailboxes | *Labels only*: sync behaves exactly as before |
+| Capture mode | each workspace, Settings → Email capture | *Off*: the discovery job skips every hour |
+| Labs AI budget, rates | Settings → AI; `worker-crm-ai` and `api` (section 8) | as they were; capture needs a non-zero budget and both rates |
+
+### Settings, by service
+
+Nothing new. Capture uses section 6's and section 8's settings:
+
+| Variable | Service | Why capture needs it |
+|---|---|---|
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | `worker-crm-sync` **and `worker-crm-ai`** (the same key) | `worker-crm-sync` scans Primary and Sent; `worker-crm-ai` reads candidate conversations. Without it on `worker-crm-ai` the job skips "The Gmail key is not set on this service." |
+| `CRM_GMAIL_CONFIGURED` | `api`, `beat`, `worker`, `worker-crm-ai` | capture treats email sync as off without it |
+| `ANTHROPIC_API_KEY` | `worker-crm-ai` only | the discovery call |
+| `CRM_AI_INPUT_USD_PER_MTOK`, `CRM_AI_OUTPUT_USD_PER_MTOK` | `worker-crm-ai` and `api` | while unset, capture skips "AI rates are not set" |
+
+Capture's Claude calls count toward the workspace's monthly AI budget and
+stop at it (spec 010 NFR-CAP-01: a six-month dry run is estimated under
+US$5, the hourly run under US$1 a month). Captured mail linked to a record
+is also summarised by phase 1 when that is on, so email summary spend rises
+with it (plan R-4).
+
+### Owner steps, before anything captures
+
+In order:
+
+1. **`007` step zero**, if not done: create `worker-crm-sync` with
+   `GOOGLE_SERVICE_ACCOUNT_JSON`, and set `CRM_GMAIL_CONFIGURED=true` on
+   `api`, `beat`, `worker` and `worker-crm-ai` (section 6, "Switching Gmail
+   sync on").
+2. **Set `GOOGLE_SERVICE_ACCOUNT_JSON` on `worker-crm-ai`, the same key as
+   `worker-crm-sync`**, and redeploy it. Capture reads threads there; without
+   it the job skips "The Gmail key is not set on this service."
+3. `009`'s Claude key on `worker-crm-ai`, and both rates on `worker-crm-ai`
+   and `api` (section 8).
+4. A **non-zero Labs AI budget** under Settings → AI. No AI phase has to be
+   on for capture.
+5. **Switch Labs email sync on** (Settings → Mailboxes), if it is not.
+6. Set `navaneeth@nunnarilabs.com` to **Primary and Sent** (start date
+   1 April 2026) under Settings → Mailboxes. Known-contact mail starts being
+   filed at the next sync; deal-document signals start too.
+7. **Wait for the backfill** to finish: the mailbox no longer says it is
+   reading from its start date, and Settings → Jobs shows the sync runs `ok`.
+   The dry run does not finish until every capturing mailbox has
+   backfilled.
+8. **Start the dry run**: Settings → Email capture → **Run dry run**. It
+   works through the candidates hourly, chaining itself a minute apart while
+   any remain; the report fills in as it goes.
+9. **Review** the report: the counts, the estimated cost, every lead and
+   deal signal, and the recall check against the hand-labelled
+   conversations.
+10. **Apply** within 7 days of it finishing. Its high- and medium-confidence
+    findings become Review Queue items for the mailbox's owner, with no new
+    Claude calls, and the mode becomes **Live**: new conversations are then
+    judged every hour.
+
+The Academy workspace and other mailboxes stay on *Labels only* (spec 010
+E2); adding one later is the same steps 6–10 for that mailbox.
+
+### Switching it off
+
+- **Stop discovery** in a workspace: Settings → Email capture → mode
+  **Off**. The job skips from its next run; an open dry run is cancelled
+  and cannot be applied. Open Review Queue items stay until decided or
+  expired.
+- **Stop capture** on a mailbox: set it back to **Labels only**. The next
+  sync removes captured mail that carries none of its labels, back to its
+  start date; labelled mail stays. Candidates of that mailbox are read no
+  further.
+- Both together restore the behaviour before spec 010 (NFR-CAP-05). To stop
+  every AI call at once, section 8 applies (budget zero, or stop
+  `worker-crm-ai`). Decision records of conversations that were not leads
+  are purged after 12 months by `crm.purge_trash`.
 
 ## Releasing a change
 

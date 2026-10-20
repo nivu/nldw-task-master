@@ -29,7 +29,14 @@ TYPES: Final = {
     "deal_link": "Link meeting to a deal",
     "enrichment_conflict": "Use the enriched value",
     "rule_suggestion": "Follow-up suggestion",
+    # Spec 010 FR-CAP-REV-01: a deal document or discovery on a known company.
+    "deal_signal": "Deal signal",
+    # Spec 010 FR-CAP-REV-01: a conversation with someone the CRM does not know.
+    "new_lead": "New lead",
 }
+#: Spec 010 FR-CAP-REV-04: the item types capture makes, owned by the
+#: mailbox owner (PD-5).
+CAPTURE_TYPES: Final = ("new_lead", "deal_signal")
 #: The items that create a task, and the task source each gives it
 #: (FR-CRMAI-REV-06, FR-CRMAI-CHG-10).
 TASK_SOURCES: Final = {
@@ -100,6 +107,7 @@ def owner_for(
     - `deal_link`, `enrichment_conflict`: the company owner.
     - `rule_suggestion`: the deal owner for a deal-level rule
       (`rule_level="deal"`), else the company owner.
+    - `new_lead`, `deal_signal` (spec 010 FR-CAP-REV-04): the mailbox owner.
 
     `roles`: member id → CRM role in this workspace; `active`: the ids of
     active accounts. Whoever it lands on must be an Admin or Member with an
@@ -116,6 +124,8 @@ def owner_for(
         fallback = deal_owner
     elif item_type == "rule_suggestion":
         fallback = deal_owner if rule_level == "deal" else company_owner
+    elif item_type in CAPTURE_TYPES:
+        fallback = mailbox_owner
     else:
         fallback = company_owner
     return fallback if _eligible(fallback, roles, active) else None
@@ -139,15 +149,17 @@ def dedupe_key(
     source_kind: str,
     source_key: str,
     item_type: str,
-    record_type: str,
-    record_id: str,
+    record_type: str | None,
+    record_id: str | None,
     *,
     member_id: str | None = None,
     fingerprint: str | None = None,
 ) -> str:
     """`<source_kind>|<source_key>|<type>|<record_type>:<record_id>`, with
-    `:<member id>` for R-4 and `#<fingerprint>` for a task item."""
-    target = f"{record_type}:{record_id}"
+    `:<member id>` for R-4 and `#<fingerprint>` for a task item. An item with
+    no target (a `new_lead` of spec 010 that matched no company) ends in
+    `|thread`: one per conversation (plan §5.10)."""
+    target = f"{record_type}:{record_id}" if record_type and record_id else "thread"
     if member_id:
         target += f":{member_id}"
     if fingerprint:

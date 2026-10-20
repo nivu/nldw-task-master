@@ -8,6 +8,7 @@ import { AiBudgetBanner } from "@/components/crm/ai-budget-banner";
 import { AiFieldsEditor } from "@/components/crm/ai-fields-editor";
 import { AiSettings } from "@/components/crm/ai-settings";
 import { AuditTable } from "@/components/crm/audit-table";
+import { CaptureSettings } from "@/components/crm/capture-settings";
 import { FollowupRulesForm } from "@/components/crm/followup-rules-form";
 import { FxRatesForm } from "@/components/crm/fx-rates-form";
 import { InviteDialog } from "@/components/crm/invite-dialog";
@@ -24,6 +25,7 @@ import {
   getCrmFxRates,
   addCrmMailbox,
   getCrmAi,
+  getCrmCapture,
   listCrmAiFields,
   getCrmJobs,
   getCrmLists,
@@ -43,6 +45,7 @@ import {
 import type {
   AutomationSwitches,
   CrmAuditEntry,
+  CrmCaptureSource,
   CrmJobName,
   CrmMailbox,
   CrmTargetIn,
@@ -52,7 +55,7 @@ import type {
   StageProbabilities,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
-import { formatDate } from "@/lib/crm/format";
+import { formatDate, todayIn } from "@/lib/crm/format";
 import { useAsync } from "@/lib/use-async";
 
 const STAGES: StageKey[] = [
@@ -74,6 +77,7 @@ const TABS = [
   "automations",
   "targets",
   "mailboxes",
+  "email-capture",
   "jobs",
   "ai",
   "ai-fields",
@@ -89,7 +93,8 @@ const TABS = [
  * dashboard's bookings targets (FR-CRM-LIST-06, FR-CRM-DASH-02); from 009
  * the AI budget, spend and phase switches (FR-CRMAI-LLM-09, FR-CRMAI-FLAG-01),
  * the AI field definitions (FR-CRMAI-FIELD-01) and the follow-up rules
- * (FR-CRMAI-RULE-01).
+ * (FR-CRMAI-RULE-01); from 010 Email capture: the mode, the dry run and its
+ * report (FR-CAP-DIS-01, FR-CAP-RPT-01 to -03).
  * Admins only; the server refuses everyone else whatever this page shows.
  */
 export default function SettingsPage() {
@@ -129,6 +134,7 @@ export default function SettingsPage() {
           <TabsTrigger value="automations">Automations</TabsTrigger>
           <TabsTrigger value="targets">Targets</TabsTrigger>
           <TabsTrigger value="mailboxes">Mailboxes</TabsTrigger>
+          <TabsTrigger value="email-capture">Email capture</TabsTrigger>
           <TabsTrigger value="jobs">Jobs</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="ai-fields">AI fields</TabsTrigger>
@@ -161,6 +167,9 @@ export default function SettingsPage() {
         </TabsContent>
         <TabsContent value="mailboxes" className="pt-4">
           <MailboxesTab workspace={ws} />
+        </TabsContent>
+        <TabsContent value="email-capture" className="pt-4">
+          <EmailCaptureTab workspace={ws} />
         </TabsContent>
         <TabsContent value="jobs" className="pt-4">
           <JobsTab workspace={ws} onShowAi={() => setTab("ai")} />
@@ -793,6 +802,35 @@ function AiTab({ workspace }: { workspace: string }) {
   );
 }
 
+/** 010 FR-CAP-DIS-01, FR-CAP-RPT-01 to -03 — the mode, the dry run and its report. */
+function EmailCaptureTab({ workspace }: { workspace: string }) {
+  const { bootstrap } = useCrm();
+  const { data, error, reload } = useAsync(() => getCrmCapture(workspace), [workspace]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Email capture</CardTitle>
+        <CardDescription>
+          Finds new leads and deal signals in Primary and Sent mail from people not yet in the
+          CRM. Start with a dry run to see what it would find before anything is created. Capture
+          starts off.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Problem message={error} />
+        {data && (
+          <CaptureSettings
+            workspace={workspace}
+            overview={data}
+            timeZone={bootstrap.me.timezone}
+            onChanged={reload}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** 009 FR-CRMAI-FIELD-01 — the AI field definitions, the four seeds among them. */
 function AiFieldsTab({ workspace }: { workspace: string }) {
   const { data, error, reload } = useAsync(() => listCrmAiFields(workspace), [workspace]);
@@ -866,11 +904,24 @@ function syncReport(result: EmailSyncResult): string {
   );
 }
 
+/** Spec 010 FR-CAP-SRC-01: the two capture sources, as Settings names them. */
+const CAPTURE_SOURCES: { value: CrmCaptureSource; label: string }[] = [
+  { value: "labels", label: "Labels only" },
+  { value: "primary_sent", label: "Primary and Sent" },
+];
+
+/** FR-CAP-SRC-07: the default capture start date. */
+const CAPTURE_START_DEFAULT = "2026-04-01";
+
 /**
  * FR-CRM-SYNC-01 to -04 — the Gmail mailboxes this workspace syncs, their
  * owners (members of the workspace) and labels; the sync switch, which stays
  * off until the service-account credential exists (Q-23); and Run now
  * (Admins only, Q-62). Only subjects and participants are stored (Q-29).
+ *
+ * Spec 010 FR-CAP-SRC-01, -07: each mailbox's capture source (Labels only,
+ * or Primary and Sent from a start date). Changing either reads the mailbox
+ * afresh, so the change is confirmed first.
  */
 function MailboxesTab({ workspace }: { workspace: string }) {
   const { bootstrap, reload: reloadShell } = useCrm();
@@ -881,6 +932,8 @@ function MailboxesTab({ workspace }: { workspace: string }) {
   const [email, setEmail] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [labels, setLabels] = useState("");
+  const [source, setSource] = useState<CrmCaptureSource>("labels");
+  const [startDate, setStartDate] = useState(CAPTURE_START_DEFAULT);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<string | null>(null);
   const [mailboxes, members] = data ?? [null, []];
@@ -906,11 +959,43 @@ function MailboxesTab({ workspace }: { workspace: string }) {
         email: email.trim(),
         owner_id: ownerId || bootstrap.me.id,
         labels: labelsOf(labels),
+        capture_source: source,
+        ...(source === "primary_sent" ? { capture_start_date: startDate } : {}),
       });
       setEmail("");
       setLabels("");
+      setSource("labels");
+      setStartDate(CAPTURE_START_DEFAULT);
     });
   }
+
+  async function changeSource(mailbox: CrmMailbox, next: CrmCaptureSource) {
+    if (next === mailbox.capture_source) return;
+    const from = formatDate(mailbox.capture_start_date, bootstrap.me.timezone);
+    const question =
+      next === "primary_sent"
+        ? `Capture Primary and Sent mail from known contacts for ${mailbox.email}? ` +
+          `The mailbox is read afresh from ${from}.`
+        : `Go back to Labels only for ${mailbox.email}? ` +
+          "Captured mail that carries none of its labels is removed on the next sync.";
+    if (!window.confirm(question)) return;
+    await act(() => updateCrmMailbox(workspace, mailbox.id, { capture_source: next }));
+  }
+
+  async function changeStart(mailbox: CrmMailbox, input: HTMLInputElement) {
+    const next = input.value;
+    if (next === mailbox.capture_start_date) return;
+    if (
+      !next ||
+      !window.confirm(`Read ${mailbox.email} afresh from ${formatDate(next, bootstrap.me.timezone)}?`)
+    ) {
+      input.value = mailbox.capture_start_date;
+      return;
+    }
+    await act(() => updateCrmMailbox(workspace, mailbox.id, { capture_start_date: next }));
+  }
+
+  const today = todayIn(bootstrap.me.timezone);
 
   async function editLabels(mailbox: CrmMailbox) {
     const text = window.prompt(
@@ -929,7 +1014,11 @@ function MailboxesTab({ workspace }: { workspace: string }) {
           <CardDescription>
             Every 15 minutes, threads carrying a mailbox&apos;s labels land on the right people and
             companies: subject, participants, direction and date, never the message itself. The
-            first run reads the last 90 days. Email among our own domains only is skipped.
+            first run reads the last 90 days. Email among our own domains only is skipped. A
+            mailbox on Primary and Sent also files Primary and Sent mail from people and
+            companies already in the CRM, with no label, from its start date; newsletters and
+            automated mail are skipped, and an SOW or proposal to a client with an open deal
+            becomes a deal signal in Review.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -1003,11 +1092,48 @@ function MailboxesTab({ workspace }: { workspace: string }) {
                       Owner {m.owner_name ?? "—"} · Labels {m.labels.join(", ")}
                       {m.is_active ? "" : " · Paused"}
                     </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Capture</span>
+                        <select
+                          aria-label={`Capture source for ${m.email}`}
+                          className="h-7 rounded-md border bg-background px-2 text-sm"
+                          value={m.capture_source}
+                          disabled={busy}
+                          onChange={(e) => changeSource(m, e.target.value as CrmCaptureSource)}
+                        >
+                          {CAPTURE_SOURCES.map((c) => (
+                            <option key={c.value} value={c.value}>
+                              {c.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {m.capture_source === "primary_sent" && (
+                        <label className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">from</span>
+                          <Input
+                            key={`${m.id}-${m.capture_start_date}`}
+                            type="date"
+                            aria-label={`Capture start date for ${m.email}`}
+                            className="h-7 w-auto"
+                            max={today}
+                            defaultValue={m.capture_start_date}
+                            disabled={busy}
+                            onBlur={(e) => changeStart(m, e.currentTarget)}
+                          />
+                        </label>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       {m.last_synced_at
                         ? `Last synced ${formatDate(m.last_synced_at, bootstrap.me.timezone)}`
                         : "Not synced yet"}
-                      {m.last_synced_at && !m.backfilled_at ? " · reading the last 90 days" : ""}
+                      {m.last_synced_at && !m.backfilled_at
+                        ? m.capture_source === "primary_sent"
+                          ? ` · reading from ${formatDate(m.capture_start_date, bootstrap.me.timezone)}`
+                          : " · reading the last 90 days"
+                        : ""}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
@@ -1081,6 +1207,33 @@ function MailboxesTab({ workspace }: { workspace: string }) {
                 className="h-8"
               />
             </label>
+            <label className="space-y-1 text-sm">
+              <span className="block text-muted-foreground">Capture</span>
+              <select
+                className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                value={source}
+                onChange={(e) => setSource(e.target.value as CrmCaptureSource)}
+              >
+                {CAPTURE_SOURCES.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {source === "primary_sent" && (
+              <label className="space-y-1 text-sm">
+                <span className="block text-muted-foreground">Capture from</span>
+                <Input
+                  type="date"
+                  required
+                  max={today}
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="h-8"
+                />
+              </label>
+            )}
             <div className="sm:col-span-3">
               <Button type="submit" disabled={busy}>
                 Add mailbox

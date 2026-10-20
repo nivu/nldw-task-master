@@ -58,6 +58,8 @@ export async function backendFetch<T>(
     throw new BackendError(problem);
   }
 
+  // 204 No Content has no body to parse (spec 010 DELETE /crm/capture/ignores/{id}).
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 

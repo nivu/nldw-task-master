@@ -78,6 +78,8 @@ JOBS: Final = {
     # Spec 009 FR-CRMAI-JOB-01, D-4: the R-1 drafts, enqueued by an
     # `automations` tick with R-1 work.
     "followup_drafts": Job("Follow-up drafts", timedelta(minutes=30)),
+    # Spec 010 FR-CAP-DIS-10, NFR-CAP-04: email capture's discovery, hourly.
+    "capture": Job("Email capture", timedelta(hours=1)),
 }
 #: FR-CRM-JOB-02.
 STREAK: Final = 3
@@ -169,6 +171,9 @@ def run(
                 (workspace or {}).get("key", "-"),
             )
         values = failure(job, exc)
+        # Spec 010 NFR-CAP-04: a run that fails part-way may say what it did.
+        if getattr(exc, "counts", None):
+            values["counts"] = dict(exc.counts)
     finish(job, workspace, started["id"], values, now)
     return {"outcome": values["outcome"], "counts": values["counts"]}
 

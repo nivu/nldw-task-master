@@ -2,7 +2,9 @@
 FR-CRM-LIST-01 to -06, -09, FR-CRM-FX-02, FR-CRM-PIPE-11; from 1b the flag
 thresholds (FR-CRM-FLAG-01), the automation switches (FR-CRM-AUTO-02) and
 the email sync switch, which cannot go on until the Gmail credential exists
-(FR-CRM-SYNC-03, Q-23), and the dashboard's bookings targets (S11b).
+(FR-CRM-SYNC-03, Q-23), and the dashboard's bookings targets (S11b). Spec
+010: the `capture` mode (contracts §1.2) is written by
+`crm_capture_set_mode`, never the generic write.
 
 Everything here is Admin only except reading the lists, which every member
 needs for the pickers. Each change goes through `crm_apply`, so it is
@@ -22,6 +24,7 @@ from fastapi import APIRouter, Body, Path
 from app.api.crm.deps import CrmAdminDep, CrmContext, CrmReadDep
 from app.api.errors import ProblemDetail
 from app.config import settings as config
+from app.domain.crm import capture as capture_rules
 from app.domain.crm import settings as rules
 from app.schemas.crm import FxRateIn, OptionCreate, OptionUpdate, SettingUpdate, TargetIn
 from app.services.crm import dashboard, email_sync, store
@@ -30,6 +33,8 @@ from app.services.crm.context import actor
 router = APIRouter(prefix="/crm", tags=["crm"])
 
 ALLOW_LIST_KEY = "allowed_domains"
+#: Spec 010: email capture's discovery mode, written by its own function.
+CAPTURE_KEY = "capture"
 MONTH = r"^\d{4}-(0[1-9]|1[0-2])$"
 _OPTION_FIELDS = (
     "id",
@@ -66,6 +71,8 @@ def update_setting(key: str, payload: SettingUpdate, ctx: CrmAdminDep) -> dict:
     why = rules.setting_refusal(key, payload.value)
     if why:
         raise ProblemDetail(422, why)
+    if key == CAPTURE_KEY:
+        return _set_capture(ctx, payload.value["mode"])
     if key == "email_sync" and payload.value["enabled"] and not config.CRM_GMAIL_CONFIGURED:
         raise ProblemDetail(422, email_sync.CANNOT_SWITCH_ON)
     store.apply(
@@ -81,6 +88,32 @@ def update_setting(key: str, payload: SettingUpdate, ctx: CrmAdminDep) -> dict:
         ],
     )
     return {"key": key, "value": payload.value}
+
+
+def _set_capture(ctx: CrmAdminDep, mode: str) -> dict:
+    """Spec 010 contracts §1.2, PD-13 — `off` always; `live` only once the
+    workspace has an applied dry run and an active *Primary and Sent*
+    mailbox; Dry run is started from Email capture. Written by
+    `crm_capture_set_mode`, which cancels an open dry run in the same
+    transaction."""
+    if mode == capture_rules.DRY_RUN:
+        raise ProblemDetail(422, capture_rules.START_FROM_CAPTURE)
+    if mode == capture_rules.LIVE:
+        if not store.has_applied_dry_run(ctx.workspace_id):
+            raise ProblemDetail(422, capture_rules.APPLY_FIRST)
+        if not any(
+            m["is_active"] and m.get("capture_source") == capture_rules.PRIMARY_SENT
+            for m in store.list_mailboxes(ctx.workspace_id)
+        ):
+            raise ProblemDetail(422, capture_rules.SET_MAILBOX_FIRST)
+    if mode != capture_rules.OFF and not config.CRM_GMAIL_CONFIGURED:
+        raise ProblemDetail(422, email_sync.CANNOT_SWITCH_ON)
+    done = store.set_capture_mode(actor(ctx), ctx.workspace_id, mode)
+    return {
+        "key": CAPTURE_KEY,
+        "value": {"mode": mode},
+        "cancelled_dry_run_id": done.get("cancelled_run_id"),
+    }
 
 
 # ---------------------------------------------------------------------------

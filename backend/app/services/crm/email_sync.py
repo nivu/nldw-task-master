@@ -49,12 +49,14 @@ import logging
 import re
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from app.config import settings
+from app.domain.crm import capture as capture_rules
 from app.domain.crm import email_rules as rules
 from app.domain.crm import flags as flag_rules
+from app.domain.crm import review as review_rules
 from app.domain.crm import today as today_rules
 from app.services import supabase as db
 from app.services.crm import flags, gmail, jobs, notifications, records, store
@@ -97,6 +99,12 @@ COUNTS: Final = (
     "matched_people",
     "created_companies",
     "created_people",
+    # Spec 010 (contracts §1.4): captured bulk mail skipped, discovery
+    # candidates marked, deal signals made, deal-document searches failed.
+    "skipped_bulk",
+    "candidates",
+    "deal_signals",
+    "deal_doc_failed",
 )
 
 
@@ -404,10 +412,11 @@ def _cursor(mailbox: dict[str, Any]) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _label_ids(mailbox: dict[str, Any]) -> list[str]:
+def _label_ids(mailbox: dict[str, Any], *, required: bool = True) -> list[str]:
     """The mailbox's labels as Gmail ids, in the order set, each named by id
     or by name (any case). A label missing from Gmail is skipped and logged;
-    none at all is a failure the admins hear about."""
+    none at all is a failure the admins hear about, unless not `required`
+    (spec 010 plan §5.3: a *Primary and Sent* mailbox still scans those)."""
     found = gmail.labels(mailbox["email"])
     by_name = {str(lb.get("name", "")).lower(): lb["id"] for lb in found}
     ids = {lb["id"] for lb in found}
@@ -421,7 +430,7 @@ def _label_ids(mailbox: dict[str, Any]) -> list[str]:
             '{"event": "crm_email_sync_label_missing", "missing": %d}',
             len(mailbox["labels"]) - len(out),
         )
-    if not out:
+    if not out and required:
         raise LabelsMissing("None of this mailbox's labels exists in its Gmail.")
     return out
 
@@ -432,12 +441,19 @@ def sync_page(
     """One page of one mailbox: `(mailbox finished, counts)`. The cursor is
     stored after the page's messages, so a page cut short is read again."""
     sub = mailbox["email"]
-    labels = _label_ids(mailbox)
+    source = mailbox.get("capture_source") or capture_rules.LABELS_ONLY
+    capturing = source == capture_rules.PRIMARY_SENT
+    # Spec 010 plan §5.3: the configured labels, plus Primary and Sent on a
+    # Primary and Sent mailbox. Hand labels win (§5.4), so both are kept.
+    configured = _label_ids(mailbox, required=not capturing)
+    labels = capture_rules.scan_labels(configured, source)
     ours = set(labels)
     cursor = _cursor(mailbox)
 
     if mailbox.get("backfilled_at") is None or not mailbox.get("history_id"):
-        # FR-CRM-SYNC-08: the last 90 days, label by label, page by page.
+        # FR-CRM-SYNC-08: the last 90 days (spec 010 FR-CAP-SRC-07: from the
+        # capture start date on Primary and Sent), label by label, page by
+        # page.
         if cursor.get("phase") != "backfill":
             cursor = {
                 "phase": "backfill",
@@ -452,11 +468,17 @@ def sync_page(
             listed = gmail.list_messages(
                 sub,
                 labels[cursor["label"]],
-                after=int(rules.backfill_after(now).timestamp()),
+                after=int(capture_rules.capture_after(mailbox, now).timestamp()),
                 page_token=cursor.get("token"),
                 page_size=PAGE_SIZE,
             )
-            got = _take(ws, mailbox, [m["id"] for m in listed.get("messages") or []], ours)
+            got = _take(
+                ws,
+                mailbox,
+                [m["id"] for m in listed.get("messages") or []],
+                ours,
+                set(configured),
+            )
             if listed.get("nextPageToken"):
                 cursor["token"] = listed["nextPageToken"]
             else:
@@ -464,16 +486,19 @@ def sync_page(
         if cursor["label"] >= len(labels):
             if cursor.get("reconcile"):
                 got["removed"] = got.get("removed", 0) + _reconcile(ws, mailbox, labels, now)
-            store.mailbox_progress(
-                ws["id"],
-                mailbox["id"],
-                {
-                    "history_id": cursor["start"] or None,
-                    "page_token": None,
-                    "backfilled_at": now.isoformat(),
-                    "last_synced_at": now.isoformat(),
-                },
-            )
+            done: dict[str, Any] = {
+                "history_id": cursor["start"] or None,
+                "page_token": None,
+                "backfilled_at": now.isoformat(),
+                "last_synced_at": now.isoformat(),
+            }
+            if mailbox.get("reconcile_after") and not capturing:
+                # PD-3: the switch back to Labels only has been reconciled
+                # (a mailbox never synced before had nothing to remove).
+                # While capturing it is kept: it marks the earliest day
+                # captured mail may date from, for that switch back.
+                done["reconcile_after"] = None
+            store.mailbox_progress(ws["id"], mailbox["id"], done)
             return True, got
         store.mailbox_progress(ws["id"], mailbox["id"], {"page_token": json.dumps(cursor)})
         return False, got
@@ -495,28 +520,45 @@ def sync_page(
             {"history_id": None, "page_token": None, "backfilled_at": None},
         )
         return False, {}
-    added, removed = changed_messages(changes.get("history") or [], ours)
+    added, removed = changed_messages(changes.get("history") or [], ours, trash_leaves=capturing)
     # A page's messages are stored a chunk at a time, so a page cut short by
     # the time limit keeps what it stored and is read again from its token.
     got = dict.fromkeys(COUNTS, 0)
     ids = sorted(added)
     for i in range(0, len(ids), PAGE_SIZE):
-        for key, value in _take(ws, mailbox, ids[i : i + PAGE_SIZE], ours).items():
+        for key, value in _take(ws, mailbox, ids[i : i + PAGE_SIZE], ours, set(configured)).items():
             got[key] += value
     got["removed"] = _drop(ws, mailbox, sorted(removed))
     if changes.get("nextPageToken"):
         cursor["token"] = changes["nextPageToken"]
         store.mailbox_progress(ws["id"], mailbox["id"], {"page_token": json.dumps(cursor)})
         return False, got
-    store.mailbox_progress(
-        ws["id"],
-        mailbox["id"],
-        {
-            "history_id": str(changes.get("historyId") or mailbox["history_id"]),
-            "page_token": None,
-            "last_synced_at": now.isoformat(),
-        },
-    )
+    progress: dict[str, Any] = {
+        "history_id": str(changes.get("historyId") or mailbox["history_id"]),
+        "page_token": None,
+        "last_synced_at": now.isoformat(),
+    }
+    if capturing:
+        # Spec 010 FR-CAP-SRC-06: the deal-document search, once the history
+        # is read; a failed search keeps its cursor for the next sync. Any
+        # failure of it (a time limit, a refused item) is its own: the
+        # history cursor is saved and the workspace's other mailboxes run.
+        try:
+            found, checked = _deal_documents(ws, mailbox, ours, now)
+        except Exception as exc:  # noqa: BLE001 - a secondary step fails alone
+            logger.warning(
+                '{"event": "crm_deal_documents_failed", "workspace": "%s", "mailbox": "%s", '
+                '"error": "%s"}',
+                ws["key"],
+                mailbox["id"],
+                type(exc).__name__,
+            )
+            found, checked = {"deal_signals": 0, "deal_doc_failed": 1}, None
+        for key, value in found.items():
+            got[key] += value
+        if checked is not None:
+            progress["docs_checked_at"] = checked
+    store.mailbox_progress(ws["id"], mailbox["id"], progress)
     return True, got
 
 
@@ -526,8 +568,13 @@ def _reconcile(
     """FR-CRM-SYNC-09 after a re-read: a stored message of the 90-day window
     that no label of the mailbox carries now lost its label while history
     could not say so, and is removed with its effect on flags. A day's
-    margin keeps the window's edge out of it."""
-    after = int(rules.backfill_after(now).timestamp())
+    margin keeps the window's edge out of it. Spec 010 (plan §5.3): the
+    window is the capture window, or back to `reconcile_after` after a
+    switch back to Labels only (PD-3), and from a fixed day the margin is
+    on the listing, so that day's mail is compared too
+    (`capture.reconcile_bounds`); `labels` are the scanned ones."""
+    listed_from, since = capture_rules.reconcile_bounds(mailbox, now)
+    after = int(listed_from.timestamp())
     labelled: set[str] = set()
     for label in labels:
         token = None
@@ -539,45 +586,244 @@ def _reconcile(
             token = listed.get("nextPageToken")
             if not token:
                 break
-    since = datetime.fromtimestamp(after, UTC) + timedelta(days=1)
     stored = store.mailbox_message_ids(ws["id"], mailbox["id"], since.isoformat())
     return _drop(ws, mailbox, sorted(stored - labelled))
 
 
-def changed_messages(history: list[dict[str, Any]], ours: set[str]) -> tuple[set[str], set[str]]:
+def changed_messages(
+    history: list[dict[str, Any]], ours: set[str], *, trash_leaves: bool = False
+) -> tuple[set[str], set[str]]:
     """From Gmail history records, oldest first: the messages that now carry
     one of our labels, and those that lost the last of them or were deleted
-    (FR-CRM-SYNC-09). A later record overrules an earlier one."""
+    (FR-CRM-SYNC-09). A later record overrules an earlier one.
+
+    Spec 010 FR-CAP-SRC-02, -08 (`trash_leaves`, Primary and Sent only): a
+    message deleted in Gmail goes to Trash keeping its Primary or Sent
+    label, so Trash or Spam added counts as removed, and Trash or Spam
+    taken away counts as added when the message is otherwise ours. Without
+    it the records mean what they did (NFR-CAP-05)."""
     added: set[str] = set()
     removed: set[str] = set()
+
+    def add(msg_id: str) -> None:
+        added.add(msg_id)
+        removed.discard(msg_id)
+
+    def drop(msg_id: str) -> None:
+        removed.add(msg_id)
+        added.discard(msg_id)
+
+    binned = capture_rules.BINNED
     for record in history:
         for event in record.get("messagesAdded") or []:
             msg = event.get("message") or {}
-            if ours & set(msg.get("labelIds") or []):
-                added.add(msg["id"])
-                removed.discard(msg["id"])
+            labels = set(msg.get("labelIds") or [])
+            if ours & labels and not (trash_leaves and labels & binned):
+                add(msg["id"])
         for event in record.get("labelsAdded") or []:
             msg = event.get("message") or {}
-            if ours & set(event.get("labelIds") or []):
-                added.add(msg["id"])
-                removed.discard(msg["id"])
+            given = set(event.get("labelIds") or [])
+            if trash_leaves and given & binned:
+                drop(msg["id"])
+            elif ours & given and not (trash_leaves and set(msg.get("labelIds") or []) & binned):
+                add(msg["id"])
         for event in record.get("labelsRemoved") or []:
             msg = event.get("message") or {}
-            if ours & set(event.get("labelIds") or []) and not ours & set(
-                msg.get("labelIds") or []
-            ):
-                removed.add(msg["id"])
-                added.discard(msg["id"])
+            given = set(event.get("labelIds") or [])
+            labels = set(msg.get("labelIds") or [])
+            if trash_leaves and given & binned:
+                if capture_rules.in_scope(labels, ours):
+                    add(msg["id"])
+            elif ours & given and not ours & labels:
+                drop(msg["id"])
         for event in record.get("messagesDeleted") or []:
             msg = event.get("message") or {}
-            removed.add(msg["id"])
-            added.discard(msg["id"])
+            drop(msg["id"])
     return added, removed
 
 
 # ---------------------------------------------------------------------------
 # Storing a page's messages — FR-CRM-SYNC-05 to -07
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Deal documents — spec 010 FR-CAP-SRC-06; plan §5.5, PD-19
+# ---------------------------------------------------------------------------
+
+
+def _document_ids(mailbox: dict[str, Any], since: datetime) -> dict[str, list[str]]:
+    """Each message a deal-document search finds since `since`, with the
+    kinds it matched: one Gmail search per kind, at most two pages each."""
+    scope = capture_rules.deal_doc_scope(mailbox.get("labels") or [])
+    after = int(since.timestamp())
+    kinds: dict[str, list[str]] = {}
+    for kind in capture_rules.DEAL_DOC_QUERIES:
+        token = None
+        for _ in range(capture_rules.DEAL_DOC_PAGES):
+            listed = gmail.search(
+                mailbox["email"],
+                capture_rules.deal_doc_query(kind, after, scope),
+                page_token=token,
+                page_size=capture_rules.DEAL_DOC_PAGE_SIZE,
+            )
+            for m in listed.get("messages") or []:
+                kinds.setdefault(m["id"], []).append(kind)
+            token = listed.get("nextPageToken")
+            if not token:
+                break
+    return kinds
+
+
+def _deal_documents(
+    ws: dict[str, Any], mailbox: dict[str, Any], ours: set[str], now: datetime
+) -> tuple[dict[str, int], str | None]:
+    """FR-CAP-SRC-06 — an SOW, proposal, quotation, MSA or purchase order
+    sent to or received from a known company with an open deal becomes one
+    `deal_signal` item per thread and company: sent suggests Proposal (for a
+    deal before it), received suggests checking for Closed Won. Primary,
+    Sent and labelled mail only, never Trash, Spam, internal or bulk mail,
+    and only deals created on or before the document (PD-19). Returns the
+    counts and the new cursor, or no cursor when Gmail failed, so the next
+    sync searches the same window again."""
+    counts = {"deal_signals": 0, "deal_doc_failed": 0}
+    ws_id = ws["id"]
+    since = capture_rules.deal_doc_since(
+        mailbox.get("docs_checked_at"), mailbox.get("capture_start_date"), now
+    )
+    try:
+        kinds = _document_ids(mailbox, since)
+        documents = []
+        for gmail_id in sorted(kinds):
+            meta = gmail.message(mailbox["email"], gmail_id)
+            if not meta or not capture_rules.in_scope(meta.get("labelIds") or [], ours):
+                continue
+            info = rules.classify(
+                meta["headers"], ws.get("allowed_domains") or [], meta["internalDate"]
+            )
+            if info["is_internal"] or capture_rules.is_bulk(meta["headers"], info["from_email"]):
+                continue
+            outside = [p for p in info["outside"] if _ADDRESS.match(p["email"])]
+            if outside:
+                documents.append({**info, "outside": outside, "meta": meta, "id": gmail_id})
+    except gmail.GmailError as exc:
+        logger.warning(
+            '{"event": "crm_deal_documents_failed", "workspace": "%s", "mailbox": "%s", '
+            '"error": "%s"}',
+            ws["key"],
+            mailbox["id"],
+            type(exc).__name__,
+        )
+        counts["deal_doc_failed"] = 1
+        return counts, None
+    if not documents:
+        return counts, now.isoformat()
+
+    # Matched as `_take` matches: a person by any email, else the domain.
+    addresses = sorted({p["email"] for d in documents for p in d["outside"]})
+    people: dict[str, dict[str, Any]] = {}
+    for person in store.people_by_emails(ws_id, addresses):
+        for address in [person.get("primary_email"), *(person.get("additional_emails") or [])]:
+            if address in addresses:
+                people.setdefault(address, person)
+    domains = sorted({rules.domain_of(a) for a in addresses})
+    by_domain = {d["domain"]: d["company_id"] for d in store.list_domains(ws_id, domains=domains)}
+    company_of: dict[str, set[str]] = {}
+    for d in documents:
+        company_of[d["id"]] = {
+            c
+            for p in d["outside"]
+            if (
+                c := (people.get(p["email"]) or {}).get("company_id")
+                or by_domain.get(rules.domain_of(p["email"]))
+            )
+        }
+    company_ids = sorted({c for ids in company_of.values() for c in ids})
+    found_deals = store.deals_of_companies(ws_id, company_ids) if company_ids else []
+    deal_ids = {deal["id"] for deal in found_deals if deal["stage"] in flag_rules.OPEN_STAGES}
+    deals = [
+        row
+        for row in records.by_id(ws_id, "crm_opportunities", deal_ids).values()
+        if not row.get("deleted_at")
+    ]
+    companies = records.by_id(ws_id, "crm_companies", set(company_ids))
+    members = store.list_members(ws_id)
+    roles = {m["user_id"]: m["role"] for m in members}
+    active = {p["id"] for p in db.list_profiles(include_crm_only=True) if p.get("is_active", False)}
+    owner = review_rules.owner_for(
+        "deal_signal", roles=roles, active=active, mailbox_owner=mailbox["owner_id"]
+    )
+    items = []
+    # Oldest first: a later document in the same thread refreshes its item.
+    for d in sorted(documents, key=lambda d: (d["sent_at"], d["id"])):
+        for company_id in sorted(company_of[d["id"]]):
+            company = companies.get(company_id)
+            if company is None or company.get("deleted_at"):
+                continue
+            mine = capture_rules.deal_doc_deals(
+                [x for x in deals if x["company_id"] == company_id], d["sent_at"]
+            )
+            by_stage: dict[str, list[dict[str, Any]]] = {}
+            for deal in mine:
+                stage = capture_rules.deal_doc_stage(d["direction"], deal["stage"])
+                if stage:
+                    by_stage.setdefault(stage, []).append(deal)
+            for stage, choices in sorted(by_stage.items()):
+                items.append(
+                    capture_rules.deal_signal_item(
+                        mailbox_id=mailbox["id"],
+                        thread_id=d["meta"]["threadId"],
+                        message_id=d["id"],
+                        company_id=company_id,
+                        deals=choices,
+                        stage=stage,
+                        kinds=kinds[d["id"]],
+                        direction=d["direction"],
+                        message_at=d["sent_at"],
+                        owner_id=owner,
+                        generated_at=now.isoformat(),
+                    )
+                )
+    if items:
+        # Imported here: the Review Queue reads this module's switch.
+        from app.services.crm import review
+
+        made = review.upsert(ws_id, items)
+        counts["deal_signals"] = sum(1 for m in made if m.get("created"))
+    return counts, now.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Filing one conversation — spec 010 plan §5.1, §5.9 (`crm.capture_thread`)
+# ---------------------------------------------------------------------------
+
+
+def file_thread(workspace_id: str, mailbox_id: str, thread_id: str) -> dict[str, int]:
+    """Spec 010 FR-CAP-SRC-04 for one conversation that became known after
+    the sync passed it (a candidate discovery found known, S2; an approved
+    lead, S3): its messages go through `_take` with the mailbox's scan
+    labels, so what is in Primary, Sent or a configured label is stored and
+    linked and `last_*` move, and nothing else is (E10). Runs on
+    `worker-crm-sync`, the process with the Gmail key. A mailbox that is
+    gone, paused, or whose owner left, or a workspace whose sync is off,
+    files nothing."""
+    counts = dict.fromkeys(COUNTS, 0)
+    ws = next((w for w in store.list_workspaces() if w["id"] == workspace_id), None)
+    if ws is None or not today_rules.email_sync_on(_settings(workspace_id)):
+        return counts
+    mailbox = store.get_mailbox(workspace_id, mailbox_id)
+    if (
+        not mailbox
+        or not mailbox["is_active"]
+        or not _owner_here(ws, mailbox, _members(workspace_id))
+    ):
+        return counts
+    source = mailbox.get("capture_source") or capture_rules.LABELS_ONLY
+    configured = _label_ids(mailbox, required=source == capture_rules.LABELS_ONLY)
+    scan = capture_rules.scan_labels(configured, source)
+    thread = gmail.thread_meta(mailbox["email"], thread_id)
+    ids = [m["id"] for m in thread.get("messages") or [] if m.get("id")]
+    return _take(ws, mailbox, ids, set(scan), set(configured))
 
 
 def _sync_actor(workspace_id: str) -> dict[str, Any]:
@@ -598,33 +844,60 @@ def _email_source(workspace_id: str) -> str | None:
 
 
 def _take(
-    ws: dict[str, Any], mailbox: dict[str, Any], gmail_ids: list[str], ours: set[str]
+    ws: dict[str, Any],
+    mailbox: dict[str, Any],
+    gmail_ids: list[str],
+    ours: set[str],
+    configured: set[str] | None = None,
 ) -> dict[str, int]:
     """Fetches, classifies, matches, creates and stores the messages of a
     page that are not stored yet; then moves `last_*` forward, New to
-    Contacted, and recomputes flags."""
+    Contacted, and recomputes flags.
+
+    Spec 010 plan §5.4: `configured` are the mailbox's own labels (all of
+    `ours` when not given). A message that carries one is *labelled* and
+    goes the way it always did. One reached through Primary or Sent alone
+    is skipped when bulk, never runs automation 2, and, when it names nobody
+    the CRM knows, is not stored: its thread becomes a discovery candidate."""
     ws_id = ws["id"]
     counts = dict.fromkeys(COUNTS, 0)
     if not gmail_ids:
         return counts
+    configured = ours if configured is None else configured
+    capturing = configured != ours
     known = store.stored_message_ids(ws_id, mailbox["id"], gmail_ids)
     found = []
     for gmail_id in gmail_ids:
         if gmail_id in known:
             continue
         meta = gmail.message(mailbox["email"], gmail_id)
-        # Gone meanwhile, or no longer labelled.
-        if not meta or not ours & set(meta.get("labelIds") or []):
+        label_ids = set((meta or {}).get("labelIds") or [])
+        # Gone meanwhile, or no longer labelled (spec 010: or in Trash or Spam).
+        if not meta or not (
+            capture_rules.in_scope(label_ids, ours) if capturing else ours & label_ids
+        ):
             continue
         counts["fetched"] += 1
+        labelled = bool(configured & label_ids)
         info = rules.classify(
             meta["headers"], ws.get("allowed_domains") or [], meta["internalDate"]
         )
         if info["is_internal"]:
             counts["skipped_internal"] += 1
             continue
+        if not labelled and capture_rules.is_bulk(meta["headers"], info["from_email"]):
+            # FR-CAP-SRC-03: captured bulk mail is skipped; nothing is kept.
+            counts["skipped_bulk"] += 1
+            continue
         info["outside"] = [p for p in info["outside"] if _ADDRESS.match(p["email"])]
-        found.append({**info, "gmail_message_id": gmail_id, "thread_id": meta["threadId"]})
+        found.append(
+            {
+                **info,
+                "gmail_message_id": gmail_id,
+                "thread_id": meta["threadId"],
+                "labelled": labelled,
+            }
+        )
     if not found:
         return counts
 
@@ -640,8 +913,10 @@ def _take(
     companies = {d["domain"]: d["company_id"] for d in store.list_domains(ws_id, domains=domains)}
 
     # Automation 2: what is unknown is created, owned by the mailbox owner.
-    if notifications.automation_on(ws_id, "email_records"):
-        made_companies, made_people = _create(ws_id, mailbox, outside, people, companies)
+    # Spec 010 FR-CAP-SRC-05, CHG-02: from labelled messages only.
+    labelled_outside = [p for m in found if m["labelled"] for p in m["outside"]]
+    if labelled_outside and notifications.automation_on(ws_id, "email_records"):
+        made_companies, made_people = _create(ws_id, mailbox, labelled_outside, people, companies)
         counts["created_companies"] = made_companies
         counts["created_people"] = made_people
 
@@ -656,7 +931,22 @@ def _take(
         deal_ids.sort()
 
     messages = []
+    kept_found = []
+    candidates = []
     for m in found:
+        links = rules.links_for(m["outside"], people, companies, open_deals)
+        if not m["labelled"] and not links:
+            # FR-CAP-SRC-05: nobody known, no label: not stored; the thread
+            # waits for discovery (ids and the time only).
+            candidates.append(
+                {
+                    "thread_id": m["thread_id"],
+                    "message_id": m["gmail_message_id"],
+                    "sent_at": m["sent_at"].isoformat(),
+                }
+            )
+            continue
+        kept_found.append(m)
         messages.append(
             {
                 "gmail_message_id": m["gmail_message_id"],
@@ -668,9 +958,12 @@ def _take(
                 "participants": m["participants"],
                 "is_internal": False,
                 "is_auto": m["is_auto"],
-                "links": rules.links_for(m["outside"], people, companies, open_deals),
+                "links": links,
             }
         )
+    if candidates:
+        counts["candidates"] = store.mark_candidates(ws_id, mailbox["id"], candidates)
+    found = kept_found
     stored = set(store.store_emails(ws_id, mailbox["id"], messages))
     counts["stored"] = len(stored)
     kept = [

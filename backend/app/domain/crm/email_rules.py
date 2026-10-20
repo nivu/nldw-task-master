@@ -30,7 +30,7 @@ Pure: the service passes headers, rows and the clock.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import getaddresses, parseaddr
 from typing import Any, Final
 
@@ -64,6 +64,8 @@ HEADERS: Final = (
     "X-Autorespond",
     "X-Auto-Response-Suppress",
     "Content-Type",
+    # Spec 010 FR-CAP-SRC-03 (PD-2): captured bulk mail is skipped by it.
+    "List-Unsubscribe",
 )
 
 #: Senders that only ever send bounces and notices.
@@ -128,9 +130,12 @@ def mailbox_refusal(
     owner_is_member: bool,
     by_tva_admin: bool,
     labels: list[str],
+    capture_start_date: date | None = None,
+    today: date | None = None,
 ) -> str | None:
     """Every rule of a mailbox setting, in the contract's order (contracts
-    §2.10); each is a 422."""
+    §2.10); each is a 422. Spec 010 (contracts §1.1): the capture start date,
+    when given, is not after `today`."""
     if not owner_is_member:
         return OWNER_NOT_MEMBER
     if not by_tva_admin and email != (owner_email or "").strip().lower():
@@ -147,6 +152,11 @@ def mailbox_refusal(
     system = [label for label in labels if is_system_label(label)]
     if system:
         return f"{system[0]} is a Gmail system label; sync a label of your own."
+    if capture_start_date is not None and today is not None and capture_start_date > today:
+        # Imported here: the capture rules read this module's headers.
+        from app.domain.crm.capture import START_IN_FUTURE
+
+        return START_IN_FUTURE
     return None
 
 

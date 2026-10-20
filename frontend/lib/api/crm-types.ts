@@ -1213,7 +1213,8 @@ export type CrmJobName =
   | "enrichment"
   | "ai_fields"
   | "review_expiry"
-  | "followup_drafts";
+  | "followup_drafts"
+  | "capture";
 
 /** A job more than twice its interval late (FR-CRM-JOB-03). */
 export interface StaleJob {
@@ -1343,7 +1344,16 @@ export interface CrmMailbox {
   backfilled_at: string | null;
   last_synced_at: string | null;
   updated_at: string;
+  /** 010 S1 (FR-CAP-SRC-01): Labels only, or Primary and Sent as well. */
+  capture_source: CrmCaptureSource;
+  /** YYYY-MM-DD: where a Primary and Sent backfill starts (FR-CAP-SRC-07). */
+  capture_start_date: string;
+  /** The last deal-document search (FR-CAP-SRC-06); null before the first. */
+  docs_checked_at: string | null;
 }
+
+/** 010 S1 — what a mailbox syncs (FR-CAP-SRC-01). */
+export type CrmCaptureSource = "labels" | "primary_sent";
 
 export interface CrmMailboxes {
   mailboxes: CrmMailbox[];
@@ -1364,6 +1374,10 @@ export interface CrmMailboxIn {
   owner_id: string;
   labels: string[];
   is_active?: boolean;
+  /** Default "labels". */
+  capture_source?: CrmCaptureSource;
+  /** Default 2026-04-01; never in the future. */
+  capture_start_date?: string;
 }
 
 export type EmailSyncResult =
@@ -1581,7 +1595,13 @@ export interface AiSettingsValue {
 }
 
 /** The AI jobs whose estimated spend Settings, AI shows. */
-export type CrmAiSpendJob = "summaries" | "meetings" | "enrichment" | "ai_fields" | "followup_drafts";
+export type CrmAiSpendJob =
+  | "summaries"
+  | "meetings"
+  | "enrichment"
+  | "ai_fields"
+  | "followup_drafts"
+  | "capture";
 
 /** GET /crm/ai — Admin only; the one route that returns spend (FR-CRMAI-LLM-09, -10).
  *  Amounts are decimal strings in USD. */
@@ -1633,7 +1653,11 @@ export type ReviewItemType =
   | "task_from_meeting"
   | "deal_link"
   | "enrichment_conflict"
-  | "rule_suggestion";
+  | "rule_suggestion"
+  /** 010 S1 (FR-CAP-REV-01): a deal document or discovery on a known company. */
+  | "deal_signal"
+  /** 010 S3 (FR-CAP-REV-01, -02): an unknown conversation judged a lead. */
+  | "new_lead";
 
 export type ReviewItemStatus = "open" | "approved" | "dismissed" | "expired";
 
@@ -1657,7 +1681,8 @@ export interface CrmReviewItem {
   version: number;
   /** Null: the item belongs to the workspace's Admins (FR-CRMAI-REV-02). */
   owner: { id: string; name: string } | null;
-  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string };
+  /** Null for a 010 `new_lead` that matched no company (contracts §1.3). */
+  target: { record_type: "company" | "person" | "opportunity" | "note"; record_id: string; name: string } | null;
   deal_choices: ReviewDealChoice[];
   suggestion: Record<string, unknown>;
   current: Record<string, unknown>;
@@ -1708,7 +1733,21 @@ export interface ReviewApproveResult {
     task?: CrmTask;
     note?: CrmNote;
     used?: boolean;
+    /** 010 `new_lead` (contracts §1.3). */
+    company_id?: string;
+    person_id?: string;
+    linked?: boolean;
+    filed?: "queued";
   };
+}
+
+/** POST /crm/review/{id}/dismiss — 010 contracts §1.3: a `new_lead` may add
+ *  its sender or its whole domain to the ignore list. */
+export type ReviewDismissIgnore = "address" | "domain";
+
+export interface ReviewDismissResult {
+  item: CrmReviewItem;
+  ignore?: { id: string; kind: ReviewDismissIgnore; value: string } | null;
 }
 
 /** One line of To review: an item, opening the queue. */
@@ -1873,4 +1912,140 @@ export interface CrmContactRecency {
   level: ContactRecencyLevel | null;
   /** Gmail sync is off for the workspace: counted from meeting notes only (FR-CRMAI-REL-03). */
   meetings_only: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 010 S2 — Settings, Email capture (010 contracts §2.1, §2.2; FR-CAP-DIS-01,
+// FR-CAP-RPT-01 to -03; mirrors schemas/crm.py CaptureOverviewOut)
+// ---------------------------------------------------------------------------
+
+/** The `capture` setting: Dry run is started from Email capture, never set. */
+export type CrmCaptureMode = "off" | "dry_run" | "live";
+
+export type CrmCaptureOutcome = "new_lead" | "deal_signal" | "other_business" | "not_relevant";
+export type CrmCaptureConfidence = "high" | "medium" | "low";
+
+/** An ignore-list entry (FR-CAP-DIS-03). */
+export interface CrmCaptureIgnore {
+  id: string;
+  kind: "address" | "domain";
+  value: string;
+  from_item_id: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+/** A judged lead or deal signal of every confidence; low is listed apart (FR-CAP-DIS-07).
+ *  `reason` is generated plain text; no message text is ever returned. */
+export interface CrmCaptureFinding {
+  candidate_id: string;
+  outcome: "new_lead" | "deal_signal";
+  confidence: CrmCaptureConfidence;
+  company_name: string | null;
+  domain: string | null;
+  /** The host came from the text, not an address: the reviewer confirms it. */
+  domain_from_text: boolean;
+  person_name: string | null;
+  person_email: string | null;
+  first_at: string | null;
+  latest_at: string | null;
+  message_count: number;
+  owner_replied: boolean;
+  reason: string | null;
+  duplicate_company: Record<string, unknown> | null;
+}
+
+export type CrmCaptureRecallFate =
+  | "filed_known"
+  | "found"
+  | "judged_otherwise"
+  | "skipped_rules"
+  | "outside_scope"
+  /** Every outside person on the ignore list: never sent to Claude. */
+  | "ignored"
+  /** Names only people added to the CRM after it began: never sent to Claude (G-5). */
+  | "known_now";
+
+/** One Sales- or Leads-labelled conversation of the recall check (FR-CAP-RPT-03). */
+export interface CrmCaptureRecallRow {
+  thread_id: string;
+  latest_at: string | null;
+  /** Only for a thread already stored as captured mail. */
+  subject: string | null;
+  fate: CrmCaptureRecallFate;
+}
+
+/** The report's counts, live while the dry run is open. */
+export interface CrmCaptureCounts {
+  considered: number;
+  pending: number;
+  skipped_rules: number;
+  ignored: number;
+  known: number;
+  judged: number;
+  failed: number;
+  filed_known_threads: number;
+  by_outcome: Record<CrmCaptureOutcome, Record<CrmCaptureConfidence, number>>;
+}
+
+export interface CrmCaptureDryRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  /** The mode was changed away from Dry run before it finished. */
+  cancelled: boolean;
+  applied_at: string | null;
+  /** Finished, not cancelled, not applied, the latest, and finished within 7 days. */
+  applicable: boolean;
+  counts: CrmCaptureCounts;
+  /** Decimal string, USD. */
+  estimated_cost_usd: string;
+  findings: CrmCaptureFinding[];
+  recall: { line: string; rows: CrmCaptureRecallRow[] };
+}
+
+/** GET /crm/capture — Admin only. */
+export interface CrmCaptureOverview {
+  mode: CrmCaptureMode;
+  /** Whether Live can be chosen: a dry run of the workspace was ever applied
+   *  and an active mailbox is on Primary and Sent (contracts §1.2). */
+  live_allowed: boolean;
+  mailboxes: {
+    id: string;
+    email: string;
+    capture_source: CrmCaptureSource;
+    capture_start_date: string;
+    backfilled_at: string | null;
+  }[];
+  ignores: CrmCaptureIgnore[];
+  /** Null when none has run. */
+  dry_run: CrmCaptureDryRun | null;
+}
+
+/** POST /crm/capture/dry-run — 202. */
+export interface CrmCaptureDryRunStarted {
+  dry_run: { id: string; started_at: string };
+}
+
+// ---------------------------------------------------------------------------
+// 010 S3 — Apply and the ignore list (010 contracts §2.3 to §2.5; FR-CAP-RPT-04,
+// FR-CAP-DIS-03)
+// ---------------------------------------------------------------------------
+
+/** POST /crm/capture/dry-runs/{id}/apply — 200. */
+export interface CrmCaptureApplied {
+  applied_at: string;
+  items_created: number;
+  mode: "live";
+}
+
+/** POST /crm/capture/ignores — trimmed and lower-cased by the server. */
+export interface CrmCaptureIgnoreIn {
+  kind: "address" | "domain";
+  value: string;
+}
+
+/** POST /crm/capture/ignores — 201. */
+export interface CrmCaptureIgnoreAdded {
+  ignore: { id: string; kind: "address" | "domain"; value: string; created_at: string };
 }

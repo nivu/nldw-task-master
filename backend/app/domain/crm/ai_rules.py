@@ -24,7 +24,15 @@ from zoneinfo import ZoneInfo
 CRM_AI_MODEL: Final = "claude-sonnet-5-5"
 
 #: The jobs that call the model, as the usage log names them (data-model §3.1).
-USAGE_JOBS: Final = ("summaries", "meetings", "enrichment", "ai_fields", "followup_drafts")
+USAGE_JOBS: Final = (
+    "summaries",
+    "meetings",
+    "enrichment",
+    "ai_fields",
+    "followup_drafts",
+    # Spec 010 FR-CAP-DIS-05: email capture's discovery (072).
+    "capture",
+)
 
 #: FR-CRMAI-FLAG-01 — the phase switches by key, with what Settings calls them.
 PHASES: Final = {

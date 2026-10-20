@@ -541,6 +541,59 @@ class TestTheRecordLifecycle:
         assert _row(stack, decided["id"])["record_id"] == gone
 
 
+class TestCaptureItems:
+    """Spec 010 data-model §3.3, §4 (073, tasks T318): a `new_lead` with no
+    target is upserted and refreshed by its thread key; a linked one moves
+    with its company on a merge, its key recomputed."""
+
+    def _lead(self, record_type, record_id, thread="t1", **values) -> dict:
+        target = f"company:{record_id}" if record_id else "thread"
+        return _item(
+            record_type,
+            record_id,
+            type="new_lead",
+            source_kind="email_thread",
+            source_key=f"gmail:mb:{thread}",
+            suggestion={"company_name": "Acme", "email": "priya@acme.com"},
+            current_values={},
+            dedupe_key=f"email_thread|gmail:mb:{thread}|new_lead|{target}",
+            **{"source_version": "m1", **values},
+        )
+
+    def test_review_db_a_targetless_lead_is_upserted_once_per_thread(self, stack, ws):
+        [made] = _upsert(stack, ws, [self._lead(None, None)])
+        assert made["created"] is True
+        [again] = _upsert(stack, ws, [self._lead(None, None, source_version="m2")])
+        assert (again["id"], again["created"]) == (made["id"], False)
+        row = _row(stack, made["id"])
+        assert (row["record_type"], row["record_id"], row["revision"]) == (None, None, 2)
+
+    def test_review_db_merge_moves_a_linked_lead(self, stack, ws, owner):
+        keep = _company(stack, ws, owner, "Acme")
+        gone = _company(stack, ws, owner, "Acme Robotics")
+        [linked] = _upsert(stack, ws, [self._lead("company", gone)])
+        rows = {
+            r["id"]: r
+            for r in stack.sql(
+                f"SELECT id, updated_at FROM crm_companies WHERE id IN ({stack.q(keep)}, "
+                f"{stack.q(gone)})"
+            )
+        }
+        plan = {
+            "survivor_id": keep,
+            "merged_id": gone,
+            "expect": {
+                "survivor_updated_at": rows[keep]["updated_at"],
+                "merged_updated_at": rows[gone]["updated_at"],
+            },
+            "survivor_changes": {},
+        }
+        stack.sql(f"SELECT crm_merge_companies({_j(stack, _actor(ws, owner))}, {_j(stack, plan)})")
+        row = _row(stack, linked["id"])
+        assert (row["record_id"], row["status"]) == (keep, "open")
+        assert row["dedupe_key"] == f"email_thread|gmail:mb:t1|new_lead|company:{keep}"
+
+
 #: Plan §6 rule 1, tasks T170: the three functions both 008 (048) and 009
 #: replace, with their argument lists.
 SHARED_FUNCTIONS = {

@@ -216,6 +216,16 @@ def crm(monkeypatch):
         current_values={deal["id"]: {"next_step": "Zqxacad call", "next_step_on": "2026-10-14"}},
         deal_choices=[deal["id"]],
     )
+    # Spec 010 S3: an entry on Academy's email capture ignore list.
+    ignore = fake.add(
+        "crm_capture_ignores",
+        workspace_id=academy["id"],
+        kind="domain",
+        value="zqxacad.example",
+        from_item_id=None,
+        created_by=OWNER["id"],
+        created_at="2026-10-13T09:00:00+00:00",
+    )
     # Spec 009 S1c: a thread summary, with phase 1 on in both workspaces.
     for ws in (academy, labs):
         fake.set_ai(ws, phases={"1": True})
@@ -303,6 +313,7 @@ def crm(monkeypatch):
         "review_item": review_item,
         "thread": {"id": f"{mailbox['id']}:t-zqxacad"},
         "ai_field": brief,
+        "ignore": ignore,
     }
     made_in_labs = {"company": labs_co}
     return http, fake, {**made, "_labs": made_in_labs}
@@ -334,6 +345,7 @@ def _value(param: str, path: str, made: dict) -> str:
             "item_id": "review_item",
             "thread_key": "thread",
             "field_id": "ai_field",
+            "ignore_id": "ignore",
         }[param]
     ]["id"]
 

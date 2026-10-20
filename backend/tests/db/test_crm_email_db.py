@@ -259,6 +259,40 @@ class TestMailboxAudit:
         with pytest.raises(ValueError):
             real.mailbox_progress(ws, str(uuid.uuid4()), {"labels": ["x"]})
 
+    def test_capture_cursors_write_no_audit_row_a_source_change_does(self, stack, ws, owner, real):
+        """Spec 010 (071): the deal-document cursor and the switch-back
+        reconcile point are bookkeeping; the capture source is a setting."""
+        box = _mailbox(stack, ws, owner)
+        created = _audit(stack, box["id"])
+        real.mailbox_progress(
+            ws,
+            box["id"],
+            {
+                "docs_checked_at": "2026-10-14T06:30:00Z",
+                "reconcile_after": "2026-04-01T00:00:00+05:30",
+            },
+        )
+        real.mailbox_progress(ws, box["id"], {"reconcile_after": None})
+        assert _audit(stack, box["id"]) == created
+        _apply(
+            stack,
+            _actor(ws, owner),
+            [
+                {
+                    "op": "update",
+                    "table": "crm_mailboxes",
+                    "id": box["id"],
+                    "values": {"capture_source": "primary_sent"},
+                }
+            ],
+        )
+        [last] = stack.sql(
+            "SELECT action, after FROM audit_log "
+            f"WHERE target_id = {stack.q(box['id'])} ORDER BY id DESC LIMIT 1"
+        )
+        assert last["action"] == "mailbox.updated"
+        assert last["after"] == {"capture_source": "primary_sent"}
+
 
 class TestPurgeAndMerge:
     """Data-model §5.4 (039 crm_purge), §5.7 (039 crm_merge_companies)."""

@@ -1,6 +1,6 @@
 ---
 title: Running a CRM workspace
-summary: For workspace admins — inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, automations, targets, and the AI settings, AI fields, follow-up rules and Enrich selected.
+summary: For workspace admins — inviting, roles, lists, probabilities, FX rates, allowed domains, trash, audit, import, mailboxes, email capture, automations, targets, and the AI settings, AI fields, follow-up rules and Enrich selected.
 order: 10
 ---
 
@@ -135,6 +135,106 @@ Email sync stays off until the portal's Google credential is set up; until
 then the switch says so. Once it is on, sync runs every 15 minutes, and
 **Run now** runs it at once.
 
+### Capture source and start date
+
+Each mailbox has a **Capture** setting:
+
+- **Labels only** (where every mailbox starts): the CRM reads only email you
+  gave one of the mailbox's labels, as above. The first run reads the last
+  90 days.
+- **Primary and Sent**: the CRM also reads your Gmail **Primary** tab and
+  your **Sent** mail, with no label needed. An email with a person or
+  company the CRM already knows is filed on their record straight away, with
+  no review and no AI. Newsletters, automated mail, calendar invitations and
+  email among colleagues are skipped and nothing about them is kept. Email
+  from people the CRM does not know is not kept either; it waits for
+  **Email capture** (below) to look at it.
+
+With Primary and Sent, the **Capture from** date (1 April 2026 unless you
+change it) is where the first read starts, instead of 90 days back. Mail in
+Gmail's Updates, Social, Promotions or Forums tabs is never read, even from
+people the CRM knows: move it to Primary, or give it a label, if it matters.
+
+A labelled email is always handled as before, whatever the capture setting
+says, including creating its company and person when that automation is on.
+Mail from an unknown sender reached only through Primary or Sent never
+creates a company by itself.
+
+Moving an email out of Primary removes it from the CRM at the next sync
+unless it carries one of the mailbox's labels; deleting it (Trash) or marking
+it spam removes it whatever its labels. Going back to
+**Labels only** removes the captured mail that has no label, back to the
+start date; mail you labelled stays.
+
+**Deal documents.** On a Primary and Sent mailbox, each sync also looks for
+emails with an SOW, statement of work, proposal, quotation, MSA or purchase
+order attached. When one is with a known company that has an open deal, a
+**Deal signal** appears in the Review Queue: one you sent suggests moving
+the deal to Proposal; one you received suggests checking whether it is won.
+
+## Email capture
+
+**Settings → Email capture** finds new leads and deal signals in Primary and
+Sent mail from people the CRM does not know yet. It needs email sync on, at
+least one mailbox on **Primary and Sent**, and the AI rates and a budget
+(Settings → AI); it does not need any AI phase switched on. Its spend counts
+toward the same monthly AI budget and stops there.
+
+Capture has three modes, and starts **Off**:
+
+1. **Run dry run.** The AI looks at every unknown conversation since the
+   mailbox's start date and writes a report, but creates nothing: no
+   company, no person, no Review Queue item. It works through them in the
+   background; the report fills in as it goes.
+2. **Read the report.** It shows how many conversations were considered,
+   skipped by the rules, skipped by the ignore list, filed as known, and
+   judged by the AI; the counts by outcome and confidence; the estimated
+   cost; and every lead and deal signal it found, with the company, person,
+   dates, confidence and reason (low-confidence ones listed separately). The
+   **Recall check** lists each conversation you labelled Sales or Leads
+   since the start date and says what capture would have done with it: filed
+   as known, found as a lead or deal signal, judged otherwise, skipped by
+   the rules, skipped by the ignore list, or never seen because it was
+   outside Primary and Sent. A labelled conversation with people who were
+   added to the CRM only later (often from that label) is not shown to the
+   AI at all, because the AI never reads mail with people the CRM knows; the
+   report says so and counts these separately. It appears once the dry run
+   has finished.
+3. **Apply.** Turns the dry run's high- and medium-confidence leads and deal
+   signals into Review Queue items, without asking the AI again, and
+   switches capture to **Live**. Only the latest dry run can be applied,
+   once it has finished, and within 7 days of finishing; one that was
+   stopped, or is older, is run again.
+
+In **Live**, new conversations are looked at every hour, and anything the AI
+thinks is a new lead or a deal signal waits in the Review Queue for the
+mailbox's owner. Nothing is created until a person approves it. Live can be
+chosen only after a dry run has been applied; after that, Live can be chosen
+again at any time, even if a later dry run was never applied (whatever that
+later run looked at is then looked at again in Live). Running a new dry run
+while capture is Live pauses Live until you apply it or choose Live again;
+the page asks first. Switching capture **Off** stops it at once; switching
+it off during a dry run stops the dry run, and that run can no longer be
+applied.
+
+The AI only ever sees conversations that passed every earlier check: never
+email among colleagues, newsletters or automated mail, email from people on
+the ignore list, or email with people the CRM already knows. It reads the
+email's words in the background and keeps none of them: the CRM keeps only
+what it decided. A conversation is looked at again only when a new email
+arrives in it. What it decided about a conversation that was not a lead is
+forgotten after 12 months.
+
+**Ignore list.** Email where everyone outside the company is on the ignore
+list never reaches the AI. Add an email address or a whole domain under
+**Ignore list**, or remove one. Public webmail domains such as gmail.com
+cannot be ignored as a whole; ignore the address instead. Dismissing a new
+lead in the Review Queue can also add to the list (see the Review Queue
+guide).
+
+Going back to the old behaviour is two switches: capture **Off** here, and
+the mailbox back to **Labels only**.
+
 ## Automations and thresholds
 
 **Settings → Automations** switches these on or off:
@@ -164,7 +264,8 @@ red only where a target is set.
 **Settings → Jobs** shows the background jobs' recent runs. Three failures
 in a row alert the workspace's Admins once, and a job running late shows on
 Today for Admins. The AI jobs (email summaries, meeting capture, company
-enrichment, AI fields, follow-up drafts and review expiry) appear here too.
+enrichment, AI fields, follow-up drafts, review expiry and email capture)
+appear here too.
 A run that did nothing on purpose says why: switched off, the AI budget
 reached, or the AI rates not set yet.
 

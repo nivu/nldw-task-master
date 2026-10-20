@@ -32,6 +32,11 @@ import type {
   CrmAiOverview,
   CrmBootstrap,
   CrmCapacity,
+  CrmCaptureApplied,
+  CrmCaptureDryRunStarted,
+  CrmCaptureIgnoreAdded,
+  CrmCaptureIgnoreIn,
+  CrmCaptureOverview,
   CrmEnrichmentRun,
   CrmColor,
   CrmCompany,
@@ -60,7 +65,6 @@ import type {
   CrmQueryResult,
   CrmRecord,
   CrmRecordPage,
-  CrmReviewItem,
   CrmReviewList,
   CrmRole,
   CrmSavedView,
@@ -94,6 +98,8 @@ import type {
   QuerySpec,
   ReviewApproveIn,
   ReviewApproveResult,
+  ReviewDismissIgnore,
+  ReviewDismissResult,
   ReviewListQuery,
   StageChanges,
   StageKey,
@@ -837,8 +843,12 @@ export const approveCrmReview = (workspace: string, id: string, approval: Review
     ...body(approval),
   });
 
-export const dismissCrmReview = (workspace: string, id: string) =>
-  call<{ item: CrmReviewItem }>(`/review/${id}/dismiss${query(workspace)}`, { method: "POST" });
+/** Spec 010 contracts §1.3: `ignore` adds a new lead's sender or domain to the ignore list. */
+export const dismissCrmReview = (workspace: string, id: string, ignore?: ReviewDismissIgnore) =>
+  call<ReviewDismissResult>(`/review/${id}/dismiss${query(workspace)}`, {
+    method: "POST",
+    ...(ignore ? body({ ignore }) : {}),
+  });
 
 // ---------------------------------------------------------------------------
 // 009 S2b — company enrichment (009 contracts §2.4; FR-CRMAI-ENR)
@@ -868,3 +878,30 @@ export const updateCrmAiField = (workspace: string, id: string, changes: CrmAiFi
 /** Admins and Members: now, or the trailing recompute when inside the hour (Q-38). */
 export const recomputeCrmAiFields = (workspace: string, object: "companies" | "opportunities", id: string) =>
   call<CrmAiFieldRecompute>(`/${object}/${id}/ai-fields/recompute${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// 010 S2 — Settings, Email capture (010 contracts §2.1, §2.2, §5)
+// ---------------------------------------------------------------------------
+
+/** The mode, the mailboxes, the ignore list and the latest dry run's report; Admins only. */
+export const getCrmCapture = (workspace: string) =>
+  call<CrmCaptureOverview>(`/capture${query(workspace)}`);
+
+/** Opens a dry run and sets the mode to Dry run; the hourly job does the work. */
+export const startCrmCaptureDryRun = (workspace: string) =>
+  call<CrmCaptureDryRunStarted>(`/capture/dry-run${query(workspace)}`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// 010 S3 — Apply and the ignore list (010 contracts §2.3 to §2.5, §5)
+// ---------------------------------------------------------------------------
+
+/** Turns a finished dry run's high- and medium-confidence findings into
+ *  Review Queue items with no Claude call, and sets the mode to Live. */
+export const applyCrmCaptureDryRun = (workspace: string, id: string) =>
+  call<CrmCaptureApplied>(`/capture/dry-runs/${id}/apply${query(workspace)}`, { method: "POST" });
+
+export const addCrmCaptureIgnore = (workspace: string, ignore: CrmCaptureIgnoreIn) =>
+  call<CrmCaptureIgnoreAdded>(`/capture/ignores${query(workspace)}`, { method: "POST", ...body(ignore) });
+
+export const removeCrmCaptureIgnore = (workspace: string, id: string) =>
+  call<void>(`/capture/ignores/${id}${query(workspace)}`, { method: "DELETE" });

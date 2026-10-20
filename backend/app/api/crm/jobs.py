@@ -30,6 +30,7 @@ JobName = Literal[
     "ai_fields",
     "review_expiry",
     "followup_drafts",
+    "capture",
 ]
 
 

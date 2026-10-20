@@ -4,7 +4,9 @@ NFR-CRMAI-01; Q-02, Q-03, Q-08, Q-23, Q-36, Q-37; D-1; plan §5.3.
 Every model call of every job goes through `call()`, on `worker-crm-ai`:
 
 1. the job's phase must be on in the workspace's `ai` setting, else the run
-   is skipped "Switched off" (FR-CRMAI-FLAG-03);
+   is skipped "Switched off" (FR-CRMAI-FLAG-03). Spec 010 (plan §5.6): email
+   capture's discovery has its own switch and passes no phase (`None`),
+   which skips this step only;
 2. both rates of the rate table must be set, and above 0, else "AI rates
    are not set" (D-1);
 3. month-to-date estimated spend (the Asia/Kolkata month of the check,
@@ -40,6 +42,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
@@ -67,7 +70,7 @@ class AiFailed(SafeError):
 def call(
     ws: dict[str, Any],
     job: str,
-    phase: str,
+    phase: str | None,
     output_model: type[BaseModel],
     instruction: str,
     parts: Sequence[tuple[str, str]],
@@ -79,7 +82,9 @@ def call(
     as data. With `site`, links on that site survive the link policy."""
     try:
         return _call(ws, job, phase, output_model, instruction, parts, site=site)
-    except (jobs.Skipped, SafeError):
+    except (jobs.Skipped, SafeError, SoftTimeLimitExceeded):
+        # A task's soft time limit is its own to handle (spec 010 OPS-2),
+        # and carries no text.
         raise
     except Exception as exc:
         name = type(exc).__name__
@@ -92,13 +97,14 @@ def _rates() -> tuple[Decimal, Decimal] | None:
     return rules.rates(settings.CRM_AI_INPUT_USD_PER_MTOK, settings.CRM_AI_OUTPUT_USD_PER_MTOK)
 
 
-def gate(ws: dict[str, Any], phase: str) -> tuple[Any, tuple[Decimal, Decimal]]:
+def gate(ws: dict[str, Any], phase: str | None) -> tuple[Any, tuple[Decimal, Decimal]]:
     """Steps 1 to 3 (the phase, the rates, the budget), as `call` runs them:
     `(the ai setting, the rates)`, else `jobs.Skipped`. A job runs it before
     any outside read (a website, Gmail, Fireflies), so a switched-off or
-    spent workspace reads nothing."""
+    spent workspace reads nothing. With no phase (spec 010's discovery, which
+    has its own switch) step 1 is skipped; the rates and budget are not."""
     value = store.ai_setting(ws["id"])
-    if not rules.phase_on(value, phase):
+    if phase is not None and not rules.phase_on(value, phase):
         raise jobs.Skipped(rules.SWITCHED_OFF)
     rates = _rates()
     if rates is None:
@@ -120,7 +126,7 @@ def _check_budget(ws: dict[str, Any], value: Any) -> None:
 def _call(
     ws: dict[str, Any],
     job: str,
-    phase: str,
+    phase: str | None,
     output_model: type[BaseModel],
     instruction: str,
     parts: Sequence[tuple[str, str]],

@@ -18,6 +18,7 @@ Celery's 600-second limit (FR-CRMAI-JOB-01, amended in S5).
 | `crm_ai.enrichment_batch` | enqueued, a minute apart | ends its workspace's `enrichment` run |
 | `crm_ai.ai_fields` | every 15 minutes | `ai_fields` |
 | `crm_ai.followup_draft` | enqueued by the `automations` job | `followup_drafts` (one run of its workspace) |
+| `crm_ai.capture` | hourly at minute 7; a dry run's follow-up a minute later | `capture` (spec 010) |
 """
 
 from __future__ import annotations
@@ -25,7 +26,16 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from app.services.crm import ai_fields, enrichment, followups, jobs, meetings, review, summaries
+from app.services.crm import (
+    ai_fields,
+    capture,
+    enrichment,
+    followups,
+    jobs,
+    meetings,
+    review,
+    summaries,
+)
 from app.worker import celery_app
 
 logger = logging.getLogger("nldw-task-master")
@@ -129,3 +139,35 @@ def followup_draft(args: dict) -> dict:
     are counted in the job log. Idempotent: a message that has an item is
     not drafted again."""
     return followups.drafts(args, datetime.now(UTC))
+
+
+@jobs.crm_job("capture", seconds=jobs.AI_TASK_SECONDS)
+def _capture(workspace: dict, now: datetime) -> dict:
+    """Spec 010 FR-CAP-DIS-01, -02, -10: the workspace's discovery
+    candidates judged, behind its `capture` mode, live Gmail sync and
+    `009`'s rates and budget, with no phase switch."""
+    return capture.run(workspace, now)
+
+
+#: Below Celery's 600-second hard limit (`app/worker.py`): a conversation
+#: whose Gmail reads are slow ends its run with its counts instead of the
+#: worker child being killed with the run left `running` (OPS-2).
+CAPTURE_SOFT_SECONDS = 540
+
+
+@celery_app.task(
+    name="crm_ai.capture", ignore_result=True, bind=True, soft_time_limit=CAPTURE_SOFT_SECONDS
+)
+def capture_conversations(self) -> dict:
+    """Hourly, per workspace (FR-CAP-DIS-10). No arguments. A dry run with
+    work left queues this task again a minute later, at most one follow-up
+    at a time (plan §5.7): only that follow-up, known by its task id, clears
+    the guard, so an hourly tick that lands while one is queued adds none.
+    Idempotent: a candidate is judged only while it is pending on its latest
+    message, so a retry judges nothing twice."""
+    capture.unchain(self.request.id)
+    result = _capture(datetime.now(UTC))
+    if capture.wants_more():
+        capture.chain()
+    logger.info('{"event": "crm_capture_done", "failed": %d}', len(result["failed"]))
+    return result

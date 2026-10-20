@@ -12,7 +12,11 @@ internal or unmatched meeting is never downloaded. `FakeWeb` stands in for
 the website reader's DNS lookups and HTTP client (`services/crm/web_fetch`)
 with scripted answers and pages, and records every lookup and request, so a
 test can check which address was connected to. `CapturedCelery` records every task a test enqueues
-instead of sending it.
+instead of sending it. `FakeGmailThread` (spec 010) stands in for email
+capture's reads, `gmail.thread_meta` and `gmail.thread_text`, with the
+label list and listing they need, and records every metadata read
+(`meta_reads`, thread ids) and every text read (`text_reads`, message ids),
+so a test can check that only the messages that passed the rules are read.
 The clock helpers build fixed times on the Asia/Kolkata wall clock, where
 the budget month turns (Q-23).
 
@@ -338,6 +342,130 @@ class CapturedCelery:
 
     def named(self, name: str) -> list[dict[str, Any]]:
         return [s for s in self.sent if s["task"] == name]
+
+
+#: The labels a Labs mailbox has in `FakeGmailThread`.
+THREAD_LABELS = [
+    {"id": "INBOX", "name": "INBOX"},
+    {"id": "Label_1", "name": "Sales"},
+    {"id": "Label_2", "name": "Leads"},
+    {"id": "CATEGORY_PERSONAL", "name": "CATEGORY_PERSONAL"},
+    {"id": "CATEGORY_PROMOTIONS", "name": "CATEGORY_PROMOTIONS"},
+    {"id": "SENT", "name": "SENT"},
+    {"id": "TRASH", "name": "TRASH"},
+    {"id": "SPAM", "name": "SPAM"},
+]
+
+
+class FakeGmailThread:
+    """Spec 010 — `gmail.thread_meta` and `gmail.thread_text` over
+    conversations added with `message()`, plus `gmail.labels` and
+    `gmail.list_messages` (the recall check lists the Sales label) and
+    `gmail._key` (the job's key check). `threads` maps a thread id to its
+    messages as metadata (`{id, threadId, labelIds, internalDate,
+    headers}`); `texts` a message id to its plain text, or to `{text,
+    attachments}`. `failing` maps an id (a thread's for the metadata read, a
+    message's for the text read) to the exception that read raises. Every
+    metadata read is in `meta_reads` (thread ids), every text read in
+    `text_reads` (message ids)."""
+
+    def __init__(
+        self,
+        threads: dict[str, list[dict[str, Any]]] | None = None,
+        texts: dict[str, Any] | None = None,
+        *,
+        failing: dict[str, BaseException] | None = None,
+    ) -> None:
+        self.threads = {k: list(v) for k, v in (threads or {}).items()}
+        self.texts = dict(texts or {})
+        self.failing = dict(failing or {})
+        self.meta_reads: list[str] = []
+        self.text_reads: list[str] = []
+        self.listed: list[str] = []
+
+    def install(self, monkeypatch, *, key: bool = True) -> FakeGmailThread:
+        monkeypatch.setattr(gmail, "thread_meta", self.thread_meta)
+        monkeypatch.setattr(gmail, "thread_text", self.thread_text)
+        monkeypatch.setattr(gmail, "labels", lambda mailbox: [dict(lb) for lb in THREAD_LABELS])
+        monkeypatch.setattr(gmail, "list_messages", self.list_messages)
+        monkeypatch.setattr(gmail, "_key", self._key if key else self._no_key)
+        return self
+
+    @staticmethod
+    def _key() -> dict[str, Any]:
+        return {"client_email": "sync@example.iam", "private_key": "-"}
+
+    @staticmethod
+    def _no_key() -> dict[str, Any]:
+        raise gmail.NotConfigured("The Gmail service-account key is not set in this process.")
+
+    def message(
+        self,
+        thread_id: str,
+        message_id: str,
+        *,
+        sender: str,
+        to: str,
+        at: datetime,
+        labels: tuple[str, ...] = ("INBOX", "CATEGORY_PERSONAL"),
+        text: str = "",
+        attachments: tuple[str, ...] = (),
+        subject: str = "Hello",
+        **headers: str,
+    ) -> dict[str, Any]:
+        """A message of a conversation, its text and attachment names."""
+        msg = {
+            "id": message_id,
+            "threadId": thread_id,
+            "labelIds": list(labels),
+            "internalDate": str(int(at.timestamp() * 1000)),
+            "headers": [
+                {"name": "From", "value": sender},
+                {"name": "To", "value": to},
+                {"name": "Subject", "value": subject},
+                *({"name": k.replace("_", "-"), "value": v} for k, v in headers.items()),
+            ],
+        }
+        self.threads.setdefault(thread_id, []).append(msg)
+        self.texts[message_id] = {"text": text, "attachments": list(attachments)}
+        return msg
+
+    def thread_meta(self, mailbox: str, thread_id: str) -> dict[str, Any]:
+        self.meta_reads.append(thread_id)
+        if thread_id in self.failing:
+            raise self.failing[thread_id]
+        msgs = self.threads.get(thread_id)
+        if not msgs:
+            return {}
+        ordered = sorted(msgs, key=lambda m: int(m["internalDate"]))
+        return {"id": thread_id, "messages": [dict(m) for m in ordered]}
+
+    def thread_text(self, mailbox: str, message_ids: list[str]) -> list[dict[str, Any]]:
+        out = []
+        for message_id in message_ids:
+            self.text_reads.append(message_id)
+            if message_id in self.failing:
+                raise self.failing[message_id]
+            if message_id not in self.texts:
+                continue
+            found = self.texts[message_id]
+            if isinstance(found, str):
+                found = {"text": found, "attachments": []}
+            out.append({"id": message_id, **found})
+        return out
+
+    def list_messages(self, mailbox, label_id, *, after, page_token, page_size):
+        self.listed.append(label_id)
+        found = sorted(
+            (
+                m
+                for msgs in self.threads.values()
+                for m in msgs
+                if label_id in m["labelIds"] and int(m["internalDate"]) // 1000 > after
+            ),
+            key=lambda m: m["id"],
+        )
+        return {"messages": [{"id": m["id"], "threadId": m["threadId"]} for m in found]}
 
 
 def ist(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:

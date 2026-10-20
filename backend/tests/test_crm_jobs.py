@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from crm_fake import MEMBER, OUTSIDER, OWNER, FakeCrmStore, as_, two_workspaces
+from crm_fake import DEFAULTS, MEMBER, OUTSIDER, OWNER, FakeCrmStore, as_, two_workspaces
 from crm_fake import client as crm_client
 
 from app.services.crm import flags, jobs, notifications
@@ -61,7 +61,40 @@ class TestEveryRunIsRecorded:
         tasks.purge_trash()
         rows = _runs(fake, "trash_purge")
         assert sorted(r["workspace_id"] for r in rows) == sorted([labs["id"], academy["id"]])
-        assert all(r["counts"] == {"purged": 0} for r in rows)
+        # Spec 010 FR-CAP-DIS-11: the purge also counts capture decisions.
+        assert all(r["counts"] == {"purged": 0, "capture_decisions": 0} for r in rows)
+
+    def test_trash_purge_deletes_capture_decisions_after_a_year(self, crm):
+        # Spec 010 FR-CAP-DIS-11 (S3-07): the nightly task passes now - 365
+        # days; a pending candidate is never purged, however old.
+        _, fake, labs, _, _ = crm
+        now = datetime.now(UTC)
+        rows = {}
+        for name, status, days in (
+            ("old", "judged", 366),
+            ("recent", "judged", 300),
+            ("pending", "pending", 400),
+        ):
+            rows[name] = fake.add(
+                "crm_capture_candidates",
+                **{
+                    **DEFAULTS["crm_capture_candidates"],
+                    "workspace_id": labs["id"],
+                    "mailbox_id": "mb-1",
+                    "thread_id": f"t-{name}",
+                    "latest_message_id": f"m-{name}",
+                    "latest_message_at": (now - timedelta(days=days)).isoformat(),
+                    "status": status,
+                    "updated_at": (now - timedelta(days=days)).isoformat(),
+                },
+            )
+        tasks.purge_trash()
+        [run] = [r for r in _runs(fake, "trash_purge") if r["workspace_id"] == labs["id"]]
+        assert run["counts"]["capture_decisions"] == 1
+        assert set(fake.rows["crm_capture_candidates"]) == {
+            rows["recent"]["id"],
+            rows["pending"]["id"],
+        }
 
     def test_the_digest_tick_has_no_workspace_and_reminders_do(self, crm):
         _, fake, labs, academy, _ = crm

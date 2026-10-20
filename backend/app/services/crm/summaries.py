@@ -17,7 +17,10 @@ threads due a summary (`crm_pending_threads`, migration 062), and for each:
    re-checks that no message arrived meanwhile.
 
 The text lives only in this module's local variables: it is never stored,
-logged, queued or put in an error. A thread that fails (the call, the
+logged, queued or put in an error. Spec 010 FR-CAP-CHG-05: this is one of
+two modules that read message text; the other is email capture's discovery
+(`services/crm/capture.py`, through `gmail.thread_text`), under the same
+rules. A thread that fails (the call, the
 schema, Gmail, a message stored meanwhile, the database) is counted in `failed_items` and
 stays pending for the next tick; the run itself is not failed
 (FR-CRMAI-JOB-01). A thread with no new message is not pending, so a second

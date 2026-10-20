@@ -98,6 +98,11 @@ WRITES = {
     "/api/v1/crm/ai-fields",
     "/api/v1/crm/companies/{record_id}/ai-fields/recompute",
     "/api/v1/crm/opportunities/{record_id}/ai-fields/recompute",
+    # Spec 010 S2: starting an email capture dry run.
+    "/api/v1/crm/capture/dry-run",
+    # Spec 010 S3: applying a dry run; adding to the ignore list.
+    "/api/v1/crm/capture/dry-runs/{run_id}/apply",
+    "/api/v1/crm/capture/ignores",
 }
 #: The TVA admin panel spans workspaces and holds no amount; a Viewer is
 #: refused it anyway (test_crm_tva_admin.py).

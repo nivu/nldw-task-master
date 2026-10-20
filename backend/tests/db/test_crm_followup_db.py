@@ -36,6 +36,10 @@ pytestmark = pytest.mark.db
 
 SYSTEM = {"kind": "system", "user_id": None, "channel": None, "workspace_id": None}
 MIGRATION = Path(__file__).resolve().parents[3] / "supabase/migrations/066_crm_follow_up_rules.sql"
+#: Spec 010: the migration that replaces 066's `crm_workspaces_seed_ai`,
+#: `crm_job_latest` and job CHECK. Re-run after 066, so the database the
+#: later tests share is still the one the tree builds.
+LATER = Path(__file__).resolve().parents[3] / "supabase/migrations/072_crm_capture_discovery.sql"
 RULE_SWITCHES = {
     "no_reply_draft": False,
     "stuck_notice": False,
@@ -154,8 +158,9 @@ def _member_row(stack, member_id: str) -> dict:
 
 
 def _rerun(stack, before: str = "") -> None:
-    """066 again, in one transaction, after `before`: it is idempotent."""
-    stack.sql(before + MIGRATION.read_text())
+    """066 again, in one transaction, after `before`: it is idempotent. Then
+    072, which replaces some of 066's objects, so nothing later sees 066's."""
+    stack.sql(before + MIGRATION.read_text() + "\n" + LATER.read_text())
 
 
 class TestTheSettings:

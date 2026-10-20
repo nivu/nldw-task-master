@@ -8,7 +8,11 @@ why, and the rules it may not break, live in the constitution. The
 intelligence layer (summaries, the Review Queue, meetings, enrichment, AI
 fields, the follow-up rules, contact recency) is specified in
 [`specs/009-crm-intelligence/`](../../specs/009-crm-intelligence/spec.md)
-and described [below](#the-intelligence-layer).
+and described [below](#the-intelligence-layer). Automatic email capture
+(Primary and Sent mail without a label, discovery of new leads) is specified
+in [`specs/010-email-capture/`](../../specs/010-email-capture/spec.md) and
+described under [Email sync and capture](#email-sync-and-capture) and
+[Email capture's discovery](#email-captures-discovery-spec-010).
 
 The CRM is a second application inside the portal: its own pages under
 `/crm`, its own routes under `/api/v1/crm/`, its own `crm_*` tables, and a
@@ -253,6 +257,7 @@ jobs ([below](#worker-and-queue)):
 | `crm.digest_tick` (daily digest at 09:00 the person's time, weekly admin digest on Mondays, task reminders) | every 15 min | default |
 | `crm.email_sync_tick` | every 15 min | default; enqueues pages |
 | `crm.email_sync_page` (one page of one mailbox) | enqueued | `crm_sync`, served only by the `worker-crm-sync` service |
+| `crm.capture_thread` (file one conversation that became known; spec 010) | enqueued by `crm_ai.capture` and by approving a `new_lead` | `crm_sync`, served only by `worker-crm-sync` |
 
 Every run writes `crm_job_runs`; three failures in a row alert the workspace
 admins once. Lateness is checked when read: admins see stale jobs on Today,
@@ -265,8 +270,60 @@ messages use the portal's `notify.deliver` (Slack DM, email fallback).
 (`GOOGLE_SERVICE_ACCOUNT_JSON`) lives on `worker-crm-sync` only; the API,
 beat and the shared worker hold just the non-secret `CRM_GMAIL_CONFIGURED`
 flag. Only subjects, participants, direction and time are stored, never a
-message body. The one reader of a message's text is the summariser on
-`worker-crm-ai` (below), which holds it in memory and stores none of it.
+message body. Two readers of a message's text exist, both on `worker-crm-ai`
+(below): the summariser and email capture's discovery job. Each holds the
+text in memory and stores none of it.
+
+### Email sync and capture
+
+Spec [`010`](../../specs/010-email-capture/spec.md) adds a **capture
+source** to each mailbox (`crm_mailboxes.capture_source`): `labels`
+(*Labels only*, the default and `007`'s behaviour) or `primary_sent`
+(*Primary and Sent*), with a `capture_start_date` (default 1 April 2026).
+
+- **Capture is a wider label set, not a second sync.**
+  `domain/crm/capture.py` `scan_labels` returns the configured labels in
+  `labels` mode, and adds Gmail's `CATEGORY_PERSONAL` (the Primary tab) and
+  `SENT` in `primary_sent` mode. Backfill, history, removal and reconcile
+  already work by label, so `email_sync.sync_page` walks the wider set with
+  the code `007` built. A message is in scope when it carries one of those
+  labels and is in neither Trash nor Spam (`capture.in_scope`); a message
+  moved out of Primary leaves scope and its stored copy is removed unless it
+  still carries a configured label, and a message put in Trash or Spam leaves
+  scope whatever its labels. Updates, Social,
+  Promotions and Forums are never read.
+- **Backfill window.** `capture.capture_after`: the start date at 00:00 IST
+  for `primary_sent`, else `007`'s 90 days. Changing the email, labels,
+  capture source or start date resets the cursor. Switching back to *Labels
+  only* sets `reconcile_after` to the old start date, so the reconcile
+  removes unlabelled captured mail back to that day.
+- **Hand labels win.** A message carrying a configured label goes through
+  `007`'s path unchanged: stored, linked, automation 2, bulk mail stored with
+  `is_auto`. A message reached through Primary or Sent alone gets three new
+  rules in `_take`: bulk or automated mail (`List-Unsubscribe`,
+  `Precedence`, `Auto-Submitted`, a no-reply sender, a delivery report, a
+  calendar invitation; `capture.is_bulk`) is skipped and stores nothing;
+  automation 2 does not run on it; and when no outside participant is a
+  known person or company domain it is **not stored**.
+- **Discovery candidates.** Unknown, unlabelled mail leaves one
+  `crm_capture_candidates` row per conversation (mailbox, Gmail thread id,
+  latest message id and time; no address, no subject), upserted by
+  `crm_capture_mark`, which moves only forward and returns a re-opened
+  conversation to `pending`. Known mail is stored and linked exactly as
+  labelled mail is, with no review and no Claude call.
+- **Deal documents.** At the end of each history pass on a `primary_sent`
+  mailbox, `email_sync._deal_documents` runs one Gmail search per document
+  kind (`capture.DEAL_DOC_QUERIES`: SOW, proposal, quotation, MSA, purchase
+  order; `filename:` queries returning ids only) over Primary, Sent and the
+  configured labels since `docs_checked_at` (at most 14 days back on the
+  first search). Each match from a known company with an open deal becomes a
+  `deal_signal` Review Queue item: sent by us suggests *Proposal, proposal
+  sent on* that date, received suggests *possibly Closed Won*. A search
+  error is counted (`deal_doc_failed`) and retried next sync; the page
+  itself succeeds.
+- Sync counts gain `skipped_bulk`, `candidates` and `deal_signals`. With
+  every mailbox on `labels`, as migration 071 seeds, the sync behaves exactly
+  as `007` built it.
 
 ## The MCP tools
 
@@ -306,6 +363,7 @@ beat ─▶ default queue ─▶ worker (shared)      crm.recompute_flags: flags
         (concurrency 1)                       (+ crm_ai.enrichment_batch), crm_ai.ai_fields   every 15 min
                                               crm_ai.review_expiry                             01:30 daily
                                               crm_ai.followup_draft                            enqueued
+                                              crm_ai.capture (spec 010)                        hourly at :07
 ```
 
 - Every model, Fireflies and full-message Gmail call runs on the
@@ -322,8 +380,8 @@ beat ─▶ default queue ─▶ worker (shared)      crm.recompute_flags: flags
 - Tasks carry only ids and workspace ids and store no result
   (`ignore_result=True`), so no text reaches the broker or the result backend.
 - Each job writes one `crm_job_runs` row per workspace per tick under the
-  names `summaries`, `meetings`, `enrichment`, `ai_fields`, `review_expiry`
-  and `followup_drafts`, and appears in Settings → Jobs with the usual
+  names `summaries`, `meetings`, `enrichment`, `ai_fields`, `review_expiry`,
+  `followup_drafts` and spec 010's `capture`, and appears in Settings → Jobs with the usual
   failure alerts and lateness checks. One failing thread or company is a
   count inside the run (`failed_items`), not a failed run. The `automations`
   job (relabelled "Automations") checks each of its switches separately and
@@ -376,9 +434,13 @@ Email bodies, transcripts and web pages are read by a `worker-crm-ai` task
 into local variables, sent to the model and dropped. They never reach a
 table, Storage, a log line, the queue, the result backend, a job-run record,
 an audit row or an error message; only the validated, masked output is
-stored. `gmail.message_text()` is the one full-message read, called only by
-the summariser (pinned by a test), for only the messages `007` stored for
-the thread, with quoted history and signatures stripped before the prompt.
+stored. `gmail.message_text()` is the summariser's full-message read, called
+only by the summariser (pinned by a test), for only the messages `007` stored
+for the thread, with quoted history and signatures stripped before the
+prompt. `gmail.thread_text()` is the second, called only from
+`services/crm/capture.py` (pinned the same way), for only the messages of a
+candidate conversation that survived the rules, the ignore list and the
+known check; quoted and forwarded blocks are kept to their first 20 lines.
 `services/crm/web_fetch.py` refuses private, loopback and link-local hosts,
 connects to the address it checked, follows same-site redirects only
 (re-checking each hop) and reads at most five pages of at most 1 MB each.
@@ -394,6 +456,9 @@ the jobs must not keep and finds it nowhere afterwards.
 | `crm_company_enrichment` | enriched values and status per company, apart from the person-entered fields |
 | `crm_ai_fields`, `crm_ai_field_values` | AI field definitions and their values, never on the record tables |
 | `crm_ai_usage` | the usage and cost log (not exported) |
+| `crm_capture_candidates` (spec 010) | one row per mailbox and Gmail thread awaiting or past discovery: latest message id and time, status, outcome, confidence, classifier version, dry-run flag; a lead's or deal signal's finding only for those two outcomes |
+| `crm_capture_dry_runs` (spec 010) | each dry run: started, finished or cancelled, applied, its final counts and the recall check (thread ids and fates, no subject or address) |
+| `crm_capture_ignores` (spec 010) | the workspace's ignore list: an address or a domain, who added it, the item it came from |
 | `crm_notes` (existing) | Fireflies meeting notes, with a source reference and provenance |
 | `crm_companies`, `crm_people` (existing) | `contact_recency`, written by `crm_set_contact_recency` only, so it moves neither `updated_at` nor the audit |
 
@@ -404,6 +469,72 @@ Trash, restore, purge, merge and the workspace export follow the record:
 Every value carries its provenance (source kind, model, time, a link to the
 source), and the web app shows an **AI** marker that names it on hover and
 focus. Generated text is always rendered as plain text.
+
+### Email capture's discovery (spec 010)
+
+`crm_ai.capture` (`services/crm/capture.py`) asks Claude about the
+discovery candidates the sync left. It runs behind the workspace's `capture`
+setting (`{"mode": "off" | "dry_run" | "live"}`, seeded off), not behind a
+`009` phase: it calls `ai.call(ws, "capture", None, ...)`, so step 1 of the
+wrapper is skipped and the rates and budget gates still apply. Before any
+Gmail read it skips with a reason when the mode is off, Gmail sync is off,
+no active mailbox is on *Primary and Sent*, a dry run is already finished,
+or the Gmail key is not set on `worker-crm-ai`.
+
+Per candidate, at most 200 a run, each step only sees what the one before
+could not decide:
+
+1. `gmail.thread_meta` (metadata only): messages out of scope are dropped;
+   nothing left → `skipped`.
+2. Rules: internal-only and bulk messages dropped; nothing left → `skipped`.
+3. Ignore list: every outside participant on it by address or domain →
+   `ignored`.
+4. Known check, message by message as the sync decides: a message naming
+   a person or a company domain is known-contact mail. Every message known
+   → `known`, and `crm.capture_thread` is queued on `worker-crm-sync` to
+   file the conversation. Otherwise only the messages naming nobody known
+   go on (a known message not stored yet is still filed).
+5. The gate again, then `gmail.thread_text` for those message ids only (at
+   most the last 12, all the prompt holds), and one structured call (`DiscoveryOutput`): *new lead*, *deal
+   signal*, *other business* or *not relevant*, with a confidence.
+6. `crm_capture_record` writes the decision only if the conversation's
+   latest message is still the one judged, so a newer message wins and a
+   retry re-judges only `pending` rows.
+
+**Dry run.** Started by `POST /crm/capture/dry-run` (`crm_capture_start_dry_run`):
+judges every candidate since the start date, oldest first, writing decisions
+and findings but no item or record, chaining itself a minute later (guarded
+by the Redis key `crm:capture:next`) while candidates remain. When nothing
+is pending and every capturing mailbox has finished its backfill, it
+computes the **recall check**: each Sales- or Leads-labelled conversation
+since the start date, judged as if it had no label, gets a fate
+(`filed_known`, `found`, `judged_otherwise`, `skipped_rules`,
+`outside_scope`, `ignored`, `known_now`). The recall applies live's ignore
+list and known check before any text: a labelled thread on the ignore list
+(`ignored`) or naming only people the CRM holds now (`known_now`, often made
+by automation 2 from the label) never reaches Claude. Any mode change
+through `PATCH /crm/settings/capture` cancels an open dry run
+(`crm_capture_set_mode`); a change to Live also returns every unapplied dry
+run decision to pending, so Live judges it again. Starting, applying and
+changing the mode take one advisory lock per workspace, so they never
+interleave.
+
+**Apply and Live.** `POST /crm/capture/dry-runs/{id}/apply`, within 7 days
+of the run finishing, turns its high- and medium-confidence findings into
+Review Queue items without a second Claude call and sets the mode to Live
+(`crm_capture_apply`). Live is refused until a dry run has been applied. In
+Live the job judges newest first and each high- or medium-confidence finding
+becomes an item before the decision is recorded; low confidence is recorded
+only. A finding's suggested domain and name are checked against existing
+companies (exact domain, a sibling domain on another public suffix, `007`'s
+name match); a match makes the item *link to the existing company*. A
+public webmail address never makes a company domain. A conversation keeps
+one open capture item: after each upsert `crm_capture_supersede` expires
+its other open `new_lead` or discovered `deal_signal` (never a deal
+document's), and a re-judgement that makes no item expires the earlier one.
+
+**Retention.** `crm.purge_trash` deletes every decided candidate row older
+than 12 months (`crm_capture_purge`).
 
 ### The approval path
 
@@ -436,6 +567,32 @@ Approval is deliberately **not** one transaction: the manual services each
 commit their own, and the claim-then-release pair is what stops two
 approvals both going through (spec 009 plan CT-1).
 
+**Capture's two item types (spec 010).** Both are owned by the mailbox
+owner and keyed on the conversation (`email_thread`,
+`gmail:<mailbox_id>:<thread_id>`), with the latest judged message id as the
+source version, so an expired item does not return for the same messages.
+Each shows its evidence (date range, message count, whether the owner
+replied, attachment names, Claude's reason) and never message text.
+
+- **`new_lead`** has no target, or the duplicate company it links to.
+  Approving it (`review._new_lead`) creates the company at New through
+  `records.create` (or reuses the linked one, one already holding the
+  domain, or the one an earlier partial approval made), moves it to the
+  suggested lead stage through `records.update`, creates the person, and
+  queues `crm.capture_thread` to store the conversation; the company and
+  person audit rows carry the item id. A failure after the company exists
+  releases the item with `result.company_id`, so a retry reuses it.
+- **`deal_signal`** targets a known company; its deal choices are the
+  company's open deals. Approving it calls `deals.create` (at Discovery) or
+  `deals.move`, so Proposal asks for amount and expected close and, in Labs,
+  creates the tentative TVA project; Closed Won in Labs is refused with the
+  handoff sentence. A suggested stage at or behind the deal's is refused.
+- **Dismissing** a `new_lead` may add the sender's address or, except for a
+  public webmail domain, the whole domain to the ignore list
+  (`ReviewDismissIn.ignore`; also through `crm_review_decide`). A Member who
+  may decide the item may add to the list this way; editing the list
+  directly is Admin only.
+
 ### Jobs, one line each
 
 | Job | Reads | Writes |
@@ -446,6 +603,8 @@ approvals both going through (spec 009 plan CT-1).
 | `ai_fields` (phase 3) | the record's own fields (no amounts), summaries, meeting notes, enriched values, next-step dates, time in stage; at most once an hour per record | `crm_ai_field_values` |
 | `followup_drafts` (phase 3, R-1) | a thread's stored summary and the record's fields, never a body | an R-1 `rule_suggestion` with a draft for the owner to send from their own mail |
 | `review_expiry` | open and decided items | expiries and tombstones |
+| `capture` (spec 010; its own `capture` mode, not a phase) | pending discovery candidates: a metadata thread read, then the text of only the messages that passed the rules, the ignore list and the known check; hourly, newest first in Live, oldest first in a dry run | decisions in `crm_capture_record`; in Live, `new_lead` and `deal_signal` items; in a dry run, findings and the recall check; queues `crm.capture_thread` for a conversation that became known |
+| `crm.capture_thread` (on `worker-crm-sync`, not a `JOBS` entry) | one conversation's metadata, Primary, Sent and configured labels only | the conversation's messages, stored and linked as known mail; a failure logs `crm_capture_thread_failed` |
 
 ### Rules as flag extensions
 

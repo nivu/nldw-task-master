@@ -22,6 +22,20 @@ the rules need, and no message body is ever fetched for it (Q-29).
 on `worker-crm-ai`, it reads the text parts of one message the sync stored,
 in memory, for `services/crm/summaries.py` to strip and hand to Claude. The
 text is never stored, logged or queued, and no other module calls it.
+
+Spec 010 (plan §5.5, §5.13): `search()` lists the ids a Gmail search finds,
+for the sync's deal-document check (ids only, never Spam or Trash); and
+every read waits and tries again on Gmail's rate limit (429) and its own
+faults (5xx), at most three tries in all.
+
+Spec 010 FR-CAP-CHG-05 (plan §5.6, CT-1): email capture's discovery, on
+`worker-crm-ai`, reads a candidate conversation's metadata (`thread_meta`)
+and then the text of only the messages that passed its rules
+(`thread_text`). So two modules read message text, each with its own
+reader: `services/crm/summaries.py` (`message_text`, stored messages only)
+and `services/crm/capture.py` (`thread_text`, the surviving messages of an
+unstored conversation). Neither text is stored, logged or queued, and no
+other module calls either reader.
 """
 
 from __future__ import annotations
@@ -48,6 +62,11 @@ ASSERTION_SECONDS: Final = 3600
 #: A token is renewed this long before Google says it expires.
 EARLY: Final = 120
 TIMEOUT: Final = httpx.Timeout(20.0, connect=5.0)
+#: Spec 010 plan §5.13 — a 429 or a 5xx: at most three tries in all, waiting
+#: `Retry-After` (capped) or else these seconds between them.
+TRIES: Final = 3
+RETRY_WAITS: Final = (1.0, 4.0)
+RETRY_AFTER_CAP: Final = 30.0
 
 
 class GmailError(Exception):
@@ -158,9 +177,28 @@ def forget(mailbox: str | None = None) -> None:
         _tokens.pop(mailbox, None)
 
 
+def _retryable(status: int) -> bool:
+    """Spec 010 NFR-CAP-03 (plan §5.13): Gmail's rate limit and its own
+    faults are worth a wait; every other status is an answer."""
+    return status == 429 or status >= 500
+
+
+def _wait(response: Any, tries: int) -> float:
+    """`Retry-After` in seconds, capped at 30, else 1 s then 4 s."""
+    given = (getattr(response, "headers", None) or {}).get("Retry-After")
+    try:
+        return min(max(float(str(given).strip()), 0.0), RETRY_AFTER_CAP)
+    except (TypeError, ValueError):
+        return RETRY_WAITS[min(tries, len(RETRY_WAITS)) - 1]
+
+
 def _get(mailbox: str, op: str, path: str, params: Any = None) -> dict[str, Any]:
-    """One GET as `mailbox`; a 401 renews the token once."""
-    for attempt in (1, 2):
+    """One GET as `mailbox`; a 401 renews the token once; a 429 or a 5xx is
+    tried again, at most `TRIES` times in all (spec 010 plan §5.13)."""
+    renewed = False
+    tries = 0
+    while True:
+        tries += 1
         started = time.monotonic()
         try:
             response = httpx.get(
@@ -173,15 +211,21 @@ def _get(mailbox: str, op: str, path: str, params: Any = None) -> dict[str, Any]
             _log(op, type(exc).__name__, started)
             raise GmailError(f"Gmail {op} failed ({type(exc).__name__}).") from None
         _log(op, response.status_code, started)
-        if response.status_code == 401 and attempt == 1:
+        if response.status_code == 401:
+            if renewed:
+                raise GmailError(f"Gmail {op} failed (401).")
+            renewed = True
+            tries -= 1
             forget(mailbox)
+            continue
+        if _retryable(response.status_code) and tries < TRIES:
+            time.sleep(_wait(response, tries))
             continue
         if response.status_code == 404 and op == "history":
             raise HistoryGone("Gmail no longer has this mailbox's history from that point.")
         if response.status_code != 200:
             raise GmailError(f"Gmail {op} failed ({response.status_code}).")
         return response.json()
-    raise GmailError(f"Gmail {op} failed (401).")
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +257,17 @@ def list_messages(
     if page_token:
         params["pageToken"] = page_token
     return _get(mailbox, "list", "/messages", params)
+
+
+def search(mailbox: str, q: str, *, page_token: str | None, page_size: int) -> dict[str, Any]:
+    """Spec 010 FR-CAP-SRC-06 — one page of the ids of the messages a Gmail
+    search finds, in no label in particular and never in Spam or Trash:
+    `{messages: [{id, threadId}], nextPageToken}`. Ids only; the deal
+    document search reads each one's metadata after."""
+    params: dict[str, Any] = {"q": q, "maxResults": page_size, "includeSpamTrash": "false"}
+    if page_token:
+        params["pageToken"] = page_token
+    return _get(mailbox, "search", "/messages", params)
 
 
 def history(mailbox: str, start: str, *, page_token: str | None, page_size: int) -> dict[str, Any]:
@@ -281,3 +336,69 @@ def message_text(mailbox: str, message_id: str) -> str:
             return ""
         raise
     return "\n\n".join(_text_parts(found.get("payload") or {}))
+
+
+# ---------------------------------------------------------------------------
+# Email capture's reads — spec 010 FR-CAP-DIS-02 to -04, FR-CAP-CHG-05
+# ---------------------------------------------------------------------------
+
+
+def thread_meta(mailbox: str, thread_id: str) -> dict[str, Any]:
+    """A conversation's messages as metadata only (`threads.get
+    format=metadata`, the sync's headers): `{id, messages: [{id, threadId,
+    labelIds, internalDate, headers}]}`, oldest first as Gmail gives them.
+    A conversation deleted meanwhile (404) answers `{}`."""
+    params = [("format", "metadata"), *(("metadataHeaders", h) for h in HEADERS)]
+    try:
+        found = _get(mailbox, "thread", f"/threads/{thread_id}", params)
+    except GmailError as exc:
+        if "(404)" in str(exc):
+            return {}
+        raise
+    return {
+        "id": found.get("id"),
+        "messages": [
+            {
+                "id": m.get("id"),
+                "threadId": m.get("threadId"),
+                "labelIds": m.get("labelIds") or [],
+                "internalDate": m.get("internalDate"),
+                "headers": (m.get("payload") or {}).get("headers") or [],
+            }
+            for m in found.get("messages") or []
+        ],
+    }
+
+
+def _filenames(part: dict[str, Any]) -> list[str]:
+    """The names of a payload's attachments, in order."""
+    found = [str(part["filename"])] if part.get("filename") else []
+    for sub in part.get("parts") or []:
+        found += _filenames(sub)
+    return found
+
+
+def thread_text(mailbox: str, message_ids: list[str]) -> list[dict[str, Any]]:
+    """The plain text and attachment names of these messages only, each read
+    with `format=full` as `message_text` reads one (decoded `text/plain`
+    parts): `[{id, text, attachments}]`, in the order given. For email
+    capture's discovery alone (FR-CAP-CHG-05), with the ids that passed its
+    rules; returned in memory, never stored, logged or queued. A message
+    deleted meanwhile (404) is left out."""
+    out: list[dict[str, Any]] = []
+    for message_id in message_ids:
+        try:
+            found = _get(mailbox, "thread_text", f"/messages/{message_id}", [("format", "full")])
+        except GmailError as exc:
+            if "(404)" in str(exc):
+                continue
+            raise
+        payload = found.get("payload") or {}
+        out.append(
+            {
+                "id": message_id,
+                "text": "\n\n".join(_text_parts(payload)),
+                "attachments": _filenames(payload),
+            }
+        )
+    return out
