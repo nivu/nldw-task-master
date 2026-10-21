@@ -301,8 +301,8 @@ source** to each mailbox (`crm_mailboxes.capture_source`): `labels`
   `007`'s path unchanged: stored, linked, automation 2, bulk mail stored with
   `is_auto`. A message reached through Primary or Sent alone gets three new
   rules in `_take`: bulk or automated mail (`List-Unsubscribe`,
-  `Precedence`, `Auto-Submitted`, a no-reply sender, a delivery report, a
-  calendar invitation; `capture.is_bulk`) is skipped and stores nothing;
+  `Precedence`, `Auto-Submitted`, a no-reply sender, a delivery report,
+  Google Calendar's notices; `capture.is_bulk`) is skipped and stores nothing;
   automation 2 does not run on it; and when no outside participant is a
   known person or company domain it is **not stored**.
 - **Discovery candidates.** Unknown, unlabelled mail leaves one
@@ -320,8 +320,48 @@ source** to each mailbox (`crm_mailboxes.capture_source`): `labels`
   `deal_signal` Review Queue item: sent by us suggests *Proposal, proposal
   sent on* that date, received suggests *possibly Closed Won*. A search
   error is counted (`deal_doc_failed`) and retried next sync; the page
-  itself succeeds.
-- Sync counts gain `skipped_bulk`, `candidates` and `deal_signals`. With
+  itself succeeds. The signal is stored through the same company grouping as
+  discovery's (`capture:deal` key, an entry with `origin = "deal_document"`;
+  see [One suggestion per company](#one-suggestion-per-company-010-revision-1)),
+  so a document and a discovery signal for one company make one item.
+- **Invitations from outside people** (010 Revision 1, FR-CAP-INV). A
+  message whose subject starts *Invitation:*, *Updated invitation:* (with or
+  without "with note") or *Invitation from Google Calendar:*
+  (`capture.is_invitation`) and whose participants include someone outside
+  our domains is ordinary mail: `is_bulk(headers, sender, outside)` runs
+  every other bulk check first (`List-Unsubscribe`, `Precedence`, auto-reply,
+  delivery report, a no-reply sender other than Google Calendar's), and only
+  then lets the invitation through, overriding just the subject, the
+  calendar-sender rule and that sender's `Auto-Submitted`. For an invitation
+  sent by Google Calendar's address, `email_rules.classify` adds the
+  `Reply-To` address (the organiser) to the participants, and
+  `capture.outside_people` drops the calendar sender itself, so matching, the
+  ignore lists and grouping see only the organiser. A known organiser's
+  invitation is filed and moves Last inbound and New → Contacted like any
+  message (`_take` clears `is_auto` on it); an unknown one marks a discovery
+  candidate. Responses, *Proposed new time:*, cancellations, reminders
+  (`capture.is_calendar_notice`) and invitations between colleagues only stay
+  skipped. Guests named only in the invitation's body are not read
+  (FR-CAP-INV-06): a colleague's invitation to outside guests is
+  internal-only on the owner's copy.
+- **The one invitation rescan.** Invitations were skipped before Revision 1
+  without a marker, so each capturing mailbox runs `email_sync._rescan_invites`
+  once, in the incremental branch after deal documents and in its own
+  `try/except`: a Gmail search (`capture.invite_rescan_query`, ids only, since
+  the capture start date, Primary, Sent and configured labels) of at most
+  `INVITE_RESCAN_PAGES = 5` pages of 100 a sync, no page started once
+  `INVITE_RESCAN_SECONDS = 120` have passed. Stored ids are skipped before any
+  metadata read; each kept invitation goes through `_take`. The page token is
+  saved in `crm_mailboxes.invite_rescan_token` after each page and the finish
+  in `invites_rescanned_at`; the API never resets either, and neither is
+  audited (`crm_audit_row`, re-copied in 074). A failure keeps the token for
+  the next sync (`invite_rescan_failed`); a saved token Gmail refuses as
+  invalid is cleared and the rescan starts again (`invite_rescan_restarted`),
+  which is safe because stored mail is skipped and a candidate only moves
+  forward.
+- Sync counts gain `skipped_bulk`, `candidates` and `deal_signals`, and with
+  Revision 1 `invites_rescanned`, `invite_rescan_failed` and
+  `invite_rescan_restarted`. With
   every mailbox on `labels`, as migration 071 seeds, the sync behaves exactly
   as `007` built it.
 
@@ -507,12 +547,11 @@ and findings but no item or record, chaining itself a minute later (guarded
 by the Redis key `crm:capture:next`) while candidates remain. When nothing
 is pending and every capturing mailbox has finished its backfill, it
 computes the **recall check**: each Sales- or Leads-labelled conversation
-since the start date, judged as if it had no label, gets a fate
-(`filed_known`, `found`, `judged_otherwise`, `skipped_rules`,
-`outside_scope`, `ignored`, `known_now`). The recall applies live's ignore
-list and known check before any text: a labelled thread on the ignore list
-(`ignored`) or naming only people the CRM holds now (`known_now`, often made
-by automation 2 from the label) never reaches Claude. Any mode change
+since the start date, judged as if it had no label, gets a fate (see
+[Recall reasons](#recall-reasons-010-revision-1)). The recall applies live's
+ignore list and known check before any text: a labelled thread on the ignore
+list (`ignored`) or naming only people the CRM holds now (`known_now`, often
+made by automation 2 from the label) never reaches Claude. Any mode change
 through `PATCH /crm/settings/capture` cancels an open dry run
 (`crm_capture_set_mode`); a change to Live also returns every unapplied dry
 run decision to pending, so Live judges it again. Starting, applying and
@@ -528,13 +567,218 @@ becomes an item before the decision is recorded; low confidence is recorded
 only. A finding's suggested domain and name are checked against existing
 companies (exact domain, a sibling domain on another public suffix, `007`'s
 name match); a match makes the item *link to the existing company*. A
-public webmail address never makes a company domain. A conversation keeps
-one open capture item: after each upsert `crm_capture_supersede` expires
-its other open `new_lead` or discovered `deal_signal` (never a deal
-document's), and a re-judgement that makes no item expires the earlier one.
+public webmail address never makes a company domain. Items are grouped by
+company (below); a re-judgement that makes no item lets the conversation go
+from the item that held it.
 
 **Retention.** `crm.purge_trash` deletes every decided candidate row older
 than 12 months (`crm_capture_purge`).
+
+### One suggestion per company (010 Revision 1)
+
+Every capture item is grouped under a **company key**
+(`capture.company_key`, pure): `domain:<d>` for the suggested domain,
+normalised (never a public webmail domain or a meeting host such as
+`zoom.us` or `meet.google.com`, FR-CAP-INV-04); else `name:<n>` for Claude's
+own company name, case-folded and whitespace collapsed (never the fallback
+the builders make from the domain, the person or the address); else
+`email:<address>`; else `thread:<ref>`, the conversation itself. The stored
+`source_key` is `capture:<key>`; when that is over 300 characters it becomes
+`capture:sha256:<hex>`, the SHA-256 of the key text.
+
+| Item | `source_key` | `dedupe_key` |
+|---|---|---|
+| `new_lead`, no matched company | `capture:<company key>` | `email_thread\|capture:<key>\|new_lead\|thread` |
+| `new_lead` linked to company X | `capture:linked` | `email_thread\|capture:linked\|new_lead\|company:<X>` |
+| `deal_signal` on company X (discovery or deal document) | `capture:deal` | `email_thread\|capture:deal\|deal_signal\|company:<X>` |
+
+The linked and deal keys keep the `company:<id>` tail that
+`crm_merge_companies` (065) rewrites, so a company merge still moves them.
+
+**Conversation entries.** `source_link` is `{mailbox_id, thread_id,
+threads: [entry, …]}`: the top-level pair is the newest conversation's (so
+"Open conversation" works as before), and each entry holds the conversation's
+`ref` (`gmail:<mailbox_id>:<thread_id>`), the latest judged message id, the
+date range, message count, whether the owner replied, its origin
+(`discovery`, `deal_document` or `academy_routing`), Claude's reason and
+confidence, and the sender's address and names. No body, no subject; `009`'s
+90-day tombstone blanks it with the rest of `source_link`. The 8 KB
+`suggestion` holds only the totals in `evidence` (conversations, dates,
+messages, owner replied, attachments, the newest reason and confidence).
+"Newest entry" means the greatest `(latest_at, message_id)`.
+
+**Merging is in SQL** because the job, an apply through the API and the
+sync's deal documents can touch one company at once. Every store goes
+through `review.capture_group_upsert` (which masks money in
+`item.suggestion` and `entry.reason`, as `review.upsert` does) and
+`crm_capture_group_upsert` (074). Under the workspace's capture lock (the
+one 072's start, mode and apply take), reading each row `FOR UPDATE` and
+re-checking `status = 'open'`, it:
+
+1. **skips** (`{skipped: true}`, counted `items_skipped`) when a decided,
+   non-superseded capture item lists an entry with the same `ref` and
+   `message_id` (or, before 074, had `source_key = ref` and that version): a
+   dismissed company comes back only for new mail. An item expired with a
+   refusal is not a decision and never blocks;
+2. **releases** the conversation from every other open capture item (not for
+   a `deal_document` entry, and a `deal_document` entry is never removed, so
+   one document sent to two known companies keeps one signal for each);
+3. **upserts** by `dedupe_key`, merging the entry into `threads` and
+   recomputing the totals; the names, person, stage, `current_values` and
+   deal choices are taken **only when the entry is the newest**, so the stage
+   and the deals offered always come from one conversation, in whatever
+   order signals arrive. Any change raises `revision`, so an approval form
+   opened earlier gets `009`'s 409.
+
+A no-item judgement calls `crm_capture_release_thread(ref, '')`: the entry
+leaves its item, the totals are recomputed and an item left empty expires
+(`review.expired` audit row). `crm_capture_supersede` (073) stays defined
+but unused.
+
+**Approvals and refusals at the same time.** Claim (069) and release (068)
+do not take the capture lock, so: an upsert that finds its row claimed
+inserts a fresh open item on the same key; 074 replaces `crm_review_release`
+so that a refused capture item, before it expires, merges its threads into
+the open item holding its key; and a refused item that reopens drops every
+entry another open item now holds (expiring if none is left).
+
+**Approving a grouped `new_lead`** (`review._new_lead`) creates the company
+as before, then one person per distinct entry address (an address already a
+person of the workspace is linked to the company; a person under another
+company stays there; the newest entry is the suggestion's person, so an
+edited address makes no second person), then queues one
+`crm.capture_thread` per entry with a mailbox. The result counts `people`
+and `threads_filed` (entries whose sender is known after approval). An item
+from before 074 files its one link. With email sync off, filing stores
+nothing, as before.
+
+**Consolidation.** The open items made before 074 (one per conversation;
+nine for HearSight in production) are regrouped by `capture._consolidate`
+at the start of every tick, right after the Off check and before the other
+gates, since it calls neither Gmail nor Claude: with capture Off nothing is
+read or changed. Python plans (`capture.consolidation_plan`): each open
+capture item's target key from its candidate's stored finding, else from its
+suggestion, where a company name equal to its domain, email or person's name
+is the builders' fallback, not Claude's, so it keys by domain, then address;
+groups of two or more, or a single item on a pre-074 `gmail:` key, need
+work. `crm_capture_consolidate` (074) applies it under the capture lock,
+keeping only members still open plus any open item already on the target
+key: the newest (by `created_at`, then id) survives with every member's
+entries and is re-keyed; each other member expires with `result =
+{superseded_by, reason: "Merged into one suggestion for <company>."}` and a
+`review.expired` audit row, keeping its own `source_link`. Decided items are
+never read or changed; a second run plans nothing. Counts `consolidated`,
+`rekeyed`; a failure is logged and counted `consolidate_failed`, and the run
+continues. The page shows an expired item with `superseded_by` as "Merged
+into another suggestion". Expiry stays 14 days from creation.
+
+### Recall reasons (010 Revision 1)
+
+A labelled conversation counts as **tested** only when Claude judged it.
+`capture._fate` decides each recall row's fate from headers and records
+only, before any text, in this order (the first that applies):
+
+1. Gmail returned no message, or a malformed one → `not_judged`;
+2. no message in Primary or Sent → `outside_scope`;
+3. every message dropped by the rules → `capture._drop_reason`, the reason
+   that dropped most messages (ties: calendar, then automated, then
+   internal): `internal_only` (including an invitation between colleagues
+   only), `calendar` (`is_calendar_notice`) or `automated` (`is_bulk`);
+4. on the ignore list → `ignored`;
+5. contacts known before → `filed_known`;
+6. contacts known now → `known_now`;
+7. Claude: a failure → `not_judged`; a high- or medium-confidence lead or
+   deal signal → `found`, except an Academy finding with no Academy target
+   → `academy_unrouted`; otherwise `judged_otherwise`.
+
+`capture.FATES` lists these eleven plus the legacy `skipped_rules`, read
+from runs stored before Revision 1 and never written. `recall_summary(rows)`
+gives `{total, tested, found, untested, capped, academy_unrouted}` (found
+includes `academy_unrouted`, which is also given on its own; `filed_known` and `known_now` both count as "involve
+contacts now in the CRM (filed automatically)"), and `recall_line(rows)`
+the sentence of spec FR-CAP-RPT-07: "None of your 60 labelled conversations
+could be tested: …" or "Of the 18 that could be tested, the dry run found
+15. 42 could not be tested: …", with ", of which N were course enquiries
+the Academy could not take" added to the found sentence when
+`academy_unrouted` is not zero, zero reasons left out, singulars, and "Only
+the first 500 were checked." only when `_recall` stopped at the cap with
+labelled conversations still unchecked (it then stores a `{"capped": true}`
+marker row; rows without `thread_id` are skipped when read). `GET
+/crm/capture` returns `recall: {line, rows, summary}`; the page shows the
+summary as a list under the line and each row's reason. Old runs render
+with their stored fates, unsplit.
+
+### Course enquiries to the Academy (010 Revision 1)
+
+In the TVA-linked workspace (Labs), `DiscoveryOutput.business` says whether
+a lead or deal signal is an Academy matter (a course enrolment, student
+training, a college or university programme) or a Labs one; it defaults to
+`labs` and is forced to `labs` in any other workspace, so nothing is routed
+the other way (`CLASSIFIER_VERSION = "010.2"`; old decisions are not
+re-judged).
+
+**Target.** `capture._academy_target()` (cached per run): the workspace with
+key `academy`, at least one active Admin, and its own `capture_routing`
+setting `{"accept_routed": true}` (074 adds the key to the settings CHECK
+and seeds it on in every workspace; only the Academy's is read, changed by
+an Academy Admin through `PATCH /crm/settings/capture_routing`).
+
+**Routing** (`_route_academy`, in live `_judge` and in `apply`), for a high-
+or medium-confidence Academy finding:
+
+1. Labs makes no item and releases the conversation from any earlier Labs
+   item;
+2. no target → the Labs finding gets `routed = false`, counted
+   `academy_unrouted`, nothing suggested anywhere;
+3. otherwise `routed = true`, counted `academy_routed` whatever the Academy
+   then does, and the Academy step runs under a `sync` actor of the Academy:
+   every outside person on the **Academy's** ignore list, or an earlier
+   Academy decision on that conversation, ends it, logged only as
+   `capture.academy_skipped` in the Academy's structured log; otherwise
+   `capture.academy_lead_item` makes a `new_lead` (a deal signal becomes one
+   with a stage hint), grouped by company key within the Academy, checked
+   for duplicates against Academy companies only, owned by the mailbox owner
+   when an active Academy Admin or Member, else the Academy's Admins, and
+   stored through `review.capture_group_upsert`. Its entries carry
+   `ref = gmail:<mailbox email>:<thread_id>` and **no `mailbox_id`**, so
+   there is nothing to open or file.
+
+Live, the Labs ignore list is read before any text, so a course enquiry
+from an ignored sender is never judged or routed; on apply a routed finding
+reads only the Academy's list. Apply writes each routed candidate's
+`finding.routed` and the run's `academy` and `academy_unrouted` counts
+through `crm_capture_apply_routed` (074) before `crm_capture_apply`.
+Whenever a Labs judgement ends as a Labs item or no item and the Academy
+workspace exists, `_back_to_labs` releases the conversation from any
+Academy item (an Academy item left empty expires). The call is paid from
+the Labs budget; the Academy's gate is not consulted.
+
+**Approving in the Academy** (`review._new_lead`, `evidence.origin ==
+"academy_routing"`) creates the company and one person per distinct address
+there, then one masked note linked to them all, one line per conversation
+("Email conversation in navaneeth@nunnarilabs.com: 2 emails, 1 Oct to 2 Oct
+2026. Asked about the AI course for final-year students."),
+and queues nothing. Dismissing follows FR-CAP-REV-03 against the Academy's
+own ignore list (written only when an ignore choice is made).
+
+**Isolation.** The constitution forbids a CRM *record* crossing workspaces.
+What crosses here is a suggestion built only from values read from Gmail
+(names, an address, dates, counts, Claude's reason), the values the Academy
+would hold had the mail reached an Academy mailbox. No Labs company,
+person, deal, mailbox, candidate or run id enters any Academy column, and
+no Academy id, ignore entry, duplicate or decision enters any Labs row,
+report or count: the Labs candidate keeps `business` and `routed` with
+`duplicate_company_id` null, and its rows look the same for an enquiry the
+Academy filed, joined, skipped or ignored. The one Academy-derived fact
+Labs can see is whether the Academy takes enquiries now (`routed = false`,
+`academy_unrouted`), an accepted disclosure (spec FR-CAP-ACAD-07).
+`test_crm_isolation_sweep.py` and `test_crm_ai_isolation.py` assert both
+directions. Course enquiries open in Labs before 074 stay there until
+dismissed or expired.
+
+**Report.** `GET /crm/capture` counts `academy` and `academy_unrouted` from
+the run's findings (from the counts Apply stored, once applied; 0 for runs
+applied before 074); `crm_capture_report` (072) is unchanged.
 
 ### The approval path
 
@@ -568,18 +812,20 @@ commit their own, and the claim-then-release pair is what stops two
 approvals both going through (spec 009 plan CT-1).
 
 **Capture's two item types (spec 010).** Both are owned by the mailbox
-owner and keyed on the conversation (`email_thread`,
-`gmail:<mailbox_id>:<thread_id>`), with the latest judged message id as the
-source version, so an expired item does not return for the same messages.
-Each shows its evidence (date range, message count, whether the owner
+owner. Since Revision 1 they are keyed on the company, not the conversation
+(see [One suggestion per company](#one-suggestion-per-company-010-revision-1)),
+and list their conversations in `source_link.threads`; a decided item does
+not return for the same conversation at the same latest message. Each shows
+its evidence (conversations, date range, message count, whether the owner
 replied, attachment names, Claude's reason) and never message text.
 
 - **`new_lead`** has no target, or the duplicate company it links to.
   Approving it (`review._new_lead`) creates the company at New through
   `records.create` (or reuses the linked one, one already holding the
   domain, or the one an earlier partial approval made), moves it to the
-  suggested lead stage through `records.update`, creates the person, and
-  queues `crm.capture_thread` to store the conversation; the company and
+  suggested lead stage through `records.update`, creates one person per
+  distinct sender address, and queues one `crm.capture_thread` per listed
+  conversation (in the Academy, one note instead and nothing filed); the company and
   person audit rows carry the item id. A failure after the company exists
   releases the item with `result.company_id`, so a retry reuses it.
 - **`deal_signal`** targets a known company; its deal choices are the
@@ -603,7 +849,7 @@ replied, attachment names, Claude's reason) and never message text.
 | `ai_fields` (phase 3) | the record's own fields (no amounts), summaries, meeting notes, enriched values, next-step dates, time in stage; at most once an hour per record | `crm_ai_field_values` |
 | `followup_drafts` (phase 3, R-1) | a thread's stored summary and the record's fields, never a body | an R-1 `rule_suggestion` with a draft for the owner to send from their own mail |
 | `review_expiry` | open and decided items | expiries and tombstones |
-| `capture` (spec 010; its own `capture` mode, not a phase) | pending discovery candidates: a metadata thread read, then the text of only the messages that passed the rules, the ignore list and the known check; hourly, newest first in Live, oldest first in a dry run | decisions in `crm_capture_record`; in Live, `new_lead` and `deal_signal` items; in a dry run, findings and the recall check; queues `crm.capture_thread` for a conversation that became known |
+| `capture` (spec 010; its own `capture` mode, not a phase) | pending discovery candidates: a metadata thread read, then the text of only the messages that passed the rules, the ignore list and the known check; hourly, newest first in Live, oldest first in a dry run | decisions in `crm_capture_record`; first, in Dry run and Live, consolidation of open capture items into one per company (`crm_capture_consolidate`); in Live, `new_lead` and `deal_signal` items grouped per company (`crm_capture_group_upsert`), and in Labs course enquiries routed to the Academy's queue; in a dry run, findings and the recall check with a reason per untested conversation; queues `crm.capture_thread` for a conversation that became known |
 | `crm.capture_thread` (on `worker-crm-sync`, not a `JOBS` entry) | one conversation's metadata, Primary, Sent and configured labels only | the conversation's messages, stored and linked as known mail; a failure logs `crm_capture_thread_failed` |
 
 ### Rules as flag extensions

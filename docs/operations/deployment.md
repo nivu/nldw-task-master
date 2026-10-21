@@ -773,6 +773,70 @@ E2); adding one later is the same steps 6–10 for that mailbox.
   `worker-crm-ai`). Decision records of conversations that were not leads
   are purged after 12 months by `crm.purge_trash`.
 
+### 074 release (Revision 1)
+
+Revision 1 (spec 010 §14: one suggestion per company, the honest recall
+line, course enquiries to the Academy, outside calendar invitations) ships
+as **migration `074`** and code, again with **no new service, no new
+variable and no new dependency**. In this order, from the one merge commit
+on `main`:
+
+1. **Migration `074`** with `npx supabase db push`, **after `071`–`073`**,
+   and before any service. It adds `invites_rescanned_at` and
+   `invite_rescan_token` to `crm_mailboxes`; the functions
+   `crm_capture_group_upsert`, `crm_capture_release_thread`,
+   `crm_capture_consolidate`, `crm_capture_apply_routed` and their pure
+   helpers; replaces `crm_audit_row`, `crm_review_release` and
+   `crm_workspaces_seed_ai`; and seeds the `capture_routing` setting
+   (`{"accept_routed": true}`) in every workspace. A worker started ahead
+   of it calls `crm_capture_group_upsert` and `crm_capture_consolidate`
+   before they exist, and its capture runs fail. Never commit
+   `supabase/config.toml`.
+2. **All five Railway services from the merge commit**: `api`, `worker`,
+   `beat`, `worker-crm-ai` and `worker-crm-sync`:
+
+   ```bash
+   cd backend && railway up . --path-as-root --service <name>
+   ```
+
+   They must ship together: the sync's new bulk rule and invitation rescan
+   (`worker-crm-sync`) and the job's grouping (`worker-crm-ai`) depend on
+   each other, and a sync on the old code keeps writing one deal-document
+   key per conversation.
+3. **Netlify**, with `--skip-functions-cache`:
+
+   ```bash
+   cd frontend && NEXT_PUBLIC_ENABLE_PASSWORD_LOGIN=false netlify deploy --build --prod --skip-functions-cache
+   ```
+
+4. **Check** (plan R1.10):
+
+   - Within an hour, the first capture run under Settings → Jobs shows
+     `consolidated`.
+   - No company has two open capture items:
+
+     ```sql
+     select dedupe_key, count(*) from crm_review_items
+      where status = 'open' and type = 'new_lead'
+      group by 1 having count(*) > 1;                                    -- no rows
+     ```
+
+   - HearSight has **one** open item, whose `source_link->'threads'` has
+     nine entries (fewer if some were decided meanwhile).
+   - Every item expired by consolidation carries `result->>'superseded_by'`
+     and a `review.expired` audit row.
+   - After the next sync of `navaneeth@nunnarilabs.com`, if it is on
+     *Primary and Sent*, `invites_rescanned_at` is set (or
+     `invite_rescan_token` is advancing).
+   - `curl -s https://<railway-domain>/health/jobs` returns `{"status":"ok",…}`.
+
+5. **Owner**: the honest recall line appears on the **next** dry run; the
+   existing report keeps its old fates. Course enquiries reach the Academy
+   only once its workspace has an active Admin (its *Accept course
+   enquiries from Labs* switch is on by default). Course enquiries already
+   open in Labs before `074` stay there (FR-CAP-ACAD-11) until dismissed or
+   expired within 14 days.
+
 ## Releasing a change
 
 Every release, in this order:

@@ -469,6 +469,18 @@ class TestThe010Additions:
             "crm_capture_apply",
             "crm_capture_purge",
             "crm_capture_supersede",
+            # 074 (R1).
+            "crm_capture_entries",
+            "crm_capture_newest",
+            "crm_capture_merge",
+            "crm_capture_evidence",
+            "crm_capture_link",
+            "crm_capture_person",
+            "crm_capture_release_thread",
+            "crm_capture_group_upsert",
+            "crm_capture_consolidate",
+            "crm_capture_apply_routed",
+            "crm_review_release",
         } <= names
         assert {n for n in names if not n.startswith("crm_")} == set()
         rows = stack.sql(
@@ -488,3 +500,41 @@ class TestThe010Additions:
             "AND table_name IN (SELECT relname FROM pg_class WHERE relkind IN ('r', 'p'))"
         )
         assert {(r["table_name"], r["column_name"]) for r in rows} == UUID_ARRAYS
+
+    @pytest.mark.parametrize(
+        ("name", "earlier", "kept"),
+        [
+            # 068's two release paths: expire behind a newer open item, or
+            # reopen; and the result write when not refused.
+            ("crm_review_release", 68, ("'review.expired'", "'review.reopened'", "SET result =")),
+            # 072's seed keys, 060/066's and 072's own.
+            (
+                "crm_workspaces_seed_ai",
+                72,
+                (
+                    "'ai',",
+                    "'automations',",
+                    "'flag_thresholds',",
+                    "'capture', '{\"mode\": \"off\"}'",
+                ),
+            ),
+        ],
+    )
+    def test_074s_replacements_keep_every_earlier_branch(self, name, earlier, kept):
+        """010 R1 T484: 074 copies the latest body and extends it, so every
+        line of the earlier body is still there, in order."""
+        old, new = _body(_sql(earlier, earlier), name), _body(_sql(74, 74), name)
+        lines = iter(new)
+        missing = [line for line in old if not any(line == n for n in lines)]
+        assert missing == []
+        text = "\n".join(new)
+        assert [k for k in kept if k not in text] == []
+        if name == "crm_workspaces_seed_ai":
+            assert "'capture_routing', '{\"accept_routed\": true}'" in text
+
+
+def _body(sql: str, name: str) -> list[str]:
+    """The stripped, non-empty lines of `name`'s last definition in `sql`."""
+    start = sql.rindex(f"CREATE OR REPLACE FUNCTION public.{name}(")
+    end = sql.index("\n$$;", start)
+    return [line.strip() for line in sql[start:end].splitlines() if line.strip()]
