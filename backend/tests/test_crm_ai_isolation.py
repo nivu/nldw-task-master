@@ -12,6 +12,12 @@ nor any row A's run writes (its items, notes, summaries, values, links, job
 runs and audit), and B's prompts carry nothing of A's. A meeting attended by
 the email both workspaces hold is processed in neither (Q-26).
 
+Spec 010 R1 (tasks T448; FR-CAP-ACAD-02, -04, -08; plan R1.4 "Isolation
+argument", PD-42): email capture's routing of a course enquiry from Labs to
+the Academy goes one way. The Labs candidate, its job run and its report
+hold no Academy id and read the same whether the Academy made an item or
+skipped the enquiry for its own ignore list; the usage row is Labs'.
+
 Every job runs on `tests/crm_fake.py` with the fakes of
 `tests/crm_ai_fakes.py`: no network.
 """
@@ -37,7 +43,7 @@ from test_crm_summaries_job import ANSWER, Mail
 
 from app.config import settings as config
 from app.domain.crm import flags as flag_rules
-from app.services.crm import followups
+from app.services.crm import capture, followups
 from app.tasks import crm_ai
 
 API = "/api/v1/crm"
@@ -584,3 +590,89 @@ class TestFollowUpDrafts:
         assert (item["record_type"], item["record_id"]) == ("person", rules.priya["id"])
         assert _targets(rules, "crm_review_items") <= _a_records(rules)
         assert "Deepika sent the pilot plan" not in _prompts(claude, "academy")
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 I3 — a course enquiry routed to the Academy (tasks T448)
+# ---------------------------------------------------------------------------
+
+
+def test_isolation_academy_routing_stays_one_way(monkeypatch):
+    """Two course enquiries judged live in Labs (test_crm_capture_job.py):
+    the Academy takes one and skips the other for its own ignore list."""
+    from test_crm_capture_job import COURSE, STUDENT, Capture, _Ctx
+
+    cap = Capture(monkeypatch)
+    cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]].update(
+        finished_at="2026-10-19T00:00:00+00:00", applied_at="2026-10-19T01:00:00+00:00"
+    )
+    cap.fake.set_capture(cap.labs, "live")
+    cap.fake.add(
+        "crm_capture_ignores",
+        workspace_id=cap.academy["id"],
+        kind="domain",
+        value="school.example.edu",
+        from_item_id=None,
+        created_by=OWNER["id"],
+        created_at="2026-10-01T00:00:00+00:00",
+    )
+    cap.conversation("c1", sender=STUDENT, at=datetime(2026, 10, 18, 6, 0, tzinfo=UTC))
+    cap.conversation(
+        "c2", sender="Ravi <ravi@school.example.edu>", at=datetime(2026, 10, 17, 6, 0, tzinfo=UTC)
+    )
+    cap.answer(
+        COURSE,
+        {
+            **COURSE,
+            "company_name": "City School",
+            "person_name": "Ravi",
+            "person_email": "ravi@school.example.edu",
+        },
+    )
+    got = cap.tick()
+    assert got["outcome"] == "ok", got
+    # Both handed over (PD-42); the Academy made an item for one only.
+    assert got["counts"]["academy_routed"] == 2 and got["counts"]["items"] == 0
+    [item] = [
+        i
+        for i in cap.fake.rows["crm_review_items"].values()
+        if i["workspace_id"] == cap.academy["id"]
+    ]
+    assert item["source_link"]["threads"][0]["thread_id"] == "c1"
+    academy_ids = {cap.academy["id"]} | {
+        r["id"]
+        for table in cap.fake.rows.values()
+        for r in table.values()
+        if r.get("workspace_id") == cap.academy["id"]
+    }
+    labs_rows = _written(cap.fake, cap.labs)
+    report = json.dumps(capture.overview(_Ctx(cap)), default=str)
+    for academy_id in academy_ids:
+        assert academy_id not in labs_rows
+        assert academy_id not in report
+        assert academy_id not in json.dumps(got["counts"])
+    # Labs cannot tell what the Academy did: the two candidates differ only
+    # in what came from Gmail.
+    gmail_values = (
+        "company_name",
+        "person_name",
+        "person_email",
+        "domain",
+        "reason",
+        "first_at",
+        "latest_at",
+    )
+    taken, skipped = (
+        {
+            **{k: cap.candidate(t)[k] for k in ("status", "outcome", "confidence", "attempts")},
+            "finding": {
+                k: v for k, v in cap.candidate(t)["finding"].items() if k not in gmail_values
+            },
+        }
+        for t in ("c1", "c2")
+    )
+    assert taken == skipped
+    assert taken["finding"]["routed"] is True and taken["finding"]["business"] == "academy"
+    assert taken["finding"]["duplicate_company_id"] is None
+    # FR-CAP-ACAD-08: both calls are Labs', paid by Labs.
+    assert {u["workspace_id"] for u in cap.fake.rows["crm_ai_usage"].values()} == {cap.labs["id"]}

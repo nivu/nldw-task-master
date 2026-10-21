@@ -53,7 +53,7 @@ And three choices:
 | **Link meeting to a deal** | a meeting note whose deal was not clear | links the meeting note to the deal you choose |
 | **Use the enriched value** | a company's website, where the company's field already holds something different | replaces the field with the value from the website |
 | **Follow-up suggestion** | one of the follow-up rules | does what the rule suggests: move a lead stage, set a next touch, qualify a campaign member into a deal or close it out. For a follow-up email draft, it marks the draft as used; you send the email yourself, from your own mail |
-| **New lead** | email capture: a conversation in Primary or Sent with someone the CRM does not know, which the AI thinks is a sales conversation | creates the company at the suggested lead stage, the person under it and the company's domain, and files the conversation's emails on them. Later email from that domain is filed straight away, with no AI. When the company may already be in the CRM, the item offers to link the conversation to it instead |
+| **New lead** | email capture: a conversation in Primary or Sent with someone the CRM does not know, which the AI thinks is a sales conversation | creates the company at the suggested lead stage with its domain, one person under it for each different sender in its conversations, and files every conversation's emails on them. Later email from that domain is filed straight away, with no AI. When the company may already be in the CRM, the item offers to link the conversations to it instead |
 | **Deal signal** | email capture, or an SOW, proposal, quotation, MSA or purchase order attached to an email with a known company | moves the company's open deal to the suggested stage, or creates a deal at Discovery when it has none |
 
 Approving is the same as making the change by hand. Every rule still
@@ -74,10 +74,21 @@ suggestion**.
 ## New leads and deal signals from email
 
 With email capture on (see *Running a CRM workspace*), two kinds of item
-come from your email. Each shows its evidence: the dates of the
-conversation, how many emails it has, whether you replied, the names of any
-attachments, and the AI's one-line reason. The email's words are never
-shown, and never kept.
+come from your email. Each shows its evidence: how many conversations it
+holds, their dates, how many emails they have, whether you replied, the
+names of any attachments, and the AI's one-line reason from the latest
+conversation. The email's words are never shown, and never kept.
+
+**One item per company.** All the conversations with one company make one
+item, for example "3 conversations · 9 emails · Asked for pricing". The
+person suggested is the one from the latest conversation; the approve
+button reads **File these 3 conversations**. A new conversation with the
+company joins the open item; if you had the item open at that moment,
+approving is refused with "This suggestion changed; review it again.": look at it again and
+approve. A company has at most one open deal signal too: a newer email or
+document updates the suggested stage, an older one only joins the list. An
+item that shows "Merged into another suggestion" was one of several
+earlier items for one company, now combined into one.
 
 **New lead.** Check the company name, domain, lead stage and person, and
 change any of them with **Edit and approve**. A company that was never
@@ -86,7 +97,18 @@ address such as gmail.com, the company has no domain unless you add one.
 When the domain came from a website mentioned in the email rather than the
 sender's own address, the item says so: check it before approving. If the
 company is already in the CRM, choose it to link the conversation there
-instead of creating a second one.
+instead of creating a second one. Approving creates one person for each
+different sender among the conversations (someone already in the CRM is
+linked to the company instead; someone under another company stays there)
+and files every conversation on them.
+
+**Course enquiries in the Academy.** In Nunnari Academy B2B, a new lead can
+come from a Labs mailbox: a course or training enquiry the AI found there.
+It says which Labs mailbox it came from, and has no conversation to open,
+since the Academy keeps no email. Approving it creates the company and the
+people in the Academy, and records the conversations as a note on them
+(when, how many emails, the AI's reason); nothing is filed. Dismissing it
+can add the sender or domain to the Academy's own ignore list.
 
 **Deal signal.** Approving it goes through the pipeline rules like a move
 made by hand:
@@ -106,8 +128,10 @@ domain to the workspace's ignore list, and email from it never reaches the
 AI again. The whole-domain choice is the sender's own domain, and is offered
 only when that is also the lead's domain: a public webmail sender (or one
 whose company website came from the email's text) can only be ignored by
-sender. Dismissing
-a deal signal changes nothing else.
+sender. A dismissed company is not suggested again for the conversations
+it held; a new conversation, or a new email in one of them, can suggest it
+again unless you ignored the sender or domain. Dismissing a deal signal
+changes nothing else.
 
 ## Who sees which suggestion
 
@@ -130,7 +154,9 @@ restored.
 A suggestion left untouched for two weeks **expires** and leaves the queue.
 Like a dismissal, it is not suggested again from the same source unless
 something new happens. An expired new lead comes back only if a new email
-arrives in the conversation.
+arrives in one of its conversations. A company's item expires two weeks
+after it was first made, even if new conversations kept joining it; a
+conversation after that starts a new item.
 
 ## From Claude
 

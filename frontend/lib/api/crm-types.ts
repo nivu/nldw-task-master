@@ -92,8 +92,18 @@ export interface CrmBootstrap {
 
 /** GET /crm/settings — Admin only. The allow-list is read-only here. */
 export interface CrmSettings {
-  settings: { stage_probabilities?: StageProbabilities } & Record<string, unknown>;
+  settings: {
+    stage_probabilities?: StageProbabilities;
+    /** 010 Revision 1 (contracts §7.4a): read only in the Academy. */
+    capture_routing?: CrmCaptureRouting;
+  } & Record<string, unknown>;
   allowed_domains: string[];
+}
+
+/** 010 Revision 1 (FR-CAP-ACAD-03): whether the workspace takes course
+ *  enquiries from Labs; on by default. */
+export interface CrmCaptureRouting {
+  accept_routed: boolean;
 }
 
 /** GET /crm/fx-rates — INR per one unit, for a month (FR-CRM-FX-02). */
@@ -1689,7 +1699,13 @@ export interface CrmReviewItem {
   source: {
     kind: "email_thread" | "meeting" | "enrichment" | "rule";
     label: string;
-    link: { thread_key?: string; record_type?: ViewObjectKind; record_id?: string } | null;
+    link: {
+      thread_key?: string;
+      record_type?: ViewObjectKind;
+      record_id?: string;
+      /** 010 Revision 1 (contracts §7.4): a capture item's conversations. */
+      threads?: CrmCaptureThreadRef[];
+    } | null;
   };
   ai: AiProvenance | null;
   /** The last refusal of an approval; the item stays open (FR-CRMAI-REV-06). */
@@ -1698,6 +1714,27 @@ export interface CrmReviewItem {
   expires_on: string;
   decided_at: string | null;
   decided_by: { id: string; name: string | null } | null;
+  /** 010 Revision 1 (contracts §7.4): a capture item merged into another. */
+  result?: { superseded_by?: string } | null;
+}
+
+/** 010 Revision 1 (contracts §7.4) — one conversation of a capture item;
+ *  `reason` is generated plain text. */
+export interface CrmCaptureThreadRef {
+  ref: string;
+  mailbox_id?: string;
+  thread_id: string;
+  message_id: string;
+  first_at: string;
+  latest_at: string;
+  message_count: number;
+  owner_replied: boolean;
+  origin: string;
+  reason: string;
+  confidence: string;
+  person_email: string;
+  first_name?: string | null;
+  last_name?: string | null;
 }
 
 /** GET /crm/review — a Viewer gets no items. */
@@ -1738,6 +1775,11 @@ export interface ReviewApproveResult {
     person_id?: string;
     linked?: boolean;
     filed?: "queued";
+    /** 010 Revision 1 (contracts §7.4). */
+    people?: number;
+    threads_filed?: number;
+    /** An Academy `new_lead`: the note recorded instead of mail (FR-CAP-ACAD-05). */
+    note_id?: string;
   };
 }
 
@@ -1952,7 +1994,13 @@ export interface CrmCaptureFinding {
   message_count: number;
   owner_replied: boolean;
   reason: string | null;
+  /** Null for an Academy finding (contracts §7.1). */
   duplicate_company: Record<string, unknown> | null;
+  /** 010 Revision 1 (FR-CAP-ACAD-01): which business the enquiry is for. */
+  business: "labs" | "academy";
+  /** An Academy finding: handed to an accepting Academy (true), none to take
+   *  it (false), or not yet applied (null). */
+  routed?: boolean | null;
 }
 
 export type CrmCaptureRecallFate =
@@ -1964,7 +2012,17 @@ export type CrmCaptureRecallFate =
   /** Every outside person on the ignore list: never sent to Claude. */
   | "ignored"
   /** Names only people added to the CRM after it began: never sent to Claude (G-5). */
-  | "known_now";
+  | "known_now"
+  /** Every message dropped by the rules as internal mail (FR-CAP-RPT-06). */
+  | "internal_only"
+  /** Every message dropped by the rules as a Google Calendar notice. */
+  | "calendar"
+  /** Every message dropped by the rules as automated mail. */
+  | "automated"
+  /** Gmail returned it empty or malformed, or Claude failed. */
+  | "not_judged"
+  /** Found as a course enquiry with no Academy workspace to take it. */
+  | "academy_unrouted";
 
 /** One Sales- or Leads-labelled conversation of the recall check (FR-CAP-RPT-03). */
 export interface CrmCaptureRecallRow {
@@ -1973,6 +2031,28 @@ export interface CrmCaptureRecallRow {
   /** Only for a thread already stored as captured mail. */
   subject: string | null;
   fate: CrmCaptureRecallFate;
+}
+
+/** The recall line's numbers (contracts §7.1, FR-CAP-RPT-08). */
+export interface CrmCaptureRecallSummary {
+  total: number;
+  tested: number;
+  found: number;
+  /** The check stopped at 500 with labelled conversations still unchecked. */
+  capped: boolean;
+  untested: {
+    known: number;
+    ignored: number;
+    internal_only: number;
+    calendar: number;
+    automated: number;
+    outside_scope: number;
+    not_judged: number;
+    /** Runs before 074 only. */
+    skipped_rules: number;
+  };
+  /** The part of `found` the Academy could not take. */
+  academy_unrouted: number;
 }
 
 /** The report's counts, live while the dry run is open. */
@@ -1985,6 +2065,10 @@ export interface CrmCaptureCounts {
   judged: number;
   failed: number;
   filed_known_threads: number;
+  /** 010 Revision 1 (FR-CAP-RPT-09): high- and medium-confidence course
+   *  enquiries, and the part of them no Academy workspace could take. */
+  academy: number;
+  academy_unrouted: number;
   by_outcome: Record<CrmCaptureOutcome, Record<CrmCaptureConfidence, number>>;
 }
 
@@ -2001,7 +2085,12 @@ export interface CrmCaptureDryRun {
   /** Decimal string, USD. */
   estimated_cost_usd: string;
   findings: CrmCaptureFinding[];
-  recall: { line: string; rows: CrmCaptureRecallRow[] };
+  recall: {
+    line: string;
+    rows: CrmCaptureRecallRow[];
+    /** Absent only from a run the backend has not summarised. */
+    summary?: CrmCaptureRecallSummary | null;
+  };
 }
 
 /** GET /crm/capture — Admin only. */

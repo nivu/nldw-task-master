@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import {
   addCrmCaptureIgnore,
   applyCrmCaptureDryRun,
+  getCrmSettings,
   removeCrmCaptureIgnore,
   startCrmCaptureDryRun,
   updateCrmSetting,
@@ -21,9 +22,15 @@ import type {
   CrmCaptureOutcome,
   CrmCaptureOverview,
   CrmCaptureRecallFate,
+  CrmCaptureRecallSummary,
+  CrmCaptureRouting,
 } from "@/lib/api/crm-types";
 import { errorMessage } from "@/lib/api/portal";
 import { type CrmTimezone, formatDate } from "@/lib/crm/format";
+import { useAsync } from "@/lib/use-async";
+
+/** The workspace course enquiries are sent to (FR-CAP-ACAD-03). */
+const ACADEMY_KEY = "academy";
 
 /** Dry run is started by its button, never chosen here; Live is first
  *  entered through Apply, then may be chosen again (contracts §1.2). */
@@ -52,15 +59,33 @@ const CONFIDENCE_TEXT: Record<CrmCaptureConfidence, string> = {
   low: "Low",
 };
 
+/** Each recall row's reason as the page names it (contracts §7.1). */
 const FATE_TEXT: Record<CrmCaptureRecallFate, string> = {
+  found: "Found",
   filed_known: "Filed as known",
-  found: "Found as a lead or deal signal",
   judged_otherwise: "Judged otherwise",
-  skipped_rules: "Skipped by the rules",
+  known_now: "Contacts added later (not sent to Claude)",
+  ignored: "On the ignore list",
+  internal_only: "Skipped: internal only",
+  calendar: "Skipped: calendar notification",
+  automated: "Skipped: automated mail",
   outside_scope: "Outside Primary and Sent",
-  ignored: "Skipped by the ignore list",
-  known_now: "Not judged: its contact was added to the CRM later",
+  not_judged: "Not judged: Claude or Gmail failed",
+  academy_unrouted: "Course enquiry, no Academy workspace",
+  skipped_rules: "Skipped by the rules",
 };
+
+/** The untestable reasons in display order (FR-CAP-RPT-06). */
+const UNTESTED_TEXT: [keyof CrmCaptureRecallSummary["untested"], string][] = [
+  ["known", "contacts now in the CRM (filed automatically)"],
+  ["ignored", "on the ignore list"],
+  ["internal_only", "internal-only"],
+  ["calendar", "calendar notifications"],
+  ["automated", "automated mail"],
+  ["outside_scope", "outside Primary and Sent"],
+  ["not_judged", "could not be judged"],
+  ["skipped_rules", "skipped by the rules"],
+];
 
 /** The reason is Claude's; the marker says so (009 FR-CRMAI-LLM-04). */
 const REASON_AI: AiProvenance = { source_kind: "email_thread", model: null, generated_at: null };
@@ -83,6 +108,11 @@ const usd = (amount: string) =>
  * and medium-confidence findings into Review Queue items with no new Claude
  * call and sets the mode to Live; Live can be chosen again once a dry run
  * was applied. The ignore list is edited here and grows from dismissals.
+ *
+ * Revision 1 (FR-CAP-RPT-09, FR-CAP-ACAD-03): when a run found course
+ * enquiries, the counts name those to be sent (sent, once applied) to the
+ * Academy and those with no Academy workspace to take them; in the Academy,
+ * the *Accept course enquiries from Labs* switch.
  */
 export function CaptureSettings({
   workspace,
@@ -197,6 +227,8 @@ export function CaptureSettings({
           {notice}
         </p>
       )}
+
+      {workspace === ACADEMY_KEY && <RoutingSwitch workspace={workspace} />}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -366,6 +398,23 @@ export function CaptureSettings({
               <CountRow label="Judged by Claude" value={run.counts.judged} />
               <CountRow label="Could not be judged" value={run.counts.failed} />
               <CountRow label="Conversations filed in all" value={run.counts.filed_known_threads} />
+              {run.counts.academy > 0 ? (
+                <>
+                  {/* A dry run routes nothing: only Apply hands enquiries over. */}
+                  <CountRow
+                    label={
+                      run.applied_at
+                        ? "Course enquiries sent to the Academy"
+                        : "Course enquiries to be sent to the Academy"
+                    }
+                    value={run.counts.academy - run.counts.academy_unrouted}
+                  />
+                  <CountRow
+                    label="Course enquiries with no Academy workspace"
+                    value={run.counts.academy_unrouted}
+                  />
+                </>
+              ) : null}
               <tr className="font-medium">
                 <td className="py-1.5">Estimated cost</td>
                 <td className="py-1.5 text-right tabular-nums">{usd(run.estimated_cost_usd)}</td>
@@ -420,6 +469,7 @@ export function CaptureSettings({
           <p className="text-sm">
             {recallReady ? run.recall.line : "Shown once the dry run finishes."}
           </p>
+          {recallReady && run.recall.summary && <RecallSummaryList summary={run.recall.summary} />}
           {recallReady && run.recall.rows.length > 0 && (
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
@@ -449,6 +499,85 @@ export function CaptureSettings({
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * The Academy's *Accept course enquiries from Labs* switch — spec 010
+ * FR-CAP-ACAD-03, contracts §7.4a. On by default; a missing value reads as
+ * on. Admins only; the server refuses everyone else.
+ */
+function RoutingSwitch({ workspace }: { workspace: string }) {
+  const { data, error, setError, reload } = useAsync(() => getCrmSettings(workspace), [workspace]);
+  const [busy, setBusy] = useState(false);
+  const routing = (data?.settings.capture_routing ?? null) as CrmCaptureRouting | null;
+  const on = data ? routing?.accept_routed !== false : true;
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await updateCrmSetting(workspace, "capture_routing", { accept_routed: next });
+      reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      {error && (
+        <div role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <div className="flex items-start gap-3">
+        <input
+          id="capture-routing"
+          type="checkbox"
+          className="mt-1 size-4"
+          checked={on}
+          disabled={!data || busy}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        <label htmlFor="capture-routing" className="text-sm">
+          <span className="block font-medium">
+            Accept course enquiries from Labs: {on ? "on" : "off"}
+          </span>
+          <span className="text-muted-foreground">
+            When Claude finds a course or training enquiry in a Labs mailbox, it is suggested in
+            this workspace&apos;s Review Queue instead. Only what came from the email crosses;
+            approving it creates the company, the people and a note. Switched off, nothing is sent
+            here.
+          </span>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+/** The recall line's numbers as a list; reasons with a zero count are left out (FR-CAP-RPT-08). */
+function RecallSummaryList({ summary }: { summary: CrmCaptureRecallSummary }) {
+  const reasons = UNTESTED_TEXT.filter(([key]) => summary.untested[key] > 0);
+  return (
+    <table className="w-full max-w-md text-sm">
+      <tbody className="divide-y">
+        <CountRow label="Labelled conversations" value={summary.total} />
+        <CountRow label="Could be tested" value={summary.tested} />
+        <CountRow label="Found" value={summary.found} />
+        {summary.academy_unrouted > 0 && (
+          <CountRow
+            label="Of those, course enquiries the Academy could not take"
+            value={summary.academy_unrouted}
+          />
+        )}
+        {reasons.map(([key, label]) => (
+          <CountRow key={key} label={`Not tested: ${label}`} value={summary.untested[key]} />
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -489,6 +618,9 @@ function FindingsTable({
             <tr key={f.candidate_id} className="align-top">
               <td className="p-2 whitespace-nowrap">
                 {f.outcome === "new_lead" ? "New lead" : "Deal signal"}
+                {f.business === "academy" && (
+                  <span className="block text-xs text-muted-foreground">Course enquiry, for the Academy</span>
+                )}
               </td>
               <td className="p-2">
                 <span className="block">{f.company_name ?? "—"}</span>

@@ -28,14 +28,16 @@ e. the budget again, then the text of **only the messages left after a, b
 f. one call through `009`'s wrapper (`ai.call(..., "capture", None, ...)`):
    budgeted, logged in `crm_ai_usage`, schema-checked and masked;
 g. live, a high- or medium-confidence lead or deal signal first becomes a
-   Review Queue item (`review.upsert`, plan §5.10) after the duplicate check
+   Review Queue item (`review.capture_group_upsert`: one per company key
+   since spec 010 R1, plan R1.2) after the duplicate check
    (FR-CAP-DIS-08: the domain, a sibling domain, the name), while the
    candidate is still pending, so a fault there leaves it to be judged
    again; low confidence is recorded only (FR-CAP-DIS-07). Then the
    decision, recorded only while the candidate is still pending on the
    message judged (`crm_capture_record`); a lead or a deal signal keeps its
-   finding. Live, a judgement that makes no item expires the conversation's
-   open one from an earlier judgement (FR-CAP-DIS-06). A dry run writes
+   finding. Live, a judgement that makes no item takes the conversation out
+   of any open item of an earlier judgement, which expires when left empty
+   (FR-CAP-DIS-06, FR-CAP-GRP-07). A dry run writes
    nothing else: no item, no record (FR-CAP-RPT-01).
 
 Failures (PD-17): Claude answering off-schema twice, or a malformed thread,
@@ -61,6 +63,10 @@ medium-confidence findings become items exactly as live ones do, with no
 second Claude call (only the mailboxes live reads, never a sender on the
 ignore list), and the mode becomes Live.
 
+**Consolidation** (spec 010 R1 FR-CAP-GRP-08): every run in Dry run or
+Live first regroups the open items made before 074 (one per conversation)
+one per company key, before any gate but Off.
+
 **The ignore list** (FR-CAP-DIS-03, FR-CAP-REV-03) is edited by Admins here
 and grows from dismissed new leads (`services/crm/review.py`).
 
@@ -70,6 +76,7 @@ queued or put in an error (FR-CAP-CHG-05, NFR-CAP-02).
 
 from __future__ import annotations
 
+import functools
 import logging
 import uuid
 from collections.abc import Mapping
@@ -104,6 +111,16 @@ COUNTS: Final = (
     "low_confidence",
     "failed_items",
     "pending_left",
+    # Spec 010 R1 (contracts §7.2): grouping by company.
+    "consolidated",
+    "rekeyed",
+    "consolidate_failed",
+    "items_skipped",
+    "released",
+    # Spec 010 R1 (contracts §7.2, PD-42): course enquiries handed to the
+    # Academy, and those it could not take; never what the Academy did.
+    "academy_routed",
+    "academy_unrouted",
 )
 #: Plan §5.7 — the dry run's follow-up: at most one queued, a minute later.
 #: The key holds its task id until it starts; it outlives a follow-up that
@@ -121,6 +138,8 @@ _OPEN: Final = ("discovery", "qualification", "proposal", "negotiation")
 
 #: The workspaces whose dry run stopped with work left, this task.
 _more: set[str] = set()
+#: Spec 010 R1 (plan R1.4): the Academy target, read once per run.
+_academy: dict[str, Any] = {}
 
 
 class MalformedThread(Exception):
@@ -218,28 +237,36 @@ def _capturing(workspace: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def run(workspace: dict[str, Any], now: datetime) -> dict[str, int]:
     """One `capture` run of one workspace (contracts §1.4 counts)."""
     ws_id = workspace["id"]
+    _academy.clear()
     mode = rules.capture_mode(store.capture_setting(ws_id))
     if mode == rules.OFF:
         raise jobs.Skipped(rules.CAPTURE_OFF)
+    # Spec 010 R1 FR-CAP-GRP-08: after the Off check, before every other
+    # gate, since it calls neither Gmail nor Claude.
+    merged = _consolidate(workspace)
     off = email_sync.off_reason(ws_id)
     if off:
-        raise jobs.Skipped(off)
+        raise jobs.Skipped(off, merged)
     mailboxes = _capturing(workspace)
     if not mailboxes:
-        raise jobs.Skipped(rules.NO_CAPTURING_MAILBOX)
+        raise jobs.Skipped(rules.NO_CAPTURING_MAILBOX, merged)
     dry = mode == rules.DRY_RUN
     open_run = None
     if dry:
         open_run = store.latest_dry_run(ws_id)
         if open_run is None or open_run.get("finished_at"):
-            raise jobs.Skipped(rules.DRY_RUN_FINISHED)
+            raise jobs.Skipped(rules.DRY_RUN_FINISHED, merged)
     try:
         gmail._key()
     except gmail.NotConfigured:
-        raise jobs.Skipped(rules.GMAIL_KEY_MISSING) from None
-    ai.gate(workspace, None)
+        raise jobs.Skipped(rules.GMAIL_KEY_MISSING, merged) from None
+    try:
+        ai.gate(workspace, None)
+    except jobs.Skipped as skipped:
+        raise jobs.Skipped(skipped.reason, {**merged, **skipped.counts}) from None
 
     counts = dict.fromkeys(COUNTS, 0)
+    counts.update(merged)
     ids = sorted(mailboxes)
     pending = store.pending_candidates(ws_id, ids, newest_first=not dry, limit=rules.RUN_CAP)
     scans: dict[str, set[str]] = {}
@@ -346,7 +373,9 @@ def _survivors(
     workspace: dict[str, Any], messages: list[dict[str, Any]], scan: set[str] | tuple[str, ...]
 ) -> list[dict[str, Any]]:
     """Steps a and b: the messages in scope and neither internal-only nor
-    bulk, each as the sync classifies it, with its Gmail id."""
+    bulk, each as the sync classifies it, with its Gmail id. Spec 010 R1
+    FR-CAP-INV-01, -04: an invitation with an outside party is kept, marked
+    `invite`."""
     out = []
     for m in messages:
         if not m.get("id"):
@@ -359,11 +388,55 @@ def _survivors(
             )
         except (KeyError, TypeError, ValueError):
             raise MalformedThread() from None
-        if info["is_internal"] or rules.is_bulk(m["headers"], info["from_email"]):
+        info["outside"] = rules.outside_people(
+            m["headers"], [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        )
+        if info["is_internal"] or rules.is_bulk(m["headers"], info["from_email"], info["outside"]):
             continue
-        info["outside"] = [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        if rules.is_invitation(m["headers"]):
+            # Spec 010 R1 FR-CAP-INV-04: Claude is told (`prompt_parts`).
+            info["invite"] = True
         out.append({**info, "id": m["id"]})
     return out
+
+
+#: Plan R1.3 — a tie between rule reasons goes to the first.
+_DROP_ORDER: Final = ("calendar", "automated", "internal_only")
+
+
+def _drop_reason(
+    workspace: dict[str, Any], messages: list[dict[str, Any]], scan: set[str] | tuple[str, ...]
+) -> str:
+    """FR-CAP-RPT-06, plan R1.3 step 3 — `_survivors`' sibling over the same
+    rules, for a conversation none of whose messages survived them: why the
+    in-scope messages were dropped, from headers only. Each is internal-only
+    (every participant ours, or an invitation between colleagues only), a
+    calendar notice, or automated mail; the conversation takes the reason
+    of most of them, calendar before automated before internal on a tie."""
+    tally = dict.fromkeys(_DROP_ORDER, 0)
+    for m in messages:
+        if not rules.in_scope(m.get("labelIds") or [], scan):
+            continue
+        try:
+            info = email_rules.classify(
+                m["headers"], workspace.get("allowed_domains") or [], m["internalDate"]
+            )
+        except (KeyError, TypeError, ValueError):
+            raise MalformedThread() from None
+        outside = rules.outside_people(
+            m["headers"], [p for p in info["outside"] if email_sync._ADDRESS.match(p["email"])]
+        )
+        sender = info["from_email"]
+        if info["is_internal"] or (
+            rules.is_invitation(m["headers"])
+            and not rules.invite_parties(m["headers"], sender, outside)
+        ):
+            tally["internal_only"] += 1
+        elif rules.is_calendar_notice(m["headers"], sender, outside):
+            tally["calendar"] += 1
+        else:
+            tally["automated"] += 1
+    return max(_DROP_ORDER, key=lambda reason: (tally[reason], -_DROP_ORDER.index(reason)))
 
 
 def _known_ids(ws_id: str, kept: list[dict[str, Any]]) -> set[str]:
@@ -503,11 +576,33 @@ def _judge(
             counts["skipped_rules"] += 1
         return
     answer, judged, choices = asked
-    finding = rules.finding_of(answer, judged, mailbox_email=mailbox["email"], choices=choices)
-    if finding is not None:
+    finding = rules.finding_of(
+        answer,
+        judged,
+        mailbox_email=mailbox["email"],
+        choices=choices,
+        tva_linked=bool(workspace.get("tva_linked")),
+    )
+    if finding is not None and finding["business"] != rules.ACADEMY:
         # FR-CAP-DIS-08: kept with the finding, so the report shows it too.
+        # An Academy finding holds none: no Academy id is written in Labs.
         finding["duplicate_company_id"] = duplicate_of(ws_id, finding)
-    if not dry:
+    if not dry and rules.routes_to_academy(finding, answer["confidence"]):
+        # Spec 010 R1 FR-CAP-ACAD-02: no Labs item; the Academy step.
+        assert finding is not None
+        _route_academy(
+            workspace,
+            mailbox,
+            thread_id=candidate["thread_id"],
+            message_id=candidate["latest_message_id"],
+            outcome=answer["outcome"],
+            confidence=answer["confidence"],
+            finding=finding,
+            outside=rules.outside_of(judged),
+            generated_at=_now().isoformat(),
+            counts=counts,
+        )
+    elif not dry:
         # Live: the item is built and stored while the candidate is still
         # pending, so a fault in the duplicate check, the owner or the upsert
         # leaves it pending to be judged again; a decision recorded first
@@ -530,13 +625,19 @@ def _judge(
         if item is not None:
             made = store_items(ws_id, [item])
             counts["items"] += sum(1 for m in made if m.get("created"))
+            counts["items_skipped"] += sum(1 for m in made if m.get("skipped"))
+            counts["released"] += sum(int(m.get("released") or 0) for m in made)
         else:
-            # FR-CAP-DIS-06: judged again from the start, the conversation
-            # makes no item now, so an open one of an earlier judgement
-            # (its evidence stale) expires.
-            store.capture_supersede(
+            # FR-CAP-DIS-06, FR-CAP-GRP-07: judged again from the start, the
+            # conversation makes no item now, so it leaves any open item of
+            # an earlier judgement (its evidence stale); an item left with
+            # no conversation expires.
+            released = store.capture_release_thread(
                 ws_id, rules.source_key(mailbox["id"], candidate["thread_id"]), ""
             )
+            counts["released"] += int(released.get("removed") or 0)
+        # FR-CAP-ACAD-09: a Labs item or no item, so no Academy item holds it.
+        _back_to_labs(mailbox, candidate["thread_id"])
     recorded = _record(
         ws_id,
         candidate,
@@ -596,17 +697,69 @@ def duplicate_of(ws_id: str, finding: Mapping[str, Any]) -> str | None:
 
 
 def store_items(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`review.upsert`, then each stored item is its conversation's only
-    open capture item: another open `new_lead` or discovered `deal_signal`
-    under another dedupe key (made before a duplicate check linked it to a
-    company, before the company went, or before a re-judgement turned the
-    lead into a deal signal) expires (spec §13 S3 line 1). A deal-document
-    signal is the sync's and is left as it is."""
-    made = review.upsert(ws_id, items)
-    for item, done in zip(items, made, strict=True):
-        if item["type"] in ("new_lead", "deal_signal") and done.get("id"):
-            store.capture_supersede(ws_id, item["source_key"], item["dedupe_key"])
+    """Spec 010 R1 (FR-CAP-GRP-02, -07; plan R1.2): each item through
+    `review.capture_group_upsert` with its one conversation entry, so a
+    company keeps one open item, the conversation leaves any other open
+    capture item (one made before a duplicate check linked it to a company,
+    before the company went, or before a re-judgement turned the lead into
+    a deal signal), and a conversation a decided item listed is skipped. A
+    deal-document entry is the sync's and is never moved. The merge is in
+    SQL, so the order items arrive in does not matter. `[{id, created,
+    skipped, released}]`."""
+    made = []
+    for item in items:
+        [entry] = (item.get("source_link") or {}).get("threads") or [None]
+        made.append(review.capture_group_upsert(ws_id, item, entry))
     return made
+
+
+def _consolidate(workspace: Mapping[str, Any]) -> dict[str, int]:
+    """FR-CAP-GRP-08 (PD-26, PD-40) — the open capture items made before
+    074, one per conversation, regrouped one per company key: each keyed
+    from its conversation's stored finding when the candidate still has
+    one, else from its suggestion; `crm_capture_consolidate` re-reads every
+    member under the capture lock, so a decision made meanwhile is never
+    touched. Its counts, non-zero only; a failure is logged and counted, and
+    the run goes on (the next tick tries again)."""
+    ws_id = workspace["id"]
+    try:
+        items = store.open_capture_items(ws_id)
+        threads: dict[str, set[str]] = {}
+        for item in items:
+            link = item.get("source_link") or {}
+            if str(item.get("source_key") or "").startswith("gmail:") and link.get("thread_id"):
+                threads.setdefault(str(link.get("mailbox_id")), set()).add(link["thread_id"])
+        findings: dict[tuple[str, str], dict[str, Any]] = {}
+        for mailbox_id, ids in sorted(threads.items()):
+            for row in store.candidates_for_threads(ws_id, mailbox_id, sorted(ids)):
+                if row.get("finding"):
+                    findings[(mailbox_id, row["thread_id"])] = row["finding"]
+        plan = rules.consolidation_plan(items, findings)
+        if not plan:
+            return {}
+        companies = base.by_id(
+            ws_id, "crm_companies", {g["record_id"] for g in plan if g.get("record_id")}
+        )
+        for group in plan:
+            company = companies.get(group.get("record_id") or "")
+            if company and company.get("name"):
+                group["company_label"] = str(company["name"])[:200]
+        done = store.capture_consolidate(ws_id, plan)
+    except Exception as exc:  # noqa: BLE001 - the run goes on; the next tick retries
+        logger.warning(
+            '{"event": "crm_capture_consolidate_failed", "workspace": "%s", "error": "%s"}',
+            workspace.get("key", "-"),
+            type(exc).__name__,
+        )
+        return {"consolidate_failed": 1}
+    out = {"consolidated": int(done.get("expired") or 0), "rekeyed": int(done.get("rekeyed") or 0)}
+    logger.info(
+        '{"event": "crm_capture_consolidated", "workspace": "%s", "groups": %d, "expired": %d}',
+        workspace.get("key", "-"),
+        int(done.get("groups") or 0),
+        out["consolidated"],
+    )
+    return {k: v for k, v in out.items() if v}
 
 
 def _owner(workspace_id: str, mailbox: Mapping[str, Any]) -> str | None:
@@ -655,6 +808,192 @@ def item_for(
         duplicate_company_id=duplicate,
         open_deals=open_deals,
     )
+
+
+# ---------------------------------------------------------------------------
+# Course enquiries to the Academy — spec 010 R1 FR-CAP-ACAD-02 to -04, -07 to
+# -10; plan R1.4, PD-30, PD-42
+# ---------------------------------------------------------------------------
+
+
+def _academy_workspace_of() -> dict[str, Any] | None:
+    return next((w for w in store.list_workspaces() if w.get("key") == rules.ACADEMY), None)
+
+
+def _find_academy() -> dict[str, Any] | None:
+    workspace = _academy_workspace_of()
+    if workspace is None:
+        return None
+    roles = {m["user_id"]: m["role"] for m in store.list_members(workspace["id"])}
+    active = {p["id"] for p in db.list_profiles(include_crm_only=True) if p.get("is_active")}
+    if not any(role == "admin" and user in active for user, role in roles.items()):
+        return None
+    setting = next(
+        (r["value"] for r in store.list_settings(workspace["id"]) if r["key"] == "capture_routing"),
+        None,
+    )
+    if not rules.accepts_routed(setting):
+        return None
+    return {"workspace": workspace, "roles": roles, "active": active}
+
+
+def _academy_target() -> dict[str, Any] | None:
+    """FR-CAP-ACAD-03 — `{workspace, roles, active}` of the workspace keyed
+    `academy` when it has an active Admin and its *Accept course enquiries
+    from Labs* switch (`capture_routing.accept_routed`, PD-41) is on; else
+    None. Read once per run; a failure to read is no target for the run
+    (plan R1.8), so the finding is recorded unrouted."""
+    if "target" not in _academy:
+        try:
+            _academy["target"] = _find_academy()
+        except Exception as exc:  # noqa: BLE001 - no target this run
+            logger.warning(
+                '{"event": "crm_capture_academy_target_failed", "error": "%s"}',
+                type(exc).__name__,
+            )
+            _academy["target"] = None
+    return _academy["target"]
+
+
+def _academy_workspace() -> dict[str, Any] | None:
+    """FR-CAP-ACAD-09 — the workspace keyed `academy`, whatever its Admins
+    and its *Accept course enquiries* switch: letting a conversation go
+    depends only on the Academy existing, not on it taking new enquiries
+    (FR-CAP-ACAD-03 is for routing). Read once per run; a failure to read
+    is no release this run."""
+    if "workspace" not in _academy:
+        try:
+            _academy["workspace"] = _academy_workspace_of()
+        except Exception as exc:  # noqa: BLE001 - no release this run
+            logger.warning(
+                '{"event": "crm_capture_academy_workspace_failed", "error": "%s"}',
+                type(exc).__name__,
+            )
+            _academy["workspace"] = None
+    return _academy["workspace"]
+
+
+def _back_to_labs(mailbox: Mapping[str, Any], thread_id: str) -> None:
+    """FR-CAP-ACAD-09 — a Labs judgement that ends as a Labs item or as no
+    item lets the conversation go from any Academy item that held it (which
+    expires when left empty), under an Academy `sync` actor, even when the
+    Academy no longer accepts enquiries or has no active Admin. Nothing
+    comes back to Labs: the result is not counted."""
+    academy = _academy_workspace()
+    if academy is None:
+        return
+    store.capture_release_thread(academy["id"], rules.academy_ref(mailbox["email"], thread_id), "")
+
+
+def _route_academy(
+    workspace: Mapping[str, Any],
+    mailbox: Mapping[str, Any],
+    *,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    finding: dict[str, Any],
+    outside: list[dict[str, str]],
+    generated_at: str | None,
+    counts: dict[str, int],
+) -> bool:
+    """Plan R1.4 routing, live and on apply alike: (1) no Labs item, and a
+    Labs item that held the conversation lets it go; (2) with no Academy
+    target, `routed = false` (`academy_unrouted`) and nothing is suggested;
+    (3) otherwise `routed = true` (`academy_routed`, whatever the Academy
+    step does, PD-42) and the Academy step, as the Academy's `sync`: every
+    outside participant on the Academy's ignore list → no item; else an
+    Academy `new_lead` built from Gmail values only, checked against the
+    Academy's own companies, owned as `owner_for` says with Academy roles,
+    stored through `review.capture_group_upsert`. The step's outcome is
+    logged in the Academy only, never on a Labs row or count; a fault in
+    it is logged the same way (`crm_capture_academy_step_failed`) and
+    changes nothing in Labs (review ISO-1). The Labs call
+    was paid by Labs (FR-CAP-ACAD-08). Returns `routed`."""
+    released = store.capture_release_thread(
+        workspace["id"], rules.source_key(mailbox["id"], thread_id), ""
+    )
+    counts["released"] = counts.get("released", 0) + int(released.get("removed") or 0)
+    finding["duplicate_company_id"] = None
+    target = _academy_target()
+    if target is None:
+        finding["routed"] = False
+        counts["academy_unrouted"] = counts.get("academy_unrouted", 0) + 1
+        return False
+    finding["routed"] = True
+    counts["academy_routed"] = counts.get("academy_routed", 0) + 1
+    academy_id = target["workspace"]["id"]
+    try:
+        _academy_step(
+            target,
+            mailbox,
+            thread_id=thread_id,
+            message_id=message_id,
+            outcome=outcome,
+            confidence=confidence,
+            finding=finding,
+            outside=outside,
+            generated_at=generated_at,
+        )
+    except Exception as exc:  # noqa: BLE001 - review ISO-1: the Academy's own
+        # fault stays in the Academy (FR-CAP-ACAD-04): logged there, keyed to
+        # its workspace and the exception type; Labs counts it routed.
+        logger.warning(
+            '{"event": "crm_capture_academy_step_failed", "workspace": "%s", "error": "%s"}',
+            academy_id,
+            type(exc).__name__,
+        )
+    return True
+
+
+def _academy_step(
+    target: Mapping[str, Any],
+    mailbox: Mapping[str, Any],
+    *,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    finding: dict[str, Any],
+    outside: list[dict[str, str]],
+    generated_at: str | None,
+) -> None:
+    """The Academy step of `_route_academy` (plan R1.4 step 3), inside the
+    Academy alone; a fault raises to `_route_academy`, which logs it."""
+    academy_id = target["workspace"]["id"]
+    if rules.ignored(outside, store.list_ignores(academy_id)):
+        logger.info(
+            '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "ignored"}',
+            academy_id,
+        )
+        return
+    duplicate = duplicate_of(academy_id, finding)
+    item = rules.academy_lead_item(
+        {**finding, "duplicate_company_id": duplicate},
+        mailbox_email=mailbox["email"],
+        thread_id=thread_id,
+        message_id=message_id,
+        outcome=outcome,
+        confidence=confidence,
+        owner_id=review_rules.owner_for(
+            "new_lead",
+            roles=target["roles"],
+            active=target["active"],
+            mailbox_owner=mailbox.get("owner_id"),
+        ),
+        model=ai_rules.CRM_AI_MODEL,
+        generated_at=generated_at,
+        company_id=duplicate,
+    )
+    if item is None:
+        return
+    made = review.capture_group_upsert(academy_id, item, item["source_link"]["threads"][0])
+    if made.get("skipped"):
+        logger.info(
+            '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "decided"}',
+            academy_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -713,43 +1052,46 @@ def _fate(
     ignores: list[dict[str, Any]],
 ) -> tuple[str, str | None]:
     """A labelled conversation judged as if it had no label: `(fate, latest
-    message time)`. Nothing is stored for it but the fate. Claude sees it
-    only after the same checks as live (G-5, NFR-CAP-02): the rules, the
-    ignore list (`ignored`) and the known-contact check, so a conversation
-    whose every message names someone in the CRM now is never read
-    (`known_now`, unless its record predates it: `filed_known`), and of the
-    rest only the messages naming nobody known are judged."""
+    message time)`. Nothing is stored for it but the fate. The reasons come
+    in the decision order of plan R1.3 (FR-CAP-RPT-06), from headers and
+    records only until Claude: Gmail returned it empty or malformed
+    (`not_judged`); no message in Primary or Sent; every message dropped by
+    the rules (`_drop_reason`); the ignore list (`ignored`); the known-
+    contact check, so a conversation whose every message names someone in
+    the CRM now is never read (`known_now`, unless its record predates it:
+    `filed_known`), and of the rest only the messages naming nobody known
+    are judged (G-5, NFR-CAP-02), a failure on it `not_judged`."""
     ws_id = workspace["id"]
+    fate = functools.partial(rules.recall_fate, in_capture=True, survived=True, known_before=False)
     messages = gmail.thread_meta(mailbox["email"], thread_id).get("messages") or []
-    if not messages:
-        return "outside_scope", None
-    times = [email_rules.sent_at(m["internalDate"]) for m in messages if m.get("internalDate")]
+    if not messages or any(not m.get("id") for m in messages):
+        return fate(failed=True), None
+    try:
+        times = [email_rules.sent_at(m["internalDate"]) for m in messages if m.get("internalDate")]
+    except (TypeError, ValueError):
+        # A date Gmail sent that is not a number: malformed, as in `_survivors`.
+        return fate(failed=True), None
     latest = max(times).isoformat() if times else None
     if not any(rules.in_scope(m.get("labelIds") or [], rules.CAPTURED) for m in messages):
-        return rules.recall_fate(in_capture=False, survived=False, known_before=False), latest
+        return fate(in_capture=False), latest
     try:
         kept = _survivors(workspace, messages, rules.CAPTURED)
+        if not kept:
+            reason = _drop_reason(workspace, messages, rules.CAPTURED)
+            return fate(survived=False, skip_reason=reason), latest
     except MalformedThread:
-        kept = []
-    if not kept:
-        return rules.recall_fate(in_capture=True, survived=False, known_before=False), latest
+        return fate(failed=True), latest
     if rules.ignored(rules.outside_of(kept), ignores):
         # FR-CAP-DIS-03: before any text is read.
-        return (
-            rules.recall_fate(in_capture=True, survived=True, known_before=False, ignored=True),
-            latest,
-        )
+        return fate(ignored=True), latest
     first = min(times) if times else min(m["sent_at"] for m in kept)
     if _known_before(ws_id, rules.outside_of(kept), first):
-        return rules.recall_fate(in_capture=True, survived=True, known_before=True), latest
+        return fate(known_before=True), latest
     known_ids = _known_ids(ws_id, kept)
     unknown = [m for m in kept if m["id"] not in known_ids]
     if not unknown:
         # G-5: a known client's mail never reaches Claude, even for recall.
-        return (
-            rules.recall_fate(in_capture=True, survived=True, known_before=False, known_now=True),
-            latest,
-        )
+        return fate(known_now=True), latest
     try:
         asked = _ask(workspace, mailbox, unknown, open_run)
     except ai.AiFailed as failed:
@@ -757,15 +1099,18 @@ def _fate(
             raise
         asked = None
     if asked is None:
-        return rules.recall_fate(in_capture=True, survived=True, known_before=False), latest
+        # Claude failed on it, or every message was deleted meanwhile.
+        return fate(failed=True), latest
     answer = asked[0]
+    # Plan R1.3 step 7: an Academy finding is `found` when the Academy
+    # target exists, else `academy_unrouted`.
+    business = rules.business_of(answer, tva_linked=bool(workspace.get("tva_linked")))
     return (
-        rules.recall_fate(
-            in_capture=True,
-            survived=True,
-            known_before=False,
+        fate(
             outcome=answer["outcome"],
             confidence=answer["confidence"],
+            business=business,
+            routed=(_academy_target() is not None) if business == rules.ACADEMY else None,
         ),
         latest,
     )
@@ -778,20 +1123,23 @@ def _recall(
     open_run: Mapping[str, Any],
 ) -> list[dict[str, Any]] | None:
     """Every Sales or Leads conversation of the capturing mailboxes since
-    their start date with its fate (at most 500 rows); None when the run's
+    their start date with its fate (at most 500 rows, then the marker row
+    `{"capped": true}` when a labelled conversation is left unchecked,
+    plan R1.3); None when the run's
     time ran out first. Each fate is kept on the open run as it is decided
     (`crm_capture_recall_add`), and a thread that has one already is not
     read or judged again, so the next tick resumes where this one stopped."""
     ws_id = workspace["id"]
-    rows: list[dict[str, Any]] = list(open_run.get("recall") or [])
+    rows: list[dict[str, Any]] = [r for r in open_run.get("recall") or [] if r.get("thread_id")]
     done = {(r["mailbox_id"], r["thread_id"]) for r in rows}
     ignores = store.list_ignores(ws_id)
     for mailbox in sorted(mailboxes.values(), key=lambda m: m["email"]):
         for thread_id in _labelled_threads(mailbox, now):
-            if len(rows) >= rules.RECALL_CAP:
-                return rows
             if (mailbox["id"], thread_id) in done:
                 continue
+            if len(rows) >= rules.RECALL_CAP:
+                # FR-CAP-RPT-07: stopped at the cap with this one unchecked.
+                return [*rows, {"capped": True}]
             if jobs.out_of_time():
                 return None
             try:
@@ -871,19 +1219,42 @@ def apply(ctx: Any, run_id: str) -> dict[str, Any]:
     # sender put on the ignore list since the run (FR-CAP-DIS-03).
     mailboxes = _capturing(ctx.workspace)
     ignores = store.list_ignores(ws_id)
+    _academy.clear()
+    counts: dict[str, int] = {}
     items = []
-    for row in store.dry_run_findings(ws_id):
+    findings = store.dry_run_findings(ws_id)
+    routed: dict[str, bool] = {}
+    for row in findings:
         mailbox = mailboxes.get(row["mailbox_id"])
         if mailbox is None or not row.get("finding"):
             continue
         email = row["finding"].get("person_email")
+        message_id = row["judged_message_id"] or row["latest_message_id"]
+        if rules.routes_to_academy(row["finding"], row["confidence"]):
+            # FR-CAP-ACAD-10: routed as live, the target checked again now;
+            # the Academy's ignore list is read there, not Labs'.
+            routed[row["id"]] = _route_academy(
+                ctx.workspace,
+                mailbox,
+                thread_id=row["thread_id"],
+                message_id=message_id,
+                outcome=row["outcome"],
+                confidence=row["confidence"],
+                finding=dict(row["finding"]),
+                outside=[{"email": email}] if email else [],
+                generated_at=str(row["judged_at"]) if row.get("judged_at") else None,
+                counts=counts,
+            )
+            continue
+        # FR-CAP-ACAD-09: a Labs item or no item.
+        _back_to_labs(mailbox, row["thread_id"])
         if email and rules.ignored([{"email": email}], ignores):
             continue
         item = item_for(
             ctx.workspace,
             mailbox,
             thread_id=row["thread_id"],
-            message_id=row["judged_message_id"] or row["latest_message_id"],
+            message_id=message_id,
             outcome=row["outcome"],
             confidence=row["confidence"],
             finding=row["finding"],
@@ -892,11 +1263,29 @@ def apply(ctx: Any, run_id: str) -> dict[str, Any]:
         if item is not None:
             items.append(item)
     made = store_items(ws_id, items)
+    # FR-CAP-ACAD-02, FR-CAP-RPT-09: the Labs record keeps whether each
+    # course enquiry was handed over, as a live judgement does, and the run
+    # keeps its Academy counts, which its candidates (live decisions from
+    # here) no longer give. An enquiry of a mailbox no longer captured was
+    # not handed over.
+    academy = [r for r in findings if rules.routes_to_academy(r.get("finding"), r["confidence"])]
+    store.capture_apply_routed(
+        actor(ctx),
+        run_id,
+        routed,
+        {
+            "academy": len(academy),
+            "academy_unrouted": sum(1 for r in academy if not routed.get(r["id"])),
+        },
+    )
     done = store.apply_dry_run(actor(ctx), run_id)
     logger.info(
-        '{"event": "crm_capture_dry_run_applied", "workspace": "%s", "items": %d}',
+        '{"event": "crm_capture_dry_run_applied", "workspace": "%s", "items": %d, '
+        '"academy_routed": %d, "academy_unrouted": %d}',
         ctx.workspace["key"],
         len(items),
+        counts.get("academy_routed", 0),
+        counts.get("academy_unrouted", 0),
     )
     return {
         "applied_at": done.get("applied_at"),
@@ -963,7 +1352,11 @@ def remove_ignore(ctx: Any, ignore_id: str) -> None:
 
 def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, Any]:
     found = row.get("finding") or {}
-    duplicate = companies.get(found.get("duplicate_company_id") or "")
+    business = rules.ACADEMY if found.get("business") == rules.ACADEMY else rules.LABS
+    # Contracts §7.1: an Academy finding names no company (FR-CAP-ACAD-02).
+    duplicate = (
+        companies.get(found.get("duplicate_company_id") or "") if business == rules.LABS else None
+    )
     return {
         "candidate_id": row["id"],
         "outcome": row["outcome"],
@@ -981,11 +1374,42 @@ def _finding(row: Mapping[str, Any], companies: Mapping[str, Any]) -> dict[str, 
         "duplicate_company": {"id": duplicate["id"], "name": duplicate.get("name")}
         if duplicate
         else None,
+        "business": business,
+        "routed": found.get("routed") if business == rules.ACADEMY else None,
     }
 
 
+def _academy_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """FR-CAP-RPT-09 (plan R1.4, PD-32) — `academy`, the run's high- and
+    medium-confidence Academy findings, and `academy_unrouted`, those the
+    Academy could not take: `routed` false, or not routed (a run not
+    applied) with no Academy target now. From the findings only: nothing the
+    Academy did."""
+    academy = [r for r in findings if rules.routes_to_academy(r.get("finding"), r["confidence"])]
+    unrouted = sum(1 for r in academy if (r.get("finding") or {}).get("routed") is False)
+    waiting = [r for r in academy if (r.get("finding") or {}).get("routed") is None]
+    if waiting and _academy_target() is None:
+        unrouted += len(waiting)
+    return {"academy": len(academy), "academy_unrouted": unrouted}
+
+
+def _run_counts(
+    ws_id: str, run: Mapping[str, Any], findings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """FR-CAP-RPT-09, contracts §7.1 — the report's counts with `academy`
+    and `academy_unrouted` for every run: an applied run's as Apply stored
+    them (its candidates are live decisions since), 0 for a run applied
+    before 074; any other run's from its findings now."""
+    counts = store.capture_report(ws_id, run["id"])
+    if run.get("applied_at"):
+        return {"academy": 0, "academy_unrouted": 0, **counts}
+    return {**counts, **_academy_counts(findings)}
+
+
 def _recall_rows(ws_id: str, recall: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The recall rows with the subject of a thread already stored."""
+    """The recall rows with the subject of a thread already stored; marker
+    rows (no `thread_id`, plan R1.3) are not conversations."""
+    recall = [r for r in recall if r.get("thread_id")]
     subjects: dict[tuple[str, str], str] = {}
     for mailbox_id in sorted({r["mailbox_id"] for r in recall}):
         threads = [r["thread_id"] for r in recall if r["mailbox_id"] == mailbox_id]
@@ -1023,6 +1447,7 @@ def overview(ctx: Any) -> dict[str, Any]:
     names = {p["id"]: p["display_name"] for p in db.list_profiles(include_crm_only=True)}
     ignores = [_ignore_out(i, names) for i in store.list_ignores(ws_id)]
     dry_run = None
+    _academy.clear()
     if latest is not None:
         findings = store.dry_run_findings(ws_id)
         companies = base.by_id(
@@ -1043,12 +1468,13 @@ def overview(ctx: Any) -> dict[str, Any]:
             "cancelled": bool(latest.get("cancelled")),
             "applied_at": latest.get("applied_at"),
             "applicable": applicable(latest, latest["id"], now),
-            "counts": store.capture_report(ws_id, latest["id"]),
+            "counts": _run_counts(ws_id, latest, findings),
             "estimated_cost_usd": str(cost.quantize(Decimal("0.01"))),
             "findings": [_finding(r, companies) for r in findings],
             "recall": {
                 "line": rules.recall_line(recall),
                 "rows": _recall_rows(ws_id, recall),
+                "summary": rules.recall_summary(recall),
             },
         }
     live_allowed = store.has_applied_dry_run(ws_id) and any(

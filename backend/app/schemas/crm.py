@@ -912,6 +912,8 @@ class ReviewItemOut(BaseModel):
     expires_on: date
     decided_at: str | None
     decided_by: dict[str, Any] | None
+    #: Spec 010 Revision 1: `{"superseded_by": id}` for a merged capture item.
+    result: dict[str, Any] | None = None
 
 
 #: FR-CRMAI-SUM-04 — a sentence ends at `.`, `!` or `?` before a space or
@@ -1177,6 +1179,10 @@ class DiscoveryOutput(BaseModel):
     deal_stage: Literal["discovery", "proposal", "closed_won"] | None = None
     website_choice: int | None = Field(default=None, ge=1, le=10)
     reason: str = Field(min_length=1, max_length=160)
+    #: Spec 010 R1 FR-CAP-ACAD-01 (contracts §7.3, PD-29): an Academy matter
+    #: (a course or training for individuals or students) or a Labs one; a
+    #: missing answer reads as Labs.
+    business: Literal["labs", "academy"] = "labs"
 
 
 class CaptureMailboxOut(BaseModel):
@@ -1202,26 +1208,41 @@ class CaptureFindingOut(BaseModel):
     owner_replied: bool
     reason: str | None
     duplicate_company: dict[str, Any] | None
+    #: Contracts §7.1 (FR-CAP-ACAD-02, -07): `labs` or `academy`; for an
+    #: Academy finding, `routed` is true when handed to an accepting Academy,
+    #: false when there was none, null before apply.
+    business: Literal["labs", "academy"] = "labs"
+    routed: bool | None = None
 
 
 class CaptureRecallRowOut(BaseModel):
     thread_id: str
     latest_at: str | None
     subject: str | None
+    #: Contracts §7.1 — `skipped_rules` only in runs stored before 074
+    #: (FR-CAP-RPT-10).
     fate: Literal[
         "filed_known",
+        "known_now",
         "found",
         "judged_otherwise",
-        "skipped_rules",
-        "outside_scope",
         "ignored",
-        "known_now",
+        "internal_only",
+        "calendar",
+        "automated",
+        "outside_scope",
+        "not_judged",
+        "academy_unrouted",
+        "skipped_rules",
     ]
 
 
 class CaptureRecallOut(BaseModel):
     line: str
     rows: list[CaptureRecallRowOut]
+    #: Contracts §7.1 — `{total, tested, found, capped, untested,
+    #: academy_unrouted}` (FR-CAP-RPT-08).
+    summary: dict[str, Any] | None = None
 
 
 class CaptureDryRunOut(BaseModel):
@@ -1231,6 +1252,8 @@ class CaptureDryRunOut(BaseModel):
     cancelled: bool
     applied_at: str | None
     applicable: bool
+    #: `crm_capture_report`'s counts plus `academy` and `academy_unrouted`,
+    #: computed from the run's findings (contracts §7.1, FR-CAP-RPT-09).
     counts: dict[str, Any]
     estimated_cost_usd: str
     findings: list[CaptureFindingOut]

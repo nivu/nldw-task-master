@@ -390,6 +390,9 @@ DEFAULTS = {
         "capture_start_date": "2026-04-01",
         "docs_checked_at": None,
         "reconcile_after": None,
+        # Spec 010 R1 (074): the invitation rescan has not run.
+        "invites_rescanned_at": None,
+        "invite_rescan_token": None,
     },
     # 071: a candidate as marked, its decision empty (the reset of a later
     # message too).
@@ -557,6 +560,13 @@ class FakeCrmStore:
         # 072: email capture's discovery is seeded off in every workspace.
         self.add(
             "crm_workspace_settings", workspace_id=ws["id"], key="capture", value={"mode": "off"}
+        )
+        # 074: course enquiries from Labs accepted (FR-CAP-ACAD-03, PD-41).
+        self.add(
+            "crm_workspace_settings",
+            workspace_id=ws["id"],
+            key="capture_routing",
+            value={"accept_routed": True},
         )
         self.add(
             "crm_workspace_settings",
@@ -3635,6 +3645,52 @@ class FakeCrmStore:
             return None
         return json.loads(json.dumps(run))
 
+    def capture_apply_routed(
+        self,
+        actor: dict[str, Any],
+        run_id: str,
+        routed: dict[str, bool],
+        counts: dict[str, int],
+    ) -> bool:
+        """074 crm_capture_apply_routed: refused as crm_capture_apply
+        refuses; each routed Academy candidate of the run's (still dry-run,
+        judged) gains `routed` and a null `duplicate_company_id`; the run's
+        stored counts (or the report as it stands) gain the Academy counts."""
+        assert actor["kind"] == "user", actor
+        ws_id = actor["workspace_id"]
+        routed = json.loads(json.dumps(routed))
+        counts = json.loads(json.dumps(counts))
+        assert isinstance(routed, dict) and all(isinstance(v, bool) for v in routed.values())
+        assert set(counts) == {"academy", "academy_unrouted"}
+        assert all(isinstance(v, int) and v >= 0 for v in counts.values())
+        run = self.rows["crm_capture_dry_runs"].get(run_id)
+        if run is None or run["workspace_id"] != ws_id:
+            raise store.refusal_for("CRM04", "No such dry run.")
+        latest = self.latest_dry_run(ws_id)
+        if (
+            not run.get("finished_at")
+            or run["cancelled"]
+            or run.get("applied_at")
+            or (latest or {}).get("id") != run_id
+        ):
+            raise store.refusal_for("CRM22", "This dry run cannot be applied.")
+        for c in self.rows["crm_capture_candidates"].values():
+            if (
+                c["workspace_id"] == ws_id
+                and c["id"] in routed
+                and c["dry_run"]
+                and c["status"] == "judged"
+                and (c.get("finding") or {}).get("business") == "academy"
+            ):
+                c["finding"] = {
+                    **c["finding"],
+                    "routed": routed[c["id"]],
+                    "duplicate_company_id": None,
+                }
+                c["updated_at"] = datetime.now(UTC).isoformat()
+        run["counts"] = {**self.capture_report(ws_id, run_id), **counts}
+        return True
+
     def apply_dry_run(self, actor: dict[str, Any], run_id: str) -> dict[str, Any]:
         """073 crm_capture_apply: the latest run only, finished, not
         cancelled or applied; its candidates live; the mode Live, audited.
@@ -4841,18 +4897,384 @@ class FakeCrmStore:
     def review_release(
         self, actor: dict[str, Any], item_id: str, refusal: str | None, result: dict | None
     ) -> None:
+        """crm_review_release (061, 068, 074): with a refusal, a claimed item
+        whose key another open item holds expires (068), a capture item's
+        conversations first joining that open item (074); otherwise it
+        reopens, a capture item leaving out every conversation another open
+        item holds now, and expiring instead when none is left (074)."""
         row = self.rows["crm_review_items"].get(item_id)
         if row is None or row["workspace_id"] != actor["workspace_id"]:
             raise store.refusal_for("CRM04", "No such suggestion.")
         if refusal is not None:
             if row["status"] != "approved":
                 raise store.refusal_for("CRM04", "No such suggestion.")
+            ws = row["workspace_id"]
+            captured = _captured(row)
+            entries = _cap_entries(row) if captured else []
+            other = next(
+                (
+                    r
+                    for r in self._of("crm_review_items", ws)
+                    if r["dedupe_key"] == row["dedupe_key"]
+                    and r["status"] == "open"
+                    and r["id"] != item_id
+                ),
+                None,
+            )
+            if other is not None:
+                if captured:
+                    other = self.rows["crm_review_items"][other["id"]]
+                    mine = _cap_entries(other)
+                    # FR-CAP-GRP-07: a conversation a third open item holds
+                    # now stays there (a deal document's entry excepted).
+                    held = {
+                        e["ref"]
+                        for r in self._of("crm_review_items", ws)
+                        if r["id"] not in (item_id, other["id"]) and _captured(r, open_only=True)
+                        for e in _cap_entries(r)
+                    }
+                    kept = [
+                        e
+                        for e in entries
+                        if (e.get("origin") or "discovery") == "deal_document"
+                        or e["ref"] not in held
+                    ]
+                    threads = mine
+                    for e in kept:
+                        threads = _cap_merge(threads, e)
+                    newest = _cap_newest(threads)
+                    take = not any(_cap_same(newest, e) for e in mine)
+                    source = row if take else other
+                    suggestion = json.loads(json.dumps(source["suggestion"]))
+                    if take:
+                        suggestion = _cap_person(row["type"], suggestion, entries, kept)
+                    suggestion["evidence"] = _cap_evidence(suggestion.get("evidence"), threads)
+                    link = _cap_link(other["source_link"], threads)
+                    changed = (
+                        other["suggestion"],
+                        other["source_version"],
+                        other["source_link"],
+                    ) != (
+                        suggestion,
+                        newest["message_id"],
+                        link,
+                    )
+                    other.update(
+                        suggestion=suggestion,
+                        source_link=link,
+                        source_version=newest["message_id"],
+                        current_values=json.loads(json.dumps(source["current_values"])),
+                    )
+                    if changed:
+                        other["revision"] = other.get("revision", 1) + 1
+                    if take:
+                        self._replace_review_deals(other, self._review_deals(row["id"]))
+                row.update(status="expired", decided_at=_now(), refusal=refusal[:500])
+                self._review_audit(actor, "review.expired", item_id, "approved", "expired")
+                return
+            if captured:
+                held = {
+                    e["ref"]
+                    for r in self._of("crm_review_items", ws)
+                    if r["id"] != item_id and _captured(r, open_only=True)
+                    for e in _cap_entries(r)
+                }
+                kept = [
+                    e
+                    for e in entries
+                    if (e.get("origin") or "discovery") == "deal_document" or e["ref"] not in held
+                ]
+                if entries and not kept:
+                    if "threads" in row["source_link"]:
+                        row["source_link"] = {**row["source_link"], "threads": []}
+                    row.update(status="expired", decided_at=_now(), refusal=refusal[:500])
+                    self._review_audit(actor, "review.expired", item_id, "approved", "expired")
+                    return
+                if len(kept) < len(entries):
+                    row["suggestion"] = _cap_person(row["type"], row["suggestion"], entries, kept)
+                    self._cap_set_entries(row, kept)
+                    row["revision"] = row.get("revision", 1) + 1
             row.update(status="open", decided_at=None, decided_by=None, refusal=refusal[:500])
             self._review_audit(actor, "review.reopened", item_id, "approved", "open")
         else:
             if row["status"] == "open":
                 raise store.refusal_for("CRM04", "No such suggestion.")
             row["result"] = json.loads(json.dumps(result or {}))
+
+    # -- spec 010 R1: one suggestion per company (074) ------------------------
+
+    def _review_deals(self, item_id: str) -> list[str]:
+        return sorted(
+            r["opportunity_id"]
+            for r in self.rows["crm_review_item_deals"].values()
+            if r["item_id"] == item_id
+        )
+
+    def _replace_review_deals(self, item: dict[str, Any], deal_ids: list[str]) -> None:
+        for key in [
+            k for k, r in self.rows["crm_review_item_deals"].items() if r["item_id"] == item["id"]
+        ]:
+            del self.rows["crm_review_item_deals"][key]
+        for deal_id in deal_ids:
+            self._add_review_deal(item, deal_id)
+
+    def _cap_set_entries(self, row: dict[str, Any], threads: list[dict[str, Any]]) -> None:
+        """An item's entries replaced: its link, its totals, its version."""
+        row["source_link"] = _cap_link(row["source_link"], threads)
+        suggestion = json.loads(json.dumps(row["suggestion"]))
+        suggestion["evidence"] = _cap_evidence(suggestion.get("evidence"), threads)
+        row["suggestion"] = suggestion
+        row["source_version"] = _cap_newest(threads)["message_id"]
+
+    def _cap_actor(self, workspace_id: str) -> dict[str, Any]:
+        return {"user_id": None, "kind": "sync", "channel": None, "workspace_id": workspace_id}
+
+    def capture_release_thread(self, workspace_id: str, ref: str, keep: str) -> dict[str, int]:
+        """074 crm_capture_release_thread: the conversation leaves every open
+        capture item but `keep`'s (a deal document's entry never); an item
+        left with none expires, one review.expired audit row each."""
+        removed = expired = 0
+        for r in sorted(self._of("crm_review_items", workspace_id), key=lambda r: r["id"]):
+            row = self.rows["crm_review_items"][r["id"]]
+            if not _captured(row, open_only=True) or row["dedupe_key"] == keep:
+                continue
+            entries = _cap_entries(row)
+            kept = [
+                e
+                for e in entries
+                if not (e["ref"] == ref and (e.get("origin") or "discovery") != "deal_document")
+            ]
+            if len(kept) == len(entries):
+                continue
+            removed += 1
+            if not kept:
+                if "threads" in row["source_link"]:
+                    row["source_link"] = {**row["source_link"], "threads": []}
+                row.update(status="expired", decided_at=_now())
+                self._review_audit(
+                    self._cap_actor(workspace_id), "review.expired", row["id"], "open", "expired"
+                )
+                expired += 1
+            else:
+                row["suggestion"] = _cap_person(row["type"], row["suggestion"], entries, kept)
+                self._cap_set_entries(row, kept)
+                row["revision"] = row.get("revision", 1) + 1
+        return {"removed": removed, "expired": expired}
+
+    def capture_group_upsert(
+        self, workspace_id: str, item: dict[str, Any], entry: dict[str, Any]
+    ) -> dict[str, Any]:
+        """074 crm_capture_group_upsert: skip a conversation state a decided
+        item lists (not one consolidation merged, not one a refusal
+        expired; a deal document's per company), release the conversation
+        elsewhere (not for a deal document), then insert or merge, taking
+        the suggestion, current values and deals only from the newest entry."""
+        ws = workspace_id
+        given = json.loads(json.dumps(item))
+        entry = json.loads(json.dumps(entry))
+        assert given["type"] in ("new_lead", "deal_signal"), given["type"]
+        assert entry.get("ref") and entry.get("message_id"), entry
+        document = entry.get("origin") == "deal_document"
+        key = given["dedupe_key"]
+        for r in self._of("crm_review_items", ws):
+            if (
+                r["status"] != "open"
+                and r["type"] in ("new_lead", "deal_signal")
+                and r["source_kind"] == "email_thread"
+                and "superseded_by" not in (r.get("result") or {})
+                and not (r["status"] == "expired" and r.get("refusal") is not None)
+                and (not document or r["dedupe_key"] == key)
+                and (
+                    any(
+                        e.get("ref") == entry["ref"] and e.get("message_id") == entry["message_id"]
+                        for e in (r.get("source_link") or {}).get("threads") or []
+                    )
+                    or (
+                        r["source_key"] == entry["ref"]
+                        and r["source_version"] == entry["message_id"]
+                    )
+                )
+            ):
+                return {"id": None, "created": False, "skipped": True, "released": 0}
+        released = 0
+        if not document:
+            released = self.capture_release_thread(ws, entry["ref"], key)["removed"]
+        assert len(json.dumps(given.get("suggestion") or {})) <= 8192
+        if given.get("record_id") is not None:
+            target = TARGETS.get(given["record_type"])
+            found = target and self.rows[target].get(given["record_id"])
+            if not found or found["workspace_id"] != ws:
+                raise store.refusal_for(
+                    "CRM04", f"No such {given['record_type']} in this workspace."
+                )
+        choices = given.pop("deal_choices", None) or []
+        open_row = next(
+            (
+                self.rows["crm_review_items"][r["id"]]
+                for r in self._of("crm_review_items", ws)
+                if r["status"] == "open" and r["dedupe_key"] == key
+            ),
+            None,
+        )
+        threads = _cap_merge(_cap_entries(open_row), entry) if open_row else [entry]
+        newest = _cap_newest(threads)
+        take = open_row is None or (
+            newest["ref"] == entry["ref"] and newest.get("message_id") == entry["message_id"]
+        )
+        if take:
+            for deal_id in choices:
+                deal = self.rows["crm_opportunities"].get(deal_id)
+                if (
+                    deal is None
+                    or deal["workspace_id"] != ws
+                    or deal.get("deleted_at")
+                    or deal["stage"] not in OPEN_STAGES
+                ):
+                    raise store.refusal_for("CRM04", "No such open deal in this workspace.")
+        if open_row is None:
+            suggestion = given.get("suggestion") or {}
+            suggestion["evidence"] = _cap_evidence(suggestion.get("evidence"), threads)
+            row = self.add_review_item(
+                self.rows["crm_workspaces"][ws],
+                **{
+                    **{
+                        k: v
+                        for k, v in given.items()
+                        if v is not None or k in ("owner_id", "record_type", "record_id")
+                    },
+                    "suggestion": suggestion,
+                    "source_version": entry["message_id"],
+                    "source_link": _cap_link(given.get("source_link") or {}, threads),
+                },
+            )
+            created = True
+        else:
+            row, created = open_row, False
+            source = given if take else row
+            suggestion = json.loads(json.dumps(source.get("suggestion") or {}))
+            suggestion["evidence"] = _cap_evidence(suggestion.get("evidence"), threads)
+            values = json.loads(json.dumps(source.get("current_values") or {}))
+            link = _cap_link(row["source_link"], threads)
+            before = (row["suggestion"], row["current_values"], row["source_version"])
+            if before + (row["source_link"],) != (suggestion, values, newest["message_id"], link):
+                row["revision"] = row.get("revision", 1) + 1
+            row.update(
+                suggestion=suggestion,
+                current_values=values,
+                source_key=given["source_key"],
+                source_link=link,
+                source_version=newest["message_id"],
+            )
+            if take:
+                row.update(model=given.get("model"), generated_at=given.get("generated_at"))
+        if take:
+            self._replace_review_deals(row, choices)
+        return {
+            "id": row["id"],
+            "created": created,
+            "skipped": False,
+            "revision": row.get("revision", 1),
+            "released": released,
+        }
+
+    def capture_consolidate(self, workspace_id: str, plan: list[dict[str, Any]]) -> dict:
+        """074 crm_capture_consolidate: per group, the members still open
+        (and an open item holding the key) become one, the newest by
+        creation surviving with every entry; the others expire first with
+        `superseded_by`, one review.expired audit row each."""
+        assert isinstance(plan, list), plan
+        groups = gone = rekeyed = 0
+        for g in json.loads(json.dumps(plan)):
+            members = set(g.get("members") or [])
+            rows = sorted(
+                (
+                    self.rows["crm_review_items"][r["id"]]
+                    for r in self._of("crm_review_items", workspace_id)
+                    if _captured(r, open_only=True)
+                    and r.get("record_id") == g.get("record_id")
+                    and (r["id"] in members or r["dedupe_key"] == g["dedupe_key"])
+                ),
+                key=lambda r: (_at(r["created_at"]), r["id"]),
+                reverse=True,
+            )
+            if not rows:
+                continue
+            survivor = rows[0]
+            if (
+                len(rows) == 1
+                and survivor["dedupe_key"] == g["dedupe_key"]
+                and survivor["source_key"] == g["source_key"]
+                and "threads" in survivor["source_link"]
+            ):
+                continue
+            groups += 1
+            threads: list[dict[str, Any]] = []
+            for r in reversed(rows):
+                for e in _cap_entries(r):
+                    threads = _cap_merge(threads, e)
+            newest = _cap_newest(threads)
+            donor = next(
+                (r for r in rows if any(_cap_same(newest, e) for e in _cap_entries(r))), survivor
+            )
+            label = (
+                g.get("company_label")
+                or donor["suggestion"].get("company_name")
+                or ("this company")
+            )
+            for r in rows[1:]:
+                r.update(
+                    status="expired",
+                    decided_at=_now(),
+                    result={
+                        "superseded_by": survivor["id"],
+                        "reason": f"Merged into one suggestion for {label}."[:500],
+                    },
+                )
+                self._review_audit(
+                    self._cap_actor(workspace_id), "review.expired", r["id"], "open", "expired"
+                )
+                self.audit[-1]["after"]["superseded_by"] = survivor["id"]
+                gone += 1
+            if (survivor["source_key"], survivor["dedupe_key"]) != (
+                g["source_key"],
+                g["dedupe_key"],
+            ):
+                rekeyed += 1
+            suggestion = json.loads(json.dumps(donor["suggestion"]))
+            survivor.update(
+                source_key=g["source_key"],
+                dedupe_key=g["dedupe_key"],
+                suggestion=suggestion,
+                current_values=json.loads(json.dumps(donor["current_values"])),
+                revision=survivor.get("revision", 1) + 1,
+            )
+            self._cap_set_entries(survivor, threads)
+            if donor is not survivor:
+                self._replace_review_deals(survivor, self._review_deals(donor["id"]))
+        return {"groups": groups, "expired": gone, "rekeyed": rekeyed}
+
+    def open_capture_items(self, workspace_id: str) -> list[dict[str, Any]]:
+        rows = sorted(
+            (r for r in self._of("crm_review_items", workspace_id) if _captured(r, open_only=True)),
+            key=lambda r: (_at(r["created_at"]), r["id"]),
+        )
+        return json.loads(json.dumps(rows))
+
+    def candidates_for_threads(
+        self, workspace_id: str, mailbox_id: str, thread_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        wanted = set(thread_ids)
+        return json.loads(
+            json.dumps(
+                [
+                    c
+                    for c in self.rows["crm_capture_candidates"].values()
+                    if c["workspace_id"] == workspace_id
+                    and c["mailbox_id"] == mailbox_id
+                    and c["thread_id"] in wanted
+                ]
+            )
+        )
 
     def review_expire(self, actor: dict[str, Any], before: datetime) -> int:
         """crm_review_expire (061): one `review.expired` audit row each."""
@@ -5727,6 +6149,144 @@ ENRICHMENT_REASONS = (
     "Model call timed out",
     "AI budget reached",
 )
+
+
+def _captured(row: dict[str, Any], *, open_only: bool = False) -> bool:
+    """A capture item (074): a new lead or deal signal from an email thread
+    keyed `capture:` or, made before 074, `gmail:`."""
+    return (
+        row["type"] in ("new_lead", "deal_signal")
+        and row["source_kind"] == "email_thread"
+        and (not open_only or row["status"] == "open")
+        and (open_only or str(row["source_key"]).startswith(("capture:", "gmail:")))
+    )
+
+
+def _cap_entries(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """074 crm_capture_entries."""
+    link = row.get("source_link") or {}
+    if isinstance(link.get("threads"), list):
+        return json.loads(json.dumps(link["threads"]))
+    if not str(row.get("source_key") or "").startswith("gmail:"):
+        return []
+    s = row.get("suggestion") or {}
+    ev = s.get("evidence") or {}
+    return [
+        {
+            "ref": row["source_key"],
+            "mailbox_id": link.get("mailbox_id"),
+            "thread_id": link.get("thread_id"),
+            "message_id": row.get("source_version"),
+            "first_at": ev.get("first_at") or ev.get("message_at"),
+            "latest_at": ev.get("latest_at") or ev.get("message_at"),
+            "message_count": ev.get("message_count") or 0,
+            "owner_replied": ev.get("owner_replied"),
+            "origin": ev.get("origin") or "discovery",
+            "reason": ev.get("reason"),
+            "confidence": ev.get("confidence"),
+            "person_email": s.get("email") or ev.get("email"),
+            "first_name": s.get("first_name"),
+            "last_name": s.get("last_name"),
+        }
+    ]
+
+
+def _cap_when(value: Any) -> datetime:
+    return _at(value) if value else datetime.min.replace(tzinfo=UTC)
+
+
+def _cap_newest(threads: list[dict[str, Any]]) -> dict[str, Any]:
+    """074 crm_capture_newest: the greatest (latest_at, message_id)."""
+    return max(
+        threads,
+        key=lambda e: (
+            _cap_when(e.get("latest_at")),
+            e.get("message_id") is not None,
+            str(e.get("message_id") or ""),
+        ),
+    )
+
+
+def _cap_merge(threads: list[dict[str, Any]], entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """074 crm_capture_merge: unique by ref, never replaced by an older one;
+    a deal document's entry stays one whichever is kept (PD-39)."""
+    if not any(e["ref"] == entry["ref"] for e in threads):
+        return [*threads, entry]
+    out = []
+    for e in threads:
+        if e["ref"] != entry["ref"]:
+            out.append(e)
+            continue
+        won = entry if _cap_when(entry.get("latest_at")) >= _cap_when(e.get("latest_at")) else e
+        if "deal_document" in (e.get("origin"), entry.get("origin")):
+            won = {**won, "origin": "deal_document"}
+        out.append(won)
+    return out
+
+
+def _cap_same(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """The same conversation state: ref and latest message (074's
+    `@> {ref, message_id}`)."""
+    return a.get("ref") == b.get("ref") and (
+        a.get("message_id") is None or a.get("message_id") == b.get("message_id")
+    )
+
+
+def _cap_person(
+    kind: str, suggestion: dict[str, Any], entries: list[dict[str, Any]], kept: list[dict]
+) -> dict[str, Any]:
+    """074 crm_capture_person: a new lead's person follows its newest entry
+    when conversations leave (FR-CAP-GRP-03); the title is dropped."""
+    if kind != "new_lead" or not kept or _cap_newest(kept) == _cap_newest(entries):
+        return suggestion
+    n = _cap_newest(kept)
+    out = {
+        k: v
+        for k, v in (suggestion or {}).items()
+        if k not in ("email", "first_name", "last_name", "title")
+    }
+    for key, field in (
+        ("email", "person_email"),
+        ("first_name", "first_name"),
+        ("last_name", "last_name"),
+    ):
+        if n.get(field) is not None:
+            out[key] = n[field]
+    return out
+
+
+def _cap_evidence(evidence: dict[str, Any] | None, threads: list[dict[str, Any]]) -> dict:
+    """074 crm_capture_evidence: the totals."""
+    out = dict(evidence or {})
+    if not threads:
+        return out
+    firsts = [e for e in threads if e.get("first_at")]
+    latests = [e for e in threads if e.get("latest_at")]
+    said = [e["owner_replied"] for e in threads if e.get("owner_replied") is not None]
+    newest = _cap_newest(threads)
+    out.update(
+        first_at=min(firsts, key=lambda e: _at(e["first_at"]))["first_at"] if firsts else None,
+        latest_at=max(latests, key=lambda e: _at(e["latest_at"]))["latest_at"] if latests else None,
+        message_count=sum(int(e.get("message_count") or 0) for e in threads),
+        conversations=len(threads),
+        owner_replied=True if any(said) else (False if said else None),
+        reason=newest.get("reason"),
+        confidence=newest.get("confidence"),
+    )
+    return out
+
+
+def _cap_link(link: dict[str, Any], threads: list[dict[str, Any]]) -> dict[str, Any]:
+    """074 crm_capture_link: the list, the newest entry's ids on top."""
+    out = {k: v for k, v in (link or {}).items() if k not in ("threads", "mailbox_id", "thread_id")}
+    if threads:
+        newest = _cap_newest(threads)
+        if newest.get("mailbox_id") is not None:
+            out.update(mailbox_id=newest["mailbox_id"], thread_id=newest["thread_id"])
+    else:
+        out.update({k: v for k, v in (link or {}).items() if k != "threads"})
+    out["threads"] = json.loads(json.dumps(threads))
+    return out
 
 
 def _at(value: str | datetime) -> datetime:

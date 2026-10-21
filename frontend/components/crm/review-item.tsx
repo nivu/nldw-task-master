@@ -55,6 +55,11 @@ import { OBJECT_PATH } from "@/lib/crm/view-fields";
  * to; it may have no target. Edit and approve can change any of them or link
  * an existing company. Dismissing a new lead may also ignore its sender or
  * its whole domain (only the sender for public webmail).
+ *
+ * Spec 010 Revision 1 FR-CAP-ACAD-04, -05 (contracts §7.4): a course enquiry
+ * routed from a Labs mailbox into the Academy has no conversation stored
+ * here, so its source names the Labs mailbox instead, and approving records
+ * a note rather than filing mail.
  */
 
 const STATUS_TEXT: Record<ReviewItemStatus, string> = {
@@ -139,7 +144,51 @@ function newLeadLines(item: CrmReviewItem): string {
     `Add ${name || "the person"}` +
     `${text(s.title) ? ` (${text(s.title)})` : ""}` +
     `${text(s.email) ? ` · ${text(s.email)}` : ""}`;
-  return `${company}\n${person}\nFile this conversation`;
+  const last = academyRouted(item)
+    ? "Record a note of the conversation; no email is stored"
+    : fileLabel(conversationCount(item));
+  return `${company}\n${person}\n${last}`;
+}
+
+/** Spec 010 Revision 1 (FR-CAP-ACAD-04): a course enquiry sent from a Labs
+ *  mailbox to the Academy. */
+function academyRouted(item: CrmReviewItem): boolean {
+  const e = item.suggestion.evidence as Record<string, unknown> | undefined;
+  return item.type === "new_lead" && e?.origin === "academy_routing";
+}
+
+/** Spec 010 Revision 1 (FR-CAP-ACAD-04): the Labs mailboxes an Academy
+ *  item's conversations came from, each from its entry's `ref`
+ *  (`gmail:<address>:<thread id>`); one item groups a company's enquiries
+ *  from every Labs mailbox. The evidence's address when no ref names one. */
+function routedMailboxes(item: CrmReviewItem): string[] {
+  const found = new Set<string>();
+  for (const entry of item.source.link?.threads ?? []) {
+    const ref = text(entry.ref);
+    const rest = ref.startsWith("gmail:") ? ref.slice("gmail:".length) : "";
+    const cut = rest.lastIndexOf(":");
+    const mailbox = cut > 0 && cut < rest.length - 1 ? rest.slice(0, cut) : "";
+    if (mailbox.includes("@")) found.add(mailbox);
+  }
+  if (found.size === 0) {
+    const fallback = text((item.suggestion.evidence as Record<string, unknown> | undefined)?.mailbox_email);
+    if (fallback) found.add(fallback);
+  }
+  return [...found].sort();
+}
+
+/** Spec 010 FR-CAP-GRP-03 — the approval of a new lead, in words. */
+function fileLabel(n: number): string {
+  return n > 1 ? `File these ${n} conversations` : "File this conversation";
+}
+
+/** Spec 010 Revision 1 (FR-CAP-GRP) — how many conversations a capture item
+ *  holds; a pre-074 item has one. */
+function conversationCount(item: CrmReviewItem): number {
+  const threads = item.source.link?.threads;
+  if (Array.isArray(threads) && threads.length > 0) return threads.length;
+  const e = item.suggestion.evidence as Record<string, unknown> | undefined;
+  return e && typeof e.conversations === "number" && e.conversations > 0 ? e.conversations : 1;
 }
 
 /** Spec 010 FR-CAP-REV-01 — the evidence a capture item carries, in words. */
@@ -154,6 +203,12 @@ function evidenceRows(item: CrmReviewItem, timeZone: CrmTimezone): { label: stri
     rows.push({ label: "When", value: `${formatDate(first, timeZone)} to ${formatDate(latest, timeZone)}` });
   } else if (latest || first) {
     rows.push({ label: "When", value: formatDate(latest || first, timeZone) });
+  }
+  if (typeof ev.conversations === "number") {
+    rows.push({
+      label: "Conversations",
+      value: `${ev.conversations} conversation${ev.conversations === 1 ? "" : "s"}`,
+    });
   }
   if (typeof ev.message_count === "number") {
     rows.push({ label: "Messages", value: `${ev.message_count} email${ev.message_count === 1 ? "" : "s"}` });
@@ -422,6 +477,8 @@ export function ReviewItemCard({
   const dealCreate = item.type === "deal_signal" && item.suggestion.action === "create";
   const dealProposal = item.type === "deal_signal" && dealStageForm(item, labs);
   const newLead = item.type === "new_lead";
+  const academy = academyRouted(item);
+  const routedFrom = academy ? routedMailboxes(item) : [];
   const leadLinked = newLead && (Boolean(edits.link_company_id) || item.target?.record_type === "company");
   // Spec 010 FR-CAP-REV-03: the sender's own domain is what the server adds,
   // even when the lead's company domain came from the text. It is offered
@@ -489,7 +546,13 @@ export function ReviewItemCard({
         <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           {item.type_label}
           {item.ai && <AiMarker ai={item.ai} timeZone={timeZone} label={item.source.label} />}
-          {!open && <Badge variant="secondary">{STATUS_TEXT[item.status]}</Badge>}
+          {!open && (
+            <Badge variant="secondary">
+              {item.status === "expired" && item.result?.superseded_by
+                ? "Merged into another suggestion"
+                : STATUS_TEXT[item.status]}
+            </Badge>
+          )}
           <span className="font-normal text-muted-foreground">
             ·{" "}
             {targetHref ? (
@@ -548,7 +611,15 @@ export function ReviewItemCard({
           ))}
           <dt className="text-muted-foreground">Source</dt>
           <dd>
-            {sourceHref ? (
+            {academy ? (
+              `From ${
+                routedFrom.length === 0
+                  ? "a Labs mailbox"
+                  : routedFrom.length === 1
+                    ? `the Labs mailbox ${routedFrom[0]}`
+                    : `the Labs mailboxes ${routedFrom.join(", ")}`
+              }; no conversation is stored in the Academy.`
+            ) : sourceHref ? (
               <Link href={sourceHref} className="underline">
                 {item.source.label}
               </Link>
@@ -1004,7 +1075,7 @@ export function ReviewItemCard({
           <div className="flex flex-wrap gap-2">
             {!handoff && (
               <Button size="sm" onClick={() => approve(false)} disabled={busy || needsDeal || needsOption}>
-                Approve
+                {newLead && !academy ? fileLabel(conversationCount(item)) : "Approve"}
               </Button>
             )}
             {editable && (

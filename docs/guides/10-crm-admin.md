@@ -145,10 +145,11 @@ Each mailbox has a **Capture** setting:
 - **Primary and Sent**: the CRM also reads your Gmail **Primary** tab and
   your **Sent** mail, with no label needed. An email with a person or
   company the CRM already knows is filed on their record straight away, with
-  no review and no AI. Newsletters, automated mail, calendar invitations and
-  email among colleagues are skipped and nothing about them is kept. Email
-  from people the CRM does not know is not kept either; it waits for
-  **Email capture** (below) to look at it.
+  no review and no AI. Newsletters, automated mail, calendar notices
+  (replies to invitations, cancellations, reminders) and email among
+  colleagues are skipped and nothing about them is kept. Email from people
+  the CRM does not know is not kept either; it waits for **Email capture**
+  (below) to look at it.
 
 With Primary and Sent, the **Capture from** date (1 April 2026 unless you
 change it) is where the first read starts, instead of 90 days back. Mail in
@@ -171,6 +172,25 @@ emails with an SOW, statement of work, proposal, quotation, MSA or purchase
 order attached. When one is with a known company that has an open deal, a
 **Deal signal** appears in the Review Queue: one you sent suggests moving
 the deal to Proposal; one you received suggests checking whether it is won.
+A company has one deal signal at a time; a later document joins it.
+
+**Calendar invitations.** A meeting invitation from someone outside the
+company (its subject starts *Invitation:* or *Updated invitation:*) is
+treated like any other email: from a person or company the CRM knows, it
+is filed on their record; from someone it does not know, Email capture
+looks at it, since a stranger's invitation is often the first sign of a
+lead. Replies to invitations (*Accepted:*, *Declined:*), new-time
+proposals, cancellations, reminders and invitations among colleagues are
+still skipped, and so is event or webinar mail sent to a mailing list or
+from a no-reply address, even when it is titled *Invitation:*. Only the
+organiser and the people the invitation was addressed to count: guests
+named only inside the invitation are not read, so a colleague's invitation
+to outside guests stays skipped.
+
+Invitations were skipped before this rule, so each Primary and Sent mailbox
+looks back once, from its start date, up to 500 messages per sync,
+until it has gone through all its past invitations. It does this once only,
+by itself; nothing needs switching on.
 
 ## Email capture
 
@@ -191,15 +211,7 @@ Capture has three modes, and starts **Off**:
    judged by the AI; the counts by outcome and confidence; the estimated
    cost; and every lead and deal signal it found, with the company, person,
    dates, confidence and reason (low-confidence ones listed separately). The
-   **Recall check** lists each conversation you labelled Sales or Leads
-   since the start date and says what capture would have done with it: filed
-   as known, found as a lead or deal signal, judged otherwise, skipped by
-   the rules, skipped by the ignore list, or never seen because it was
-   outside Primary and Sent. A labelled conversation with people who were
-   added to the CRM only later (often from that label) is not shown to the
-   AI at all, because the AI never reads mail with people the CRM knows; the
-   report says so and counts these separately. It appears once the dry run
-   has finished.
+   **Recall check** appears once the dry run has finished (see below).
 3. **Apply.** Turns the dry run's high- and medium-confidence leads and deal
    signals into Review Queue items, without asking the AI again, and
    switches capture to **Live**. Only the latest dry run can be applied,
@@ -224,6 +236,58 @@ email's words in the background and keeps none of them: the CRM keeps only
 what it decided. A conversation is looked at again only when a new email
 arrives in it. What it decided about a conversation that was not a lead is
 forgotten after 12 months.
+
+**The recall check.** It takes each conversation you labelled Sales or
+Leads since the start date and asks: had it not been labelled, would capture
+have found it? A conversation counts as **tested** only when the AI
+actually judged it. The line at the top says how many could be tested and
+how many of those the dry run found, then why the others could not be
+tested, for example:
+
+> Of the 18 that could be tested, the dry run found 15. 42 could not be
+> tested: 30 involve contacts now in the CRM (filed automatically), 8 were
+> internal-only, 4 are outside Primary and Sent.
+
+or, when none reached the AI, "None of your 60 labelled conversations could
+be tested: …". The reasons are: *involve contacts now in the CRM (filed
+automatically)*, since the AI never reads mail with people the CRM knows,
+including people added later, often from that very label; *are on the
+ignore list*; *were internal-only*; *were calendar notifications*; *were
+automated mail*; *are outside Primary and Sent*; and *could not be judged*
+(Gmail or the AI failed on it). Under the line the same numbers are listed,
+and each row of the table names its own reason. "Only the first 500 were
+checked" appears only when there were more than 500 labelled conversations.
+A dry run from before this report changed keeps its old wording ("skipped
+by the rules"); the next dry run shows the full split.
+
+**One suggestion per company.** All the conversations with one company make
+one **New lead** in the Review Queue, not one each: the company is
+recognised by its email domain, or, for people writing from gmail.com and
+the like, by the company name the AI found; two webmail senders with no
+company name stay apart. Each new conversation joins the company's open
+suggestion. Suggestions made before this change, one per conversation, are
+merged automatically the next time capture runs in Dry run or Live (never
+while it is Off): the newest stays, holding all the conversations, and the
+others show as "Merged into another suggestion".
+
+**Course enquiries go to the Academy.** In Nunnari Labs, when the AI finds
+that a conversation is about a course or training for individuals or
+students (a course enrolment, student training, a college or university
+programme), it is not suggested in Labs. It is suggested instead in the
+Nunnari Academy B2B workspace's Review Queue, for its Admins (or for the
+mailbox's owner, when they are an active Admin or Member of the Academy).
+Only what came from the email crosses: names, the sender's address, the Labs
+mailbox it reached, dates, counts and the AI's reason. No
+Labs record does, and nothing the Academy decides about it is shown in
+Labs. The Labs report counts the course enquiries sent to the Academy.
+
+This needs the Academy workspace to have at least one active Admin and its
+**Accept course enquiries from Labs** switch on (in the Academy, **Settings
+→ Email capture**, Admins only; on unless switched off). When it cannot
+take them, the enquiry is suggested nowhere and the Labs report counts it
+as "Course enquiries with no Academy workspace". The AI's cost is Labs'.
+Course enquiries already waiting in the Labs queue before this change stay
+there: dismiss them, or they expire within two weeks.
 
 **Ignore list.** Email where everyone outside the company is on the ignore
 list never reaches the AI. Add an email address or a whole domain under

@@ -2,7 +2,14 @@
 -10, FR-CAP-RPT-01, -03, FR-CAP-CHG-05, NFR-CAP-01 to -04; plan §5.6, §5.7,
 PD-11, PD-14, PD-17; spec §13 S2. S3 (tasks T314): FR-CAP-DIS-03, -07 to
 -10 (live), FR-CAP-REV-04, FR-CAP-RPT-04; plan §5.8, §5.10, PD-4; spec §13
-S3 lines 1, 3, 5 and 6.
+S3 lines 1, 3, 5 and 6. R1 (tasks T416): FR-CAP-GRP-01 to -08 — one item
+per company, order-independent, a moved conversation leaves its item, one
+deal signal per company, consolidation of the items made before 074; plan
+R1.2, PD-24, PD-26, PD-38 to PD-40; spec §14.5 I1. R1 (tasks T425):
+FR-CAP-RPT-05 to -07 — the recall's reasons, a failure not judged, the cap
+marker; plan R1.3; spec §14.5 I2. R1 (tasks T465): FR-CAP-INV-04 — an
+outside person's invitation judged as one, no meeting host as a website;
+plan R1.5; spec §14.5 I4.
 
 Every run is on `tests/crm_fake.py` with `FakeClaude` and `FakeGmailThread`
 (`tests/crm_ai_fakes.py`): no network. A `FakeClaude()` with no script fails
@@ -12,6 +19,7 @@ by the run passing.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -324,7 +332,14 @@ class TestNeverClaude:
         )
         cap.conversation("internal", sender="deepika@nunnarilabs.com")
         cap.conversation("news", sender="news@vendor.io", List_Unsubscribe="<mailto:x@vendor.io>")
-        cap.conversation("invite", sender="ravi@other.io", subject="Invitation: Sync @ Mon")
+        # Spec 010 R1 FR-CAP-INV-03: an invitation between colleagues only
+        # (an outside person's invitation is judged: TestInvitations).
+        cap.conversation(
+            "invite",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Sync @ Mon",
+            Reply_To="Deepika <deepika@nunnarilabs.com>",
+        )
         cap.conversation("noreply", sender="no-reply@saas.io")
         cap.conversation("known", sender="ravi@acme.com")
         cap.conversation("ignored", sender="sam@vendor.example")
@@ -662,7 +677,8 @@ class TestTheChain:
 
 
 class TestRecall:
-    """FR-CAP-RPT-03, plan §5.7, PD-11; spec §13 S2 line 3."""
+    """FR-CAP-RPT-03, -05 to -07, plan §5.7, R1.3, PD-11, PD-27, PD-28; spec
+    §13 S2 line 3, §14.5 I2."""
 
     SALES = ("INBOX", "Label_1")
 
@@ -718,7 +734,7 @@ class TestRecall:
         fates = {r["thread_id"]: r["fate"] for r in run["recall"]}
         assert fates == {
             "r-out": "outside_scope",
-            "r-bulk": "skipped_rules",
+            "r-bulk": "automated",
             "r-known": "filed_known",
             "r-auto": "known_now",
             "r-new": "found",
@@ -732,12 +748,142 @@ class TestRecall:
         assert cap.fake.rows["crm_capture_candidates"] == {}
         assert len(cap.claude.calls) == 2
         assert sorted(cap.gmail.text_reads) == ["r-new-m1", "r-vendor-m1"]
-        line = capture.overview(_Ctx(cap))["dry_run"]["recall"]["line"]
-        assert line == (
-            "Found 2 of your 6 labelled conversations; 1 of the rest are outside Primary and "
-            "Sent. 1 of the rest name only people added to the CRM after they began, so they "
-            "were not sent to Claude."
+        recall = capture.overview(_Ctx(cap))["dry_run"]["recall"]
+        # FR-CAP-RPT-07: filed as known is not tested (PD-28).
+        assert recall["line"] == (
+            "Of the 2 that could be tested, the dry run found 1. 4 could not be tested: "
+            "2 involve contacts now in the CRM (filed automatically), 1 was automated mail, "
+            "1 is outside Primary and Sent."
         )
+        assert recall["summary"]["untested"]["known"] == 2
+
+    def test_capture_recall_names_each_reason(self, cap, monkeypatch):
+        # Plan R1.3: the rules' reasons from headers only; Gmail's empty or
+        # malformed answer is not judged; a lead is still judged.
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        self._labelled(cap, "r-internal", primary_sales, "deepika@nunnarilabs.com")
+        self._labelled(
+            cap,
+            "r-cal",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Accepted: Demo @ Tue",
+        )
+        self._labelled(cap, "r-bulk", primary_sales, "news@bulk.io", List_Unsubscribe="<x>")
+        self._labelled(cap, "r-empty", primary_sales, "sam@empty.io")
+        self._labelled(cap, "r-malformed", primary_sales, "sam@broken.io")
+        cap.gmail.threads["r-malformed"][0]["headers"] = None
+        # A date that is not a number is malformed too (plan R1.3 step 1).
+        self._labelled(cap, "r-baddate", primary_sales, "sam@baddate.io")
+        # FR-CAP-RPT-06: an invitation between colleagues only is internal-only.
+        self._labelled(
+            cap,
+            "r-colleague-invite",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Standup @ Mon",
+            Reply_To="Deepika <deepika@nunnarilabs.com>",
+        )
+        self._labelled(cap, "r-new", primary_sales, "Priya Shah <priya@acme-robotics.com>")
+        # Spec 010 R1 FR-CAP-INV-01, -04 (T463): an outside person's
+        # invitation is judged like any conversation.
+        self._labelled(
+            cap,
+            "r-outside-invite",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu",
+            Reply_To="Lee <lee@prospect.io>",
+        )
+        # A tie between a calendar notice and automated mail goes to calendar.
+        self._labelled(
+            cap,
+            "r-tie",
+            primary_sales,
+            "Google Calendar <calendar-notification@google.com>",
+            subject="Declined: Demo",
+        )
+        cap.gmail.message(
+            "r-tie",
+            "r-tie-m2",
+            sender="news@bulk.io",
+            to=BOX,
+            at=NOW - timedelta(days=29),
+            labels=primary_sales,
+            List_Unsubscribe="<x>",
+        )
+        meta = gmail.thread_meta
+
+        def thread_meta(mailbox, thread_id):
+            got = meta(mailbox, thread_id)
+            if thread_id == "r-baddate":
+                got["messages"][0]["internalDate"] = "abc"
+            return {"id": thread_id, "messages": []} if thread_id == "r-empty" else got
+
+        monkeypatch.setattr(gmail, "thread_meta", thread_meta)
+        cap.answer(LEAD, LEAD)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert {r["thread_id"]: r["fate"] for r in run["recall"]} == {
+            "r-internal": "internal_only",
+            "r-cal": "calendar",
+            "r-bulk": "automated",
+            "r-empty": "not_judged",
+            "r-malformed": "not_judged",
+            "r-baddate": "not_judged",
+            "r-colleague-invite": "internal_only",
+            "r-new": "found",
+            "r-outside-invite": "found",
+            "r-tie": "calendar",
+        }
+        assert sorted(cap.gmail.text_reads) == ["r-new-m1", "r-outside-invite-m1"]
+        summary = capture.overview(_Ctx(cap))["dry_run"]["recall"]["summary"]
+        assert summary["untested"] == {
+            "known": 0,
+            "ignored": 0,
+            "internal_only": 2,
+            "calendar": 2,
+            "automated": 1,
+            "outside_scope": 0,
+            "not_judged": 3,
+            "skipped_rules": 0,
+        }
+
+    def test_capture_recall_counts_a_failure_as_not_judged(self, cap):
+        # FR-CAP-RPT-06: Claude failing on a conversation is not a judgement.
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        self._labelled(cap, "r-new", primary_sales, "sam@newco.io")
+        cap.answer(default=INVALID)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert run["finished_at"] is not None
+        assert {r["thread_id"]: r["fate"] for r in run["recall"]} == {"r-new": "not_judged"}
+        assert capture.overview(_Ctx(cap))["dry_run"]["recall"]["line"] == (
+            "None of your 1 labelled conversation could be tested: 1 could not be judged."
+        )
+
+    def test_capture_recall_marks_a_run_capped_only_with_threads_left(self, cap, monkeypatch):
+        # Plan R1.3: the marker only when the check stops at the cap with a
+        # labelled conversation unchecked; a mailbox with exactly the cap is not.
+        monkeypatch.setattr(rules, "RECALL_CAP", 2)
+        primary_sales = (*self.SALES, "CATEGORY_PERSONAL")
+        for n in range(2):
+            self._labelled(cap, f"r{n}", primary_sales, f"news{n}@bulk.io", List_Unsubscribe="<x>")
+        cap.tick()
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        assert [r.get("thread_id") for r in run["recall"]] == ["r0", "r1"]
+        assert not capture.overview(_Ctx(cap))["dry_run"]["recall"]["summary"]["capped"]
+        self._labelled(cap, "r2", primary_sales, "news2@bulk.io", List_Unsubscribe="<x>")
+        run.update(finished_at=None, recall=[])
+        cap.tick()
+        assert run["recall"][-1] == {"capped": True}
+        assert len(run["recall"]) == 3
+        recall = capture.overview(_Ctx(cap))["dry_run"]["recall"]
+        assert [r["thread_id"] for r in recall["rows"]] == ["r0", "r1"]
+        assert recall["summary"]["capped"] is True
+        assert recall["line"].endswith(" Only the first 2 were checked.")
 
     def test_capture_recall_never_sends_an_ignored_or_known_client_message(self, cap):
         # PRIV-1, PRIV-2: the recall applies live's ignore list and known
@@ -978,15 +1124,16 @@ class TestLive:
         # upsert ends the run with the conversation still to be judged.
         live.conversation("t1")
         live.answer(LEAD, LEAD)
-        real = capture.review.upsert
+        # Spec 010 R1: items are stored through the group upsert.
+        real = capture.review.capture_group_upsert
 
         def fails(*args, **kwargs):
             raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
 
-        monkeypatch.setattr(capture.review, "upsert", fails)
+        monkeypatch.setattr(capture.review, "capture_group_upsert", fails)
         assert live.tick()["outcome"] == "failed"
         assert live.candidate("t1")["status"] == "pending" and _items(live) == []
-        monkeypatch.setattr(capture.review, "upsert", real)
+        monkeypatch.setattr(capture.review, "capture_group_upsert", real)
         got = live.tick()
         assert got["outcome"] == "ok" and got["counts"]["items"] == 1
         assert live.candidate("t1")["status"] == "judged"
@@ -1316,3 +1463,1111 @@ class TestApply:
             row["owner_id"] = "u-nobody"
         assert self._apply(cap)["items_created"] == 0
         assert _items(cap) == []
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 — one suggestion per company (FR-CAP-GRP; tasks T416)
+# ---------------------------------------------------------------------------
+
+
+def _open(cap) -> list[dict]:
+    return [i for i in _items(cap) if i["status"] == "open"]
+
+
+def _deal_row(cap, company, stage: str) -> dict:
+    return cap.fake.add(
+        "crm_opportunities",
+        workspace_id=cap.labs["id"],
+        company_id=company["id"],
+        name=f"{company['name']} {stage}",
+        stage=stage,
+        deleted_at=None,
+        created_at="2026-09-01T00:00:00+00:00",
+    )
+
+
+def _signal(cap, company, deals, *, stage, at, thread, message, confidence="high"):
+    """A discovered `deal_signal` on a matched company, as `item_for` makes it."""
+    finding = {
+        **FOUND,
+        "deal_stage": stage,
+        "latest_at": at.astimezone(rules.ZONE).isoformat(),
+        "first_at": at.astimezone(rules.ZONE).isoformat(),
+    }
+    return rules.to_item(
+        finding,
+        outcome="deal_signal",
+        confidence=confidence,
+        mailbox_id=cap.mailbox["id"],
+        thread_id=thread,
+        message_id=message,
+        owner_id=OWNER["id"],
+        model="claude-sonnet-5-5",
+        generated_at=NOW.isoformat(),
+        duplicate_company_id=company["id"],
+        open_deals=deals,
+    )
+
+
+FOUND = {
+    "company_name": "Acme Robotics",
+    "domain": "acme-robotics.com",
+    "domain_from_text": False,
+    "person_name": "Priya Shah",
+    "person_email": "priya@acme-robotics.com",
+    "person_title": None,
+    "lead_stage": "contacted",
+    "deal_stage": None,
+    "reason": "Asked for pricing.",
+    "first_at": "2026-10-01T09:00:00+05:30",
+    "latest_at": "2026-10-01T09:00:00+05:30",
+    "message_count": 1,
+    "owner_replied": False,
+    "attachments": [],
+    "duplicate_company_id": None,
+}
+
+
+class TestGrouping:
+    """Spec 010 R1 FR-CAP-GRP-01 to -07; plan R1.2; spec §14.5 I1."""
+
+    def test_capture_groups_a_company_s_conversations(self, live):
+        for n, who in enumerate(("priya", "ravi", "sam"), 1):
+            live.conversation(
+                f"t{n}", sender=f"{who}@acme-robotics.com", at=NOW - timedelta(days=n)
+            )
+        live.answer(*({**LEAD, "person_email": f"{w}@acme-robotics.com"} for w in "abc"))
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["items"] == 1 and got["counts"]["judged"] == 3
+        [item] = _items(live)
+        assert item["source_key"] == "capture:domain:acme-robotics.com"
+        threads = item["source_link"]["threads"]
+        assert sorted(t["thread_id"] for t in threads) == ["t1", "t2", "t3"]
+        assert {t["person_email"] for t in threads} == {
+            "priya@acme-robotics.com",
+            "ravi@acme-robotics.com",
+            "sam@acme-robotics.com",
+        }
+        evidence = item["suggestion"]["evidence"]
+        assert (evidence["conversations"], evidence["message_count"]) == (3, 3)
+        # The latest conversation (t1, newest) gives the person and the top level.
+        assert item["source_link"]["thread_id"] == "t1"
+        assert item["suggestion"]["email"] == "priya@acme-robotics.com"
+        assert item["revision"] == 3
+
+    def test_capture_groups_by_claude_s_company_name(self, live):
+        live.conversation("t1", sender="a.k@gmail.com", at=NOW - timedelta(days=1))
+        live.conversation("t2", sender="b.r@gmail.com", at=NOW - timedelta(days=2))
+        live.conversation("t3", sender="c.x@gmail.com", at=NOW - timedelta(days=3))
+        live.conversation("t4", sender="d.y@gmail.com", at=NOW - timedelta(days=4))
+        named = {**LEAD, "company_name": "Zeta Labs", "website_choice": None}
+        nameless = {**LEAD, "company_name": None, "website_choice": None}
+        live.answer(
+            {**named, "person_email": "a.k@gmail.com"},
+            {**named, "person_email": "b.r@gmail.com"},
+            {**nameless, "person_email": "c.x@gmail.com"},
+            {**nameless, "person_email": "d.y@gmail.com"},
+        )
+        live.tick()
+        keys = sorted(i["source_key"] for i in _open(live))
+        assert keys == [
+            "capture:email:c.x@gmail.com",
+            "capture:email:d.y@gmail.com",
+            "capture:name:zeta labs",
+        ]
+        [zeta] = [i for i in _open(live) if i["source_key"] == "capture:name:zeta labs"]
+        assert len(zeta["source_link"]["threads"]) == 2
+
+    def test_capture_apply_in_reverse_order_gives_the_same_item(self, live):
+        def lead(n: int) -> dict:
+            at = NOW - timedelta(days=n)
+            return rules.to_item(
+                {
+                    **FOUND,
+                    "person_email": f"p{n}@acme-robotics.com",
+                    "reason": f"Conversation {n}.",
+                    "latest_at": at.astimezone(rules.ZONE).isoformat(),
+                },
+                outcome="new_lead",
+                confidence="high",
+                mailbox_id=live.mailbox["id"],
+                thread_id=f"t{n}",
+                message_id=f"m{n}",
+                owner_id=OWNER["id"],
+                model="claude-sonnet-5-5",
+                generated_at=NOW.isoformat(),
+            )
+
+        shown = []
+        for order in ((1, 2, 3), (3, 2, 1)):
+            live.fake.rows["crm_review_items"].clear()
+            capture.store_items(live.labs["id"], [lead(n) for n in order])
+            [item] = _items(live)
+            shown.append(
+                (
+                    item["suggestion"],
+                    item["source_version"],
+                    item["source_link"]["thread_id"],
+                    sorted(t["ref"] for t in item["source_link"]["threads"]),
+                )
+            )
+        assert shown[0] == shown[1]
+        assert shown[0][0]["evidence"]["reason"] == "Conversation 1."
+        assert shown[0][1] == "m1"
+
+    def test_capture_an_older_signal_never_replaces_a_newer_ones_stage(self, live):
+        company = _company(live, "Acme Robotics")
+        early = _deal_row(live, company, "discovery")
+        late = _deal_row(live, company, "proposal")
+        newer = _signal(
+            live,
+            company,
+            [early, late],
+            stage="closed_won",
+            at=NOW - timedelta(days=1),
+            thread="t-won",
+            message="m-won",
+        )
+        older = _signal(
+            live,
+            company,
+            [early, late],
+            stage="proposal",
+            at=NOW - timedelta(days=5),
+            thread="t-prop",
+            message="m-prop",
+        )
+        assert newer["deal_choices"] == sorted([early["id"], late["id"]])
+        assert older["deal_choices"] == [early["id"]]
+        capture.store_items(live.labs["id"], [newer, older])
+        [item] = _items(live)
+        assert item["suggestion"]["stage"] == "closed_won"
+        assert live.fake._review_deals(item["id"]) == sorted([early["id"], late["id"]])
+        assert len(item["source_link"]["threads"]) == 2
+        assert item["source_version"] == "m-won"
+
+    def test_capture_one_document_to_two_companies_keeps_a_signal_for_each(self, live):
+        from app.services.crm import review
+
+        first, second = _company(live, "Acme"), _company(live, "Beta")
+        for company in (first, second):
+            deal = _deal_row(live, company, "discovery")
+            item = rules.deal_signal_item(
+                mailbox_id=live.mailbox["id"],
+                thread_id="t-sow",
+                message_id="m-sow",
+                company_id=company["id"],
+                deals=[deal],
+                stage="proposal",
+                kinds=["sow"],
+                direction="outbound",
+                message_at=NOW - timedelta(hours=1),
+                owner_id=OWNER["id"],
+                generated_at=NOW.isoformat(),
+            )
+            made = review.capture_group_upsert(
+                live.labs["id"], item, item["source_link"]["threads"][0]
+            )
+            assert made["created"], made
+        assert sorted(i["record_id"] for i in _open(live)) == sorted([first["id"], second["id"]])
+        # Dismissing one company's signal leaves the other's document state.
+        acme = next(i for i in _open(live) if i["record_id"] == first["id"])
+        live.fake.rows["crm_review_items"][acme["id"]].update(
+            status="dismissed", decided_at=NOW.isoformat()
+        )
+        again = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-sow",
+            message_id="m-sow",
+            company_id=second["id"],
+            deals=[],
+            stage="proposal",
+            kinds=["sow"],
+            direction="outbound",
+            message_at=NOW - timedelta(hours=1),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        made = review.capture_group_upsert(
+            live.labs["id"], again, again["source_link"]["threads"][0]
+        )
+        assert not made["skipped"]
+
+    def test_capture_a_dismissed_company_returns_only_for_new_mail(self, live):
+        live.conversation("t1")
+        live.answer(LEAD, LEAD, {**LEAD, "person_email": "ravi@acme-robotics.com"})
+        live.tick()
+        [item] = _items(live)
+        r = live.http.post(
+            f"/api/v1/crm/review/{item['id']}/dismiss?workspace=labs", headers=as_(OWNER["id"])
+        )
+        assert r.status_code == 200, r.text
+        # Re-judged at the same latest message (a restart): not suggested again.
+        live.candidate("t1").update(DEFAULTS["crm_capture_candidates"])
+        got = live.tick()
+        assert got["counts"]["items"] == 0 and got["counts"]["items_skipped"] == 1
+        assert _open(live) == []
+        # Re-applied: the same finding again is skipped too.
+        again = capture.item_for(
+            live.labs,
+            live.mailbox,
+            thread_id="t1",
+            message_id="t1-m1",
+            outcome="new_lead",
+            confidence="high",
+            finding=live.candidate("t1")["finding"],
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [again])
+        assert made["skipped"] and _open(live) == []
+        # A new conversation from the company is suggested.
+        live.conversation("t2", sender="ravi@acme-robotics.com")
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        [fresh] = _open(live)
+        assert [t["thread_id"] for t in fresh["source_link"]["threads"]] == ["t2"]
+
+    def test_capture_a_moved_conversation_leaves_its_item(self, live):
+        live.conversation("t1", at=NOW - timedelta(days=2))
+        live.conversation("t2", sender="ravi@acme-robotics.com", at=NOW - timedelta(days=3))
+        live.answer(LEAD, {**LEAD, "person_email": "ravi@acme-robotics.com"})
+        live.tick()
+        [first] = _items(live)
+        assert len(first["source_link"]["threads"]) == 2
+        # t1 again: it names another company's site, which Claude picks.
+        later = NOW - timedelta(hours=1)
+        live.gmail.message(
+            "t1",
+            "t1-m2",
+            sender="priya@acme-robotics.com",
+            to=BOX,
+            at=later,
+            text="I moved to zeta.io, please write to me there.",
+        )
+        live.mark("t1", "t1-m2", later)
+        live.answer({**LEAD, "company_name": "Zeta", "website_choice": 2})
+        got = live.tick()
+        assert got["counts"]["released"] == 1
+        acme = live.fake.rows["crm_review_items"][first["id"]]
+        assert acme["status"] == "open"
+        assert [t["thread_id"] for t in acme["source_link"]["threads"]] == ["t2"]
+        assert acme["suggestion"]["evidence"]["conversations"] == 1
+        # FR-CAP-GRP-03: the person suggested is now t2's sender, not t1's.
+        assert acme["suggestion"]["email"] == "ravi@acme-robotics.com"
+        [zeta] = [i for i in _open(live) if i["source_key"] == "capture:domain:zeta.io"]
+        assert [t["thread_id"] for t in zeta["source_link"]["threads"]] == ["t1"]
+        # t2 judged no lead now: the Acme item is left empty and expires.
+        live.gmail.message("t2", "t2-m2", sender="ravi@acme-robotics.com", to=BOX, at=later)
+        live.mark("t2", "t2-m2", later)
+        live.answer({**VENDOR})
+        live.tick()
+        assert live.fake.rows["crm_review_items"][first["id"]]["status"] == "expired"
+        assert any(
+            a["action"] == "review.expired" and a["target_id"] == first["id"]
+            for a in live.fake.audit
+        )
+
+    def test_capture_one_deal_signal_per_company(self, live):
+        from app.services.crm import review
+
+        company = _company(live, "Acme Robotics")
+        deal = _deal_row(live, company, "discovery")
+        document = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-sow",
+            message_id="m-sow",
+            company_id=company["id"],
+            deals=[deal],
+            stage="proposal",
+            kinds=["sow"],
+            direction="outbound",
+            message_at=NOW - timedelta(days=3),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        review.capture_group_upsert(
+            live.labs["id"], document, document["source_link"]["threads"][0]
+        )
+        live.conversation("t1", at=NOW - timedelta(days=1))
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _open(live)
+        assert (item["type"], item["record_id"]) == ("deal_signal", company["id"])
+        assert sorted(t["origin"] for t in item["source_link"]["threads"]) == [
+            "deal_document",
+            "discovery",
+        ]
+        assert item["suggestion"]["stage"] == "proposal"
+
+    def test_capture_a_deal_document_s_conversation_outlives_discovery(self, live):
+        """PD-39: discovery's signal on a deal document's conversation keeps
+        the entry a document's, so a later no-item judgement leaves it."""
+        from app.services.crm import review
+
+        company = _company(live, "Acme Robotics")
+        deal = _deal_row(live, company, "discovery")
+        document = rules.deal_signal_item(
+            mailbox_id=live.mailbox["id"],
+            thread_id="t1",
+            message_id="m-sow",
+            company_id=company["id"],
+            deals=[deal],
+            stage="proposal",
+            kinds=["proposal"],
+            direction="outbound",
+            message_at=NOW - timedelta(days=3),
+            owner_id=OWNER["id"],
+            generated_at=NOW.isoformat(),
+        )
+        made = review.capture_group_upsert(
+            live.labs["id"], document, document["source_link"]["threads"][0]
+        )
+        live.conversation("t1", at=NOW - timedelta(days=1))
+        live.answer({**LEAD, "outcome": "deal_signal", "deal_stage": "proposal"})
+        live.tick()
+        [item] = _open(live)
+        assert item["id"] == made["id"]
+        [entry] = item["source_link"]["threads"]
+        assert (entry["message_id"], entry["origin"]) == ("t1-m1", "deal_document")
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("t1", "t1-m2", sender="priya@acme-robotics.com", to=BOX, at=later)
+        live.mark("t1", "t1-m2", later)
+        live.answer({**VENDOR})
+        live.tick()
+        row = live.fake.rows["crm_review_items"][made["id"]]
+        assert row["status"] == "open"
+        assert [t["thread_id"] for t in row["source_link"]["threads"]] == ["t1"]
+
+    def test_capture_a_refusal_merge_leaves_out_what_another_item_holds(self, live):
+        """FR-CAP-GRP-07 (the fake's crm_review_release): a conversation
+        moved to another company while the item was claimed is not merged
+        back into the fresh item when the approval is refused."""
+
+        def lead(thread, *, domain="acme-robotics.com", message=None, at="2026-10-01"):
+            item = rules.to_item(
+                {
+                    **FOUND,
+                    "domain": domain,
+                    "person_email": f"{thread}@{domain}",
+                    "first_at": f"{at}T09:00:00+05:30",
+                    "latest_at": f"{at}T09:00:00+05:30",
+                },
+                outcome="new_lead",
+                confidence="high",
+                mailbox_id=live.mailbox["id"],
+                thread_id=thread,
+                message_id=message or f"{thread}-m1",
+                owner_id=OWNER["id"],
+                model=None,
+                generated_at=NOW.isoformat(),
+            )
+            [made] = capture.store_items(live.labs["id"], [item])
+            return made["id"]
+
+        claimed = lead("t1")
+        assert lead("t2", at="2026-10-02") == claimed
+        user = {"user_id": OWNER["id"], "kind": "user", "channel": None}
+        actor = {**user, "workspace_id": live.labs["id"]}
+        live.fake.review_claim(actor, claimed, "approved")
+        moved = lead("t2", domain="zeta.io", message="t2-m2", at="2026-10-08")
+        fresh = lead("t3", at="2026-10-03")
+        assert fresh not in (claimed, moved)
+        live.fake.review_release(actor, claimed, "Refused.", None)
+        rows = live.fake.rows["crm_review_items"]
+        assert rows[claimed]["status"] == "expired"
+        assert sorted(t["thread_id"] for t in rows[fresh]["source_link"]["threads"]) == [
+            "t1",
+            "t3",
+        ]
+        holders = [
+            i["id"]
+            for i in _open(live)
+            if "t2" in [t["thread_id"] for t in i["source_link"]["threads"]]
+        ]
+        assert holders == [moved]
+
+    def test_capture_money_is_masked_in_the_suggestion_and_every_reason(self, live):
+        live.conversation("t1")
+        live.answer({**LEAD, "reason": "Asked for a quote; budget USD 40,000."})
+        live.tick()
+        [item] = _items(live)
+        [entry] = item["source_link"]["threads"]
+        assert "40,000" not in entry["reason"]
+        assert "40,000" not in item["suggestion"]["evidence"]["reason"]
+        # The save-time check itself (FR-CRMAI-LLM-05): a finding's figure is
+        # masked by the group upsert's wrapper, whatever reached it.
+        lead = rules.to_item(
+            {**FOUND, "domain": "zeta.io", "reason": "Budget of Rs 5,00,000 agreed."},
+            outcome="new_lead",
+            confidence="high",
+            mailbox_id=live.mailbox["id"],
+            thread_id="t-money",
+            message_id="m-money",
+            owner_id=OWNER["id"],
+            model=None,
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [lead])
+        stored = live.fake.rows["crm_review_items"][made["id"]]
+        assert "5,00,000" not in json.dumps(stored["suggestion"])
+        assert "5,00,000" not in json.dumps(stored["source_link"])
+
+
+def _old(cap, n: int, *, status="open", **suggestion) -> dict:
+    """An open `new_lead` as 073 made it: one per conversation."""
+    thread = f"h{n}"
+    key = rules.source_key(cap.mailbox["id"], thread)
+    return cap.fake.add_review_item(
+        cap.labs,
+        type="new_lead",
+        record_type=None,
+        record_id=None,
+        owner_id=OWNER["id"],
+        source_key=key,
+        source_version=f"{thread}-m1",
+        source_link={"mailbox_id": cap.mailbox["id"], "thread_id": thread},
+        created_at=f"2026-10-{10 + n:02d}T00:00:00+00:00",
+        status=status,
+        decided_at=None if status == "open" else "2026-10-19T00:00:00+00:00",
+        suggestion={
+            "company_name": "HearSight",
+            "domain": "hearsight.ai",
+            "first_name": "Asha",
+            "last_name": None,
+            "email": f"asha{n}@hearsight.ai",
+            "lead_stage": "new",
+            "evidence": {
+                "first_at": f"2026-10-{n:02d}T09:00:00+05:30",
+                "latest_at": f"2026-10-{n:02d}T10:00:00+05:30",
+                "message_count": 1,
+                "owner_replied": False,
+                "reason": f"Conversation {n}.",
+                "confidence": "high",
+                "origin": "discovery",
+            },
+            **suggestion,
+        },
+    )
+
+
+class TestConsolidation:
+    """Spec 010 R1 FR-CAP-GRP-08; plan R1.2, PD-26, PD-40; spec §14.5 I1."""
+
+    def test_capture_consolidates_open_items_once(self, live):
+        old = [_old(live, n) for n in range(1, 10)]
+        approved = _old(live, 10, status="approved")
+        dismissed = _old(live, 11, status="dismissed")
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert (got["counts"]["consolidated"], got["counts"]["rekeyed"]) == (8, 1)
+        rows = live.fake.rows["crm_review_items"]
+        survivor = rows[old[-1]["id"]]
+        assert survivor["status"] == "open"
+        assert survivor["source_key"] == "capture:domain:hearsight.ai"
+        assert len(survivor["source_link"]["threads"]) == 9
+        assert survivor["suggestion"]["evidence"]["conversations"] == 9
+        for item in old[:-1]:
+            row = rows[item["id"]]
+            assert row["status"] == "expired"
+            assert row["result"] == {
+                "superseded_by": survivor["id"],
+                "reason": "Merged into one suggestion for HearSight.",
+            }
+            [audit] = [
+                a
+                for a in live.fake.audit
+                if a["target_id"] == item["id"] and a["action"] == "review.expired"
+            ]
+            assert audit["after"]["superseded_by"] == survivor["id"]
+            # The loser keeps its own reference.
+            assert "threads" not in row["source_link"] and row["source_link"]["thread_id"]
+        assert rows[approved["id"]]["status"] == "approved"
+        assert rows[dismissed["id"]]["status"] == "dismissed"
+        assert "superseded_by" not in rows[dismissed["id"]]["result"]
+        before = json.dumps(rows, sort_keys=True, default=str)
+        again = live.tick()
+        assert "consolidated" not in again["counts"] or again["counts"]["consolidated"] == 0
+        assert json.dumps(rows, sort_keys=True, default=str) == before
+
+    def test_capture_an_open_item_on_the_new_key_takes_the_old_ones(self, live):
+        # Keyed by Claude's name: no domain.
+        old = [_old(live, n, domain=None) for n in (1, 2)]
+        new = rules.to_item(
+            {**FOUND, "domain": None, "company_name": "HearSight"},
+            outcome="new_lead",
+            confidence="high",
+            mailbox_id=live.mailbox["id"],
+            thread_id="t9",
+            message_id="t9-m1",
+            owner_id=OWNER["id"],
+            model=None,
+            generated_at=NOW.isoformat(),
+        )
+        [made] = capture.store_items(live.labs["id"], [new])
+        live.fake.rows["crm_review_items"][made["id"]]["created_at"] = "2026-10-01T00:00:00+00:00"
+        assert capture._consolidate(live.labs) == {"consolidated": 2, "rekeyed": 1}
+        [item] = _open(live)
+        assert item["source_key"] == "capture:name:hearsight"
+        assert len(item["source_link"]["threads"]) == 3
+        # The newest by creation survives, holding every conversation.
+        assert item["id"] == old[-1]["id"]
+        assert (
+            live.fake.rows["crm_review_items"][made["id"]]["result"]["superseded_by"]
+            == (item["id"])
+        )
+
+    def test_capture_a_consolidation_failure_does_not_stop_the_run(self, live, monkeypatch):
+        _old(live, 1)
+        _old(live, 2)
+
+        def fails(*args, **kwargs):
+            raise APIError({"code": "57014", "message": "canceling statement due to timeout"})
+
+        monkeypatch.setattr(capture.store, "capture_consolidate", fails)
+        live.conversation("t1")
+        live.answer(LEAD)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["consolidate_failed"] == 1 and got["counts"]["judged"] == 1
+
+    def test_capture_off_leaves_every_item_untouched(self, live):
+        _old(live, 1)
+        _old(live, 2)
+        live.fake.set_capture(live.labs, "off")
+        before = json.dumps(live.fake.rows["crm_review_items"], sort_keys=True, default=str)
+        got = live.tick()
+        assert (got["outcome"], got["counts"]) == ("skipped", {"skipped": rules.CAPTURE_OFF})
+        assert json.dumps(live.fake.rows["crm_review_items"], sort_keys=True, default=str) == (
+            before
+        )
+
+    def test_capture_consolidates_in_a_dry_run_before_the_other_gates(self, cap):
+        _old(cap, 1)
+        _old(cap, 2)
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = NOW.isoformat()
+        got = cap.tick()
+        assert got["outcome"] == "skipped"
+        assert got["counts"]["consolidated"] == 1
+        assert len(_open(cap)) == 1
+
+    def test_capture_an_old_person_name_item_and_new_mail_end_in_one_item(self, live):
+        # PD-40: the old item's company name is the person's (no Claude
+        # name), so it keys by address, as the new conversation does.
+        old = _old(
+            live,
+            1,
+            company_name="Priya Shah",
+            domain=None,
+            first_name="Priya",
+            last_name="Shah",
+            email="priya.shah@gmail.com",
+        )
+        live.conversation("t1", sender="Priya Shah <priya.shah@gmail.com>")
+        live.answer(
+            {
+                **LEAD,
+                "company_name": None,
+                "person_email": "priya.shah@gmail.com",
+                "website_choice": None,
+            }
+        )
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        [item] = _open(live)
+        assert item["id"] == old["id"]
+        assert item["source_key"] == "capture:email:priya.shah@gmail.com"
+        assert sorted(t["thread_id"] for t in item["source_link"]["threads"]) == ["h1", "t1"]
+
+    def test_capture_an_old_item_keys_from_its_candidates_finding(self, live):
+        old = _old(live, 1, company_name="Asha", domain=None, email="asha@gmail.com")
+        live.fake.mark_candidates(
+            live.labs["id"],
+            live.mailbox["id"],
+            [{"thread_id": "h1", "message_id": "h1-m1", "sent_at": NOW.isoformat()}],
+        )
+        row = next(
+            c for c in live.fake.rows["crm_capture_candidates"].values() if c["thread_id"] == "h1"
+        )
+        row.update(
+            status="judged",
+            outcome="new_lead",
+            confidence="high",
+            judged_message_id="h1-m1",
+            judged_at=NOW.isoformat(),
+            finding={**FOUND, "domain": None, "company_name": "HearSight"},
+        )
+        capture._consolidate(live.labs)
+        assert live.fake.rows["crm_review_items"][old["id"]]["source_key"] == (
+            "capture:name:hearsight"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 I3 — course enquiries to the Academy (tasks T446)
+# ---------------------------------------------------------------------------
+
+COURSE = {
+    **LEAD,
+    "company_name": "City College",
+    "person_name": "Asha Kumar",
+    "person_email": "asha@college.example.edu",
+    "person_title": None,
+    "reason": "Asked about the AI course for final-year students; you replied.",
+    "business": "academy",
+}
+STUDENT = "Asha Kumar <asha@college.example.edu>"
+
+
+def _in(cap, workspace) -> list[dict]:
+    return [i for i in _items(cap) if i["workspace_id"] == workspace["id"]]
+
+
+def _open_in(cap, workspace) -> list[dict]:
+    return [i for i in _in(cap, workspace) if i["status"] == "open"]
+
+
+def _academy_membership(cap, user_id):
+    return next(
+        m
+        for m in cap.fake.rows["crm_memberships"].values()
+        if m["workspace_id"] == cap.academy["id"] and m["user_id"] == user_id
+    )
+
+
+def _academy_setting(cap):
+    return next(
+        r
+        for r in cap.fake.rows["crm_workspace_settings"].values()
+        if r["workspace_id"] == cap.academy["id"] and r["key"] == "capture_routing"
+    )
+
+
+class TestAcademy:
+    """FR-CAP-ACAD-02 to -04, -07 to -10, FR-CAP-RPT-09; plan R1.4, PD-30,
+    PD-42; spec §14.5 I3."""
+
+    def test_capture_routes_a_course_enquiry_to_the_academy(self, live):
+        candidate = live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_routed"] == 1 and got["counts"]["items"] == 0
+        assert got["counts"]["academy_unrouted"] == 0
+        # FR-CAP-ACAD-02: nothing in Labs.
+        assert _in(live, live.labs) == []
+        [item] = _in(live, live.academy)
+        assert item["type"] == "new_lead" and item["status"] == "open"
+        # The mailbox owner is an Academy Admin: his item (FR-CAP-ACAD-03).
+        assert item["owner_id"] == OWNER["id"]
+        assert item["source_key"] == "capture:domain:college.example.edu"
+        assert item["source_link"].keys() == {"threads"}
+        [entry] = item["source_link"]["threads"]
+        assert entry["ref"] == f"gmail:{BOX}:c1" and "mailbox_id" not in entry
+        assert entry["origin"] == "academy_routing"
+        assert item["suggestion"]["evidence"]["mailbox_email"] == BOX
+        # No Labs id in any column (FR-CAP-ACAD-04).
+        held = json.dumps(item, default=str)
+        for labs_id in (live.labs["id"], live.mailbox["id"], candidate["id"], live.run["id"]):
+            assert labs_id not in held
+        row = live.candidate("c1")
+        assert row["finding"]["business"] == "academy" and row["finding"]["routed"] is True
+        assert row["finding"]["duplicate_company_id"] is None
+        assert row["classifier_version"] == "010.2"
+
+    def test_capture_the_academy_s_admins_own_it_when_the_owner_is_not_a_member(self, live):
+        live.fake.rows["crm_memberships"].pop(_academy_membership(live, OWNER["id"])["id"])
+        _academy_membership(live, MEMBER["id"])["role"] = "admin"
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        live.tick()
+        [item] = _in(live, live.academy)
+        assert item["owner_id"] is None
+
+    def test_capture_an_earlier_labs_item_lets_the_conversation_go(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer({**COURSE, "business": "labs"}, COURSE)
+        live.tick()
+        [labs_item] = _open_in(live, live.labs)
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="And dates?")
+        live.mark("c1", "c1-m2", later)
+        got = live.tick()
+        assert got["counts"]["released"] == 1 and got["counts"]["academy_routed"] == 1
+        assert live.fake.rows["crm_review_items"][labs_item["id"]]["status"] == "expired"
+        assert _open_in(live, live.labs) == []
+        assert len(_open_in(live, live.academy)) == 1
+
+    @pytest.mark.parametrize("gap", ["no_workspace", "no_admin", "inactive_admin", "switch_off"])
+    def test_capture_without_an_academy_admin_suggests_nothing(self, live, gap):
+        if gap == "no_workspace":
+            live.fake.rows["crm_workspaces"].pop(live.academy["id"])
+        elif gap == "no_admin":
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+        elif gap == "inactive_admin":
+            # The Academy's only Admin has an inactive account.
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+            _academy_membership(live, MEMBER["id"])["role"] = "admin"
+            live.fake.profiles[MEMBER["id"]]["is_active"] = False
+        else:
+            _academy_setting(live)["value"] = {"accept_routed": False}
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_unrouted"] == 1 and got["counts"]["academy_routed"] == 0
+        assert _items(live) == []
+        assert live.candidate("c1")["finding"]["routed"] is False
+
+    def test_capture_academy_ignore_list_stops_routing(self, live, caplog):
+        live.fake.add(
+            "crm_capture_ignores",
+            workspace_id=live.academy["id"],
+            kind="domain",
+            value="college.example.edu",
+            from_item_id=None,
+            created_by=OWNER["id"],
+            created_at=NOW.isoformat(),
+        )
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        with caplog.at_level("INFO", logger="nldw-task-master"):
+            got = live.tick()
+        # Handed over, whatever the Academy then did (PD-42).
+        assert got["counts"]["academy_routed"] == 1
+        assert _items(live) == []
+        assert live.candidate("c1")["finding"]["routed"] is True
+        skipped = [r.getMessage() for r in caplog.records if "capture.academy_skipped" in r.message]
+        assert skipped and '"reason": "ignored"' in skipped[0]
+        assert "college.example.edu" not in skipped[0]
+
+    def _academy_upsert_fails(self, cap, monkeypatch):
+        """Review ISO-1: the Academy's own upsert faults (a PostgREST error)."""
+        real = capture.review.capture_group_upsert
+
+        def upsert(ws_id, item, entry):
+            if ws_id == cap.academy["id"]:
+                raise APIError({"message": "boom", "code": "XX000"})
+            return real(ws_id, item, entry)
+
+        monkeypatch.setattr(capture.review, "capture_group_upsert", upsert)
+
+    def test_capture_an_academy_fault_stays_in_the_academy(self, live, monkeypatch, caplog):
+        """Review ISO-1 (FR-CAP-ACAD-04): a fault in the Academy step fails
+        nothing in Labs; the run is ok, the candidate judged and routed, and
+        only an Academy-keyed log line records it."""
+        self._academy_upsert_fails(live, monkeypatch)
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        with caplog.at_level("WARNING", logger="nldw-task-master"):
+            got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_routed"] == 1
+        row = live.candidate("c1")
+        assert row["status"] == "judged" and row["finding"]["routed"] is True
+        assert _items(live) == []
+        [line] = [
+            r.getMessage()
+            for r in caplog.records
+            if "crm_capture_academy_step_failed" in r.getMessage()
+        ]
+        assert live.academy["id"] in line and '"error": "APIError"' in line
+        assert live.labs["id"] not in line and "college" not in line
+        [run] = [
+            r
+            for r in live.fake.rows["crm_job_runs"].values()
+            if r["job"] == "capture" and r["workspace_id"] == live.labs["id"]
+        ]
+        assert not run.get("error")
+        # Not judged again on the next tick (FR-CAP-ACAD-08).
+        live.answer()  # no script: a Claude call fails the test
+        assert live.tick()["outcome"] == "ok"
+
+    def test_capture_rejudged_to_labs_leaves_the_academy_item(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE, {**COURSE, "business": "labs"})
+        live.tick()
+        [academy_item] = _open_in(live, live.academy)
+        # A later message reopens the candidate through the real mark, which
+        # clears the earlier finding (071 `crm_capture_mark`).
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="Pilot?")
+        live.mark("c1", "c1-m2", later)
+        assert live.candidate("c1")["status"] == "pending"
+        assert live.candidate("c1")["finding"] is None
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        assert live.fake.rows["crm_review_items"][academy_item["id"]]["status"] == "expired"
+        assert len(_open_in(live, live.labs)) == 1
+        assert _open_in(live, live.academy) == []
+
+    def test_capture_the_usage_row_is_labs(self, live):
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        live.tick()
+        [usage] = live.fake.rows["crm_ai_usage"].values()
+        assert usage["workspace_id"] == live.labs["id"]
+
+    def test_capture_no_routing_outside_the_tva_linked_workspace(self, live):
+        # PD-29: only the TVA-linked workspace routes; elsewhere it is Labs.
+        live.conversation("c1", sender=STUDENT)
+        live.labs["tva_linked"] = False
+        live.fake.rows["crm_workspaces"][live.labs["id"]]["tva_linked"] = False
+        live.answer(COURSE)
+        got = live.tick()
+        assert got["counts"]["academy_routed"] == 0 and got["counts"]["items"] == 1
+        assert live.candidate("c1")["finding"]["business"] == "labs"
+        assert _in(live, live.academy) == []
+
+    @pytest.mark.parametrize("target", [True, False])
+    def test_capture_a_dry_run_recall_row_for_a_course_enquiry(self, cap, target):
+        # Plan R1.3 step 7: `found` with an Academy target, else
+        # `academy_unrouted` (counted inside found, FR-CAP-RPT-07).
+        if not target:
+            _academy_setting(cap)["value"] = {"accept_routed": False}
+        cap.gmail.message(
+            "r-course",
+            "r-course-m1",
+            sender=STUDENT,
+            to=BOX,
+            at=NOW - timedelta(days=30),
+            labels=("INBOX", "Label_1", "CATEGORY_PERSONAL"),
+            text="Course dates?",
+        )
+        cap.answer(COURSE)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        run = cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]
+        [row] = run["recall"]
+        assert row["fate"] == ("found" if target else "academy_unrouted")
+        # A dry run routes nothing.
+        assert _items(cap) == []
+
+    def test_capture_the_report_counts_course_enquiries(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.conversation("t2", sender="ravi@robots.io")
+        cap.answer(COURSE, LEAD)
+        cap.tick()
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 0
+        academy = next(f for f in out["findings"] if f["business"] == "academy")
+        assert academy["routed"] is None and academy["duplicate_company"] is None
+        _academy_setting(cap)["value"] = {"accept_routed": False}
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy_unrouted"] == 1
+
+    def _finish(self, cap):
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]]["finished_at"] = (
+            datetime.now(UTC) - timedelta(hours=1)
+        ).isoformat()
+
+    def _apply(self, cap):
+        r = cap.http.post(
+            f"/api/v1/crm/capture/dry-runs/{cap.run['id']}/apply?workspace=labs",
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_capture_apply_routes(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        cap.answer()  # no script: a Claude call fails the test
+        assert self._apply(cap)["items_created"] == 0
+        assert _in(cap, cap.labs) == []
+        [item] = _in(cap, cap.academy)
+        assert item["source_link"]["threads"][0]["ref"] == f"gmail:{BOX}:c1"
+        # FR-CAP-ACAD-02: the applied decision records the hand-over, as a
+        # live judgement does.
+        row = cap.candidate("c1")
+        assert row["dry_run"] is False
+        assert row["finding"]["routed"] is True and row["finding"]["duplicate_company_id"] is None
+        # FR-CAP-RPT-09: the applied run still counts it.
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["applied_at"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 0
+
+    def test_capture_apply_checks_the_target_again(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        _academy_setting(cap)["value"] = {"accept_routed": False}
+        self._apply(cap)
+        assert _items(cap) == []
+        assert cap.candidate("c1")["finding"]["routed"] is False
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 1
+        # Turning the switch on again does not rewrite what Apply recorded.
+        _academy_setting(cap)["value"] = {"accept_routed": True}
+        out = capture.overview(_Ctx(cap))["dry_run"]
+        assert out["counts"]["academy"] == 1 and out["counts"]["academy_unrouted"] == 1
+
+    def test_capture_apply_keeps_the_run_s_other_counts(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.conversation("t2", sender="ravi@robots.io")
+        cap.answer(COURSE, LEAD)
+        cap.tick()
+        before = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        self._finish(cap)
+        self._apply(cap)
+        after = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        assert after == before
+        assert after["academy"] == 1 and after["judged"] == 2
+
+    def test_capture_an_applied_run_from_before_074_counts_no_course_enquiry(self, cap):
+        # Contracts §7.1: present for every run, 0 when none.
+        cap.fake.rows["crm_capture_dry_runs"][cap.run["id"]].update(
+            finished_at="2026-10-19T00:00:00+00:00",
+            applied_at="2026-10-19T01:00:00+00:00",
+            counts={"considered": 0},
+        )
+        counts = capture.overview(_Ctx(cap))["dry_run"]["counts"]
+        assert counts == {"considered": 0, "academy": 0, "academy_unrouted": 0}
+
+    def test_capture_apply_routed_is_refused_for_a_run_that_cannot_be_applied(self, cap):
+        from app.services.crm import CrmRefused, store
+
+        actor = {
+            "user_id": OWNER["id"],
+            "kind": "user",
+            "channel": "web",
+            "workspace_id": cap.labs["id"],
+        }
+        with pytest.raises(CrmRefused) as refused:
+            store.capture_apply_routed(
+                actor, cap.run["id"], {}, {"academy": 0, "academy_unrouted": 0}
+            )
+        assert refused.value.status == 422
+
+    @pytest.mark.parametrize("gap", ["switch_off", "no_admin"])
+    def test_capture_rejudged_to_labs_leaves_the_academy_item_without_a_target(self, live, gap):
+        # FR-CAP-ACAD-09: letting go depends only on the Academy existing,
+        # not on it still taking enquiries (FR-CAP-ACAD-03 is for routing).
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE, {**COURSE, "business": "labs"})
+        live.tick()
+        [academy_item] = _open_in(live, live.academy)
+        if gap == "switch_off":
+            _academy_setting(live)["value"] = {"accept_routed": False}
+        else:
+            _academy_membership(live, OWNER["id"])["role"] = "member"
+        later = NOW - timedelta(hours=1)
+        live.gmail.message("c1", "c1-m2", sender=STUDENT, to=BOX, at=later, text="Pilot?")
+        live.mark("c1", "c1-m2", later)
+        got = live.tick()
+        assert got["counts"]["items"] == 1
+        assert live.fake.rows["crm_review_items"][academy_item["id"]]["status"] == "expired"
+        assert len(_open_in(live, live.labs)) == 1
+
+    def test_capture_live_the_labs_ignore_list_applies_before_judging(self, live):
+        # FR-CAP-DIS-03 over §14.5 I3 (spec amended): live, the Labs ignore
+        # list is read before any text, so a course enquiry from a Labs-
+        # ignored domain is never judged nor routed; only an applied dry run
+        # reads the Academy's list alone.
+        _ignore(live, "domain", "college.example.edu")
+        live.conversation("c1", sender=STUDENT)
+        live.answer()  # no script: a Claude call fails the test
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["ignored"] == 1 and got["counts"].get("academy_routed", 0) == 0
+        assert live.candidate("c1")["status"] == "ignored"
+        assert _items(live) == []
+
+    def test_capture_apply_reads_the_academy_ignore_list_not_labs(self, cap):
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        _ignore(cap, "address", "asha@college.example.edu")
+        self._apply(cap)
+        assert len(_in(cap, cap.academy)) == 1
+
+    def test_capture_apply_an_academy_fault_stays_in_the_academy(self, cap, monkeypatch):
+        """Review ISO-1: on apply too, a fault in the Academy step is no
+        500 in Labs; the hand-over is recorded as routed."""
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        self._academy_upsert_fails(cap, monkeypatch)
+        cap.answer()  # no script: a Claude call fails the test
+        assert self._apply(cap)["items_created"] == 0
+        assert _items(cap) == []
+        row = cap.candidate("c1")
+        assert row["dry_run"] is False and row["finding"]["routed"] is True
+
+
+class TestInvitations:
+    """Spec 010 R1 FR-CAP-INV-04 (tasks T465); plan R1.5; spec §14.5 I4
+    line 1: an outside person's invitation is judged, Claude told it is an
+    invitation, and a meeting host is never offered as the website."""
+
+    def test_capture_tells_claude_it_is_an_invitation(self, cap):
+        cap.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu 23 Oct 2026",
+            Reply_To="Priya Shah <priya@acme-robotics.com>",
+            Auto_Submitted="auto-generated",
+            text=(
+                "Join with Google Meet: https://meet.google.com/abc-defg-hij\n"
+                "Or Zoom: https://us02web.zoom.us/j/123456\n"
+                "Teams: https://teams.microsoft.com/l/meetup-join/1\n"
+                "Agenda: pricing for 40 seats."
+            ),
+        )
+        cap.conversation("t-mail", sender="Sam Lee <sam@newco.io>")
+        cap.answer(LEAD, VENDOR)
+        got = cap.tick()
+        assert got["outcome"] == "ok", got
+        assert len(cap.claude.calls) == 2
+        [invite] = [p for p in cap.claude.prompts if "Agenda: pricing" in p]
+        [plain] = [p for p in cap.claude.prompts if "sam@newco.io" in p]
+        assert '<data source="Conversation type">\nmeeting invitation\n</data>' in invite
+        assert '<data source="Conversation type">' not in plain
+        websites = invite.split('<data source="Websites in this conversation">\n', 1)[1]
+        assert websites.split("\n</data>", 1)[0] == "1. acme-robotics.com"
+        assert cap.candidate("t-inv")["status"] != "skipped"
+
+    @pytest.mark.parametrize(
+        ("kind", "value"), [("address", "lee@webinarco.io"), ("domain", "webinarco.io")]
+    )
+    def test_capture_an_ignored_organiser_s_calendar_invitation_is_ignored(self, live, kind, value):
+        # FR-CAP-INV-01, FR-CAP-DIS-03: Google Calendar's sending address is
+        # never an outside participant, so an organiser on the ignore list
+        # stops their next calendar-sent invitation before any text read.
+        _ignore(live, kind, value)
+        live.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: AI Summit @ Thu 23 Oct 2026",
+            Reply_To="Lee <lee@webinarco.io>",
+            Auto_Submitted="auto-generated",
+        )
+        got = live.tick()  # FakeClaude() with no script: any call fails the test.
+        assert got["outcome"] == "ok", got
+        assert live.candidate("t-inv")["status"] == "ignored"
+        assert live.gmail.text_reads == [] and live.claude.calls == []
+
+    def test_capture_an_invitation_finding_names_the_organiser_not_google(self, live):
+        # FR-CAP-INV-01, -04: with no person or website from Claude, the
+        # finding falls back to the organiser in Reply-To, never Google
+        # Calendar's sending address, its domain or a google.com group.
+        live.conversation(
+            "t-inv",
+            sender="Google Calendar <calendar-notification@google.com>",
+            subject="Invitation: Pricing call @ Thu 23 Oct 2026",
+            Reply_To="Lee <lee@prospect.io>",
+            Auto_Submitted="auto-generated",
+        )
+        live.answer({**LEAD, "person_email": None, "website_choice": None})
+        got = live.tick()
+        assert got["outcome"] == "ok", got
+        finding = live.candidate("t-inv")["finding"]
+        assert finding["person_email"] == "lee@prospect.io"
+        assert finding["domain"] == "prospect.io"
+        [item] = _items(live)
+        assert item["source_key"] == "capture:domain:prospect.io"

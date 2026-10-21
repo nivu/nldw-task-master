@@ -47,6 +47,7 @@ a matched company; a Claude `deal_signal` on an unknown company is a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -55,7 +56,7 @@ from email.utils import parseaddr
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from app.domain.crm import ai_rules, email_rules
+from app.domain.crm import ai_rules, dedupe, email_rules
 from app.domain.crm import review as review_rules
 from app.domain.crm import summaries as summary_rules
 from app.domain.crm.invites import PUBLIC_WEBMAIL_DOMAINS
@@ -161,42 +162,116 @@ _BULK_PRECEDENCE: Final = ("bulk", "list", "junk", "auto_reply")
 _NO_REPLY: Final = re.compile(
     r"^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster)([+._-].*)?$"
 )
-#: Google Calendar's invitations, by how their subject starts (lower case).
-_INVITE_SUBJECTS: Final = (
-    "invitation:",
-    "updated invitation:",
+#: Spec 010 R1 (FR-CAP-INV-01, -03; PD-33) — Google Calendar's invitations
+#: and its notices, by how their subjects start (lower case). A reply to an
+#: invitation (`Re:`) is a person writing: no prefix is stripped.
+_INVITATION_SUBJECTS: Final = email_rules.INVITATION_SUBJECTS
+#: Notices that are bulk from any sender: the subjects 010 already skipped
+#: before R1, so mail from a person keeps its pre-074 handling.
+_CALENDAR_NOTICE_SUBJECTS: Final = (
     "accepted:",
     "declined:",
     "tentatively accepted:",
     "canceled event:",
     "cancelled event:",
 )
-_CALENDAR_SENDER: Final = "calendar-notification@google.com"
+#: Review R1-X2: R1's further notices (*Notification:*, *Proposed new
+#: time:*, "… with note:" cancellations) are recognised by Google
+#: Calendar's sender, whose mail (invitations aside) is bulk, never by the
+#: subject alone: a person's "Notification: PO 4411 issued" is mail.
+_CALENDAR_SENDER: Final = email_rules.CALENDAR_SENDER
 
 
-def is_bulk(headers: list[dict[str, Any]], sender: str | None = None) -> bool:
+def _subject(headers: list[dict[str, Any]]) -> str:
+    return (email_rules.header(headers, "Subject") or "").strip().lower()
+
+
+def _sender(headers: list[dict[str, Any]], sender: str | None) -> str:
+    return (sender or parseaddr(email_rules.header(headers, "From") or "")[1]).strip().lower()
+
+
+def is_invitation(headers: list[dict[str, Any]]) -> bool:
+    """FR-CAP-INV-01 — a calendar invitation, by its subject's start."""
+    return _subject(headers).startswith(_INVITATION_SUBJECTS)
+
+
+def invite_parties(
+    headers: list[dict[str, Any]], sender: str | None, outside: Iterable[Mapping[str, Any]]
+) -> list[str]:
+    """The outside people of an invitation: its outside participants, never
+    Google Calendar's own sending address. `email_rules.classify` already
+    counts the organiser in `Reply-To` as a participant when Google Calendar
+    sent the invitation (PD-33), so an outside organiser is among them."""
+    return [
+        a
+        for p in outside
+        if (a := (p.get("email") or "").strip().lower()) and a != _CALENDAR_SENDER
+    ]
+
+
+def outside_people(
+    headers: list[dict[str, Any]], outside: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Spec 010 R1 FR-CAP-INV-01 — an invitation's outside participants as
+    every later step sees them (matching, the ignore list, the person a
+    finding names, grouping): never Google Calendar's own sending address,
+    so the organiser in `Reply-To` stands for the invitation. Any other
+    message's participants are returned as they are."""
+    if not is_invitation(headers):
+        return list(outside)
+    return [p for p in outside if (p.get("email") or "").strip().lower() != _CALENDAR_SENDER]
+
+
+def is_calendar_notice(
+    headers: list[dict[str, Any]], sender: str | None, outside: Iterable[Mapping[str, Any]] = ()
+) -> bool:
+    """FR-CAP-INV-03, FR-CAP-RPT-06 — a calendar notice: anything else Google
+    Calendar's sender sends, a response, a new-time proposal, a cancellation
+    or a reminder, or an invitation with nobody outside."""
+    if is_invitation(headers):
+        return not invite_parties(headers, sender, outside)
+    return _sender(headers, sender) == _CALENDAR_SENDER or _subject(headers).startswith(
+        _CALENDAR_NOTICE_SUBJECTS
+    )
+
+
+def is_bulk(
+    headers: list[dict[str, Any]],
+    sender: str | None = None,
+    outside: Iterable[Mapping[str, Any]] = (),
+) -> bool:
     """A newsletter, a notification, an auto-reply, a bounce or a calendar
-    invitation, from its headers (`List-Unsubscribe`, `Precedence`,
+    notice, from its headers (`List-Unsubscribe`, `Precedence`,
     `Auto-Submitted`, `X-Autoreply`/`X-Autorespond`, a delivery report), its
-    sender (a no-reply address, Google Calendar) or its subject (an
-    invitation)."""
+    sender (a no-reply address, Google Calendar) or its subject.
+
+    Spec 010 R1 (FR-CAP-INV-01): an invitation with someone outside among
+    `outside` (the message's outside participants, as `classify` gives them)
+    is not bulk for its subject, for coming from Google Calendar's sender or
+    for that sender's `Auto-Submitted`; every other sign above still makes
+    it bulk, checked first."""
     header = email_rules.header
+    address = _sender(headers, sender)
+    calendar = address == _CALENDAR_SENDER
     if (header(headers, "List-Unsubscribe") or "").strip():
         return True
     if (header(headers, "Precedence") or "").strip().lower() in _BULK_PRECEDENCE:
-        return True
-    auto = (header(headers, "Auto-Submitted") or "").strip().lower()
-    if auto and auto != "no":
         return True
     if header(headers, "X-Autoreply") or header(headers, "X-Autorespond"):
         return True
     if "report-type=delivery-status" in (header(headers, "Content-Type") or "").lower():
         return True
-    address = (sender or parseaddr(header(headers, "From") or "")[1]).strip().lower()
-    if address == _CALENDAR_SENDER or _NO_REPLY.match(address.split("@", 1)[0]):
+    if not calendar and _NO_REPLY.match(address.split("@", 1)[0]):
         return True
-    subject = (header(headers, "Subject") or "").strip().lower()
-    return subject.startswith(_INVITE_SUBJECTS)
+    auto = (header(headers, "Auto-Submitted") or "").strip().lower()
+    if auto and auto != "no" and not calendar:
+        return True
+    if is_invitation(headers) and invite_parties(headers, address, outside):
+        return False
+    if calendar or (auto and auto != "no"):
+        return True
+    subject = _subject(headers)
+    return subject.startswith(_INVITATION_SUBJECTS) or subject.startswith(_CALENDAR_NOTICE_SUBJECTS)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +325,23 @@ def deal_doc_query(kind: str, after: int, scope: str) -> str:
     return f"has:attachment after:{after} {scope} ({DEAL_DOC_QUERIES[kind]})"
 
 
+#: Spec 010 R1 FR-CAP-INV-05 (plan R1.5, PD-34) — the one rescan of a
+#: mailbox's past invitations: pages of ids per sync, and ids per page.
+INVITE_RESCAN_PAGES: Final = 5
+INVITE_RESCAN_PAGE_SIZE: Final = 100
+#: Seconds since the page task started after which no rescan page starts:
+#: well inside the task's 240-second soft limit, leaving the rest of the
+#: page (progress, notices, the run's end, the next mailbox) its time.
+INVITE_RESCAN_SECONDS: Final = 120
+
+
+def invite_rescan_query(after: int, scope: str) -> str:
+    """The rescan's search since `after` (epoch seconds) in `scope`
+    (`deal_doc_scope`). `subject:` matches words, so the caller re-checks
+    each message with `is_invitation`."""
+    return f"after:{after} {scope} subject:invitation"
+
+
 def deal_doc_since(docs_checked_at: Any, start_date: date | str | None, now: datetime) -> datetime:
     """Where a search starts: the last check, or on the first one the later
     of the capture start date and 14 days back (PD-19)."""
@@ -276,8 +368,259 @@ def deal_doc_deals(
 
 
 def source_key(mailbox_id: str, thread_id: str) -> str:
-    """Contracts §6: the same key `009`'s summaries use for a thread."""
+    """Contracts §6: the same key `009`'s summaries use for a thread. Since
+    spec 010 R1 it is a conversation's `ref`, and the key only of an item
+    made before 074."""
     return f"gmail:{mailbox_id}:{thread_id}"
+
+
+# ---------------------------------------------------------------------------
+# One suggestion per company — spec 010 R1 FR-CAP-GRP-01, -02, -06, -08;
+# plan R1.2; data-model §9.3; PD-22, PD-23, PD-40
+# ---------------------------------------------------------------------------
+
+#: The keys of a capture item linked to a company (`company:<id>` follows
+#: in the dedupe key, which 065's company merge rewrites).
+LINKED_KEY: Final = "capture:linked"
+DEAL_KEY: Final = "capture:deal"
+#: 061's `source_key` CHECK.
+_SOURCE_KEY_CAP: Final = 300
+#: What an entry's `origin` says.
+ORIGINS: Final = ("discovery", "deal_document", "academy_routing")
+
+
+def _name_key(name: Any) -> str | None:
+    """Claude's company name, case-folded, whitespace collapsed, trimmed."""
+    text = " ".join(str(name or "").split()).casefold()
+    return text or None
+
+
+def _keyed(key: str) -> str:
+    """`capture:<key>`, or `capture:sha256:<hex>` when longer than 061's
+    300 characters."""
+    full = f"capture:{key}"
+    if len(full) <= _SOURCE_KEY_CAP:
+        return full
+    return "capture:sha256:" + hashlib.sha256(key.encode()).hexdigest()
+
+
+def company_key(finding: Mapping[str, Any], ref: str | None = None) -> str:
+    """FR-CAP-GRP-01 — the `source_key` a lead with no matched company is
+    grouped under: `capture:domain:<d>` (the suggested domain normalised,
+    never a public webmail domain), else `capture:name:<n>` (Claude's own
+    company name only, never one made up from the domain, the person or the
+    address), else `capture:email:<address>`, else the conversation itself,
+    `capture:thread:<ref>`. Hashed when over 300 characters."""
+    raw = finding.get("domain")
+    domain = dedupe.normalise_domain(str(raw)) if raw else None
+    if domain and domain not in PUBLIC_WEBMAIL_DOMAINS and not _meeting_host(domain):
+        # Spec 010 R1 FR-CAP-INV-04: never grouped under a meeting host.
+        return _keyed(f"domain:{domain}")
+    name = _name_key(finding.get("company_name"))
+    if name:
+        return _keyed(f"name:{name}")
+    email = (finding.get("person_email") or "").strip().lower()
+    if email:
+        return _keyed(f"email:{email}")
+    return _keyed(f"thread:{ref or ''}")
+
+
+def _entry(
+    *,
+    mailbox_id: str | None,
+    thread_id: str,
+    message_id: str,
+    first_at: Any,
+    latest_at: Any,
+    message_count: int,
+    owner_replied: bool | None,
+    origin: str,
+    reason: str | None,
+    confidence: str | None,
+    person_email: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    ref: str | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {"ref": ref or source_key(str(mailbox_id), thread_id)}
+    if mailbox_id is not None:
+        entry["mailbox_id"] = mailbox_id
+    entry.update(
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=first_at,
+        latest_at=latest_at,
+        message_count=int(message_count or 0),
+        owner_replied=owner_replied,
+        origin=origin,
+        reason=reason,
+        confidence=confidence,
+        person_email=person_email,
+        first_name=first_name,
+        last_name=last_name,
+    )
+    return entry
+
+
+def thread_entry(
+    finding: Mapping[str, Any],
+    *,
+    mailbox_id: str,
+    thread_id: str,
+    message_id: str,
+    confidence: str | None,
+    origin: str = "discovery",
+) -> dict[str, Any]:
+    """Data-model §9.3 — one conversation of a capture item: its reference,
+    the latest message judged, its dates and message count, whether the
+    owner replied, Claude's reason and confidence, and its sender (the
+    finding's person), whom approval makes a person (FR-CAP-GRP-04). Ids,
+    dates and counts only: no subject, no body."""
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    return _entry(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=finding.get("first_at"),
+        latest_at=finding.get("latest_at"),
+        message_count=int(finding.get("message_count") or 0),
+        owner_replied=bool(finding.get("owner_replied")),
+        origin=origin,
+        reason=finding.get("reason"),
+        confidence=confidence,
+        person_email=finding.get("person_email"),
+        first_name=first,
+        last_name=last,
+    )
+
+
+def _when_of(value: Any) -> datetime:
+    at = _at(value)
+    if at is None:
+        return datetime.min.replace(tzinfo=ZONE)
+    return at if at.tzinfo else at.replace(tzinfo=ZONE)
+
+
+def entry_order(entry: Mapping[str, Any]) -> tuple[datetime, bool, str]:
+    """ "Newest" is the greatest `(latest_at, message_id)` (data-model §9.3),
+    as `crm_capture_newest` orders it: no date or no id is the oldest."""
+    message = entry.get("message_id")
+    return _when_of(entry.get("latest_at")), message is not None, str(message or "")
+
+
+def entries_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """074 `crm_capture_entries` — an item's conversations: its
+    `source_link.threads`, or the one a pre-074 item (`source_key`
+    `gmail:…`) stands for, built from its link, source version and
+    evidence."""
+    link = item.get("source_link") or {}
+    if isinstance(link.get("threads"), list):
+        return [dict(e) for e in link["threads"]]
+    key = str(item.get("source_key") or "")
+    if not key.startswith("gmail:"):
+        return []
+    suggestion = item.get("suggestion") or {}
+    evidence = suggestion.get("evidence") or {}
+    return [
+        _entry(
+            ref=key,
+            mailbox_id=link.get("mailbox_id"),
+            thread_id=link.get("thread_id"),
+            message_id=item.get("source_version"),
+            first_at=evidence.get("first_at") or evidence.get("message_at"),
+            latest_at=evidence.get("latest_at") or evidence.get("message_at"),
+            message_count=int(evidence.get("message_count") or 0),
+            owner_replied=evidence.get("owner_replied"),
+            origin=evidence.get("origin") or "discovery",
+            reason=evidence.get("reason"),
+            confidence=evidence.get("confidence"),
+            person_email=suggestion.get("email") or evidence.get("email"),
+            first_name=suggestion.get("first_name"),
+            last_name=suggestion.get("last_name"),
+        )
+    ]
+
+
+def _claude_name(suggestion: Mapping[str, Any]) -> str | None:
+    """PD-40 — a pre-074 suggestion's company name is Claude's only when it
+    is not what `_company_name` falls back to: the domain, the address or
+    the person's name."""
+    name = suggestion.get("company_name")
+    if not name:
+        return None
+    person = " ".join(p for p in (suggestion.get("first_name"), suggestion.get("last_name")) if p)
+    folded = _name_key(name)
+    fallbacks = {
+        _name_key(suggestion.get("domain")),
+        _name_key(suggestion.get("email")),
+        _name_key(person),
+    }
+    return None if folded in fallbacks else name
+
+
+def _target(item: Mapping[str, Any], finding: Mapping[str, Any] | None) -> tuple[str, str]:
+    """`(source_key, dedupe_key)` an open capture item belongs under."""
+    company = item.get("record_id") if item.get("record_type") == "company" else None
+    if item["type"] == "deal_signal" and company:
+        return DEAL_KEY, review_rules.dedupe_key(
+            "email_thread", DEAL_KEY, "deal_signal", "company", company
+        )
+    if company:
+        return LINKED_KEY, review_rules.dedupe_key(
+            "email_thread", LINKED_KEY, "new_lead", "company", company
+        )
+    key = str(item.get("source_key") or "")
+    if not key.startswith("gmail:"):
+        # Keyed since 074 already.
+        return key, item["dedupe_key"]
+    if finding is None:
+        suggestion = item.get("suggestion") or {}
+        finding = {
+            "domain": suggestion.get("domain"),
+            "company_name": _claude_name(suggestion),
+            "person_email": suggestion.get("email"),
+        }
+    source = company_key(finding, key)
+    return source, review_rules.dedupe_key("email_thread", source, "new_lead", None, None)
+
+
+def consolidation_plan(
+    items: Iterable[Mapping[str, Any]],
+    findings: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """FR-CAP-GRP-08, PD-26, PD-40 — the groups of open capture items that
+    need work, for `crm_capture_consolidate`: each item's target key from
+    its conversation's stored finding (`findings` by `(mailbox_id,
+    thread_id)`), else from its suggestion (a company name equal to its
+    domain, address or person's name is not Claude's); a group of two or
+    more, or one still on a pre-074 key. Members newest first."""
+    groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for item in items:
+        if item.get("type") not in ("new_lead", "deal_signal"):
+            continue
+        link = item.get("source_link") or {}
+        finding = findings.get((str(link.get("mailbox_id")), str(link.get("thread_id"))))
+        groups.setdefault(_target(item, finding), []).append(item)
+    plan = []
+    for (source, dedupe_key_), members in sorted(groups.items()):
+        members = sorted(
+            members, key=lambda i: (str(i.get("created_at") or ""), str(i["id"])), reverse=True
+        )
+        stale = any(str(m.get("source_key") or "").startswith("gmail:") for m in members)
+        if len(members) < 2 and not stale:
+            continue
+        newest = members[0]
+        plan.append(
+            {
+                "source_key": source,
+                "dedupe_key": dedupe_key_,
+                "record_type": newest.get("record_type"),
+                "record_id": newest.get("record_id"),
+                "company_label": ((newest.get("suggestion") or {}).get("company_name") or "")[:200],
+                "members": [m["id"] for m in members],
+            }
+        )
+    return plan
 
 
 def deal_signal_item(
@@ -293,12 +636,14 @@ def deal_signal_item(
     message_at: datetime,
     owner_id: str | None,
     generated_at: str,
+    person_email: str | None = None,
 ) -> dict[str, Any]:
-    """Contracts §6.2 — one `deal_signal` from a deal document, as
-    `crm_review_upsert` takes it: the company the target, its eligible open
-    deals the choices, the message id the source version (model NULL: no
-    Claude)."""
-    key = source_key(mailbox_id, thread_id)
+    """Contracts §6.2, §7.4 — one `deal_signal` from a deal document, as
+    `crm_capture_group_upsert` takes it: the company the target, its
+    eligible open deals the choices, the message id the source version
+    (model NULL: no Claude). Spec 010 R1 (FR-CAP-GRP-06): keyed per company
+    (`capture:deal`), so a document and a discovered signal for one company
+    make one item; its conversation is one `deal_document` entry."""
     names = [DEAL_DOC_NAMES[k] for k in kinds if k in DEAL_DOC_NAMES]
     what = " and ".join(names) or "Document"
     suggestion: dict[str, Any] = {"action": "move", "stage": stage}
@@ -307,20 +652,40 @@ def deal_signal_item(
         reason = f"{what} sent to the client."
     else:
         reason = f"{what} received. {SIGNED_DOCUMENT}"
+    at = message_at.astimezone(ZONE).isoformat()
+    # Sent by the owner, so they wrote in the thread; for a received
+    # document the thread was not read, so it is not said (the card hides
+    # the row).
+    replied = True if direction == "outbound" else None
     suggestion["evidence"] = {
         "origin": "deal_document",
         "document_kinds": list(kinds),
         "direction": direction,
-        "message_at": message_at.astimezone(ZONE).isoformat(),
+        "message_at": at,
+        "first_at": at,
+        "latest_at": at,
         "message_count": 1,
-        # Sent by the owner, so they wrote in the thread; for a received
-        # document the thread was not read, so it is not said (the card
-        # hides the row).
-        "owner_replied": True if direction == "outbound" else None,
+        "conversations": 1,
+        "owner_replied": replied,
         "attachments": [],
         "reason": reason[:160],
         "confidence": None,
     }
+    entry = _entry(
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=at,
+        latest_at=at,
+        message_count=1,
+        owner_replied=replied,
+        origin="deal_document",
+        reason=reason[:160],
+        confidence=None,
+        person_email=person_email,
+        first_name=None,
+        last_name=None,
+    )
     return {
         "type": "deal_signal",
         "owner_id": owner_id,
@@ -329,11 +694,11 @@ def deal_signal_item(
         "suggestion": suggestion,
         "current_values": {},
         "source_kind": "email_thread",
-        "source_key": key,
+        "source_key": DEAL_KEY,
         "source_version": message_id,
-        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id},
+        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id, "threads": [entry]},
         "dedupe_key": review_rules.dedupe_key(
-            "email_thread", key, "deal_signal", "company", company_id
+            "email_thread", DEAL_KEY, "deal_signal", "company", company_id
         ),
         "model": None,
         "generated_at": generated_at,
@@ -369,7 +734,9 @@ def deal_signal_title(suggestion: Mapping[str, Any]) -> str:
 
 #: Stored with every decision (FR-CAP-DIS-06): a change of rules or prompt
 #: that should be told apart moves it.
-CLASSIFIER_VERSION: Final = "010.1"
+#: Spec 010 R1 (PD-29): "010.2" adds the business answer; old decisions are
+#: not re-judged for the bump.
+CLASSIFIER_VERSION: Final = "010.2"
 #: What the discovery job records in the usage log and the job log.
 JOB: Final = "capture"
 #: Candidates a run judges at most (NFR-CAP-03).
@@ -398,6 +765,32 @@ def capture_refusal(value: Any) -> str | None:
     if not isinstance(value, dict) or set(value) != {"mode"} or value["mode"] not in MODES:
         return MODE_REFUSAL
     return None
+
+
+#: Spec 010 R1 FR-CAP-ACAD-03 (PD-41) — the Academy's `capture_routing`
+#: setting's sentence.
+ROUTING_REFUSAL: Final = 'Course enquiries from Labs take {"accept_routed": true} or false.'
+
+
+def routing_refusal(value: Any) -> str | None:
+    """Data-model §9.2a — the setting is exactly `{"accept_routed":
+    boolean}`."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"accept_routed"}
+        or not isinstance(value["accept_routed"], bool)
+    ):
+        return ROUTING_REFUSAL
+    return None
+
+
+def accepts_routed(value: Any) -> bool:
+    """Whether the workspace takes course enquiries from Labs: a missing
+    row reads as on (data-model §9.2a); a malformed one, which the validator
+    never lets in, as off, so nothing crosses on a value nobody set."""
+    if value is None:
+        return True
+    return routing_refusal(value) is None and value["accept_routed"]
 
 
 def capture_mode(value: Any) -> str:
@@ -492,7 +885,9 @@ def prompt_parts(
     """The quoted parts of the prompt (contracts §4): one per message, oldest
     first, at most the last 12, the oldest dropped until the texts total at
     most 24,000 characters (one message alone over it is cut at the end);
-    then the websites Claude may pick from and whether the owner replied.
+    then "Conversation type: meeting invitation" when a judged message is a kept
+    invitation (spec 010 R1 FR-CAP-INV-04), the websites Claude may pick
+    from and whether the owner replied.
 
     `messages` are `classify` answers with `id` and `attachments`; `texts`
     the plain text by message id. `ai.quote_untrusted` keeps only plain
@@ -518,6 +913,9 @@ def prompt_parts(
             f"to {to or 'nobody'} · {_when(m['sent_at'])} · attachments: {names}"
         )
         parts.append((f"Message {i} of {n} {m['direction']}", f"{head}\n\n{body}"))
+    if any(m.get("invite") for m in messages):
+        # Spec 010 R1 FR-CAP-INV-04: `_survivors` marks a kept invitation.
+        parts.append(("Conversation type", "meeting invitation"))
     listed = "\n".join(f"{i}. {host}" for i, host in enumerate(websites, 1))
     parts.append(("Websites in this conversation", listed or "none"))
     parts.append(("Mailbox owner replied", "yes" if replied else "no"))
@@ -532,6 +930,23 @@ _HOST: Final = re.compile(
 )
 #: Most hosts a prompt lists.
 MAX_WEBSITES: Final = 10
+#: Spec 010 R1 FR-CAP-INV-04 — meeting hosts an invitation names, never a
+#: company's website (nor any host under one, such as `us02web.zoom.us`).
+MEETING_HOSTS: Final = frozenset(
+    {
+        "google.com",
+        "meet.google.com",
+        "calendar.google.com",
+        "zoom.us",
+        "teams.microsoft.com",
+        "teams.live.com",
+        "webex.com",
+    }
+)
+
+
+def _meeting_host(host: str) -> bool:
+    return host in MEETING_HOSTS or any(host.endswith("." + h) for h in MEETING_HOSTS)
 
 
 def _plain_host(found: str) -> str | None:
@@ -549,7 +964,8 @@ def website_choices(
     """PD-20 — the hosts found verbatim in the conversation, which Claude
     picks the website from by number: the outside participants' domains,
     then hosts in the text (signatures, links), each once, never a public
-    webmail domain or one of the workspace's own, at most 10."""
+    webmail domain, a meeting host (spec 010 R1 FR-CAP-INV-04) or one of
+    the workspace's own, at most 10."""
     ours = {d.lower() for d in our_domains}
     found: list[str] = []
 
@@ -559,6 +975,7 @@ def website_choices(
             and host not in found
             and host not in ours
             and host not in PUBLIC_WEBMAIL_DOMAINS
+            and not _meeting_host(host)
             and len(found) < MAX_WEBSITES
         ):
             found.append(host)
@@ -586,6 +1003,9 @@ def domain_of_finding(
         host = choices[choice - 1]
         return host, host not in own
     domain = domain_for(person_email or "") if person_email else None
+    if domain and _meeting_host(domain):
+        # Spec 010 R1 FR-CAP-INV-04: a meeting host is never the company's.
+        domain = None
     return domain, False
 
 
@@ -648,12 +1068,16 @@ def finding_of(
     *,
     mailbox_email: str,
     choices: Sequence[str],
+    tva_linked: bool = False,
 ) -> dict[str, Any] | None:
     """Data-model §3.2 `finding` — what a lead or a deal signal keeps (the
     only place a name or an address is kept); none for *other business* or
     *not relevant*. `answer` is the masked `DiscoveryOutput`; `messages`
     the conversation's surviving messages (`classify` answers with `id` and
-    `attachments`)."""
+    `attachments`). Spec 010 R1 (FR-CAP-ACAD-01, PD-29): it keeps the
+    `business` answer, Labs outside the TVA-linked workspace (`tva_linked`
+    false), so nothing is ever routed from the Academy; an Academy finding
+    holds no duplicate company (the Academy checks its own)."""
     if answer.get("outcome") not in FINDING_OUTCOMES:
         return None
     outside = outside_of(messages)
@@ -683,11 +1107,36 @@ def finding_of(
         "owner_replied": replied,
         "attachments": names,
         "duplicate_company_id": None,
+        "business": business_of(answer, tva_linked=tva_linked),
     }
     # The last attachment names go first until the finding fits (071).
     while names and finding_bytes(finding) > FINDING_BYTES:
         names.pop()
     return finding
+
+
+#: Spec 010 R1 FR-CAP-ACAD-01 — the two businesses a finding belongs to.
+BUSINESSES: Final = ("labs", "academy")
+LABS: Final = "labs"
+ACADEMY: Final = "academy"
+
+
+def business_of(answer: Mapping[str, Any], *, tva_linked: bool) -> str:
+    """PD-29 — Claude's `business` answer in the TVA-linked workspace (Labs);
+    a missing or unknown answer, and every answer anywhere else, is Labs."""
+    if not tva_linked:
+        return LABS
+    return ACADEMY if answer.get("business") == ACADEMY else LABS
+
+
+def routes_to_academy(finding: Mapping[str, Any] | None, confidence: str | None) -> bool:
+    """FR-CAP-ACAD-02 — a high- or medium-confidence Academy finding makes no
+    Labs item and goes to the Academy step instead."""
+    return (
+        finding is not None
+        and finding.get("business") == ACADEMY
+        and confidence in ("high", "medium")
+    )
 
 
 #: The job's instruction, after the fixed rules every prompt carries
@@ -707,7 +1156,13 @@ INSTRUCTION: Final = (
     "website_choice, the number of the company's website in the websites list, or null "
     "when none of them is it; and reason, one line under 160 characters naming what "
     "was asked and whether the mailbox owner replied. Never quote the messages. Use "
-    "null for anything not known."
+    "null for anything not known. "
+    # Spec 010 R1 FR-CAP-ACAD-01 (plan R1.4) and FR-CAP-INV-04 (plan R1.5).
+    "business: academy when the enquiry is about courses or training for individuals "
+    "or students — a course enrolment, student training, a college or university "
+    "programme; labs for AI services, products, software or staffing. "
+    "A meeting invitation is a lead only when the conversation shows interest in "
+    "buying; an invitation to a webinar or event is not relevant."
 )
 
 
@@ -730,20 +1185,56 @@ def failure_counts(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The recall check — FR-CAP-RPT-03; plan §5.7, PD-11
+# The recall check — FR-CAP-RPT-03, -05 to -08, -10; plan §5.7, R1.3, PD-11,
+# PD-27, PD-28
 # ---------------------------------------------------------------------------
 
-#: Data-model §3.5 — a labelled conversation's fate in the recall check.
-#: `ignored` and `known_now` are never sent to Claude (G-5, NFR-CAP-02).
+#: Data-model §3.5, §9 — a labelled conversation's fate in the recall check.
+#: `ignored`, `known_now` and the three rule reasons are never sent to
+#: Claude (G-5, NFR-CAP-02). `skipped_rules` is read in runs stored before
+#: 074 and never written (FR-CAP-RPT-10).
 FATES: Final = (
     "filed_known",
+    "known_now",
     "found",
     "judged_otherwise",
-    "skipped_rules",
-    "outside_scope",
     "ignored",
-    "known_now",
+    "internal_only",
+    "calendar",
+    "automated",
+    "outside_scope",
+    "not_judged",
+    "academy_unrouted",
+    "skipped_rules",
 )
+#: Why the rules dropped every message of a conversation (plan R1.3 step 3).
+SKIP_REASONS: Final = ("internal_only", "calendar", "automated")
+#: FR-CAP-RPT-06 — the untested reasons, in display order; `known` is
+#: `filed_known` and `known_now` together (PD-28).
+UNTESTED: Final = (
+    "known",
+    "ignored",
+    "internal_only",
+    "calendar",
+    "automated",
+    "outside_scope",
+    "not_judged",
+    "skipped_rules",
+)
+#: FR-CAP-RPT-07 — each reason as the line says it: (one, many).
+_UNTESTED_TEXT: Final = {
+    "known": (
+        "involves contacts now in the CRM (filed automatically)",
+        "involve contacts now in the CRM (filed automatically)",
+    ),
+    "ignored": ("is on the ignore list", "are on the ignore list"),
+    "internal_only": ("was internal-only", "were internal-only"),
+    "calendar": ("was a calendar notification", "were calendar notifications"),
+    "automated": ("was automated mail", "were automated mail"),
+    "outside_scope": ("is outside Primary and Sent", "are outside Primary and Sent"),
+    "not_judged": ("could not be judged", "could not be judged"),
+    "skipped_rules": ("was skipped by the rules", "were skipped by the rules"),
+}
 #: Labelled mail is judged as if it had no label: through Primary and Sent alone.
 CAPTURED: Final = (PRIMARY, SENT)
 
@@ -757,18 +1248,29 @@ def recall_fate(
     known_now: bool = False,
     outcome: str | None = None,
     confidence: str | None = None,
+    skip_reason: str | None = None,
+    failed: bool = False,
+    business: str | None = None,
+    routed: bool | None = None,
 ) -> str:
-    """PD-11 — what capture would have done with a labelled conversation:
-    outside Primary and Sent; skipped by the rules; every outside person on
-    the ignore list; filed as known through a person or company that
-    existed before it began; every message naming someone in the CRM now
-    (its record made later, often from the label itself), so not judged:
-    Claude never sees known-client mail (G-5); or judged, `found` only as a
-    high- or medium-confidence lead or deal signal."""
+    """PD-11, plan R1.3 — what capture would have done with a labelled
+    conversation, in the decision order of FR-CAP-RPT-06: could not be
+    judged (`failed`: Gmail returned it empty or malformed, or Claude
+    failed on it); outside Primary and Sent; dropped by the rules, for
+    `skip_reason` (`internal_only`, `calendar` or `automated`); every
+    outside person on the ignore list; filed as known through a person or
+    company that existed before it began; every message naming someone in
+    the CRM now (its record made later, often from the label itself), so
+    not judged: Claude never sees known-client mail (G-5); or judged,
+    `found` only as a high- or medium-confidence lead or deal signal, and
+    an Academy one the Academy could not take (`routed` false)
+    `academy_unrouted`."""
+    if failed:
+        return "not_judged"
     if not in_capture:
         return "outside_scope"
     if not survived:
-        return "skipped_rules"
+        return skip_reason if skip_reason in SKIP_REASONS else "skipped_rules"
     if ignored:
         return "ignored"
     if known_before:
@@ -776,27 +1278,68 @@ def recall_fate(
     if known_now:
         return "known_now"
     if outcome in FINDING_OUTCOMES and confidence in ("high", "medium"):
+        if business == "academy" and routed is False:
+            return "academy_unrouted"
         return "found"
     return "judged_otherwise"
 
 
+def recall_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Contracts §7.1 — `{total, tested, found, capped, untested,
+    academy_unrouted}`: found is `found` and `academy_unrouted` (Claude
+    found both, PD-28), tested is found and `judged_otherwise`, and every
+    other conversation counts under one reason of `UNTESTED`. Rows without
+    a `thread_id` are markers, not conversations; `capped` is the
+    `{"capped": true}` marker's."""
+    fates = [r.get("fate") for r in rows if r.get("thread_id")]
+    count = fates.count
+    untested = {reason: count(reason) for reason in UNTESTED}
+    untested["known"] = count("filed_known") + count("known_now")
+    found = count("found") + count("academy_unrouted")
+    return {
+        "total": len(fates),
+        "tested": found + count("judged_otherwise"),
+        "found": found,
+        "capped": any(r.get("capped") is True and not r.get("thread_id") for r in rows),
+        "untested": untested,
+        "academy_unrouted": count("academy_unrouted"),
+    }
+
+
+def _conversations(n: int) -> str:
+    return f"{n} labelled conversation" if n == 1 else f"{n} labelled conversations"
+
+
 def recall_line(rows: Sequence[Mapping[str, Any]]) -> str:
-    """ "Found N of your M labelled conversations; K of the rest are outside
-    Primary and Sent." (spec §4.5), then, when there are any, how many were
-    not judged because they name only people already in the CRM."""
-    total = len(rows)
-    found = sum(1 for r in rows if r.get("fate") in ("filed_known", "found"))
-    outside = sum(1 for r in rows if r.get("fate") == "outside_scope")
-    known_now = sum(1 for r in rows if r.get("fate") == "known_now")
-    line = (
-        f"Found {found} of your {total} labelled conversations; "
-        f"{outside} of the rest are outside Primary and Sent."
+    """FR-CAP-RPT-07 — "None of your 60 labelled conversations could be
+    tested: 36 involve contacts now in the CRM (filed automatically), …" or
+    "Of the 18 that could be tested, the dry run found 15. 42 could not be
+    tested: …", reasons with no conversation left out, the Academy's
+    clause inside the found sentence, and "Only the first 500 were
+    checked." only when the check stopped at the cap."""
+    summary = recall_summary(rows)
+    untested = summary["untested"]
+    reasons = ", ".join(
+        f"{n} {_UNTESTED_TEXT[reason][0 if n == 1 else 1]}"
+        for reason in UNTESTED
+        if (n := untested[reason])
     )
-    if known_now:
-        line += (
-            f" {known_now} of the rest name only people added to the CRM after they began,"
-            " so they were not sent to Claude."
+    left = sum(untested.values())
+    if not summary["tested"]:
+        line = f"None of your {_conversations(summary['total'])} could be tested"
+        line += f": {reasons}." if reasons else "."
+    else:
+        line = (
+            f"Of the {summary['tested']} that could be tested, the dry run found {summary['found']}"
         )
+        if academy := summary["academy_unrouted"]:
+            what = "was a course enquiry" if academy == 1 else "were course enquiries"
+            line += f", of which {academy} {what} the Academy could not take"
+        line += "."
+        if left:
+            line += f" {left} could not be tested: {reasons}."
+    if summary["capped"]:
+        line += f" Only the first {RECALL_CAP} were checked."
     return line
 
 
@@ -928,6 +1471,7 @@ def _evidence(finding: Mapping[str, Any], confidence: str) -> dict[str, Any]:
         "latest_at": finding.get("latest_at"),
         "message_count": int(finding.get("message_count") or 0),
         "owner_replied": bool(finding.get("owner_replied")),
+        "conversations": 1,
         "attachments": list(finding.get("attachments") or []),
         "reason": finding.get("reason"),
         "confidence": confidence,
@@ -936,7 +1480,9 @@ def _evidence(finding: Mapping[str, Any], confidence: str) -> dict[str, Any]:
 
 
 def _base_item(
+    finding: Mapping[str, Any],
     *,
+    confidence: str,
     mailbox_id: str,
     thread_id: str,
     message_id: str,
@@ -944,14 +1490,22 @@ def _base_item(
     model: str | None,
     generated_at: str | None,
 ) -> dict[str, Any]:
-    key = source_key(mailbox_id, thread_id)
+    """Spec 010 R1 (plan R1.2): the conversation is the item's one entry so
+    far; the key is set by the item (a company key, `capture:linked` or
+    `capture:deal`)."""
+    entry = thread_entry(
+        finding,
+        mailbox_id=mailbox_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        confidence=confidence,
+    )
     return {
         "owner_id": owner_id,
         "current_values": {},
         "source_kind": "email_thread",
-        "source_key": key,
         "source_version": message_id,
-        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id},
+        "source_link": {"mailbox_id": mailbox_id, "thread_id": thread_id, "threads": [entry]},
         "model": model,
         "generated_at": generated_at,
     }
@@ -970,11 +1524,14 @@ def new_lead_item(
     company_id: str | None = None,
     deal_stage_hint: str | None = None,
 ) -> dict[str, Any]:
-    """Contracts §6.1 — a `new_lead` as `crm_review_upsert` takes it: with
-    no target, or linked to the existing company a duplicate check matched
-    (`link: true`). A public webmail address gives no domain (FR-CAP-DIS-09)."""
-    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    """Contracts §6.1, §7.4 — a `new_lead` as `crm_capture_group_upsert`
+    takes it: with no target, keyed by its company key (FR-CAP-GRP-01), or
+    linked to the existing company a duplicate check matched (`link: true`,
+    `capture:linked`). A public webmail address gives no domain
+    (FR-CAP-DIS-09)."""
     item = _base_item(
+        finding,
+        confidence=confidence,
         mailbox_id=mailbox_id,
         thread_id=thread_id,
         message_id=message_id,
@@ -982,13 +1539,38 @@ def new_lead_item(
         model=model,
         generated_at=generated_at,
     )
+    item.update(
+        _lead_fields(
+            finding,
+            confidence=confidence,
+            ref=source_key(mailbox_id, thread_id),
+            company_id=company_id,
+            deal_stage_hint=deal_stage_hint,
+        )
+    )
+    return item
+
+
+def _lead_fields(
+    finding: Mapping[str, Any],
+    *,
+    confidence: str,
+    ref: str,
+    company_id: str | None,
+    deal_stage_hint: str | None,
+) -> dict[str, Any]:
+    """A `new_lead`'s type, keys, target and suggestion (contracts §6.1,
+    §7.4), in Labs and in the Academy alike."""
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
     domain = finding.get("domain")
     domain = domain_for(domain) if domain else None
-    item.update(
-        type="new_lead",
-        record_type="company" if company_id else None,
-        record_id=company_id,
-        suggestion={
+    key = LINKED_KEY if company_id else company_key(finding, ref)
+    return {
+        "type": "new_lead",
+        "source_key": key,
+        "record_type": "company" if company_id else None,
+        "record_id": company_id,
+        "suggestion": {
             "company_name": _company_name(finding),
             "domain": domain,
             "domain_from_text": bool(finding.get("domain_from_text")) and domain is not None,
@@ -1001,16 +1583,143 @@ def new_lead_item(
             "deal_stage_hint": deal_stage_hint,
             "evidence": _evidence(finding, confidence),
         },
-        dedupe_key=review_rules.dedupe_key(
+        "dedupe_key": review_rules.dedupe_key(
             "email_thread",
-            item["source_key"],
+            key,
             "new_lead",
             "company" if company_id else None,
             company_id,
         ),
-        deal_choices=[],
+        "deal_choices": [],
+    }
+
+
+#: An Academy entry's and item's origin (data-model §9.3).
+ACADEMY_ROUTING: Final = "academy_routing"
+
+
+def academy_ref(mailbox_email: str, thread_id: str) -> str:
+    """Data-model §9.3 — an Academy entry's `ref`, `gmail:<mailbox
+    email>:<thread_id>`: the mailbox's address, never its Labs id."""
+    return f"gmail:{mailbox_email}:{thread_id}"
+
+
+def academy_ref_mailbox(ref: Any) -> str | None:
+    """The mailbox address an Academy entry's `ref` (`academy_ref`) names,
+    or None when it is not one (a Labs `ref` names a mailbox id)."""
+    if not isinstance(ref, str) or not ref.startswith("gmail:"):
+        return None
+    mailbox, sep, thread = ref[len("gmail:") :].rpartition(":")
+    if not sep or not thread or "@" not in mailbox:
+        return None
+    return mailbox
+
+
+def academy_lead_item(
+    finding: Mapping[str, Any],
+    *,
+    mailbox_email: str,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    owner_id: str | None,
+    model: str | None,
+    generated_at: str | None,
+    company_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Spec 010 R1 FR-CAP-ACAD-04 (contracts §7.4, plan R1.4 step 3b, PD-30)
+    — the Academy's `new_lead` for a course enquiry found in a Labs mailbox:
+    only what came from Gmail (names, the address, dates, counts, whether
+    the owner replied, attachment names, Claude's reason and confidence, the
+    Gmail thread id with the mailbox's address). No `mailbox_id` anywhere,
+    so no link to open and nothing to file; no Labs id of any kind.
+    Grouped by company key within the Academy, or `capture:linked` with the
+    Academy's own company (`company_id`) its duplicate check matched. A
+    deal signal becomes a lead with the deal stage as a hint: Labs never
+    sees an Academy deal. None for low confidence or no finding."""
+    if outcome not in FINDING_OUTCOMES or confidence not in ("high", "medium"):
+        return None
+    ref = academy_ref(mailbox_email, thread_id)
+    first, last = split_name(finding.get("person_name"), finding.get("person_email"))
+    entry = _entry(
+        ref=ref,
+        mailbox_id=None,
+        thread_id=thread_id,
+        message_id=message_id,
+        first_at=finding.get("first_at"),
+        latest_at=finding.get("latest_at"),
+        message_count=int(finding.get("message_count") or 0),
+        owner_replied=bool(finding.get("owner_replied")),
+        origin=ACADEMY_ROUTING,
+        reason=finding.get("reason"),
+        confidence=confidence,
+        person_email=finding.get("person_email"),
+        first_name=first,
+        last_name=last,
     )
-    return item
+    fields = _lead_fields(
+        finding,
+        confidence=confidence,
+        ref=ref,
+        company_id=company_id,
+        deal_stage_hint=finding.get("deal_stage") if outcome == "deal_signal" else None,
+    )
+    fields["suggestion"]["evidence"].update(origin=ACADEMY_ROUTING, mailbox_email=mailbox_email)
+    return {
+        "owner_id": owner_id,
+        "current_values": {},
+        "source_kind": "email_thread",
+        "source_version": message_id,
+        "source_link": {"threads": [entry]},
+        "model": model,
+        "generated_at": generated_at,
+        **fields,
+    }
+
+
+#: `NoteFields.body`'s limit.
+NOTE_CAP: Final = 20_000
+
+
+def _day(value: Any) -> date | None:
+    at = _at(value)
+    if at is None:
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=ZONE)).astimezone(ZONE).date()
+
+
+def _span(first: date | None, latest: date | None) -> str | None:
+    """ "1 Oct to 2 Oct 2026"; one day, "2 Oct 2026"; a span across years
+    names both."""
+    if latest is None:
+        return None
+    end = f"{latest.day} {latest:%b %Y}"
+    if first is None or first == latest:
+        return end
+    start = f"{first.day} {first:%b}" + (f" {first:%Y}" if first.year != latest.year else "")
+    return f"{start} to {end}"
+
+
+def academy_note(entries: Sequence[Mapping[str, Any]], mailbox_email: str) -> str:
+    """FR-CAP-ACAD-05 — the note an Academy approval records instead of the
+    mail: "Email conversation in navaneeth@nunnarilabs.com: 2 emails, 1 Oct
+    to 2 Oct 2026. Asked about the AI course for final-year students.", one
+    line per conversation, oldest first, cut to the note's limit, each
+    naming its own mailbox from its `ref` (an item groups conversations of
+    every Labs mailbox), `mailbox_email` only when the ref names none. The
+    caller masks money in it (FR-CRMAI-LLM-05)."""
+    lines = []
+    for entry in sorted(entries, key=entry_order):
+        n = int(entry.get("message_count") or 0)
+        count = f"{n} email" if n == 1 else f"{n} emails"
+        span = _span(_day(entry.get("first_at")), _day(entry.get("latest_at")))
+        mailbox = academy_ref_mailbox(entry.get("ref")) or mailbox_email
+        line = f"Email conversation in {mailbox}: {count}" + (f", {span}." if span else ".")
+        if entry.get("reason"):
+            line += f" {entry['reason']}"
+        lines.append(line)
+    return "\n".join(lines)[:NOTE_CAP]
 
 
 def discovered_signal_item(
@@ -1042,6 +1751,8 @@ def discovered_signal_item(
     if open_deals and not choices:
         return None
     item = _base_item(
+        finding,
+        confidence=confidence,
         mailbox_id=mailbox_id,
         thread_id=thread_id,
         message_id=message_id,
@@ -1070,8 +1781,9 @@ def discovered_signal_item(
         record_type="company",
         record_id=company_id,
         suggestion=suggestion,
+        source_key=DEAL_KEY,
         dedupe_key=review_rules.dedupe_key(
-            "email_thread", item["source_key"], "deal_signal", "company", company_id
+            "email_thread", DEAL_KEY, "deal_signal", "company", company_id
         ),
         deal_choices=sorted(d["id"] for d in choices),
     )
@@ -1124,11 +1836,15 @@ def new_lead_title(suggestion: Mapping[str, Any]) -> str:
 
 
 def new_lead_detail(suggestion: Mapping[str, Any]) -> str:
-    """Contracts §6.1 — "2 emails · Asked for pricing; you replied."."""
+    """Contracts §6.1, §7.4 — "3 conversations · 9 emails · Asked for
+    pricing; you replied."; with one conversation, "2 emails · …" as
+    before (FR-CAP-GRP-03)."""
     evidence = suggestion.get("evidence") or {}
     n = int(evidence.get("message_count") or 0)
     count = f"{n} email" if n == 1 else f"{n} emails"
-    return " · ".join(p for p in (count, evidence.get("reason")) if p)
+    conversations = int(evidence.get("conversations") or 1)
+    talks = f"{conversations} conversations" if conversations > 1 else None
+    return " · ".join(p for p in (talks, count, evidence.get("reason")) if p)
 
 
 # ---------------------------------------------------------------------------

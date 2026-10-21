@@ -38,6 +38,17 @@ live and sets the mode Live with an audit row; `crm_capture_purge` deletes
 every decided row older than the cutoff, findings included, and keeps
 pending and newer rows.
 
+R1 (migration 074, tasks T418; FR-CAP-GRP-02, -05 to -08, FR-CAP-ACAD-03;
+data-model §9; plan PD-24, PD-38, PD-39): the group upsert inserts, merges
+and skips (both skip forms; an expiry by refusal or by merge is no
+decision), takes the suggestion, current values and deals only from the
+newest entry; an upsert after a claim makes a fresh item, a refusal merges
+into it, a reopened item drops what another open item holds; a release
+removes, recomputes and expires, never a deal document's entry; the
+consolidation keeps the newest, audits each loser, leaves decided items and
+changes nothing a second time; the company merge still re-keys the linked
+and deal keys; and `capture_routing` is a key seeded on everywhere.
+
 Each test works in a workspace of its own.
 """
 
@@ -51,6 +62,7 @@ import pytest
 from supabase import create_client
 
 from app.domain.crm import capture
+from app.domain.crm import review as review_rules
 from app.services.crm import CrmRefused, store
 
 pytestmark = pytest.mark.db
@@ -1139,9 +1151,25 @@ class TestTheTargetlessItem:
         )
 
 
+def _pre074(item: dict) -> dict:
+    """An item as 073's code built it: keyed by its conversation
+    (`gmail:<mailbox>:<thread>`), no `threads` list. 074's builders key by
+    company; 073's `crm_capture_supersede` stays in the tree for such items."""
+    link = {k: v for k, v in item["source_link"].items() if k != "threads"}
+    key = capture.source_key(link["mailbox_id"], link["thread_id"])
+    return {
+        **item,
+        "source_key": key,
+        "source_link": link,
+        "dedupe_key": review_rules.dedupe_key(
+            "email_thread", key, item["type"], item.get("record_type"), item.get("record_id")
+        ),
+    }
+
+
 class TestSupersede:
     """073 crm_capture_supersede — one open new lead a conversation (spec §13
-    S3 line 1); data-model §3.7."""
+    S3 line 1); data-model §3.7. On items keyed as 073 made them."""
 
     def test_supersede_expires_the_conversations_other_open_new_leads(self, stack, ws, owner):
         company = _apply(
@@ -1158,17 +1186,19 @@ class TestSupersede:
         sync = {"user_id": None, "kind": "sync", "channel": None, "workspace_id": ws}
 
         def lead(thread: str, company_id: str | None) -> dict:
-            return capture.to_item(
-                {"company_name": "Acme", "person_email": "priya@acme.com", "message_count": 1},
-                outcome="new_lead",
-                confidence="high",
-                mailbox_id="mb",
-                thread_id=thread,
-                message_id="m1",
-                owner_id=None,
-                model="claude-sonnet-5-5",
-                generated_at=_at(),
-                duplicate_company_id=company_id,
+            return _pre074(
+                capture.to_item(
+                    {"company_name": "Acme", "person_email": "priya@acme.com", "message_count": 1},
+                    outcome="new_lead",
+                    confidence="high",
+                    mailbox_id="mb",
+                    thread_id=thread,
+                    message_id="m1",
+                    owner_id=None,
+                    model="claude-sonnet-5-5",
+                    generated_at=_at(),
+                    duplicate_company_id=company_id,
+                )
             )
 
         unlinked, other = lead("t-1", None), lead("t-2", None)
@@ -1236,9 +1266,9 @@ class TestSupersede:
             "model": "claude-sonnet-5-5",
             "generated_at": _at(),
         }
-        lead = capture.to_item(finding, outcome="new_lead", **common)
-        signal = capture.to_item(
-            finding, outcome="deal_signal", duplicate_company_id=company, **common
+        lead = _pre074(capture.to_item(finding, outcome="new_lead", **common))
+        signal = _pre074(
+            capture.to_item(finding, outcome="deal_signal", duplicate_company_id=company, **common)
         )
         document = {
             **signal,
@@ -1394,6 +1424,68 @@ class TestApplying:
             real.apply_dry_run({**_actor(ws, owner), "kind": "system"}, run_id)
         assert refused.value.status == 422
 
+    def test_apply_routed_records_the_hand_over_and_the_counts(self, stack, ws, owner, real):
+        # 074 crm_capture_apply_routed — FR-CAP-ACAD-02, FR-CAP-RPT-09.
+        box = _mailbox(stack, ws, owner, capture_source="primary_sent")
+        run_id = real.start_dry_run(_actor(ws, owner))
+        real.mark_candidates(ws, box["id"], [_row("t1", "m1"), _row("t2", "m2")])
+        course, lead = _candidates(stack, box["id"])
+        for row, business in ((course, "academy"), (lead, "labs")):
+            real.record_candidate(
+                ws,
+                row["id"],
+                row["latest_message_id"],
+                {
+                    "status": "judged",
+                    "outcome": "new_lead",
+                    "confidence": "high",
+                    "dry_run": True,
+                    "finding": {"company_name": "City College", "business": business},
+                },
+            )
+        assert real.finish_dry_run(ws, run_id, [])
+        stored = _runs(stack, ws)[0]["counts"]
+        counts = {"academy": 1, "academy_unrouted": 0}
+        routed = {course["id"]: True, lead["id"]: True}
+        assert real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        course, lead = _candidates(stack, box["id"])
+        assert course["finding"]["routed"] is True
+        assert course["finding"]["duplicate_company_id"] is None
+        assert "routed" not in lead["finding"]  # a Labs finding is not touched
+        assert _runs(stack, ws)[0]["counts"] == {**stored, **counts}
+        assert real.capture_report(ws, run_id) == {**stored, **counts}
+        assert real.apply_dry_run(_actor(ws, owner), run_id)["applied_at"]
+        # Applied: refused like a second apply.
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        assert refused.value.status == 422
+
+    @pytest.mark.parametrize(
+        ("routed", "counts"),
+        [
+            ([], {"academy": 0, "academy_unrouted": 0}),
+            ({"x": "yes"}, {"academy": 0, "academy_unrouted": 0}),
+            ({}, {"academy": 0}),
+            ({}, {"academy": -1, "academy_unrouted": 0}),
+            ({}, {"academy": 0, "academy_unrouted": 0, "items": 1}),
+        ],
+    )
+    def test_apply_routed_refuses_a_malformed_payload_and_a_system_actor(
+        self, stack, ws, owner, real, routed, counts
+    ):
+        run_id = self._finished(stack, ws, owner, real)
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(_actor(ws, owner), run_id, routed, counts)
+        assert refused.value.status == 422
+        with pytest.raises(CrmRefused) as refused:
+            real.capture_apply_routed(
+                {**_actor(ws, owner), "kind": "system"},
+                run_id,
+                {},
+                {"academy": 0, "academy_unrouted": 0},
+            )
+        assert refused.value.status == 422
+
 
 class TestThePurge:
     """073 crm_capture_purge — FR-CAP-DIS-11; E12, PD-15."""
@@ -1436,3 +1528,702 @@ class TestThePurge:
         ]
         assert len(_candidates(stack, other_box["id"])) == 1
         assert real.purge_capture(ws, cutoff) == 0
+
+
+# ---------------------------------------------------------------------------
+# Spec 010 R1 — migration 074 (tasks T418): one suggestion per company
+# ---------------------------------------------------------------------------
+
+SYNC_KIND = "sync"
+
+
+def _sync(ws: str) -> dict:
+    return {"user_id": None, "kind": SYNC_KIND, "channel": None, "workspace_id": ws}
+
+
+def _finding(n: int, **values) -> dict:
+    return {
+        "company_name": "Acme Robotics",
+        "domain": "acme-robotics.com",
+        "person_name": f"Person {n}",
+        "person_email": f"p{n}@acme-robotics.com",
+        "first_at": f"2026-10-0{n}T09:00:00+05:30",
+        "latest_at": f"2026-10-0{n}T10:00:00+05:30",
+        "message_count": n,
+        "owner_replied": n == 2,
+        "reason": f"Conversation {n}.",
+        "lead_stage": "new",
+        **values,
+    }
+
+
+def _lead_item(n: int, *, company: str | None = None, message: str = "", **values) -> dict:
+    return capture.to_item(
+        _finding(n, **values),
+        outcome="new_lead",
+        confidence="high",
+        mailbox_id="mb",
+        thread_id=f"t{n}",
+        message_id=message or f"m{n}",
+        owner_id=None,
+        model="claude-sonnet-5-5",
+        generated_at=_at(),
+        duplicate_company_id=company,
+    )
+
+
+def _group(stack, ws: str, item: dict, entry: dict | None = None) -> dict:
+    entry = entry or item["source_link"]["threads"][0]
+    return stack.sql(
+        f"SELECT crm_capture_group_upsert({_j(stack, _sync(ws))}, {_j(stack, item)}, "
+        f"{_j(stack, entry)}) AS r"
+    )[0]["r"]
+
+
+def _item_row(stack, item_id: str) -> dict:
+    return stack.sql(f"SELECT * FROM crm_review_items WHERE id = {stack.q(item_id)}")[0]
+
+
+def _open_rows(stack, ws: str) -> list[dict]:
+    return stack.sql(
+        "SELECT * FROM crm_review_items "
+        f"WHERE workspace_id = {stack.q(ws)} AND status = 'open' ORDER BY created_at, id"
+    )
+
+
+def _refs(row: dict) -> list[str]:
+    return sorted(e["ref"] for e in row["source_link"].get("threads") or [])
+
+
+def _decide(stack, item_id: str, status: str, **values) -> None:
+    sets = ", ".join(
+        [f"status = {stack.q(status)}", "decided_at = now()"]
+        + [f"{k} = {stack.q(v)}" for k, v in values.items()]
+    )
+    stack.sql(f"UPDATE crm_review_items SET {sets} WHERE id = {stack.q(item_id)}")
+
+
+def _claim(stack, ws: str, owner: str, item_id: str) -> None:
+    stack.sql(
+        f"SELECT crm_review_claim({_j(stack, _actor(ws, owner))}, {stack.q(item_id)}::uuid, "
+        "'approved') AS r"
+    )
+
+
+def _refuse(stack, ws: str, owner: str, item_id: str) -> None:
+    stack.sql(
+        f"SELECT crm_review_release({_j(stack, _actor(ws, owner))}, {stack.q(item_id)}::uuid, "
+        "'Refused.', NULL)"
+    )
+
+
+def _company_id(stack, ws: str, owner: str, name: str = "Acme") -> str:
+    return _apply(
+        stack,
+        _actor(ws, owner),
+        [
+            {
+                "op": "insert",
+                "table": "crm_companies",
+                "values": {"name": name, "owner_id": owner, "lead_stage": "deal_open"},
+            }
+        ],
+    )[0]["id"]
+
+
+def _deal_id(stack, ws: str, owner: str, company: str, name: str) -> str:
+    return _apply(
+        stack,
+        _actor(ws, owner),
+        [
+            {
+                "op": "insert",
+                "table": "crm_opportunities",
+                "values": {
+                    "name": name,
+                    "company_id": company,
+                    "owner_id": owner,
+                    "probability": 10,
+                    "next_step": "Call",
+                    "next_step_on": "2026-10-21",
+                },
+            }
+        ],
+    )[0]["id"]
+
+
+class TestGroupUpsert:
+    """074 crm_capture_group_upsert — data-model §9.4; FR-CAP-GRP-02, -05,
+    -06; plan R1.2, PD-24, PD-38."""
+
+    def test_group_upsert_inserts_then_merges_by_company(self, stack, ws):
+        first = _group(stack, ws, _lead_item(1))
+        assert (first["created"], first["skipped"], first["revision"]) == (True, False, 1)
+        second = _group(stack, ws, _lead_item(2))
+        assert (second["id"], second["created"], second["revision"]) == (first["id"], False, 2)
+        row = _item_row(stack, first["id"])
+        assert row["source_key"] == "capture:domain:acme-robotics.com"
+        assert _refs(row) == ["gmail:mb:t1", "gmail:mb:t2"]
+        evidence = row["suggestion"]["evidence"]
+        assert (evidence["conversations"], evidence["message_count"]) == (2, 3)
+        assert evidence["owner_replied"] is True
+        assert evidence["first_at"] == "2026-10-01T09:00:00+05:30"
+        assert evidence["latest_at"] == "2026-10-02T10:00:00+05:30"
+        assert evidence["reason"] == "Conversation 2."
+        assert (row["source_version"], row["source_link"]["thread_id"]) == ("m2", "t2")
+        assert row["suggestion"]["email"] == "p2@acme-robotics.com"
+        # The same conversation state again changes nothing.
+        again = _group(stack, ws, _lead_item(2))
+        assert again["revision"] == 2
+
+    def test_group_upsert_an_older_entry_joins_but_never_replaces(self, stack, ws):
+        made = _group(stack, ws, _lead_item(3))
+        _group(stack, ws, _lead_item(1))
+        row = _item_row(stack, made["id"])
+        assert _refs(row) == ["gmail:mb:t1", "gmail:mb:t3"]
+        assert row["suggestion"]["email"] == "p3@acme-robotics.com"
+        assert row["source_version"] == "m3"
+
+    def test_group_upsert_skips_a_decided_conversation_state(self, stack, ws):
+        made = _group(stack, ws, _lead_item(1))
+        _decide(stack, made["id"], "dismissed")
+        skipped = _group(stack, ws, _lead_item(1))
+        assert (skipped["id"], skipped["skipped"]) == (None, True)
+        # A new conversation of the company is a new item.
+        fresh = _group(stack, ws, _lead_item(2))
+        assert fresh["created"] is True and fresh["id"] != made["id"]
+
+    def test_group_upsert_skips_the_pre_074_form(self, stack, ws):
+        old = _pre074(_lead_item(1))
+        [made] = stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, _sync(ws))}, {_j(stack, [old])}) AS r"
+        )[0]["r"]
+        _decide(stack, made["id"], "dismissed")
+        assert _group(stack, ws, _lead_item(1))["skipped"] is True
+
+    def test_group_upsert_skips_the_pre_074_form_of_a_deal_document(self, stack, ws, owner):
+        """Review F1 (PD-24, PD-39): a deal document's signal decided under
+        073 (keyed per conversation) is matched by its company, so a
+        re-search of documents does not bring it back."""
+        company = _company_id(stack, ws, owner)
+
+        def document(company_id: str) -> dict:
+            return capture.deal_signal_item(
+                mailbox_id="mb",
+                thread_id="t1",
+                message_id="m-doc",
+                company_id=company_id,
+                deals=[],
+                stage="proposal",
+                kinds=["proposal"],
+                direction="outbound",
+                message_at=datetime.now(UTC),
+                owner_id=None,
+                generated_at=_at(),
+            )
+
+        old = _pre074(document(company))
+        assert old["dedupe_key"] != document(company)["dedupe_key"]
+        [made] = stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, _sync(ws))}, {_j(stack, [old])}) AS r"
+        )[0]["r"]
+        _decide(stack, made["id"], "dismissed")
+        again = document(company)
+        assert _group(stack, ws, again, again["source_link"]["threads"][0])["skipped"] is True
+        # Per company still (PD-39): the same document to another company.
+        other = _company_id(stack, ws, owner, name="Other Co")
+        fresh = document(other)
+        assert _group(stack, ws, fresh, fresh["source_link"]["threads"][0])["created"] is True
+
+    def test_group_upsert_an_expiry_by_refusal_or_merge_is_no_decision(self, stack, ws):
+        refused = _group(stack, ws, _lead_item(1))
+        _decide(stack, refused["id"], "expired", refusal="Refused.")
+        assert _group(stack, ws, _lead_item(1))["skipped"] is False
+        merged = _group(stack, ws, _lead_item(2, domain="beta.example"))
+        stack.sql(
+            "UPDATE crm_review_items SET status = 'expired', decided_at = now(), "
+            f'result = \'{{"superseded_by": "{refused["id"]}"}}\'::jsonb '
+            f"WHERE id = {stack.q(merged['id'])}"
+        )
+        assert _group(stack, ws, _lead_item(2, domain="beta.example"))["skipped"] is False
+
+    def test_group_upsert_takes_deals_only_from_the_newest_entry(self, stack, ws, owner):
+        company = _company_id(stack, ws, owner)
+        early = _deal_id(stack, ws, owner, company, "Early")
+        late = _deal_id(stack, ws, owner, company, "Late")
+
+        def signal(n: int, stage: str, deals: list[str]) -> dict:
+            item = capture.to_item(
+                _finding(n, deal_stage=stage),
+                outcome="deal_signal",
+                confidence="high",
+                mailbox_id="mb",
+                thread_id=f"t{n}",
+                message_id=f"m{n}",
+                owner_id=None,
+                model=None,
+                generated_at=_at(),
+                duplicate_company_id=company,
+                open_deals=[{"id": d, "stage": "discovery"} for d in deals],
+            )
+            return {**item, "current_values": {"stage": stage}}
+
+        made = _group(stack, ws, signal(5, "closed_won", [early, late]))
+        _group(stack, ws, signal(2, "proposal", [early]))
+        row = _item_row(stack, made["id"])
+        assert row["suggestion"]["stage"] == "closed_won"
+        assert row["current_values"] == {"stage": "closed_won"}
+        deals = stack.sql(
+            "SELECT opportunity_id FROM crm_review_item_deals "
+            f"WHERE item_id = {stack.q(made['id'])} ORDER BY opportunity_id"
+        )
+        assert [d["opportunity_id"] for d in deals] == sorted([early, late])
+        assert _refs(row) == ["gmail:mb:t2", "gmail:mb:t5"]
+
+    def test_group_upsert_after_a_claim_makes_a_fresh_item(self, stack, ws, owner):
+        claimed = _group(stack, ws, _lead_item(1))
+        _claim(stack, ws, owner, claimed["id"])
+        fresh = _group(stack, ws, _lead_item(2))
+        assert fresh["created"] is True and fresh["id"] != claimed["id"]
+        assert _refs(_item_row(stack, claimed["id"])) == ["gmail:mb:t1"]
+        assert _item_row(stack, claimed["id"])["status"] == "approved"
+
+    def test_a_refusal_merges_into_the_fresh_item_then_expires(self, stack, ws, owner):
+        claimed = _group(stack, ws, _lead_item(1))
+        _claim(stack, ws, owner, claimed["id"])
+        fresh = _group(stack, ws, _lead_item(2))
+        _refuse(stack, ws, owner, claimed["id"])
+        gone = _item_row(stack, claimed["id"])
+        assert (gone["status"], gone["refusal"]) == ("expired", "Refused.")
+        kept = _item_row(stack, fresh["id"])
+        assert kept["status"] == "open"
+        assert _refs(kept) == ["gmail:mb:t1", "gmail:mb:t2"]
+        assert kept["suggestion"]["evidence"]["conversations"] == 2
+        # Nothing in the refused item blocks its conversation.
+        assert _group(stack, ws, _lead_item(1))["skipped"] is False
+
+    def test_a_reopened_item_drops_what_another_open_item_holds(self, stack, ws, owner):
+        claimed = _group(stack, ws, _lead_item(1))
+        _group(stack, ws, _lead_item(2))
+        # While it is claimed, t1 is judged under another company: the
+        # claimed item is not changed.
+        _claim(stack, ws, owner, claimed["id"])
+        # A later message of t1 (the same state would be skipped: the claimed
+        # item lists it).
+        _group(
+            stack,
+            ws,
+            _lead_item(
+                1, domain="zeta.example", message="m1-later", latest_at="2026-10-09T10:00:00+05:30"
+            ),
+        )
+        [fresh] = _open_rows(stack, ws)
+        assert fresh["source_key"] == "capture:domain:zeta.example"
+        assert _refs(_item_row(stack, claimed["id"])) == ["gmail:mb:t1", "gmail:mb:t2"]
+        _refuse(stack, ws, owner, claimed["id"])
+        reopened = _item_row(stack, claimed["id"])
+        assert reopened["status"] == "open" and reopened["refusal"] == "Refused."
+        assert _refs(reopened) == ["gmail:mb:t2"]
+        assert reopened["suggestion"]["evidence"]["conversations"] == 1
+
+    def test_a_refusal_merge_leaves_out_what_a_third_item_holds(self, stack, ws, owner):
+        """FR-CAP-GRP-07: while A is claimed, t2 moves to another company's
+        open item; a fresh item takes A's key; A is refused. Only t1 joins
+        the fresh item, so t2 stays in one open item."""
+        claimed = _group(stack, ws, _lead_item(1))
+        _group(stack, ws, _lead_item(2))
+        _claim(stack, ws, owner, claimed["id"])
+        moved = _group(
+            stack,
+            ws,
+            _lead_item(
+                2, domain="zeta.example", message="m2-later", latest_at="2026-10-08T10:00:00+05:30"
+            ),
+        )
+        fresh = _group(stack, ws, _lead_item(3))
+        assert fresh["created"] is True
+        _refuse(stack, ws, owner, claimed["id"])
+        assert _item_row(stack, claimed["id"])["status"] == "expired"
+        assert _refs(_item_row(stack, fresh["id"])) == ["gmail:mb:t1", "gmail:mb:t3"]
+        assert _refs(_item_row(stack, moved["id"])) == ["gmail:mb:t2"]
+        holders = [r["id"] for r in _open_rows(stack, ws) if "gmail:mb:t2" in _refs(r)]
+        assert holders == [moved["id"]]
+
+    def test_a_reopened_item_names_its_newest_sender(self, stack, ws, owner):
+        """FR-CAP-GRP-03: the reopened item's person follows its newest
+        remaining conversation."""
+        claimed = _group(stack, ws, _lead_item(1))
+        _group(stack, ws, _lead_item(2))
+        _claim(stack, ws, owner, claimed["id"])
+        _group(
+            stack,
+            ws,
+            _lead_item(
+                2, domain="zeta.example", message="m2-later", latest_at="2026-10-09T10:00:00+05:30"
+            ),
+        )
+        _refuse(stack, ws, owner, claimed["id"])
+        row = _item_row(stack, claimed["id"])
+        assert row["status"] == "open" and _refs(row) == ["gmail:mb:t1"]
+        assert (row["suggestion"]["email"], row["suggestion"]["first_name"]) == (
+            "p1@acme-robotics.com",
+            "Person",
+        )
+
+    def test_a_reopened_item_left_with_nothing_expires(self, stack, ws, owner):
+        claimed = _group(stack, ws, _lead_item(1))
+        _claim(stack, ws, owner, claimed["id"])
+        assert _group(stack, ws, _lead_item(1, domain="zeta.example"))["skipped"] is True
+        _group(
+            stack,
+            ws,
+            _lead_item(
+                1, domain="zeta.example", message="m1-later", latest_at="2026-10-09T10:00:00+05:30"
+            ),
+        )
+        _refuse(stack, ws, owner, claimed["id"])
+        row = _item_row(stack, claimed["id"])
+        assert (row["status"], row["refusal"]) == ("expired", "Refused.")
+        [audit] = stack.sql(
+            "SELECT before, after FROM audit_log WHERE target_table = 'crm_review_items' "
+            f"AND target_id = {stack.q(claimed['id'])} AND action = 'review.expired'"
+        )
+        assert audit == {"before": {"status": "approved"}, "after": {"status": "expired"}}
+
+    def test_group_upsert_is_the_sync_or_the_system_only(self, stack, ws, owner):
+        item = _lead_item(1)
+        with pytest.raises(stack.SqlError) as raised:
+            stack.sql(
+                f"SELECT crm_capture_group_upsert({_j(stack, _actor(ws, owner))}, "
+                f"{_j(stack, item)}, {_j(stack, item['source_link']['threads'][0])})"
+            )
+        assert raised.value.code == "CRM22"
+
+
+class TestReleaseThread:
+    """074 crm_capture_release_thread — FR-CAP-GRP-07; PD-39."""
+
+    def test_release_removes_recomputes_and_expires_an_empty_item(self, stack, ws):
+        both = _group(stack, ws, _lead_item(1))
+        _group(stack, ws, _lead_item(2))
+        alone = _group(stack, ws, _lead_item(3, domain="beta.example"))
+        out = stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t2', '') AS r"
+        )[0]["r"]
+        assert out == {"removed": 1, "expired": 0}
+        row = _item_row(stack, both["id"])
+        assert _refs(row) == ["gmail:mb:t1"]
+        assert row["suggestion"]["evidence"]["reason"] == "Conversation 1."
+        assert row["source_version"] == "m1" and row["revision"] == 3
+        out = stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t3', '') AS r"
+        )[0]["r"]
+        assert out == {"removed": 1, "expired": 1}
+        assert _item_row(stack, alone["id"])["status"] == "expired"
+        [audit] = stack.sql(
+            "SELECT actor_label FROM audit_log WHERE action = 'review.expired' "
+            f"AND target_id = {stack.q(alone['id'])}"
+        )
+        assert audit["actor_label"] == "sync"
+
+    def test_release_never_moves_a_deal_documents_entry(self, stack, ws, owner):
+        company = _company_id(stack, ws, owner)
+        document = capture.deal_signal_item(
+            mailbox_id="mb",
+            thread_id="t1",
+            message_id="m-doc",
+            company_id=company,
+            deals=[],
+            stage="proposal",
+            kinds=["sow"],
+            direction="outbound",
+            message_at=datetime.now(UTC),
+            owner_id=None,
+            generated_at=_at(),
+        )
+        made = _group(stack, ws, document)
+        assert made["created"] is True
+        stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t1', '') AS r"
+        )
+        assert _item_row(stack, made["id"])["status"] == "open"
+        # A discovery lead on the same conversation leaves the document too.
+        _group(stack, ws, _lead_item(1))
+        assert _refs(_item_row(stack, made["id"])) == ["gmail:mb:t1"]
+
+    def test_release_of_the_newest_moves_the_suggested_person(self, stack, ws):
+        """FR-CAP-GRP-03: the person suggested is the newest remaining
+        conversation's sender, never the one released (title dropped)."""
+        made = _group(stack, ws, _lead_item(1, person_name="Bob Rao"))
+        _group(stack, ws, _lead_item(2, person_name="Alice Iyer", person_title="CTO"))
+        row = _item_row(stack, made["id"])
+        assert (row["suggestion"]["email"], row["suggestion"]["title"]) == (
+            "p2@acme-robotics.com",
+            "CTO",
+        )
+        stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t2', '') AS r"
+        )
+        s = _item_row(stack, made["id"])["suggestion"]
+        assert (s["email"], s["first_name"], s["last_name"]) == (
+            "p1@acme-robotics.com",
+            "Bob",
+            "Rao",
+        )
+        assert "title" not in s
+        # Releasing an older conversation keeps the person as it is.
+        _group(stack, ws, _lead_item(3, person_title="CEO"))
+        stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t1', '') AS r"
+        )
+        s = _item_row(stack, made["id"])["suggestion"]
+        assert (s["email"], s["title"]) == ("p3@acme-robotics.com", "CEO")
+
+    def test_a_discovery_signal_keeps_a_documents_entry(self, stack, ws, owner):
+        """PD-39: a discovery signal on a deal document's conversation
+        replaces its entry's state but not its origin, so a later
+        re-judgement to no item never releases it."""
+        company = _company_id(stack, ws, owner)
+        document = capture.deal_signal_item(
+            mailbox_id="mb",
+            thread_id="t1",
+            message_id="m-doc",
+            company_id=company,
+            deals=[],
+            stage="proposal",
+            kinds=["proposal"],
+            direction="outbound",
+            message_at=datetime(2026, 10, 1, tzinfo=UTC),
+            owner_id=None,
+            generated_at=_at(),
+        )
+        made = _group(stack, ws, document)
+        discovered = capture.to_item(
+            _finding(1, deal_stage="proposal", latest_at="2026-10-05T10:00:00+05:30"),
+            outcome="deal_signal",
+            confidence="high",
+            mailbox_id="mb",
+            thread_id="t1",
+            message_id="m-reply",
+            owner_id=None,
+            model=None,
+            generated_at=_at(),
+            duplicate_company_id=company,
+            open_deals=[],
+        )
+        assert _group(stack, ws, discovered)["id"] == made["id"]
+        [entry] = _item_row(stack, made["id"])["source_link"]["threads"]
+        assert (entry["message_id"], entry["origin"]) == ("m-reply", "deal_document")
+        stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t1', '') AS r"
+        )
+        row = _item_row(stack, made["id"])
+        assert row["status"] == "open" and _refs(row) == ["gmail:mb:t1"]
+
+    def test_merge_keeps_a_documents_origin_either_way(self, stack):
+        doc = {
+            "ref": "r",
+            "message_id": "a",
+            "latest_at": "2026-10-01T00:00:00Z",
+            "origin": "deal_document",
+        }
+        newer = {
+            "ref": "r",
+            "message_id": "b",
+            "latest_at": "2026-10-02T00:00:00Z",
+            "origin": "discovery",
+        }
+        older = {**newer, "message_id": "z", "latest_at": "2026-09-01T00:00:00Z"}
+        [r] = stack.sql(
+            f"SELECT crm_capture_merge({_j(stack, [doc])}, {_j(stack, newer)}) AS a, "
+            f"crm_capture_merge({_j(stack, [older])}, {_j(stack, doc)}) AS b, "
+            f"crm_capture_merge({_j(stack, [older])}, {_j(stack, newer)}) AS c"
+        )
+        assert r["a"] == [{**newer, "origin": "deal_document"}]
+        assert r["b"] == [doc]
+        assert r["c"] == [newer]
+
+    def test_release_skips_an_item_no_longer_open(self, stack, ws, owner):
+        claimed = _group(stack, ws, _lead_item(1))
+        _claim(stack, ws, owner, claimed["id"])
+        stack.sql(
+            f"SELECT crm_capture_release_thread({_j(stack, _sync(ws))}, 'gmail:mb:t1', '') AS r"
+        )
+        row = _item_row(stack, claimed["id"])
+        assert row["status"] == "approved" and _refs(row) == ["gmail:mb:t1"]
+
+
+class TestConsolidate:
+    """074 crm_capture_consolidate — FR-CAP-GRP-08; PD-26; spec §14.5 I1."""
+
+    def _old(self, stack, ws: str, n: int) -> str:
+        old = _pre074(_lead_item(n))
+        [made] = stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, _sync(ws))}, {_j(stack, [old])}) AS r"
+        )[0]["r"]
+        stack.sql(
+            "UPDATE crm_review_items SET created_at = "
+            f"'2026-10-0{n}T00:00:00+00:00' WHERE id = {stack.q(made['id'])}"
+        )
+        return made["id"]
+
+    def _plan(self, members: list[str]) -> list[dict]:
+        return [
+            {
+                "source_key": "capture:domain:acme-robotics.com",
+                "dedupe_key": "email_thread|capture:domain:acme-robotics.com|new_lead|thread",
+                "record_type": None,
+                "record_id": None,
+                "company_label": "HearSight",
+                "members": members,
+            }
+        ]
+
+    def _run(self, stack, ws: str, plan: list[dict]) -> dict:
+        return stack.sql(
+            f"SELECT crm_capture_consolidate({_j(stack, _sync(ws))}, {_j(stack, plan)}) AS r"
+        )[0]["r"]
+
+    def test_consolidate_merges_into_the_newest_and_audits_each(self, stack, ws):
+        ids = [self._old(stack, ws, n) for n in range(1, 10)]
+        out = self._run(stack, ws, self._plan(list(reversed(ids))))
+        assert out == {"groups": 1, "expired": 8, "rekeyed": 1}
+        survivor = _item_row(stack, ids[-1])
+        assert survivor["status"] == "open"
+        assert survivor["source_key"] == "capture:domain:acme-robotics.com"
+        assert len(survivor["source_link"]["threads"]) == 9
+        assert survivor["suggestion"]["evidence"]["message_count"] == sum(range(1, 10))
+        for item_id in ids[:-1]:
+            row = _item_row(stack, item_id)
+            assert row["status"] == "expired"
+            assert row["result"] == {
+                "superseded_by": survivor["id"],
+                "reason": "Merged into one suggestion for HearSight.",
+            }
+            assert "threads" not in row["source_link"]
+            [audit] = stack.sql(
+                "SELECT after FROM audit_log WHERE action = 'review.expired' "
+                f"AND target_id = {stack.q(item_id)}"
+            )
+            assert audit["after"] == {"status": "expired", "superseded_by": survivor["id"]}
+        # A second run changes nothing.
+        before = _item_row(stack, survivor["id"])
+        assert self._run(stack, ws, self._plan([survivor["id"]])) == {
+            "groups": 0,
+            "expired": 0,
+            "rekeyed": 0,
+        }
+        assert _item_row(stack, survivor["id"]) == before
+
+    def test_consolidate_leaves_decided_items(self, stack, ws, owner):
+        ids = [self._old(stack, ws, n) for n in (1, 2, 3)]
+        _decide(stack, ids[0], "dismissed")
+        _claim(stack, ws, owner, ids[2])
+        out = self._run(stack, ws, self._plan(ids))
+        assert out["expired"] == 0 and out["groups"] == 1
+        assert _item_row(stack, ids[0])["status"] == "dismissed"
+        assert _item_row(stack, ids[2])["status"] == "approved"
+        assert _item_row(stack, ids[2])["source_key"].startswith("gmail:")
+        assert _item_row(stack, ids[1])["source_key"] == "capture:domain:acme-robotics.com"
+
+    def test_consolidate_takes_an_open_item_already_on_the_key(self, stack, ws):
+        old = self._old(stack, ws, 1)
+        new = _group(stack, ws, _lead_item(2))
+        out = self._run(stack, ws, self._plan([old]))
+        assert out["groups"] == 1
+        [row] = _open_rows(stack, ws)
+        assert row["id"] == new["id"]
+        assert _refs(row) == ["gmail:mb:t1", "gmail:mb:t2"]
+        assert _item_row(stack, old)["result"]["superseded_by"] == new["id"]
+
+    def test_consolidate_takes_the_capture_lock_and_refuses_a_non_array(self, stack, ws):
+        for name in (
+            "crm_capture_consolidate",
+            "crm_capture_group_upsert",
+            "crm_capture_release_thread",
+            "crm_review_release",
+        ):
+            [row] = stack.sql(
+                "SELECT pg_get_functiondef(p.oid) AS d FROM pg_proc p "
+                f"WHERE p.proname = {stack.q(name)}"
+            )
+            assert "pg_advisory_xact_lock(hashtext('crm_capture:'" in row["d"], name
+        with pytest.raises(stack.SqlError) as raised:
+            self._run(stack, ws, {"not": "a list"})  # type: ignore[arg-type]
+        assert raised.value.code == "CRM22"
+
+
+class TestMergeKeepsCaptureKeys:
+    """065 crm_merge_companies still moves `capture:linked` and
+    `capture:deal` items (their `company:` head), plan R1.2."""
+
+    def test_merge_rekeys_linked_and_deal_items(self, stack, ws, owner):
+        keep = _company_id(stack, ws, owner, "Keep")
+        gone = _company_id(stack, ws, owner, "Gone")
+        linked = _group(stack, ws, _lead_item(1, company=gone))
+        signal = capture.to_item(
+            _finding(2, deal_stage="discovery"),
+            outcome="deal_signal",
+            confidence="high",
+            mailbox_id="mb",
+            thread_id="t2",
+            message_id="m2",
+            owner_id=None,
+            model=None,
+            generated_at=_at(),
+            duplicate_company_id=gone,
+        )
+        deal = _group(stack, ws, signal)
+        rows = {
+            r["id"]: r
+            for r in stack.sql(
+                f"SELECT id, updated_at FROM crm_companies WHERE id IN ({stack.q(keep)}, "
+                f"{stack.q(gone)})"
+            )
+        }
+        plan = {
+            "survivor_id": keep,
+            "merged_id": gone,
+            "expect": {
+                "survivor_updated_at": rows[keep]["updated_at"],
+                "merged_updated_at": rows[gone]["updated_at"],
+            },
+            "survivor_changes": {},
+        }
+        stack.sql(f"SELECT crm_merge_companies({_j(stack, _actor(ws, owner))}, {_j(stack, plan)})")
+        assert _item_row(stack, linked["id"])["dedupe_key"] == (
+            f"email_thread|capture:linked|new_lead|company:{keep}"
+        )
+        assert _item_row(stack, deal["id"])["dedupe_key"] == (
+            f"email_thread|capture:deal|deal_signal|company:{keep}"
+        )
+
+
+class TestTheRoutingSetting:
+    """074 `capture_routing` — data-model §9.2a; FR-CAP-ACAD-03; PD-41."""
+
+    def test_routing_every_workspace_is_seeded_on(self, stack):
+        rows = stack.sql(
+            "SELECT w.id, s.value FROM crm_workspaces w LEFT JOIN crm_workspace_settings s "
+            "ON s.workspace_id = w.id AND s.key = 'capture_routing'"
+        )
+        assert rows and all(r["value"] == {"accept_routed": True} for r in rows)
+
+    def test_routing_a_new_workspace_is_seeded_by_the_trigger(self, stack, ws):
+        [row] = stack.sql(
+            "SELECT value FROM crm_workspace_settings "
+            f"WHERE workspace_id = {stack.q(ws)} AND key = 'capture_routing'"
+        )
+        assert row["value"] == {"accept_routed": True}
+        [audit] = [
+            r for r in _audit(stack, ws) if (r["after"] or {}).get("key") == "capture_routing"
+        ]
+        assert (audit["action"], audit["actor_label"]) == ("setting.created", "system")
+        assert _setting(stack, ws) == {"mode": "off"}
+
+    def test_routing_the_key_check_takes_capture_routing(self, stack):
+        [row] = stack.sql(
+            "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
+            "WHERE conname = 'crm_workspace_settings_key_check'"
+        )
+        assert "'capture_routing'" in row["d"] and "'capture'" in row["d"]

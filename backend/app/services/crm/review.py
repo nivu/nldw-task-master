@@ -58,6 +58,7 @@ from app.domain.crm import ai_rules, dedupe, email_rules
 from app.domain.crm import capture as capture_rules
 from app.domain.crm import review as rules
 from app.domain.crm import today as today_rules
+from app.domain.crm.invites import PUBLIC_WEBMAIL_DOMAINS
 from app.domain.tasks.service import TaskActor, create_task
 from app.schemas.crm import (
     CampaignMemberUpdate,
@@ -187,6 +188,27 @@ def upsert(workspace_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any
     return store.review_upsert(_sync(workspace_id), masked)
 
 
+def capture_group_upsert(
+    workspace_id: str, item: dict[str, Any], entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Spec 010 R1 (FR-CAP-GRP-02, plan R1.2) — one capture item (`new_lead`
+    or `deal_signal`) stored per company key through 074's
+    `crm_capture_group_upsert`, money masked first in every suggestion
+    string and in every conversation's reason (FR-CRMAI-LLM-05). The job,
+    an applied dry run, the sync's deal documents and the Academy step all
+    store through here, never the store directly. Returns `{id, created,
+    skipped, released}`. Sends nothing."""
+    masked = {**item, "suggestion": _masked(item.get("suggestion") or {})}
+    link = item.get("source_link") or {}
+    if isinstance(link.get("threads"), list):
+        masked["source_link"] = {
+            **link,
+            "threads": [{**e, "reason": _masked(e.get("reason"))} for e in link["threads"]],
+        }
+    given = {**entry, "reason": _masked(entry.get("reason"))}
+    return store.capture_group_upsert(workspace_id, masked, given)
+
+
 # ---------------------------------------------------------------------------
 # Reading — FR-CRMAI-REV-01, -03, FR-CRMAI-FLAG-04
 # ---------------------------------------------------------------------------
@@ -256,6 +278,7 @@ def present(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             link["thread_key"] = f"{link['mailbox_id']}:{link['thread_id']}"
         owner = item.get("owner_id")
         decider = item.get("decided_by")
+        merged = (item.get("result") or {}).get("superseded_by")
         out.append(
             ReviewItemOut(
                 id=item["id"],
@@ -297,6 +320,7 @@ def present(ws_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 expires_on=rules.expires_on(item["created_at"]),
                 decided_at=item.get("decided_at"),
                 decided_by={"id": decider, "name": names.get(decider)} if decider else None,
+                result={"superseded_by": merged} if merged else None,
             ).model_dump(mode="json")
         )
     return out
@@ -767,7 +791,26 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
     New owned by the mailbox owner; (2) the suggested lead stage, from New;
     (3) the person, unless one has the address; (4) the conversation queued
     for filing. A refusal or a fault after the company exists keeps its id
-    on the item, so a retry does not make a second company of that name."""
+    on the item, so a retry does not make a second company of that name.
+
+    Spec 010 R1 (FR-CAP-GRP-04, PD-35): an item grouping several
+    conversations makes (or reuses) one person per distinct sender address
+    among them, the latest sender as the suggestion (and the edits) say,
+    the others with their own names (an edited address replaces the newest
+    conversation's, which makes no second person); an address already a
+    person of no company is linked to this company, one under another
+    company is left there; then every conversation is queued for
+    filing, one job each. `threads_filed` counts the conversations whose
+    sender is a person of the workspace after this step (an edited-away
+    address is not one); an item made
+    before 074 files its one link as before.
+
+    Spec 010 R1 FR-CAP-ACAD-05 (PD-31): an Academy item
+    (`evidence.origin == "academy_routing"`) makes the company and the
+    people the same way, then records its conversations as one note
+    (money masked) linked to the company and every person made or linked,
+    instead of filing: the Academy has no mailbox. A fault on the note
+    refuses the approval with the company kept for the retry."""
     edits = _edits(item, body)
     suggestion = item.get("suggestion") or {}
     stage = edits.get("lead_stage", suggestion.get("lead_stage") or "new")
@@ -786,6 +829,12 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
     first = edits.get("first_name", suggestion.get("first_name"))
     last = edits.get("last_name", suggestion.get("last_name"))
     title = edits.get("title", suggestion.get("title"))
+    entries = capture_rules.entries_of(item)
+    evidence = suggestion.get("evidence") or {}
+    academy = evidence.get("origin") == capture_rules.ACADEMY_ROUTING
+    # Plan R1.2: the newest conversation's sender is the suggestion's
+    # person, so an edited address replaces that entry's address.
+    newest = max(entries, key=capture_rules.entry_order) if entries else None
 
     def earlier() -> str | None:
         made = (item.get("result") or {}).get("company_id")
@@ -801,6 +850,34 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
             if row and not row.get("deleted_at"):
                 return d["company_id"]
         return None
+
+    def sender(entry: dict[str, Any]) -> str | None:
+        """An entry's sender; a pre-074 entry without one is the suggestion's."""
+        given = entry.get("person_email")
+        given = given.strip().lower() if isinstance(given, str) and given.strip() else None
+        return given or email
+
+    def person_for(
+        approver: Any,
+        company_id: str,
+        address: str | None,
+        names: tuple[Any, Any],
+        job_title: Any,
+    ) -> str:
+        held = store.people_by_emails(ws_id, [address]) if address else []
+        if held:
+            # FR-CAP-GRP-04: a person of no company is linked to this one,
+            # as the approver; one under another company stays there.
+            if not held[0].get("company_id") and not held[0].get("deleted_at"):
+                base.update(approver, "person", held[0]["id"], {"company_id": company_id})
+            return held[0]["id"]
+        person: dict[str, Any] = {"first_name": names[0], "company_id": company_id}
+        for key, value in (("last_name", names[1]), ("primary_email", address)):
+            if value:
+                person[key] = value
+        if job_title:
+            person["job_title"] = job_title
+        return base.create(approver, "person", person, check_duplicates=False)["id"]
 
     def change(approver: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         made_before = earlier()
@@ -824,32 +901,115 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
                     company_id,
                     {"lead_stage": stage, "expect_updated_at": row["updated_at"]},
                 )
-            held = store.people_by_emails(ws_id, [email]) if email else []
-            if held:
-                person_id = held[0]["id"]
-            else:
-                person: dict[str, Any] = {"first_name": first, "company_id": company_id}
-                for key, value in (("last_name", last), ("primary_email", email)):
-                    if value:
-                        person[key] = value
-                if title:
-                    person["job_title"] = title
-                person_id = base.create(approver, "person", person, check_duplicates=False)["id"]
+            person_id = person_for(approver, company_id, email, (first, last), title)
+            person_ids = [person_id]
+            # Two sets (FR-CAP-GRP-04): `known` is the addresses that make
+            # no new person; `held` the addresses a person holds after
+            # this step, which alone count a conversation as filed.
+            held = {email} if email else set()
+            known = set(held)
+            if email and newest is not None and sender(newest):
+                # Its original address, when the approver edited it, makes
+                # no second person, but nobody holds it: not counted filed.
+                known.add(str(sender(newest)))
+            people = 1
+            # FR-CAP-GRP-04: every other sender among the conversations.
+            for entry in entries:
+                address = sender(entry)
+                if entry is newest or not address or address in known:
+                    continue
+                default_first, default_last = capture_rules.split_name(None, address)
+                other = person_for(
+                    approver,
+                    company_id,
+                    address,
+                    (entry.get("first_name") or default_first, entry.get("last_name")),
+                    None,
+                )
+                if other not in person_ids:
+                    person_ids.append(other)
+                known.add(address)
+                held.add(address)
+                people += 1
+            note_id = (
+                _academy_note(approver, company_id, person_ids, entries, evidence)
+                if academy
+                else None
+            )
         except Exception:  # noqa: BLE001 - a refusal or a fault alike: re-raised
             # Kept on the item while it is claimed, before it opens again
             # (approve's handler then opens it with the right sentence).
             store.review_release(actor(ctx), item["id"], None, {"company_id": company_id})
             raise
-        _queue_filing(ws_id, item.get("source_link") or {})
+        if academy:
+            result = {
+                "company_id": company_id,
+                "person_id": person_id,
+                "people": people,
+                "note_id": note_id,
+                "linked": linked,
+                "threads_filed": 0,
+            }
+            return result, dict(result)
+        filed = 0
+        links = [e for e in entries if e.get("mailbox_id") and e.get("thread_id")]
+        if links:
+            for entry in links:
+                _queue_filing(ws_id, entry)
+                if _known_after(ws_id, company_id, held, sender(entry)):
+                    filed += 1
+        else:
+            link = item.get("source_link") or {}
+            _queue_filing(ws_id, link)
+            if link.get("mailbox_id") and link.get("thread_id") and email:
+                filed = 1
         result = {
             "company_id": company_id,
             "person_id": person_id,
+            "people": people,
             "linked": linked,
             "filed": "queued",
+            "threads_filed": filed,
         }
         return result, dict(result)
 
     return change
+
+
+def _known_after(ws_id: str, company_id: str, held: set[str], address: str | None) -> bool:
+    """FR-CAP-GRP-04: whether a conversation's sender is known after the
+    approval, so its filing stores something: a person holds the address,
+    or (not webmail) the company holds its domain, which is how the sync
+    matches a sender with no person (`email_rules.links_for`)."""
+    if not address:
+        return False
+    if address in held:
+        return True
+    domain = dedupe.normalise_domain(email_rules.domain_of(address))
+    if not domain or domain in PUBLIC_WEBMAIL_DOMAINS:
+        return False
+    return bool(store.list_domains(ws_id, company_ids=[company_id], domains=[domain]))
+
+
+def _academy_note(
+    approver: Any,
+    company_id: str,
+    person_ids: list[str],
+    entries: list[dict[str, Any]],
+    evidence: dict[str, Any],
+) -> str:
+    """FR-CAP-ACAD-05 — the one note an Academy approval records, linked to
+    the company and every person (`records._targets`' `{record_type,
+    record_id}` links, at most 20), dated on the latest conversation, its
+    body masked (Academy Viewers read notes; FR-CRMAI-LLM-05)."""
+    body = _masked(capture_rules.academy_note(entries, str(evidence.get("mailbox_email") or "")))
+    links = [{"record_type": "company", "record_id": company_id}]
+    links += [{"record_type": "person", "record_id": p} for p in person_ids]
+    values: dict[str, Any] = {"kind": "note", "body": body, "links": links[:20]}
+    latest = max((str(e.get("latest_at") or "") for e in entries), default="")
+    if latest[:10]:
+        values["occurred_on"] = latest[:10]
+    return base.create(approver, "note", values, check_duplicates=False)["id"]
 
 
 def approve(ctx: Any, item_id: str, body: ReviewApproveIn) -> dict[str, Any]:

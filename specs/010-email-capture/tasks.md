@@ -257,3 +257,157 @@ in parallel with each other.
 | S3: `deal_signal` into Proposal asks amount and close; Labs tentative project only then | `TestDealSignal::test_capture_proposal_needs_amount_and_close` |
 | S3: not judged twice for the same latest message | `test_crm_capture_job.py::TestOnce::test_capture_judges_a_message_once_across_retries` + db `test_record_refuses_a_stale_message` |
 | S3: applying a dry run creates items without Claude calls | `test_crm_capture_job.py::TestApply::test_capture_applying_a_dry_run_makes_items_without_claude` |
+
+---
+
+## R1 — Capture improvements
+
+**Goal.** One suggestion per company (the 31 open items consolidated
+automatically), an honest recall line, course enquiries suggested in the
+Academy, and calendar invitations from outside people treated as mail.
+
+**Spec.** §14: FR-CAP-GRP-01 to -09; FR-CAP-RPT-05 to -10; FR-CAP-ACAD-01 to
+-10; FR-CAP-INV-01 to -06; E13–E16. Amended: FR-CAP-SRC-03, DIS-05, DIS-06,
+REV-01, -02, -04, RPT-02, -03.
+
+**Plan.** "Revision 1" (R1.1–R1.12, PD-22 to PD-37). **Migration.**
+`074_crm_capture_improvements.sql` (data-model §9).
+
+**Where.** Branch `010-capture-improvements` from `main` `4c3f497`. The
+gates at the top of this file apply unchanged, plus: after a fresh reset,
+every mailbox has `invites_rescanned_at IS NULL`; 001–073 unchanged
+(`git diff main --stat -- supabase/migrations/0[0-6]*.sql
+supabase/migrations/07[0-3]*.sql` empty).
+
+### R1 setup
+
+- [x] T401 Write `074_crm_capture_improvements.sql`: header (numbered list; provenance `crm_audit_row` → 071, upsert body → 069; Reversible); `crm_mailboxes.invites_rescanned_at`, `invite_rescan_token` (≤ 512); `crm_audit_row()` copied from 071 with both columns in the mailbox skip (`-- 074`); `crm_capture_group_upsert`, `crm_capture_release_thread`, `crm_capture_consolidate` (data-model §9.4: capture lock first, rows `FOR UPDATE` with an `open` re-check, sync/system actor, skip rule ignoring expired-with-refusal, release never touching `deal_document` entries, merge with deal choices and `current_values` only from the newest entry, audit rows); `crm_review_release` replaced from 068 (`-- 074`: capture lock, merge into the open item before expiring, reopen drops threads held elsewhere); key CHECK + `capture_routing` seed + `crm_workspaces_seed_ai` replaced from 072 (data-model §9.2a); grants — `supabase/migrations/074_crm_capture_improvements.sql`
+- [x] T402 Store: `_MAILBOX_COLUMNS` + `MAILBOX_PROGRESS` + both columns; `capture_group_upsert(ws, item, entry)`, `capture_release_thread(ws, ref, keep)`, `capture_consolidate(ws, plan)`, `open_capture_items(ws)` (open `new_lead`/`deal_signal` with `source_kind = 'email_thread'`) — `backend/app/services/crm/store.py`
+- [x] T403 Fakes: the three 074 functions mirrored (skip rule, release, merge, consolidate, audit rows, open re-check after a claim) and the replaced `crm_review_release` capture branch, `capture_routing` setting rows, mailbox columns in `DEFAULTS`, `FakeGmail.search` matching `subject:` words — `backend/tests/crm_fake.py`
+- [x] T404 [P] Calendar rules shared by I2 and I4: `_INVITATION_SUBJECTS`, `_CALENDAR_NOTICE_SUBJECTS`, `is_invitation`, `invite_parties`, `is_calendar_notice`, `is_bulk(headers, sender, outside=())` (today's List-Unsubscribe, Precedence, auto-reply, delivery-report and non-calendar no-reply checks first; then an invitation with an outside party → False, overriding only the subject prefix, the calendar-sender rule and that sender's `Auto-Submitted`); `email_rules.HEADERS` + `"Reply-To"`, `classify` adding `Reply-To` only for a calendar-sender invitation; split `test_capture_calendar_invitations_are_skipped` into invitation-with-outsider not bulk, internal invite bulk, each notice subject bulk, calendar sender never an outside party, `Reply-To` organiser counted, an `Invitation:` with `List-Unsubscribe` and one from `no-reply@` still bulk — `backend/app/domain/crm/capture.py`, `backend/app/domain/crm/email_rules.py`, `backend/tests/test_crm_capture_rules.py`
+
+### R1 / I1 — one suggestion per company
+
+- [x] T411 Pure rules: `company_key(finding)` (domain normalised, never webmail; Claude's own name only; address; `thread:` fallback; hash over 300); `thread_entry(...)`; `new_lead_item`, `discovered_signal_item`, `deal_signal_item` on the R1.2 keys with `source_link.threads`; `thread_entry` with `person_email`, `first_name`, `last_name`; `new_lead_detail` "N conversations · M emails · reason"; `consolidation_plan(items, findings)` (target key per open item from its candidate's finding, else the suggestion with the `_company_name` fallback recognised; groups of two or more or a pre-074 key) — `backend/app/domain/crm/capture.py`
+- [x] T412 Capture service: `store_items` through `review.capture_group_upsert` (new wrapper in `review.py` masking `item.suggestion` and `entry.reason` with `_masked`, then `store.capture_group_upsert`; count `items_skipped`, `released`); `_judge` no-item path → `capture_release_thread(ws, ref, "")`; `_consolidate(ws)` in `run` right after the `mode == OFF` check, before the other gates (failure logged, `consolidate_failed`, run continues), reading the members' candidate findings; `apply` unchanged in order but order-independent through the SQL merge; test: a currency figure in a finding's reason is masked in `suggestion` and `source_link.threads` — `backend/app/services/crm/capture.py`, `backend/app/services/crm/review.py`
+- [x] T413 Sync: `_deal_documents` stores its signal through `review.capture_group_upsert` on the `capture:deal` key with `origin = "deal_document"` entries — `backend/app/services/crm/email_sync.py`
+- [x] T414 Review service: `_new_lead` makes or links one person per distinct entry `person_email` through `base.create`, then queues `_queue_filing` per entry with a `mailbox_id` (fallback to the top-level link), result `people`, `threads_filed` (entries whose sender is then known); `present` passes `source_link.threads` through — `backend/app/services/crm/review.py`
+- [x] T415 [P] Rule tests: keys, grouping inputs, webmail apart, name only from Claude, hash, plan for nine items, a plan for already-keyed singles is empty, a pre-074 item whose suggestion `company_name` is the person's name keys by email (from its finding when present), two namesakes at webmail stay apart — `backend/tests/test_crm_capture_rules.py`
+- [x] T416 Job tests `TestGrouping`: three conversations at one domain → one item with three entries and totals; name-only grouping; two webmail senders apart; apply in reverse order gives the same item; an older proposal signal applied after a newer closed-won one keeps the closed-won stage and its deal choices; one document to two known companies keeps a signal for each; dismissed company: re-judged listed conversation skipped, re-applied dry run skipped, new conversation suggested; thread moved to another company leaves the first, empty item expires; deal document + discovery signal → one item; `TestConsolidation`: nine open pre-074 items → newest survives with nine entries, eight expired with `superseded_by` and audit rows, an approved and a dismissed item untouched, second run no-op, a collision with an open new key merges into it, failure does not stop the run, capture Off leaves every item untouched, a pre-074 person-name item and a new conversation from the same sender end in one item — `backend/tests/test_crm_capture_job.py`
+- [x] T417 [P] Review tests: approve a grouped item queues one `crm.capture_thread` per entry, `threads_filed`; two webmail senders grouped by Claude's company name become two people and both conversations count as filed; a pre-074 item still files its one link; revision bump → 409 on a stale form — `backend/tests/test_crm_capture_review.py`
+- [x] T418 DB tests: group upsert insert/merge/skip (both skip forms; expired-with-refusal does not skip), deal choices and `current_values` replaced only by the newest entry, the three interleavings (upsert after claim inserts a fresh item; refusal with a fresh item merges the threads, then expires; reopen drops threads held elsewhere, empty → expired), `capture_routing` key and seed, release (remove, recompute, expire empty, document entries kept), consolidate (lock, decided untouched, idempotent, audit rows, survivor newest), merge (065) still re-keys `capture:linked`/`capture:deal` — `backend/tests/db/test_crm_capture_db.py`
+- [x] T419 Frontend: `CrmCaptureThreadRef`, `source.link.threads`, evidence `conversations`; `evidenceRows` + Conversations; "File these N conversations"; expired with `superseded_by` → "Merged into another suggestion" — `frontend/lib/api/crm-types.ts`, `frontend/components/crm/review-item.tsx`
+- [x] T420 I1 review fixes: `_new_lead` treats the newest entry as the suggestion's person (an edited address makes no second person) and links a held person of no company to the company (one under another company stays); `crm_capture_person` rewrites a new lead's person from the newest entry when one leaves (release, reopen, refusal merge); `crm_capture_merge` keeps a `deal_document` origin; the refusal merge leaves out entries a third open item holds; `_deal_documents` names each company's own contact; the approve button reads "File these N conversations" — 074, `review.py`, `email_sync.py`, `crm_fake.py`, `review-item.tsx`, tests in `test_crm_capture_review.py`, `test_crm_capture_job.py`, `test_crm_capture_sync.py`, `db/test_crm_capture_db.py`
+
+### R1 / I2 — honest recall line
+
+Depends on T404.
+
+- [x] T421 Pure rules: `FATES` (twelve, `skipped_rules` legacy), `recall_fate(..., skip_reason, failed, business, routed)`, `recall_summary(rows)`, `recall_line(rows)` (FR-CAP-RPT-07 wording, singulars, cap from the `{"capped": true}` marker, Academy clause inside the found sentence with `academy_unrouted` counted in found, legacy); `_recall` writes the marker only when it stops at the cap with threads unchecked; `_recall_rows` skips rows without `thread_id` — `backend/app/domain/crm/capture.py`
+- [x] T422 Capture service: `_drop_reason(thread)` sibling of `_survivors` (internal / calendar / automated, ties calendar > automated > internal); `_fate` order of plan R1.3 (empty or malformed → `not_judged`; `asked is None` → `not_judged`; an Academy finding → `found` until I3, whose `academy_unrouted` branch is T443's); `overview` returns `recall.summary` — `backend/app/services/crm/capture.py`
+- [x] T423 Schema: `CaptureRecallRowOut.fate` Literal + five fates (keep `skipped_rules`); `CaptureRecallOut.summary` (optional) — `backend/app/schemas/crm.py`
+- [x] T424 [P] Rule tests `TestRecall` rewritten: none tested (60 = 36 + 15 + 9), some tested, academy_unrouted inside found ("of which 2 …"), zero reasons left out, singulars, cap only with the marker (exactly 500 rows without it is not capped), legacy `skipped_rules` run renders — `backend/tests/test_crm_capture_rules.py`
+- [x] T425 Job tests: fate map with `r-internal` → `internal_only`, `r-cal` notice → `calendar`, `r-bulk` → `automated`, Claude failure → `not_judged`, empty thread → `not_judged`, outside-party invite judged; exact lines updated (L700–770) — `backend/tests/test_crm_capture_job.py` (the outside-party invite case waits for T463: `_survivors` still drops it, and `TestNeverClaude` pins that until I4)
+- [x] T426 [P] Route test: overview `recall.summary` shape, old stored run with `skipped_rules` validates (no 500) — `backend/tests/test_crm_capture_routes.py`
+- [x] T427 Frontend: `CrmCaptureRecallFate` + five; `FATE_TEXT` (contracts §7.1); breakdown list under the line from `summary` — `frontend/lib/api/crm-types.ts`, `frontend/components/crm/capture-settings.tsx`
+
+### R1 / I3 — course enquiries to the Academy
+
+- [x] T441 Schema: `DiscoveryOutput.business` (default `labs`); `CaptureFindingOut` + `business`, `routed`; overview counts + `academy`, `academy_unrouted` — `backend/app/schemas/crm.py`
+- [x] T442 Pure rules: `INSTRUCTION` business and invitation sentences; `CLASSIFIER_VERSION = "010.2"`; `finding_of` keeps `business` (forced `labs` outside the TVA-linked workspace), nulls `duplicate_company_id` for Academy; `academy_lead_item(finding, mailbox_email, thread_id, …)` (no `mailbox_id`, R1.2 keys inside the Academy, `origin = "academy_routing"`) — `backend/app/domain/crm/capture.py`
+- [x] T443 Capture service: `_academy_target()` (key `academy`, an active Admin, `capture_routing.accept_routed` true; cached per run); `_route_academy` in live `_judge` and `apply` (Labs release; no target → `routed = false`, `academy_unrouted`; otherwise `routed = true`, `academy_routed`, then the Academy step under an Academy `sync` actor: Academy ignore list and earlier Academy decisions logged as `capture.academy_skipped` only, Academy duplicates, owner by `owner_for` with Academy roles, `review.capture_group_upsert`); back-to-Labs release on **every** Labs judgement ending as a Labs item or no item when a target exists; overview Academy counts from `dry_run_findings`; `_fate` passes `routed = _academy_target() is not None` for an Academy finding (plan R1.3 step 7: `found` / `academy_unrouted`); `VALIDATORS["capture_routing"]` — `backend/app/services/crm/capture.py`, `backend/app/domain/crm/capture.py`
+- [x] T444 Review service: `_new_lead` for `origin == "academy_routing"`: company, one person per distinct entry address, one masked note via `base.create(…, "note", …)` linked to all of them (check the `links` shape `records._targets` takes), no filing, result `note_id`; retry reuses `result` — `backend/app/services/crm/review.py`
+- [x] T445 [P] Rule tests: schema default and enum, instruction sentences, `academy_lead_item` holds no uuid-shaped value, Labs finding forced outside TVA-linked — `backend/tests/test_crm_capture_rules.py`
+- [x] T446 Job tests `TestAcademy`: routed item in Academy owned by Admins / by the mailbox owner when an Academy member; no Labs item and an earlier Labs item released; no workspace and no active Admin → `academy_unrouted`, no item; Academy ignore stops it, Labs ignore not consulted; re-judged to Labs releases the Academy item, with the candidate reopened by a real `mark_candidates` call before the re-judgement; `accept_routed` off → `academy_unrouted`, no item; a dry-run recall row for an Academy finding is stored as `academy_unrouted` with no Academy target and `found` with one; usage row is Labs'; apply routes — `backend/tests/test_crm_capture_job.py`
+- [x] T447 [P] Review tests: Academy approval creates company, person, note, queues nothing, touches no Labs row; dismiss writes the Academy ignore — `backend/tests/test_crm_capture_review.py`
+- [x] T448 Isolation: Academy item columns hold no Labs mailbox, candidate, company or run id; Labs candidate rows, report and job counts hold no Academy id, and are identical for an Academy-ignored finding and a routed one; Academy-only member sees the item, Labs-only member does not (every scope and status) — `backend/tests/test_crm_isolation_sweep.py`, `backend/tests/test_crm_ai_isolation.py`
+- [x] T449 Frontend: Academy card text instead of "Open conversation" (no `thread_key`, null target renders); capture counts row "Course enquiries sent to the Academy" / "… with no Academy workspace"; in the Academy's Settings → Email capture, the *Accept course enquiries from Labs* switch (Admin) — `frontend/components/crm/review-item.tsx`, `frontend/components/crm/capture-settings.tsx`, `frontend/lib/api/crm-types.ts`
+- [x] T450 Review fixes (I3): apply writes each routed candidate's `finding.routed` (and `duplicate_company_id` null) and the run's `academy`/`academy_unrouted` counts through 074's new `crm_capture_apply_routed`, before `crm_capture_apply`, so an applied run keeps both (FR-CAP-ACAD-02, FR-CAP-RPT-09); `_back_to_labs` needs only the Academy workspace, not a target (FR-CAP-ACAD-09); the Academy note and card name each conversation's own mailbox from its `ref`; the count row reads "to be sent" until the run is applied and shows only when the run found course enquiries; spec §14.5 I3, FR-CAP-ACAD-04 and plan R1.4 amended: live, the Labs ignore list still applies before judging (FR-CAP-DIS-03) — `backend/app/services/crm/capture.py`, `backend/app/services/crm/store.py`, `backend/app/domain/crm/capture.py`, `supabase/migrations/074_crm_capture_improvements.sql`, `frontend/components/crm/review-item.tsx`, `frontend/components/crm/capture-settings.tsx`, tests in `test_crm_capture_job.py`, `test_crm_capture_review.py`, `test_crm_capture_rules.py`, `tests/db/test_crm_capture_db.py`
+
+### R1 / I4 — invitations from outside people
+
+Depends on T404.
+
+- [x] T461 Pure rules: `MEETING_HOSTS` in `website_choices`; `invite_rescan_query`; `INVITE_RESCAN_PAGES = 5`; `prompt_parts` "Conversation type: meeting invitation" — `backend/app/domain/crm/capture.py`
+- [x] T462 Sync: `_take`, `_deal_documents` pass filtered `outside` to `is_bulk` (filter moved before the check); `_rescan_invites` in the incremental branch after deal documents (own try/except, token per page, finish sets `invites_rescanned_at`, a saved token refused as invalid is cleared and the rescan restarts); counts `invites_rescanned`, `invite_rescan_failed`, `invite_rescan_restarted`; API untouched for the two columns — `backend/app/services/crm/email_sync.py`
+- [x] T463 Capture service: `_survivors` passes `outside`, marks `invite` on kept invitations — `backend/app/services/crm/capture.py`
+- [x] T464 Sync tests `TestInvitations`: unknown outside organiser → candidate; known contact → stored and linked; calendar sender + outside `Reply-To` → candidate; `Accepted:`, reminder, internal invite, and an `Invitation:` with `List-Unsubscribe` or from `no-reply@` skipped with nothing stored; `TestInviteRescan`: two pages across two syncs, finish recorded, third sync searches nothing, re-run of a page stores nothing twice, failure keeps the token and the history cursor, a 400 on the saved token clears it and restarts from the query start — `backend/tests/test_crm_capture_sync.py`
+- [x] T465 [P] Job test: an invitation candidate is judged with the meeting-invitation part; Meet host never offered as website — `backend/tests/test_crm_capture_job.py`
+- [x] T466 DB test: the two columns not audited, a `capture_source` change still is — `backend/tests/db/test_crm_email_db.py::TestMailboxAudit`
+- [x] T467 Review fixes (I4): `outside_people(headers, outside)` drops Google Calendar's sending address from an invitation's outside participants where `_take`, `_deal_documents`, `_survivors` and `_drop_reason` build them, so matching, the ignore list (Labs and Academy), `choose_email` and grouping see only the organiser (FR-CAP-INV-01); `domain_of_finding`'s address fallback and `company_key` never use a meeting host (FR-CAP-INV-04); `_take` clears `is_auto` on a non-bulk invitation, so a calendar-sent one moves Last inbound like any message (FR-CAP-INV-02); `_rescan_invites` starts no page once `INVITE_RESCAN_SECONDS = 120` have passed since the page task began, skips stored ids before any metadata read and hands its metadata to `_take` (no second read); tests: calendar invite never filed to a google.com company, owner-sent invite moves New → Contacted, known invite moves Last inbound, Labels-only never rescans, the rescan's time budget and single read, an ignored organiser's calendar invite ignored without Claude, a finding with no person or website from Claude names the organiser — `backend/app/domain/crm/capture.py`, `backend/app/services/crm/email_sync.py`, `backend/app/services/crm/capture.py`, `backend/tests/test_crm_capture_sync.py`, `backend/tests/test_crm_capture_job.py`, `backend/tests/test_crm_capture_rules.py`
+
+### R1 / review — whole-branch review fixes
+
+- [x] T470 Whole-branch review fixes: `_new_lead` counts `threads_filed` against the addresses a person holds after approval (or whose domain the company holds), not the edited-away address (R1-X1); R1's further notice subjects (*Notification:*, *Proposed new time:*, "… with note:" cancellations) are bulk only from Google Calendar's sender (R1-X2); `_route_academy` catches any fault of the Academy step, logs `crm_capture_academy_step_failed` keyed to the Academy, and still returns routed, live and on apply (ISO-1); 074's re-suggestion check matches a decided deal-document signal by company, so a pre-074 key counts (F1); `_take` stores an outside person's invitation `is_auto` with a transient `is_invite` that moves `last_*` and New → Contacted but no flag (OPS-1); the 074 release check can fail (OPS-3); spec FR-CAP-GRP-04, -ACAD-04, -INV-02, -INV-03, plan R1.2, R1.4, R1.5, R1.10 and data-model §9.4 amended — `backend/app/services/crm/review.py`, `backend/app/domain/crm/capture.py`, `backend/app/services/crm/capture.py`, `backend/app/services/crm/email_sync.py`, `backend/app/domain/crm/email_rules.py`, `supabase/migrations/074_crm_capture_improvements.sql`, `docs/operations/deployment.md`, tests in `test_crm_capture_review.py`, `test_crm_capture_rules.py`, `test_crm_capture_job.py`, `test_crm_capture_sync.py`, `tests/db/test_crm_capture_db.py`
+
+### R1 / D — docs and release
+
+- [x] T481 [P] Architecture: email capture section (company grouping, consolidation, recall reasons, Academy routing and the isolation paragraph, invitations, rescan); jobs line — `docs/architecture/crm.md`
+- [x] T482 [P] Help: Email capture (recall line, Academy, invitations) and New lead (conversations, merged items) — `docs/guides/10-crm-admin.md`, `docs/guides/12-crm-intelligence.md`; then `pnpm build:guides` — `frontend/lib/help-content.generated.json`
+- [x] T483 [P] Deployment §9 "074 release": migration first, all five Railway services from one commit, Netlify with `--skip-functions-cache`, checks of plan R1.10 — `docs/operations/deployment.md`
+- [x] T484 Security sweep names for 074 functions (and the replaced `crm_review_release`, `crm_workspaces_seed_ai` keeping every earlier branch) — `backend/tests/db/test_crm_security_db.py`
+- [x] T485 Gates; commits per improvement ("Group capture suggestions by company (010 R1)", "Make the recall line honest (010 R1)", "Send course enquiries to the Academy (010 R1)", "Treat outside calendar invitations as mail (010 R1)", "Document capture improvements (010 R1)"); merge to `main`
+- [ ] T486 Release (plan R1.10): `npx supabase db push` (074); Railway `api`, `worker`, `beat`, `worker-crm-ai`, `worker-crm-sync` from the merge commit; Netlify `--skip-functions-cache`; checks: no open capture item on a `gmail:` key and no company with two open items, HearSight one open item, expired members with `superseded_by` and audit rows, `invites_rescanned_at` after the next sync, `/health/jobs` ok — no files
+- [ ] T487 Report to the owner: consolidation numbers, what the next dry run will show, Academy routing waits for an active Academy Admin (its *Accept course enquiries from Labs* switch is on by default), course enquiries already open in Labs stay there until dismissed or expired within 14 days (FR-CAP-ACAD-11), filing waits for email sync; update the project memory note — no repo files
+
+### R1 parallel groups
+
+| Group | Tasks that may run together (disjoint files) |
+|---|---|
+| after T401–T403 | T404, T441 |
+| I1 tests | T415, T417 (after T411–T414) |
+| I2 | T424, T426 (after T421–T423) |
+| I3 tests | T445, T447 (after T442–T444) |
+| I4 | T465 (after T461–T463) |
+| D | T481, T482, T483 |
+
+`domain/crm/capture.py`, `services/crm/capture.py`, `store.py`,
+`schemas/crm.py`, `crm_fake.py` and `services/crm/review.py` are shared
+across I1–I4: their tasks run one after another.
+
+### R1 coverage — spec to tasks
+
+| Spec | Tasks |
+|---|---|
+| GRP-01, -02, -03 | T401, T411, T412, T416, T418, T419 |
+| GRP-04 | T414, T417 |
+| GRP-05 | T401, T416, T418 |
+| GRP-06 | T411, T413, T416 |
+| GRP-07 | T401, T412, T416, T418 |
+| GRP-08 | T401, T411, T412, T416, T418, T486 |
+| GRP-09 | T417 |
+| RPT-05 to -08, -10 | T421–T427 |
+| RPT-09 | T441, T443, T449 |
+| ACAD-01 | T441, T442, T445 |
+| ACAD-02 to -04, -07 to -10 | T401, T443, T446, T448, T449 |
+| ACAD-11 | T486, T487 (stated, nothing moved) |
+| ACAD-05, -06 | T444, T447 |
+| INV-01 to -03 | T404, T462, T464 |
+| INV-04 | T461, T463, T465 |
+| INV-05 | T401, T402, T462, T464, T466 |
+| INV-06 | T481 (documented) |
+
+### R1 acceptance — spec §14.5 line to test
+
+| §14.5 line | Test |
+|---|---|
+| I1: three conversations → one item, three filings | `TestGrouping::test_capture_groups_a_company_s_conversations` + `test_crm_capture_review.py::TestGroupedApproval::test_capture_files_every_grouped_conversation` |
+| I1: name grouping; webmail apart | `TestGrouping::test_capture_groups_by_claude_s_company_name` |
+| I1: dismissed company not back for listed conversations; new one suggested | `TestGrouping::test_capture_a_dismissed_company_returns_only_for_new_mail` |
+| I1: re-judged conversation leaves; empty item expires | `TestGrouping::test_capture_a_moved_conversation_leaves_its_item` |
+| I1: one deal signal per company | `TestGrouping::test_capture_one_deal_signal_per_company` |
+| I1: consolidation of nine | `TestConsolidation::test_capture_consolidates_open_items_once` + db `test_consolidate_leaves_decided_items` |
+| I2: none tested line | `TestRecall::test_capture_recall_line_when_none_could_be_tested` |
+| I2: some tested line | `TestRecall::test_capture_recall_line_counts_only_tested` |
+| I2: Claude failure not judged | `test_crm_capture_job.py::TestRecall::test_capture_recall_counts_a_failure_as_not_judged` |
+| I2: old run renders | `test_crm_capture_routes.py::test_capture_overview_reads_a_run_before_074` |
+| I2: page breakdown and fate text | `pnpm build` (exhaustive `FATE_TEXT`) |
+| I3: routed, no Labs uuid | `TestAcademy::test_capture_routes_a_course_enquiry_to_the_academy` + `test_crm_isolation_sweep.py` |
+| I3: Academy approval | `TestAcademyApproval::test_capture_academy_approval_records_a_note` |
+| I3: no workspace / no Admin | `TestAcademy::test_capture_without_an_academy_admin_suggests_nothing` |
+| I3: Academy ignore list | `TestAcademy::test_capture_academy_ignore_list_stops_routing` |
+| I3: Labs rows hold no Academy id; membership; usage | `test_crm_ai_isolation.py::test_isolation_academy_routing_stays_one_way` |
+| I4: outside invite → candidate, judged as invite | `TestInvitations::test_capture_an_outsider_s_invitation_is_a_candidate` + job `test_capture_tells_claude_it_is_an_invitation` |
+| I4: known invite filed | `TestInvitations::test_capture_files_a_known_contact_s_invitation` |
+| I4: notices, internal invites skipped | `TestInvitations::test_capture_still_skips_calendar_notices` |
+| I4: rescan once, resumable | `TestInviteRescan::test_capture_rescans_invitations_once` |

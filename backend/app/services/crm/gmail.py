@@ -71,7 +71,14 @@ RETRY_AFTER_CAP: Final = 30.0
 
 class GmailError(Exception):
     """A Gmail or token call failed. The message names the operation and
-    the HTTP status only, never a mailbox's content or a credential."""
+    the HTTP status only, never a mailbox's content or a credential.
+    `status` is the HTTP status Gmail answered with, when it answered (spec
+    010 R1 PD-43: a refused saved page token restarts the invitation
+    rescan)."""
+
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class HistoryGone(GmailError):
@@ -224,7 +231,7 @@ def _get(mailbox: str, op: str, path: str, params: Any = None) -> dict[str, Any]
         if response.status_code == 404 and op == "history":
             raise HistoryGone("Gmail no longer has this mailbox's history from that point.")
         if response.status_code != 200:
-            raise GmailError(f"Gmail {op} failed ({response.status_code}).")
+            raise GmailError(f"Gmail {op} failed ({response.status_code}).", response.status_code)
         return response.json()
 
 
