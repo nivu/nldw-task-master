@@ -342,11 +342,11 @@ Depends on T404.
 
 ### R1 / D — docs and release
 
-- [ ] T481 [P] Architecture: email capture section (company grouping, consolidation, recall reasons, Academy routing and the isolation paragraph, invitations, rescan); jobs line — `docs/architecture/crm.md`
-- [ ] T482 [P] Help: Email capture (recall line, Academy, invitations) and New lead (conversations, merged items) — `docs/guides/10-crm-admin.md`, `docs/guides/12-crm-intelligence.md`; then `pnpm build:guides` — `frontend/lib/help-content.generated.json`
-- [ ] T483 [P] Deployment §9 "074 release": migration first, all five Railway services from one commit, Netlify with `--skip-functions-cache`, checks of plan R1.10 — `docs/operations/deployment.md`
-- [ ] T484 Security sweep names for 074 functions (and the replaced `crm_review_release`, `crm_workspaces_seed_ai` keeping every earlier branch) — `backend/tests/db/test_crm_security_db.py`
-- [ ] T485 Gates; commits per improvement ("Group capture suggestions by company (010 R1)", "Make the recall line honest (010 R1)", "Send course enquiries to the Academy (010 R1)", "Treat outside calendar invitations as mail (010 R1)", "Document capture improvements (010 R1)"); merge to `main`
+- [x] T481 [P] Architecture: email capture section (company grouping, consolidation, recall reasons, Academy routing and the isolation paragraph, invitations, rescan); jobs line — `docs/architecture/crm.md`
+- [x] T482 [P] Help: Email capture (recall line, Academy, invitations) and New lead (conversations, merged items) — `docs/guides/10-crm-admin.md`, `docs/guides/12-crm-intelligence.md`; then `pnpm build:guides` — `frontend/lib/help-content.generated.json`
+- [x] T483 [P] Deployment §9 "074 release": migration first, all five Railway services from one commit, Netlify with `--skip-functions-cache`, checks of plan R1.10 — `docs/operations/deployment.md`
+- [x] T484 Security sweep names for 074 functions (and the replaced `crm_review_release`, `crm_workspaces_seed_ai` keeping every earlier branch) — `backend/tests/db/test_crm_security_db.py`
+- [x] T485 Gates; commits per improvement ("Group capture suggestions by company (010 R1)", "Make the recall line honest (010 R1)", "Send course enquiries to the Academy (010 R1)", "Treat outside calendar invitations as mail (010 R1)", "Document capture improvements (010 R1)"); merge to `main`
 - [ ] T486 Release (plan R1.10): `npx supabase db push` (074); Railway `api`, `worker`, `beat`, `worker-crm-ai`, `worker-crm-sync` from the merge commit; Netlify `--skip-functions-cache`; checks: no open capture item on a `gmail:` key and no company with two open items, HearSight one open item, expired members with `superseded_by` and audit rows, `invites_rescanned_at` after the next sync, `/health/jobs` ok — no files
 - [ ] T487 Report to the owner: consolidation numbers, what the next dry run will show, Academy routing waits for an active Academy Admin (its *Accept course enquiries from Labs* switch is on by default), course enquiries already open in Labs stay there until dismissed or expired within 14 days (FR-CAP-ACAD-11), filing waits for email sync; update the project memory note — no repo files
 
