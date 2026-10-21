@@ -1014,9 +1014,13 @@ def _take(
             continue
         if not bulk and capture_rules.is_invitation(meta["headers"]):
             # Spec 010 R1 FR-CAP-INV-02: such an invitation moves Last
-            # inbound or outbound like any message; the `Auto-Submitted`
-            # Google Calendar's sender adds marks no auto-reply.
-            info["is_auto"] = False
+            # inbound or outbound and New → Contacted like any message
+            # (`is_invite`, read by `email_rules.latest` and `contacted`),
+            # but is stored `is_auto` so Reply owed and Client silent never
+            # read it: the owner's answer to it is a skipped notice (review
+            # OPS-1).
+            info["is_auto"] = True
+            info["is_invite"] = True
         found.append(
             {
                 **info,
@@ -1094,7 +1098,7 @@ def _take(
     stored = set(store.store_emails(ws_id, mailbox["id"], messages))
     counts["stored"] = len(stored)
     kept = [
-        {**msg, "sent_at": m["sent_at"]}
+        {**msg, "sent_at": m["sent_at"], "is_invite": bool(m.get("is_invite"))}
         for msg, m in zip(messages, found, strict=True)
         if msg["gmail_message_id"] in stored
     ]

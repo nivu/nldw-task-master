@@ -1701,6 +1701,40 @@ class TestGroupUpsert:
         _decide(stack, made["id"], "dismissed")
         assert _group(stack, ws, _lead_item(1))["skipped"] is True
 
+    def test_group_upsert_skips_the_pre_074_form_of_a_deal_document(self, stack, ws, owner):
+        """Review F1 (PD-24, PD-39): a deal document's signal decided under
+        073 (keyed per conversation) is matched by its company, so a
+        re-search of documents does not bring it back."""
+        company = _company_id(stack, ws, owner)
+
+        def document(company_id: str) -> dict:
+            return capture.deal_signal_item(
+                mailbox_id="mb",
+                thread_id="t1",
+                message_id="m-doc",
+                company_id=company_id,
+                deals=[],
+                stage="proposal",
+                kinds=["proposal"],
+                direction="outbound",
+                message_at=datetime.now(UTC),
+                owner_id=None,
+                generated_at=_at(),
+            )
+
+        old = _pre074(document(company))
+        assert old["dedupe_key"] != document(company)["dedupe_key"]
+        [made] = stack.sql(
+            f"SELECT crm_review_upsert({_j(stack, _sync(ws))}, {_j(stack, [old])}) AS r"
+        )[0]["r"]
+        _decide(stack, made["id"], "dismissed")
+        again = document(company)
+        assert _group(stack, ws, again, again["source_link"]["threads"][0])["skipped"] is True
+        # Per company still (PD-39): the same document to another company.
+        other = _company_id(stack, ws, owner, name="Other Co")
+        fresh = document(other)
+        assert _group(stack, ws, fresh, fresh["source_link"]["threads"][0])["created"] is True
+
     def test_group_upsert_an_expiry_by_refusal_or_merge_is_no_decision(self, stack, ws):
         refused = _group(stack, ws, _lead_item(1))
         _decide(stack, refused["id"], "expired", refusal="Refused.")

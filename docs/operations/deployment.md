@@ -813,12 +813,22 @@ on `main`:
 
    - Within an hour, the first capture run under Settings → Jobs shows
      `consolidated`.
-   - No company has two open capture items:
+   - No open capture item is left on a pre-074 per-conversation key, and
+     no company has two open capture items. (A check on `dedupe_key` alone
+     proves nothing: 061's unique index already allows one open item per
+     key, consolidated or not.)
 
      ```sql
-     select dedupe_key, count(*) from crm_review_items
+     select count(*) from crm_review_items
+      where status = 'open' and type in ('new_lead', 'deal_signal')
+        and source_key like 'gmail:%';                                   -- 0
+
+     select workspace_id, coalesce(record_id::text, suggestion->>'domain') as company,
+            count(*)
+       from crm_review_items
       where status = 'open' and type = 'new_lead'
-      group by 1 having count(*) > 1;                                    -- no rows
+        and coalesce(record_id::text, suggestion->>'domain') is not null
+      group by 1, 2 having count(*) > 1;                                 -- no rows
      ```
 
    - HearSight has **one** open item, whose `source_link->'threads'` has

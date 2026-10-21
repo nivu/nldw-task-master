@@ -166,17 +166,19 @@ _NO_REPLY: Final = re.compile(
 #: and its notices, by how their subjects start (lower case). A reply to an
 #: invitation (`Re:`) is a person writing: no prefix is stripped.
 _INVITATION_SUBJECTS: Final = email_rules.INVITATION_SUBJECTS
+#: Notices that are bulk from any sender: the subjects 010 already skipped
+#: before R1, so mail from a person keeps its pre-074 handling.
 _CALENDAR_NOTICE_SUBJECTS: Final = (
     "accepted:",
     "declined:",
     "tentatively accepted:",
     "canceled event:",
     "cancelled event:",
-    "canceled event with note:",
-    "cancelled event with note:",
-    "proposed new time:",
-    "notification:",
 )
+#: Review R1-X2: R1's further notices (*Notification:*, *Proposed new
+#: time:*, "… with note:" cancellations) are recognised by Google
+#: Calendar's sender, whose mail (invitations aside) is bulk, never by the
+#: subject alone: a person's "Notification: PO 4411 issued" is mail.
 _CALENDAR_SENDER: Final = email_rules.CALENDAR_SENDER
 
 

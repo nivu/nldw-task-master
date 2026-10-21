@@ -228,16 +228,35 @@ class TestInvitations:
             "Tentatively accepted: Demo",
             "Canceled event: Demo",
             "Cancelled event: Demo",
-            "Canceled event with note: Demo",
-            "Cancelled event with note: Demo",
-            "Proposed new time: Demo",
-            "Notification: Demo @ 10am",
         ],
     )
     def test_capture_each_calendar_notice_is_bulk(self, subject):
         headers = _h(From="priya@acme.com", Subject=subject)
         assert capture.is_bulk(headers, "priya@acme.com", OUTSIDER)
         assert capture.is_calendar_notice(headers, "priya@acme.com", OUTSIDER)
+
+    R1_NOTICES = [
+        "Canceled event with note: Demo",
+        "Cancelled event with note: Demo",
+        "Proposed new time: Demo",
+        "Notification: Demo @ 10am",
+    ]
+
+    @pytest.mark.parametrize("subject", R1_NOTICES)
+    def test_capture_each_r1_calendar_notice_from_google_calendar_is_bulk(self, subject):
+        headers = _h(From=f"Google Calendar <{CALENDAR}>", Subject=subject)
+        assert capture.is_bulk(headers, CALENDAR, OUTSIDER)
+        assert capture.is_calendar_notice(headers, CALENDAR, OUTSIDER)
+
+    @pytest.mark.parametrize(
+        "subject", [*R1_NOTICES, "Notification: PO 4411 issued", "Notification: billing contact"]
+    )
+    def test_capture_an_r1_notice_subject_from_a_person_is_mail(self, subject):
+        """Review R1-X2: the subjects R1 added are a notice only from Google
+        Calendar's sender; from a person they keep their pre-074 handling."""
+        headers = _h(From="Priya <priya@acme.com>", Subject=subject)
+        assert not capture.is_bulk(headers, "priya@acme.com", OUTSIDER)
+        assert not capture.is_calendar_notice(headers, "priya@acme.com", OUTSIDER)
 
     def test_capture_anything_else_from_google_calendar_is_bulk(self):
         headers = _h(From=CALENDAR, Subject="Your agenda for today")

@@ -376,10 +376,12 @@ def links_for(
 def latest(messages: Iterable[dict[str, Any]]) -> dict[str, datetime]:
     """`{last_inbound_at, last_outbound_at, last_contact_at}` from the
     messages that count (no auto-reply or bounce); a key is absent when no
-    message gives it."""
+    message gives it. Spec 010 R1 FR-CAP-INV-02: an outside person's
+    invitation (`is_invite`) counts here, although stored `is_auto` so no
+    flag reads it."""
     out: dict[str, datetime] = {}
     for m in messages:
-        if m.get("is_auto") or m.get("is_internal"):
+        if (m.get("is_auto") and not m.get("is_invite")) or m.get("is_internal"):
             continue
         at = m["sent_at"]
         key = "last_inbound_at" if m["direction"] == "inbound" else "last_outbound_at"
@@ -408,7 +410,9 @@ def forward(row: dict[str, Any], seen: dict[str, datetime]) -> dict[str, str]:
 
 def contacted(company: dict[str, Any], messages: Iterable[dict[str, Any]]) -> bool:
     """FR-CRM-PIPE-02 — a company at New moves to Contacted when the first
-    outbound email (not an auto-reply) is recorded."""
+    outbound email (not an auto-reply) is recorded; spec 010 R1
+    FR-CAP-INV-02: an outside person's invitation (`is_invite`) counts."""
     return company.get("lead_stage") == "new" and any(
-        m["direction"] == "outbound" and not m.get("is_auto") for m in messages
+        m["direction"] == "outbound" and (not m.get("is_auto") or m.get("is_invite"))
+        for m in messages
     )

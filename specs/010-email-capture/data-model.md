@@ -527,7 +527,11 @@ updated (plan R1.2, PD-38).
      `result ? 'superseded_by'`, not (`status = 'expired' AND refusal IS
      NOT NULL`), has an entry in `source_link -> 'threads'`
      with the same `ref` and `message_id`, or has `source_key = p_entry ->>
-     'ref'` and `source_version = p_entry ->> 'message_id'`;
+     'ref'` and `source_version = p_entry ->> 'message_id'`; for an entry
+     of origin `deal_document`, only a decided `deal_signal` on the same
+     company (`record_type = 'company'`, same `record_id`) counts (PD-39),
+     compared by target rather than `dedupe_key`, so a document signal
+     decided before 074 under its per-conversation key still counts;
   2. **release** `p_entry ->> 'ref'` from every other open capture item
      (as `crm_capture_release_thread` with `p_keep = dedupe_key`); not done
      at all when `p_entry.origin = 'deal_document'`, and an entry of origin

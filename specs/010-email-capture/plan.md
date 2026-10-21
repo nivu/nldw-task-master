@@ -1086,7 +1086,9 @@ when the address is already a person of the workspace; then
 `_queue_filing` once per entry with a `mailbox_id` (falling back to the
 single top-level link for an item without `threads`). The result adds
 `people: n` and `threads_filed: n`, where only entries whose sender is a
-known person after this step count: with every sender a person,
+known person after this step count (an address the approver edited away
+makes no person, so its entries do not count; a sender whose domain the
+company holds does, as `_take` matches by domain): with every sender a person,
 `_take` files webmail senders and name-keyed groups too (a pre-074 entry
 without `person_email` uses the suggestion's address). Where email sync is switched off (production
 today), `file_thread` stores nothing, as before this revision; the items
@@ -1209,7 +1211,12 @@ for a high- or medium-confidence `new_lead` or `deal_signal` with
    roles=academy_roles, active, mailbox_owner)`; stored with
    `review.capture_group_upsert` (masked) under that actor, so the audit
    row is in the Academy; a skip there for an earlier Academy decision is
-   logged the same way (reason `decided`).
+   logged the same way (reason `decided`);
+   c. any fault in a or b (a database or PostgREST error inside the
+      Academy) is caught: logged only, as `crm_capture_academy_step_failed`
+      with the Academy workspace id and the exception type, and the step
+      still returns `routed = true`, so the Labs run, candidate and counts
+      are as if the step succeeded (live and on apply; review ISO-1).
 
 The Labs candidate's `finding` keeps `business` and `routed` and sets
 `duplicate_company_id = null`: no Academy id, and nothing the Academy
@@ -1289,9 +1296,13 @@ Academy-ignored and a routed finding.
 - `_INVITATION_SUBJECTS = ("invitation:", "updated invitation:", "updated
   invitation with note:", "invitation from google calendar:")`;
   `_CALENDAR_NOTICE_SUBJECTS = ("accepted:", "declined:", "tentatively
-  accepted:", "canceled event:", "cancelled event:", "canceled event with
-  note:", "cancelled event with note:", "proposed new time:",
-  "notification:")`;
+  accepted:", "canceled event:", "cancelled event:")` — the notice
+  subjects 010 skipped before R1, bulk from any sender. R1's further
+  notices ("canceled event with note:", "cancelled event with note:",
+  "proposed new time:", "notification:") are recognised only by
+  `_CALENDAR_SENDER`, whose mail (invitations aside) is bulk anyway, so a
+  person's "Notification: PO 4411 issued" keeps its pre-074 handling
+  (review R1-X2);
 - `is_invitation(headers)` — subject prefix in `_INVITATION_SUBJECTS`,
   case-insensitive, no `Re:`/`Fwd:` stripping (a reply to an invitation is
   a person writing, already ordinary mail);
@@ -1309,6 +1320,12 @@ Academy-ignored and a routed finding.
   from any other sender is still bulk). `_CALENDAR_NOTICE_SUBJECTS` and
   invitations without an outside party stay bulk. So "Invitation: …"
   webinar mail with `List-Unsubscribe` or from `no-reply@` is bulk;
+- `_take` stores such an invitation with `is_auto = true` and a transient
+  `is_invite` that `email_rules.latest` and `contacted` read: it moves
+  Last inbound/outbound and New → Contacted, but no flag (Reply owed,
+  Client silent) and no SQL reader of `NOT is_auto` counts it. The owner's
+  RSVP ("Accepted: …") stays a skipped notice, so without this every
+  client's invitation would leave a reply owed (review OPS-1);
 - `is_calendar_notice(headers, sender)` — the calendar sender or a notice
   subject or a party-less invitation; used by I2;
 - `MEETING_HOSTS = frozenset({"google.com", "meet.google.com",
@@ -1421,9 +1438,12 @@ candidate finding stays under 4096 bytes).
    code would keep writing per-thread deal-document keys).
 4. Netlify with `--skip-functions-cache`.
 5. Checks: within an hour of the deploy, the first `capture` tick's run
-   shows `consolidated`; in SQL, `SELECT dedupe_key, count(*) FROM
-   crm_review_items WHERE status='open' AND type='new_lead' GROUP BY 1
-   HAVING count(*) > 1` returns nothing; HearSight has one open item whose
+   shows `consolidated`; in SQL, no open `new_lead` or `deal_signal` has a
+   `source_key` starting `gmail:` (count 0), and grouping open `new_lead`
+   items by workspace and `coalesce(record_id::text,
+   suggestion->>'domain')` with `HAVING count(*) > 1` returns nothing (a
+   check on `dedupe_key` alone cannot fail: 061's unique index already
+   allows one open item per key); HearSight has one open item whose
    `source_link->'threads'` has nine entries (or fewer if decided
    meanwhile); the expired members carry `result->>'superseded_by'` and a
    `review.expired` audit row each; after the next sync of

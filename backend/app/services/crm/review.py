@@ -58,6 +58,7 @@ from app.domain.crm import ai_rules, dedupe, email_rules
 from app.domain.crm import capture as capture_rules
 from app.domain.crm import review as rules
 from app.domain.crm import today as today_rules
+from app.domain.crm.invites import PUBLIC_WEBMAIL_DOMAINS
 from app.domain.tasks.service import TaskActor, create_task
 from app.schemas.crm import (
     CampaignMemberUpdate,
@@ -800,7 +801,8 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
     person of no company is linked to this company, one under another
     company is left there; then every conversation is queued for
     filing, one job each. `threads_filed` counts the conversations whose
-    sender is a person of the workspace after this step; an item made
+    sender is a person of the workspace after this step (an edited-away
+    address is not one); an item made
     before 074 files its one link as before.
 
     Spec 010 R1 FR-CAP-ACAD-05 (PD-31): an Academy item
@@ -901,10 +903,14 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
                 )
             person_id = person_for(approver, company_id, email, (first, last), title)
             person_ids = [person_id]
-            known = {email} if email else set()
+            # Two sets (FR-CAP-GRP-04): `known` is the addresses that make
+            # no new person; `held` the addresses a person holds after
+            # this step, which alone count a conversation as filed.
+            held = {email} if email else set()
+            known = set(held)
             if email and newest is not None and sender(newest):
-                # Its original address, when the approver edited it, is
-                # this person's too: no second person under the old one.
+                # Its original address, when the approver edited it, makes
+                # no second person, but nobody holds it: not counted filed.
                 known.add(str(sender(newest)))
             people = 1
             # FR-CAP-GRP-04: every other sender among the conversations.
@@ -923,6 +929,7 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
                 if other not in person_ids:
                     person_ids.append(other)
                 known.add(address)
+                held.add(address)
                 people += 1
             note_id = (
                 _academy_note(approver, company_id, person_ids, entries, evidence)
@@ -949,7 +956,7 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
         if links:
             for entry in links:
                 _queue_filing(ws_id, entry)
-                if sender(entry) in known:
+                if _known_after(ws_id, company_id, held, sender(entry)):
                     filed += 1
         else:
             link = item.get("source_link") or {}
@@ -967,6 +974,21 @@ def _new_lead(ctx: Any, item: dict[str, Any], body: ReviewApproveIn) -> Change:
         return result, dict(result)
 
     return change
+
+
+def _known_after(ws_id: str, company_id: str, held: set[str], address: str | None) -> bool:
+    """FR-CAP-GRP-04: whether a conversation's sender is known after the
+    approval, so its filing stores something: a person holds the address,
+    or (not webmail) the company holds its domain, which is how the sync
+    matches a sender with no person (`email_rules.links_for`)."""
+    if not address:
+        return False
+    if address in held:
+        return True
+    domain = dedupe.normalise_domain(email_rules.domain_of(address))
+    if not domain or domain in PUBLIC_WEBMAIL_DOMAINS:
+        return False
+    return bool(store.list_domains(ws_id, company_ids=[company_id], domains=[domain]))
 
 
 def _academy_note(

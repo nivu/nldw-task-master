@@ -1127,6 +1127,46 @@ class TestInvitations:
         assert fake.rows["crm_companies"][acme["id"]]["last_inbound_at"] == at.isoformat()
         assert fake.rows["crm_people"][priya["id"]]["last_inbound_at"] == at.isoformat()
 
+    def test_capture_a_known_contact_s_invitation_owes_no_reply(self, crm):
+        """Review OPS-1 (FR-CAP-INV-02): an invitation moves Last inbound but
+        is stored `is_auto`, so the owner's skipped "Accepted:" leaves no
+        Reply owed flag, however old the invitation."""
+        _, fake, labs, _, mail, queue, mailbox, _ = crm
+        _capturing(fake, mailbox)
+        acme = _company(fake, labs, "Acme", "acme.com")
+        priya = _person(fake, labs, "Priya", "priya@acme.com", acme)
+        at = NOW - timedelta(hours=30)
+        mail.send(
+            OWNER_ADDRESS,
+            "m-inv",
+            sender="Priya <priya@acme.com>",
+            to=OWNER_ADDRESS,
+            at=at,
+            labels=PRIMARY,
+            thread="t-inv",
+            subject="Invitation: Weekly sync @ Wed 22 Oct 2026",
+        )
+        mail.send(
+            OWNER_ADDRESS,
+            "m-yes",
+            sender=OWNER_ADDRESS,
+            to="Priya <priya@acme.com>",
+            at=at + timedelta(minutes=5),
+            labels=SENT,
+            thread="t-inv",
+            subject="Accepted: Weekly sync @ Wed 22 Oct 2026",
+        )
+        _sync(queue)
+        [msg] = _messages(fake)
+        assert (msg["gmail_message_id"], msg["is_auto"]) == ("m-inv", True)
+        company = fake.rows["crm_companies"][acme["id"]]
+        assert company["last_inbound_at"] == at.isoformat()
+        assert fake.rows["crm_people"][priya["id"]]["last_inbound_at"] == at.isoformat()
+        assert "reply_owed" not in [f["kind"] for f in company.get("flags") or []]
+        assert "reply_owed" not in [
+            f["kind"] for f in fake.rows["crm_people"][priya["id"]].get("flags") or []
+        ]
+
     def test_capture_an_invitation_the_owner_sends_moves_new_to_contacted(self, crm):
         # FR-CAP-INV-02: Last outbound and New → Contacted like any message.
         _, fake, labs, _, mail, queue, mailbox, _ = crm

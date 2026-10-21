@@ -911,6 +911,30 @@ class TestGroupedApproval:
             "ravi@acme-robotics.com",
         }
 
+    def test_capture_an_edited_webmail_address_is_not_counted_filed(self, lead):
+        """Review R1-X1 (FR-CAP-GRP-04): the edited-away address makes no
+        second person, and nobody holds it after approval, so conversations
+        from it are not counted as filed (webmail: no company domain
+        matches either)."""
+        http, fake, labs, celery = lead
+        for n in (1, 2):
+            item = _lead(
+                fake,
+                labs,
+                thread=f"t-{n}",
+                domain=None,
+                company_name="Zeta Labs",
+                person_email="bob@gmail.com",
+                person_name="Bob",
+                latest_at=f"2026-10-0{n}T11:40:00+05:30",
+            )
+        r = _approve(http, item, edits={"email": "robert@gmail.com"})
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert (result["people"], result["threads_filed"]) == (1, 0)
+        assert [p["primary_email"] for p in _of(fake, "crm_people", labs)] == ["robert@gmail.com"]
+        assert len(celery.named("crm.capture_thread")) == 2
+
     def test_capture_an_edited_address_on_an_item_from_before_074(self, lead):
         http, fake, labs, celery = lead
         item = fake.add_review_item(

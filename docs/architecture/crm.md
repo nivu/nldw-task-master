@@ -338,10 +338,15 @@ source** to each mailbox (`crm_mailboxes.capture_source`): `labels`
   `capture.outside_people` drops the calendar sender itself, so matching, the
   ignore lists and grouping see only the organiser. A known organiser's
   invitation is filed and moves Last inbound and New → Contacted like any
-  message (`_take` clears `is_auto` on it); an unknown one marks a discovery
-  candidate. Responses, *Proposed new time:*, cancellations, reminders
-  (`capture.is_calendar_notice`) and invitations between colleagues only stay
-  skipped. Guests named only in the invitation's body are not read
+  message, but is stored `is_auto` (with a transient `is_invite` that
+  `email_rules.latest` and `contacted` read), so no flag (Reply owed,
+  Client silent) counts it: the owner's RSVP is a skipped notice and would
+  otherwise leave every client's meeting owing a reply. An unknown one marks
+  a discovery candidate. Responses (*Accepted:*, *Declined:*, *Tentatively
+  accepted:*) and *Canceled event:* from any sender, anything else from
+  Google Calendar's sender (*Proposed new time:*, reminders, cancellations
+  with a note), and invitations between colleagues only stay skipped
+  (`capture.is_calendar_notice`); a person's own "Notification: …" is mail. Guests named only in the invitation's body are not read
   (FR-CAP-INV-06): a colleague's invitation to outside guests is
   internal-only on the owner's copy.
 - **The one invitation rescan.** Invitations were skipped before Revision 1
@@ -648,7 +653,9 @@ person of the workspace is linked to the company; a person under another
 company stays there; the newest entry is the suggestion's person, so an
 edited address makes no second person), then queues one
 `crm.capture_thread` per entry with a mailbox. The result counts `people`
-and `threads_filed` (entries whose sender is known after approval). An item
+and `threads_filed` (entries whose sender is known after approval: a
+person holds the address or the company its domain; an address the
+approver edited away is not). An item
 from before 074 files its one link. With email sync off, filing stores
 nothing, as before.
 
@@ -741,7 +748,10 @@ or medium-confidence Academy finding:
    when an active Academy Admin or Member, else the Academy's Admins, and
    stored through `review.capture_group_upsert`. Its entries carry
    `ref = gmail:<mailbox email>:<thread_id>` and **no `mailbox_id`**, so
-   there is nothing to open or file.
+   there is nothing to open or file. A fault anywhere in this step (a
+   database error inside the Academy) is caught and logged only as
+   `crm_capture_academy_step_failed` with the Academy workspace id and the
+   exception type; the Labs run, candidate and counts are unchanged.
 
 Live, the Labs ignore list is read before any text, so a course enquiry
 from an ignored sender is never judged or routed; on apply a routed finding

@@ -2241,6 +2241,48 @@ class TestAcademy:
         assert skipped and '"reason": "ignored"' in skipped[0]
         assert "college.example.edu" not in skipped[0]
 
+    def _academy_upsert_fails(self, cap, monkeypatch):
+        """Review ISO-1: the Academy's own upsert faults (a PostgREST error)."""
+        real = capture.review.capture_group_upsert
+
+        def upsert(ws_id, item, entry):
+            if ws_id == cap.academy["id"]:
+                raise APIError({"message": "boom", "code": "XX000"})
+            return real(ws_id, item, entry)
+
+        monkeypatch.setattr(capture.review, "capture_group_upsert", upsert)
+
+    def test_capture_an_academy_fault_stays_in_the_academy(self, live, monkeypatch, caplog):
+        """Review ISO-1 (FR-CAP-ACAD-04): a fault in the Academy step fails
+        nothing in Labs; the run is ok, the candidate judged and routed, and
+        only an Academy-keyed log line records it."""
+        self._academy_upsert_fails(live, monkeypatch)
+        live.conversation("c1", sender=STUDENT)
+        live.answer(COURSE)
+        with caplog.at_level("WARNING", logger="nldw-task-master"):
+            got = live.tick()
+        assert got["outcome"] == "ok", got
+        assert got["counts"]["academy_routed"] == 1
+        row = live.candidate("c1")
+        assert row["status"] == "judged" and row["finding"]["routed"] is True
+        assert _items(live) == []
+        [line] = [
+            r.getMessage()
+            for r in caplog.records
+            if "crm_capture_academy_step_failed" in r.getMessage()
+        ]
+        assert live.academy["id"] in line and '"error": "APIError"' in line
+        assert live.labs["id"] not in line and "college" not in line
+        [run] = [
+            r
+            for r in live.fake.rows["crm_job_runs"].values()
+            if r["job"] == "capture" and r["workspace_id"] == live.labs["id"]
+        ]
+        assert not run.get("error")
+        # Not judged again on the next tick (FR-CAP-ACAD-08).
+        live.answer()  # no script: a Claude call fails the test
+        assert live.tick()["outcome"] == "ok"
+
     def test_capture_rejudged_to_labs_leaves_the_academy_item(self, live):
         live.conversation("c1", sender=STUDENT)
         live.answer(COURSE, {**COURSE, "business": "labs"})
@@ -2442,6 +2484,20 @@ class TestAcademy:
         _ignore(cap, "address", "asha@college.example.edu")
         self._apply(cap)
         assert len(_in(cap, cap.academy)) == 1
+
+    def test_capture_apply_an_academy_fault_stays_in_the_academy(self, cap, monkeypatch):
+        """Review ISO-1: on apply too, a fault in the Academy step is no
+        500 in Labs; the hand-over is recorded as routed."""
+        cap.conversation("c1", sender=STUDENT)
+        cap.answer(COURSE)
+        cap.tick()
+        self._finish(cap)
+        self._academy_upsert_fails(cap, monkeypatch)
+        cap.answer()  # no script: a Claude call fails the test
+        assert self._apply(cap)["items_created"] == 0
+        assert _items(cap) == []
+        row = cap.candidate("c1")
+        assert row["dry_run"] is False and row["finding"]["routed"] is True
 
 
 class TestInvitations:

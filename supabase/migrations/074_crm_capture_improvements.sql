@@ -553,14 +553,18 @@ BEGIN
     --    never comes back, whatever is re-judged or re-applied. An item a
     --    consolidation merged, or one a refused approval expired, is no
     --    decision. A deal document's state is per company (PD-39): one
-    --    document to two companies keeps a signal for each.
+    --    document to two companies keeps a signal for each. It is compared
+    --    by the decided item's target, not its key, so a deal signal decided
+    --    before 074 (its key per conversation) still counts (review F1).
     IF EXISTS (
         SELECT 1 FROM crm_review_items r
         WHERE r.workspace_id = ws AND r.status <> 'open'
           AND r.type IN ('new_lead', 'deal_signal') AND r.source_kind = 'email_thread'
           AND NOT (r.result ? 'superseded_by')
           AND NOT (r.status = 'expired' AND r.refusal IS NOT NULL)
-          AND (NOT document OR r.dedupe_key = key)
+          AND (NOT document
+               OR (r.type = 'deal_signal' AND r.record_type = 'company'
+                   AND r.record_id = (p_item ->> 'record_id')::uuid))
           AND ((r.source_link -> 'threads')
                    @> jsonb_build_array(jsonb_build_object('ref', ref, 'message_id', msg))
                OR (r.source_key = ref AND r.source_version = msg))

@@ -907,7 +907,9 @@ def _route_academy(
     Academy `new_lead` built from Gmail values only, checked against the
     Academy's own companies, owned as `owner_for` says with Academy roles,
     stored through `review.capture_group_upsert`. The step's outcome is
-    logged in the Academy only, never on a Labs row or count. The Labs call
+    logged in the Academy only, never on a Labs row or count; a fault in
+    it is logged the same way (`crm_capture_academy_step_failed`) and
+    changes nothing in Labs (review ISO-1). The Labs call
     was paid by Labs (FR-CAP-ACAD-08). Returns `routed`."""
     released = store.capture_release_thread(
         workspace["id"], rules.source_key(mailbox["id"], thread_id), ""
@@ -922,12 +924,50 @@ def _route_academy(
     finding["routed"] = True
     counts["academy_routed"] = counts.get("academy_routed", 0) + 1
     academy_id = target["workspace"]["id"]
+    try:
+        _academy_step(
+            target,
+            mailbox,
+            thread_id=thread_id,
+            message_id=message_id,
+            outcome=outcome,
+            confidence=confidence,
+            finding=finding,
+            outside=outside,
+            generated_at=generated_at,
+        )
+    except Exception as exc:  # noqa: BLE001 - review ISO-1: the Academy's own
+        # fault stays in the Academy (FR-CAP-ACAD-04): logged there, keyed to
+        # its workspace and the exception type; Labs counts it routed.
+        logger.warning(
+            '{"event": "crm_capture_academy_step_failed", "workspace": "%s", "error": "%s"}',
+            academy_id,
+            type(exc).__name__,
+        )
+    return True
+
+
+def _academy_step(
+    target: Mapping[str, Any],
+    mailbox: Mapping[str, Any],
+    *,
+    thread_id: str,
+    message_id: str,
+    outcome: str,
+    confidence: str,
+    finding: dict[str, Any],
+    outside: list[dict[str, str]],
+    generated_at: str | None,
+) -> None:
+    """The Academy step of `_route_academy` (plan R1.4 step 3), inside the
+    Academy alone; a fault raises to `_route_academy`, which logs it."""
+    academy_id = target["workspace"]["id"]
     if rules.ignored(outside, store.list_ignores(academy_id)):
         logger.info(
             '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "ignored"}',
             academy_id,
         )
-        return True
+        return
     duplicate = duplicate_of(academy_id, finding)
     item = rules.academy_lead_item(
         {**finding, "duplicate_company_id": duplicate},
@@ -947,14 +987,13 @@ def _route_academy(
         company_id=duplicate,
     )
     if item is None:
-        return True
+        return
     made = review.capture_group_upsert(academy_id, item, item["source_link"]["threads"][0])
     if made.get("skipped"):
         logger.info(
             '{"event": "capture.academy_skipped", "workspace": "%s", "reason": "decided"}',
             academy_id,
         )
-    return True
 
 
 # ---------------------------------------------------------------------------
