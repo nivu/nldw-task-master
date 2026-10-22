@@ -195,6 +195,67 @@ class TestFieldChoices:
         assert "cannot be" in r.json()["detail"]
         assert not fake.rows["crm_companies"][made["dup"]["id"]].get("merged_into_id")
 
+    def _partner(self, http, fake, company_id):
+        """FR-CRM-PIPE-02, amended 2026-10-22 — a company at Partner with the
+        seeded Channel partner type, which the fake leaves out."""
+        labs = next(w for w in fake.rows["crm_workspaces"].values() if w["key"] == "labs")
+        option = fake.add(
+            "crm_select_options",
+            workspace_id=labs["id"],
+            list_key="company.account_type",
+            system_key="channel_partner",
+            label="Channel partner",
+            color=None,
+            position=3,
+            is_default=False,
+            is_active=True,
+            is_fixed=False,
+        )
+        r = http.patch(
+            f"/api/v1/crm/companies/{company_id}{LABS}",
+            json={"account_type_id": option["id"], "lead_stage": "partner"},
+            headers=as_(OWNER["id"]),
+        )
+        assert r.status_code == 200, r.text
+        return labs
+
+    def test_partner_without_its_partner_type_is_refused(self, crm):
+        http, fake, made = crm
+        labs = self._partner(http, fake, made["dup"]["id"])
+        http.patch(
+            f"/api/v1/crm/companies/{made['acme']['id']}{LABS}",
+            json={"account_type_id": fake.option(labs, "Prospect")["id"]},
+            headers=as_(OWNER["id"]),
+        )
+        r = _merge(http, made["acme"]["id"], made["dup"]["id"], {"lead_stage": "b"})
+        assert r.status_code == 422
+        assert r.json()["detail"].startswith("A company at Partner keeps a Technology")
+        assert not fake.rows["crm_companies"][made["dup"]["id"]].get("merged_into_id")
+
+    def test_partner_with_its_partner_type_merges(self, crm):
+        http, fake, made = crm
+        self._partner(http, fake, made["dup"]["id"])
+        r = _merge(
+            http,
+            made["acme"]["id"],
+            made["dup"]["id"],
+            {"lead_stage": "b", "account_type_id": "b"},
+        )
+        assert r.status_code == 200, r.text
+        assert fake.rows["crm_companies"][made["acme"]["id"]]["lead_stage"] == "partner"
+
+    def test_a_partner_survivor_keeps_a_partner_type(self, crm):
+        http, fake, made = crm
+        labs = self._partner(http, fake, made["acme"]["id"])
+        client = fake.option(labs, "Client")["id"]
+        http.patch(
+            f"/api/v1/crm/companies/{made['dup']['id']}{LABS}",
+            json={"account_type_id": client},
+            headers=as_(OWNER["id"]),
+        )
+        r = _merge(http, made["acme"]["id"], made["dup"]["id"], {"account_type_id": "b"})
+        assert r.status_code == 422
+
     def test_a_change_meanwhile_is_refused(self, crm):
         http, _, made = crm
         r = _merge(
