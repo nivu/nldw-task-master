@@ -322,9 +322,12 @@ LEAD_STAGES: Final = (
     "partner",
     "disqualified",
 )
-#: Contracts §2.5.1 — chosen by hand. Deal open, Customer and Partner follow
-#: from deals (FR-CRM-PIPE-04, -05).
+#: Contracts §2.5.1 — chosen by hand. Deal open and Customer follow from deals
+#: (FR-CRM-PIPE-04, -05); Partner is also chosen by hand, but only on a
+#: partner account type (FR-CRM-PIPE-02, amended 2026-10-22).
 MANUAL_LEAD_STAGES: Final = ("new", "contacted", "nurturing", "qualified", "disqualified")
+#: FR-CRM-LIST-09, FR-CRM-MIG-05 — account types whose companies are partners.
+PARTNER_ACCOUNT_TYPES: Final = ("technology_partner", "channel_partner", "training_partner")
 
 #: FR-CRM-WS-06.
 ENTITIES: Final = {"nunnari_labs": "Nunnari Labs", "deepweaver": "DeepWeaver"}
@@ -404,14 +407,36 @@ def required_refusal(kind: str, values: dict) -> str | None:
     return f"{article.get(kind, 'A record')} needs {_and([m.lower() for m in missing])}."
 
 
-def lead_stage_refusal(stage: str, *, creating: bool) -> str | None:
-    """FR-CRM-PIPE-01, -02 and contracts §2.5.1."""
+def lead_stage_refusal(
+    stage: str, *, creating: bool, account_type_key: str | None = None
+) -> str | None:
+    """FR-CRM-PIPE-01, -02 and contracts §2.5.1. `account_type_key` is the
+    system key of the company's account type once the write lands."""
     if creating and stage != "new":
         return "A new company starts at New; change its lead stage once it exists."
+    if stage == "partner":
+        if account_type_key in PARTNER_ACCOUNT_TYPES:
+            return None
+        return (
+            "Partner is for a company whose account type is Technology partner, "
+            "Channel partner or Training partner; set that account type first."
+        )
     if stage not in MANUAL_LEAD_STAGES:
         return (
-            "Deal open, Customer and Partner follow from the company's deals; "
-            "choose New, Contacted, Nurturing, Qualified or Disqualified."
+            "Deal open and Customer follow from the company's deals; choose New, "
+            "Contacted, Nurturing, Qualified, Disqualified or, for a partner "
+            "account type, Partner."
+        )
+    return None
+
+
+def account_type_refusal(lead_stage: str | None, account_type_key: str | None) -> str | None:
+    """FR-CRM-PIPE-02, amended 2026-10-22 — a company at Partner keeps a
+    partner account type."""
+    if lead_stage == "partner" and account_type_key not in PARTNER_ACCOUNT_TYPES:
+        return (
+            "A company at Partner keeps a Technology, Channel or Training partner "
+            "account type; move its lead stage off Partner first."
         )
     return None
 

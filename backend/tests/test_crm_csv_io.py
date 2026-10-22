@@ -417,8 +417,34 @@ class TestRelationsAndRules:
         http = crm["http"]
         content = _csv([["Name", "Lead stage"], ["A", "Customer"], ["B", "Nurturing"]])
         rows = _dry(http, content, "companies").json()["rows"]
-        assert rows[0]["errors"][0].startswith("Deal open, Customer and Partner follow")
+        assert rows[0]["errors"][0].startswith("Deal open and Customer follow")
         assert rows[1]["errors"] == []
+
+    def test_partner_needs_a_partner_account_type(self, crm):
+        """FR-CRM-PIPE-02, amended 2026-10-22."""
+        http, fake = crm["http"], crm["fake"]
+        fake.add(
+            "crm_select_options",
+            workspace_id=crm["academy"]["id"],
+            list_key="company.account_type",
+            system_key="channel_partner",
+            label="Channel partner",
+            color=None,
+            position=3,
+            is_default=False,
+            is_active=True,
+            is_fixed=False,
+        )
+        content = _csv(
+            [
+                ["Name", "Lead stage", "Account type"],
+                ["A", "Partner", "Channel partner"],
+                ["B", "Partner", "Client"],
+            ]
+        )
+        rows = _dry(http, content, "companies").json()["rows"]
+        assert rows[0]["errors"] == []
+        assert rows[1]["errors"][0].startswith("Partner is for a company whose account type")
 
     def test_a_cell_that_cannot_be_read(self, crm):
         http = crm["http"]

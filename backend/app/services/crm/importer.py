@@ -823,7 +823,11 @@ def plan_csv(
                 values["owner_id"] = ctx.user.id
             stage = values.pop("lead_stage", None) if kind == "company" else None
             if stage is not None and stage != "new":
-                why = objects.lead_stage_refusal(stage, creating=False)
+                why = objects.lead_stage_refusal(
+                    stage,
+                    creating=False,
+                    account_type_key=base.account_type_key_of(ws, values, None),
+                )
                 if why:
                     row.errors.append(why)
             parsed = _try(row.errors, lambda: base.parse(kind, values, creating=True))

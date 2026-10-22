@@ -154,10 +154,13 @@ All guarded by TVA `AdminDep` (staff admin). None reads a CRM record table (CT-3
 
 - **company** (`owner_id` defaults to the caller on create): `name`, `domain`, `additional_domains[]`, `entities[]`,
   `lead_stage` (create defaults to `new`; edits by hand among New, Contacted,
-  Nurturing, Qualified, Disqualified, plus the rules of PIPE-04/05: a
+  Nurturing, Qualified, Disqualified, and Partner when the account type is
+  `technology_partner`, `channel_partner` or `training_partner` (PIPE-02,
+  amended 2026-10-22; otherwise 422), plus the rules of PIPE-04/05: a
   company at Deal open, Customer or Partner with an open deal is not moved
   by hand, 422 "Acme has open deals; its lead stage follows them."),
-  `account_type_id`, `relationship_status_id`, `channel_ids[]`, `owner_id`,
+  `account_type_id` (on a company at Partner, a non-partner account type is
+  422 until its lead stage moves off Partner), `relationship_status_id`, `channel_ids[]`, `owner_id`,
   `next_touch_on`, `industry_id`, `institution_type_id`, `size_id`,
   `country`, `city`, `address{}`, `website{}`, `linkedin{}`, `description`,
   `source_id`. Read-only: `last_inbound_at`, `last_outbound_at`,

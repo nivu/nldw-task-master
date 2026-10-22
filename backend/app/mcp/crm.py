@@ -119,7 +119,9 @@ async def crm_update(
     rather than overwritten. A deal's stage is not changed here: use
     crm_move_stage. System-written fields (last inbound, won on…) are
     refused. Lead stages by key: new, contacted, nurturing, qualified,
-    disqualified. Task statuses by key: open, waiting, done, cancelled."""
+    disqualified, and partner on a company whose account type is a
+    technology, channel or training partner. Task statuses by key: open,
+    waiting, done, cancelled."""
     body = dict(changes)
     if expect_updated_at is not None:
         body["expect_updated_at"] = expect_updated_at
