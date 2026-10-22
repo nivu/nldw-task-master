@@ -47,7 +47,7 @@ from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 from app.domain.crm import dedupe, fx
-from app.domain.crm.objects import LEAD_STAGES, MEMBER_STATUSES
+from app.domain.crm.objects import LEAD_STAGES, MEMBER_STATUSES, PARTNER_ACCOUNT_TYPES
 from app.domain.crm.pipeline import OPEN, default_probability
 from app.domain.crm.settings import STAGE_LABELS
 from app.domain.tasks import rules as task_rules
@@ -256,7 +256,7 @@ LEAD_STAGE_LABELS: Final = {
     "disqualified": "Disqualified",
 }
 #: FR-CRM-MIG-05 — account types whose companies are partners.
-PARTNER_TYPES: Final = ("technology_partner", "channel_partner", "training_partner")
+PARTNER_TYPES: Final = PARTNER_ACCOUNT_TYPES
 #: Lead stages a deal may sit on (FR-CRM-PIPE-04).
 OPENABLE: Final = ("qualified", "deal_open", "customer", "partner")
 #: 008 FR-TASK-CHG-09: Twenty's To do and In progress are both Open.

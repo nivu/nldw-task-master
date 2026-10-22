@@ -96,6 +96,13 @@ A company climbs its **lead stage** (New, Contacted, Nurturing, Qualified)
 before it takes a deal. A deal can be opened only on a company at **Qualified**
 or later, and opening one moves the company to **Deal open**.
 
+A company you work *with* rather than sell to, such as a channel or
+technology partner, belongs at **Partner**. Set its account type to
+Technology, Channel or Training partner first; Partner then appears in its
+lead stage list. Partners stay out of the lead funnel and its follow-up
+flags, and can still take a co-sell deal later. To change a partner's
+account type to something else, move its lead stage off Partner first.
+
 Every open deal always has a **next step and its date**. That is the deal's
 follow-up; there is no separate reminder to set.
 

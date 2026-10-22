@@ -226,7 +226,11 @@ def check_fields(ws: Workspace, kind: str, values: dict[str, Any], existing: dic
     if "lead_stage" in values and (
         existing is None or values["lead_stage"] != existing.get("lead_stage")
     ):
-        why = objects.lead_stage_refusal(values["lead_stage"] or "", creating=existing is None)
+        why = objects.lead_stage_refusal(
+            values["lead_stage"] or "",
+            creating=existing is None,
+            account_type_key=account_type_key_of(ws, values, existing),
+        )
         if why:
             raise CrmRefused(422, why)
 
@@ -248,6 +252,14 @@ def check_fields(ws: Workspace, kind: str, values: dict[str, Any], existing: dic
         if isinstance(chosen, list) and len(set(chosen)) != len(chosen):
             raise CrmRefused(422, f"{f.label} lists the same option twice.")
 
+    if kind == "company" and existing is not None and "account_type_id" in values:
+        why = objects.account_type_refusal(
+            values.get("lead_stage", existing.get("lead_stage")),
+            account_type_key_of(ws, values, existing),
+        )
+        if why:
+            raise CrmRefused(422, why)
+
     if values.get("owner_id") and values["owner_id"] not in ws.members:
         raise CrmRefused(422, "The owner must be a member of this workspace.")
 
@@ -258,6 +270,17 @@ def check_fields(ws: Workspace, kind: str, values: dict[str, Any], existing: dic
                 why = objects.url_refusal(link["url"])
                 if why:
                     raise CrmRefused(422, why)
+
+
+def account_type_key_of(ws: Workspace, values: dict[str, Any], existing: dict | None) -> str | None:
+    """The system key of a company's account type once this write lands."""
+    option_id = (
+        values["account_type_id"]
+        if "account_type_id" in values
+        else (existing or {}).get("account_type_id")
+    )
+    option = ws.facts.options.get(option_id or "")
+    return option.get("system_key") if option else None
 
 
 def open_deal_company_ops(ws: Workspace, company: dict[str, Any]) -> list[dict[str, Any]]:

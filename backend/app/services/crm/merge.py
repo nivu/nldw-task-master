@@ -155,6 +155,16 @@ def merge(ctx: Any, body: MergeIn) -> dict[str, Any]:
         changes["lead_stage"] = stage
     else:
         changes.pop("lead_stage", None)
+    # FR-CRM-PIPE-02, amended 2026-10-22: a company at Partner keeps a
+    # partner account type.
+    if ("lead_stage" in changes or "account_type_id" in changes) and objects.account_type_refusal(
+        stage, base.account_type_key_of(ws, changes, survivor)
+    ):
+        raise CrmRefused(
+            422,
+            "A company at Partner keeps a Technology, Channel or Training partner "
+            "account type; keep the lead stage and account type from the same company.",
+        )
     if changes.get("owner_id") and changes["owner_id"] not in ws.members:
         raise CrmRefused(422, "The owner must be a member of this workspace.")
 

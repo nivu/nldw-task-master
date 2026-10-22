@@ -30,9 +30,11 @@ import {
 import type { CrmBootstrap, CrmCompany, CrmMember } from "@/lib/api/crm-types";
 import { useAsync } from "@/lib/use-async";
 
-/** Contracts §2.5.1 — chosen by hand; Deal open, Customer and Partner follow
- *  from deals (FR-CRM-PIPE-04, -05). */
+/** Contracts §2.5.1 — chosen by hand; Deal open and Customer follow from deals
+ *  (FR-CRM-PIPE-04, -05). Partner is chosen by hand on a partner account type
+ *  (FR-CRM-PIPE-02, amended 2026-10-22). */
 const MANUAL_LEAD_STAGES = ["new", "contacted", "nurturing", "qualified", "disqualified"];
+const PARTNER_ACCOUNT_TYPES = ["technology_partner", "channel_partner", "training_partner"];
 
 const ENTITIES: Choice[] = [
   { value: "nunnari_labs", label: "Nunnari Labs" },
@@ -53,8 +55,12 @@ function companyGroups(
   members: CrmMember[],
   current: CrmCompany
 ): FieldGroup[] {
+  const accountType = (bootstrap.lists["company.account_type"] ?? []).find((o) => o.id === current.account_type_id);
+  const manual = PARTNER_ACCOUNT_TYPES.includes(accountType?.system_key ?? "")
+    ? [...MANUAL_LEAD_STAGES, "partner"]
+    : MANUAL_LEAD_STAGES;
   const stages = (bootstrap.lists["company.lead_stage"] ?? [])
-    .filter((o) => o.system_key && (MANUAL_LEAD_STAGES.includes(o.system_key) || o.system_key === current.lead_stage))
+    .filter((o) => o.system_key && (manual.includes(o.system_key) || o.system_key === current.lead_stage))
     .map((o) => ({ value: o.system_key as string, label: o.label }));
   const labs = bootstrap.workspace.has_entity;
   return [

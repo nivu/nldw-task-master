@@ -240,7 +240,7 @@ class TestLeadStage:
         )
         assert r.status_code == 200 and r.json()["lead_stage"] == stage
 
-    @pytest.mark.parametrize("stage", ["deal_open", "customer", "partner"])
+    @pytest.mark.parametrize("stage", ["deal_open", "customer"])
     def test_deal_stages_follow_from_deals(self, crm, stage):
         http, *_ = crm
         made = _company(http).json()
@@ -250,7 +250,107 @@ class TestLeadStage:
             headers=as_(OWNER["id"]),
         )
         assert r.status_code == 422
-        assert r.json()["detail"].startswith("Deal open, Customer and Partner follow from")
+        assert r.json()["detail"].startswith("Deal open and Customer follow from")
+
+
+def _partner_type(fake, ws):
+    """The seeded Channel partner account type (026), which the fake leaves out."""
+    return fake.add(
+        "crm_select_options",
+        workspace_id=ws["id"],
+        list_key="company.account_type",
+        system_key="channel_partner",
+        label="Channel partner",
+        color=None,
+        position=3,
+        is_default=False,
+        is_active=True,
+        is_fixed=False,
+    )
+
+
+class TestPartnerByHand:
+    """FR-CRM-PIPE-02, amended 2026-10-22; contracts §2.5.1."""
+
+    def _patch(self, http, company_id, body):
+        return http.patch(
+            f"/api/v1/crm/companies/{company_id}{LABS}", json=body, headers=as_(OWNER["id"])
+        )
+
+    def test_partner_needs_a_partner_account_type(self, crm):
+        http, fake, labs, _ = crm
+        made = _company(http).json()
+        r = self._patch(http, made["id"], {"lead_stage": "partner"})
+        assert r.status_code == 422
+        assert r.json()["detail"].startswith("Partner is for a company whose account type is")
+        prospect = fake.option(labs, "Prospect")["id"]
+        r = self._patch(http, made["id"], {"account_type_id": prospect, "lead_stage": "partner"})
+        assert r.status_code == 422
+
+    def test_partner_is_chosen_by_hand_on_a_partner_account_type(self, crm):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http, account_type_id=partner).json()
+        self._patch(http, made["id"], {"lead_stage": "nurturing"})
+        r = self._patch(http, made["id"], {"lead_stage": "partner"})
+        assert r.status_code == 200, r.text
+        assert (r.json()["lead_stage"], r.json()["lead_stage_label"]) == ("partner", "Partner")
+
+    def test_account_type_and_partner_in_one_write(self, crm):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http).json()
+        r = self._patch(http, made["id"], {"account_type_id": partner, "lead_stage": "partner"})
+        assert r.status_code == 200, r.text
+        assert r.json()["lead_stage"] == "partner"
+
+    @pytest.mark.parametrize("to", ["Prospect", None])
+    def test_a_partner_keeps_a_partner_account_type(self, crm, to):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http, account_type_id=partner).json()
+        self._patch(http, made["id"], {"lead_stage": "partner"})
+        other = fake.option(labs, to)["id"] if to else None
+        r = self._patch(http, made["id"], {"account_type_id": other})
+        assert r.status_code == 422
+        assert r.json()["detail"].startswith("A company at Partner keeps a Technology")
+
+    def test_moved_off_partner_then_the_account_type_changes(self, crm):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http, account_type_id=partner).json()
+        self._patch(http, made["id"], {"lead_stage": "partner"})
+        r = self._patch(http, made["id"], {"lead_stage": "nurturing"})
+        assert r.status_code == 200 and r.json()["lead_stage"] == "nurturing"
+        prospect = fake.option(labs, "Prospect")["id"]
+        r = self._patch(http, made["id"], {"account_type_id": prospect})
+        assert r.status_code == 200, r.text
+
+    def test_one_write_moves_off_partner_and_changes_the_type(self, crm):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http, account_type_id=partner).json()
+        self._patch(http, made["id"], {"lead_stage": "partner"})
+        prospect = fake.option(labs, "Prospect")["id"]
+        r = self._patch(http, made["id"], {"lead_stage": "nurturing", "account_type_id": prospect})
+        assert r.status_code == 200, r.text
+
+    def test_a_non_partner_type_change_elsewhere_is_unaffected(self, crm):
+        http, fake, labs, _ = crm
+        made = _company(http).json()
+        r = self._patch(http, made["id"], {"account_type_id": fake.option(labs, "Client")["id"]})
+        assert r.status_code == 200, r.text
+
+    def test_through_mcp(self, crm):
+        http, fake, labs, _ = crm
+        partner = _partner_type(fake, labs)["id"]
+        made = _company(http, account_type_id=partner).json()
+        body = asyncio.run(
+            tools.crm_update(
+                Ctx(OWNER["id"]), "company", made["id"], {"lead_stage": "partner"}, workspace="labs"
+            )
+        )
+        assert body["lead_stage"] == "partner"
 
 
 class TestPeople:
