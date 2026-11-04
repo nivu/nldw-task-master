@@ -118,6 +118,32 @@ class TestCarryForward:
         assert result.remaining == Decimal("2.0")
 
 
+class TestNoCarryForward:
+    """FR-BAL-10 — a category on the no-carry list opens every month at zero."""
+
+    GRANTS = [grant("2026-10", category="wfh", days="2.0")]
+
+    @pytest.mark.parametrize("policy", [ROLLING, POOLING])
+    def test_unused_days_lapse_at_month_end(self, policy):
+        result = balance_for(self.GRANTS, [], "2026-11", "wfh", policy=policy, carry_forward=False)
+        assert (result.opening, result.allowance, result.remaining) == (
+            Decimal("0.0"),
+            Decimal("2.0"),
+            Decimal("2.0"),
+        )
+
+    def test_an_overdraft_does_not_carry_either(self):
+        entries = [used("2026-10", category="wfh", duration="3.0")]
+        result = balance_for(self.GRANTS, entries, "2026-11", "wfh", carry_forward=False)
+        assert result.opening == Decimal("0.0")
+        assert result.remaining == Decimal("2.0")
+
+    def test_days_used_this_month_still_count(self):
+        entries = [used("2026-11", category="wfh", duration="0.5")]
+        result = balance_for(self.GRANTS, entries, "2026-11", "wfh", carry_forward=False)
+        assert result.remaining == Decimal("1.5")
+
+
 class TestQ02BothPolicies:
     """Q-02 — rolling and pooling differ only in where accumulation starts.
 

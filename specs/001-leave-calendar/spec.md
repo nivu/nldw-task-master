@@ -219,11 +219,12 @@ its primary users. The gate stays *"an admin created your account"*
 | FR-BAL-02 | Allowance values MUST be read from admin configuration. They MUST NOT be hardcoded. |
 | FR-BAL-03 | Each category MUST have its own independent allowance. |
 | FR-BAL-04 | Balances MUST support half-day granularity. |
-| FR-BAL-05 | Unused allowance MUST carry forward rather than being forfeited at month end. |
+| FR-BAL-05 | Unused allowance MUST carry forward rather than being forfeited at month end, except in a category listed under FR-BAL-10. *Amended 5 November 2026.* |
 | FR-BAL-06 | The system MUST display, for the current period and per category: allowance, used, and remaining. |
 | FR-BAL-07 | Changing an allowance MUST apply to the period it is set for and MUST NOT retroactively invalidate bookings already approved in a closed period. |
 | FR-BAL-08 | A user MUST be able to see their own consumption history for the current year. |
 | FR-BAL-09 | When no allowance has ever been configured for a category (no personal or organisation row for that period or earlier), the system MUST say so — "not set up yet, ask an admin" — distinctly from an exhausted balance, both when refusing a booking and when displaying balances. *Added 10 October 2026.* |
+| FR-BAL-10 | An admin MUST be able to name categories whose unused allowance lapses at month end instead of carrying forward. In such a category every month opens at zero: neither a leftover nor an overdraft carries in. *Added 5 November 2026: company policy is that work from home and sick leave lapse monthly and casual leave carries forward.* |
 
 ### 5.5 Approval — FR-APPR
 
@@ -444,7 +445,7 @@ opening_balance(period, category)
 ```
 
 `opening_balance` is a **function over the ledger**, not a stored column, so the
-carry-forward policy (Q-02) can change without a migration.
+carry-forward policy (Q-02) can change without a migration. A category listed under FR-BAL-10 skips it: its opening balance is always zero.
 
 ### 7.4 `holidays`
 
@@ -521,8 +522,8 @@ small diff — never a rebuild. Nothing here is silently decided.
 
 | ID | Question | Shipped default | Where it lives | Owner |
 |---|---|---|---|---|
-| Q-01 | The actual monthly allowance figures per category. Three non-reconciling numbers were given on the call. | Seed values: wfh 4.0, casual 1.5, sick 1.0 per month, **clearly marked as placeholders** (development only). **Live figures (10 October 2026):** casual 3.0 from 2026-09 and wfh 2.0 from 2026-10, set by an admin; sick 1.0 from 2026-10, set by migration `023_sick_allowance_default.sql` because production had none and same-day sick leave (§4.2) was always refused. All are editable in Admin > Allowances. Blocks the first live month, not the build. **Rollout plan (confirmed 2026-09-04):** go live as early in a month as possible, with each person's leave already taken that month entered by an admin. See A-21. | `allowances` table, seeded in `supabase/seed.sql` | Devansh & Vinita |
-| Q-02 | Carry-forward: rolling into the next month, or pooling to year-end? | `rolling` — cumulative from the start of tracking, no reset. `pooling` is implemented too and resets each calendar year. | `app_settings.carry_forward_policy` | Devansh |
+| Q-01 | The actual monthly allowance figures per category. Three non-reconciling numbers were given on the call. | Seed values: wfh 4.0, casual 1.5, sick 1.0 per month, **clearly marked as placeholders** (development only). **Live figures (10 October 2026):** casual 3.0 from 2026-09 and wfh 2.0 from 2026-10, set by an admin; sick 1.0 from 2026-10, set by migration `023_sick_allowance_default.sql` because production had none and same-day sick leave (§4.2) was always refused. **Revised 5 November 2026:** casual lowered to 1.0 from 2026-09 (back-dated on the office admin's instruction; balances recompute from September). All are editable in Admin > Allowances. Blocks the first live month, not the build. **Rollout plan (confirmed 2026-09-04):** go live as early in a month as possible, with each person's leave already taken that month entered by an admin. See A-21. | `allowances` table, seeded in `supabase/seed.sql` | Devansh & Vinita |
+| Q-02 | Carry-forward: rolling into the next month, or pooling to year-end? | `rolling` — cumulative from the start of tracking, no reset. `pooling` is implemented too and resets each calendar year. **Since 5 November 2026** this applies only to categories not listed in `no_carry_forward_categories` (FR-BAL-10), live as `["sick", "wfh"]`: casual carries forward, work from home and sick leave lapse monthly. | `app_settings.carry_forward_policy` | Devansh |
 | Q-03 | Precise lock boundary; does approval lock earlier than midnight? | End of the booked date, 23:59:59 **Asia/Kolkata**, evaluated server-side. Approval does **not** shorten the window. | `app/domain/rules.py::is_locked` | Sriram |
 | Q-04 | Fate of a pending booking that reaches its own date un-actioned. | **Auto-approve at lock.** A nightly sweep at 00:05 IST promotes them, writing `system` as the actor in the audit log. | `app/tasks/lock_sweep.py` | Devansh |
 | Q-05 | Who approves a lead's own leave, and who covers an absent lead? | **A lead's leave goes to an admin.** Concretely: a booking's approver is `profiles.lead_id`, and where that is null it falls to any admin. *No provisional answer existed in the source spec — this is our default.* | `app/domain/approval.py::approver_for` | Devansh |
@@ -564,7 +565,7 @@ specification wins:
 
 | Prototype does | This spec requires |
 |---|---|
-| Annual allowances | Monthly, with carry-forward (FR-BAL-01, FR-BAL-05) |
+| Annual allowances | Monthly, with carry-forward for casual; work from home and sick lapse monthly (FR-BAL-01, FR-BAL-05, FR-BAL-10) |
 | Allowances hardcoded | Read from admin configuration (FR-BAL-02) |
 | Instant self-approval | Request, notify, lead decides (FR-APPR-01) |
 | Any day editable forever | Locked once its date passes (FR-BOOK-08, §6.3) |

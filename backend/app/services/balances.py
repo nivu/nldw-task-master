@@ -70,6 +70,7 @@ def balances_for(
     grants = _grants_for(user_id)
     entries = _consumption_for(user_id)
     policy = settings_store.carry_forward_policy()
+    no_carry = settings_store.no_carry_forward_categories()
     tracking_start = ledger.earliest_period(grants, entries, default=period)
 
     result: dict[str, ledger.Balance] = {}
@@ -81,6 +82,7 @@ def balances_for(
             category,
             policy=policy,
             tracking_start=tracking_start,
+            carry_forward=category not in no_carry,
         )
         if exclude_booking_duration and exclude_category == category:
             balance = ledger.Balance(

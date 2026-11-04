@@ -183,13 +183,20 @@ def balance_for(
     *,
     policy: str = ROLLING,
     tracking_start: str | None = None,
+    carry_forward: bool = True,
 ) -> Balance:
-    """The full picture for one category in one period — FR-BAL-06."""
+    """The full picture for one category in one period — FR-BAL-06.
+
+    `carry_forward=False` is FR-BAL-10: the category is use-it-or-lose-it, so
+    each month opens at zero and nothing — leftover or overdraft — carries in.
+    """
     grants, entries = list(grants), list(entries)
     start = tracking_start or earliest_period(grants, entries, default=period)
 
-    opening = opening_balance(
-        grants, entries, period, category, policy=policy, tracking_start=start
+    opening = (
+        opening_balance(grants, entries, period, category, policy=policy, tracking_start=start)
+        if carry_forward
+        else ZERO
     )
     allowance = resolve_allowance(grants, period, category)
     used = consumed(entries, period, category)

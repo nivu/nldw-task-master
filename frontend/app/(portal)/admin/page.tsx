@@ -327,9 +327,10 @@ export default function AdminPage() {
             <CardHeader>
               <CardTitle className="text-base">Monthly allowances (company defaults)</CardTitle>
               <CardDescription>
-                Days per month for everyone, carried forward if unused. Sick
-                leave defaults to 1 day a month. These are edited on the
-                Allowances tab.
+                Days per month for everyone. Unused days carry forward, except
+                in the categories listed under no_carry_forward_categories
+                below, which lapse at month end. Sick leave defaults to 1 day a
+                month. These are edited on the Allowances tab.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
