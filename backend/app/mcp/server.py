@@ -264,9 +264,12 @@ async def book_leave(
     reason: str | None = None,
 ) -> dict:
     """Book a day for the connected person. CONFIRM WITH THEM FIRST.
-    category: wfh | casual | sick. duration: "full" | "half" (or 1.0 / 0.5).
-    reason: the person's own reason, required for casual and sick. Casual
-    must be a future day; sick must be today; wfh may be either. The portal refuses
+    category: wfh | casual | sick | additional. duration: "full" | "half" (or
+    1.0 / 0.5). reason: the person's own reason,
+    required for casual, sick and additional. Casual must be a future day; sick must be today; wfh may be
+    either. additional (Additional leave) has no allowance and is only for
+    when the person's own runs out: for today once sick leave is used up, for
+    a future day once casual leave is used up. The portal refuses
     weekends, holidays, locked days and insufficient balance with a sentence
     to relay verbatim. The booking is pending until their lead decides."""
     return await _api(
@@ -874,9 +877,9 @@ async def backfill_leave(
 ) -> dict:
     """ADMINS. Record leave already taken on a past (locked) day — the one
     sanctioned override of the lock. CONFIRM FIRST. category: wfh | casual |
-    sick | compoff. duration: "full" | "half" (or 1.0 / 0.5). reason: the
-    person's own reason, required for casual and sick, optional for wfh and
-    compoff. note: why it is being entered by hand, always required and shown
+    sick | compoff | additional. duration: "full" | "half" (or 1.0 / 0.5).
+    reason: the person's own reason, required for casual, sick and additional,
+    optional for wfh and compoff. note: why it is being entered by hand, always required and shown
     to the person. The day must be a past weekday; weekends, holidays and a
     day that already holds a record are refused. If the day only holds an
     absence marked by mark_absent, it is replaced with this leave."""
@@ -907,9 +910,9 @@ async def convert_absence(
     """ADMINS. Turn a day marked absent (unrecognised, from mark_absent) into the
     leave actually taken, in place. CONFIRM FIRST. Counts against the person's
     allowance like any booking and is refused if the balance is short (comp-off
-    uses credits instead). category: wfh | casual | sick | compoff. duration:
-    "full" | "half" (or 1.0 / 0.5). reason: the person's own reason, required
-    for casual and sick. note: why it is being entered by hand, always
+    uses credits instead; additional has no allowance). category: wfh | casual
+    | sick | compoff | additional. duration: "full" | "half" (or 1.0 / 0.5).
+    reason: the person's own reason, required for casual, sick and additional. note: why it is being entered by hand, always
     required. Returns balance_after (null for comp-off)."""
     return await _api(
         ctx,

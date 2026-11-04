@@ -18,20 +18,22 @@ from app.domain.calendar import is_weekend, today_in_company_tz
 # Categories and states — §6.1, §6.4
 # ---------------------------------------------------------------------------
 
-CATEGORIES = ("wfh", "casual", "sick", "compoff")
+CATEGORIES = ("wfh", "casual", "sick", "compoff", "additional")
 CATEGORY_LABELS = {
     "wfh": "Work from home",
     "casual": "Casual leave",
     "sick": "Sick leave",
     # Spec 006 FR-COMP — draws on earned credits, not an allowance.
     "compoff": "Comp-off",
+    # FR-BOOK-13 — leave beyond the allowance; no allowance of its own.
+    "additional": "Additional leave",
 }
 #: Categories that draw down a monthly allowance. Comp-off does not; it
 #: consumes credits earned by working a weekend or holiday (spec 006).
 ALLOWANCE_CATEGORIES = ("wfh", "casual", "sick")
 #: Categories that take the person out of work. Work from home is a working
 #: day: it is expected on the timesheet and is full capacity.
-LEAVE_CATEGORIES = ("casual", "sick", "compoff")
+LEAVE_CATEGORIES = ("casual", "sick", "compoff", "additional")
 
 
 def is_leave(category: str | None) -> bool:
@@ -45,16 +47,28 @@ VALID_DURATIONS = (HALF_DAY, FULL_DAY)
 #: Q-07 — a reason is required for casual and sick leave, optional for work
 #: from home. Sick and casual are absences someone else has to plan around;
 #: work from home is not.
-REASON_REQUIRED = {"wfh": False, "casual": True, "sick": True, "compoff": False}
+REASON_REQUIRED = {
+    "wfh": False,
+    "casual": True,
+    "sick": True,
+    "compoff": False,
+    "additional": True,
+}
 
 #: §6.1 — casual leave is planned (a family event, an appointment) and may not
 #: be filed for today. Sick leave is by nature unplanned and must be. The
 #: system must not force the same notice rules on both.
-ALLOWS_SAME_DAY = {"wfh": True, "casual": False, "sick": True, "compoff": False}
+ALLOWS_SAME_DAY = {
+    "wfh": True,
+    "casual": False,
+    "sick": True,
+    "compoff": False,
+    "additional": True,
+}
 
 #: §6.1 — sick leave cannot be booked in advance; nobody knows they will be ill
 #: next Tuesday. A future-dated sick day is almost always a mis-tap on casual.
-ALLOWS_FUTURE = {"wfh": True, "casual": True, "sick": False, "compoff": True}
+ALLOWS_FUTURE = {"wfh": True, "casual": True, "sick": False, "compoff": True, "additional": True}
 
 #: §6.4 — the states that draw down an allowance. Everything else (rejected,
 #: withdrawn, released, unrecognised) returns it.
@@ -193,6 +207,33 @@ def check_timing(
             # admin has configured yet.
             return f"Bookings cannot be made more than {max_future_days} days ahead."
 
+    return None
+
+
+def additional_stands_in_for(day: date, today: date) -> str:
+    """FR-BOOK-13 — the allowance Additional leave is the fallback for.
+
+    Booked for today it stands in for sick leave (the only leave allowed
+    same-day); booked ahead it stands in for casual leave.
+    """
+    return "sick" if day == today else "casual"
+
+
+def check_additional(
+    day: date, duration: Decimal, *, fallback_remaining: Decimal, today: date
+) -> str | None:
+    """FR-BOOK-13 — Additional leave only once the matching allowance is used up.
+
+    "Used up" means it cannot cover this booking: half a day left still lets a
+    full day through, since the half day alone would leave the other half
+    unrecorded.
+    """
+    if fallback_remaining >= duration:
+        fallback = CATEGORY_LABELS[additional_stands_in_for(day, today)]
+        return (
+            f"You still have {_days(fallback_remaining)} of {fallback.lower()} left. "
+            f"Book {fallback.lower()} instead; Additional leave is for when it is used up."
+        )
     return None
 
 

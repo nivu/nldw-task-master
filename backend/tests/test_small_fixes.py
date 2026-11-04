@@ -116,7 +116,7 @@ class TestToolDescriptions:
     @pytest.mark.parametrize("name", ["book_leave", "backfill_leave"])
     def test_the_reason_rule_is_stated(self, name):
         (tool,) = [t for t in asyncio.run(server.mcp.list_tools()) if t.name == name]
-        assert "required for casual and sick" in tool.description
+        assert "required for casual, sick and additional" in tool.description
         assert '"full" | "half"' in tool.description
 
     @pytest.mark.parametrize("name", ["team_compoff", "decide_compoff"])

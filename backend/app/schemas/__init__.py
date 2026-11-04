@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, field_validator
 
-Category = Literal["wfh", "casual", "sick", "compoff"]
+Category = Literal["wfh", "casual", "sick", "compoff", "additional"]
 Role = Literal["user", "lead", "manager", "admin"]
 Status = Literal["pending", "approved", "rejected", "withdrawn", "released", "unrecognised"]
 

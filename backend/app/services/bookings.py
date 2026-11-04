@@ -89,6 +89,7 @@ def create_or_replace(
     from app.services.holidays import holiday_on_for_user
 
     holiday = holiday_on_for_user(user_id, day)
+    additional_refusal: str | None = None
     if category == "compoff":
         # Spec 006 FR-COMP-03 — credits, not an allowance. Checked here with
         # comp-off wording; the generic allowance check below is then passed
@@ -99,6 +100,27 @@ def create_or_replace(
                 f"You have {have} day(s) of comp-off available and this needs {duration}. "
                 "Claim comp-off for a weekend or holiday you worked, and ask your lead to approve it."
             )
+        remaining = duration
+        configured = True
+    elif category == "additional":
+        # FR-BOOK-13 — no allowance of its own; allowed only once the
+        # allowance it stands in for cannot cover the day. A booking on the
+        # same day in that category is about to be replaced, so its cost
+        # counts as available.
+        fallback = rules.additional_stands_in_for(day, today)
+        fallback_balance = balances.balances_for(
+            user_id,
+            period_of(day),
+            exclude_booking_duration=(
+                Decimal(str(existing["duration"]))
+                if existing and existing["category"] == fallback
+                else None
+            ),
+            exclude_category=fallback,
+        )[fallback]
+        additional_refusal = rules.check_additional(
+            day, duration, fallback_remaining=fallback_balance.remaining, today=today
+        )
         remaining = duration
         configured = True
     else:
@@ -121,6 +143,8 @@ def create_or_replace(
     )
     if refusal:
         raise BookingRefused(refusal)
+    if additional_refusal:
+        raise BookingRefused(additional_refusal)
 
     if existing:
         db.update_booking(
@@ -590,7 +614,7 @@ def _convert_absence(
     user_id = existing["user_id"]
     if category == "compoff":
         _require_compoff_credits(user_id, duration, today)
-    elif check_allowance:
+    elif check_allowance and category in rules.ALLOWANCE_CATEGORIES:
         balance = balances.balances_for(
             user_id,
             period_of(date.fromisoformat(existing["date"])),

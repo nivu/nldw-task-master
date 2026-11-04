@@ -200,7 +200,7 @@ its primary users. The gate stays *"an admin created your account"*
 |---|---|
 | FR-BOOK-01 | A user MUST be able to book a day as one of: work from home, casual leave, sick leave. |
 | FR-BOOK-02 | A booking MUST carry a duration of either full day (1.0) or half day (0.5). The API also accepts `"full"` / `"half"` (any case, or `"full day"` / `"half day"`) as synonyms, for booking and backfill alike. *Amended 10 October 2026.* |
-| FR-BOOK-03 | A booking MUST capture a free-text reason. A reason MUST be required for casual and sick leave. |
+| FR-BOOK-03 | A booking MUST capture a free-text reason. A reason MUST be required for casual and sick leave, and for additional leave (FR-BOOK-13). *Amended 5 November 2026.* |
 | FR-BOOK-04 | The system MUST reject a booking on a declared holiday or a non-working day. |
 | FR-BOOK-05 | The system MUST reject a booking that would take the user's remaining allowance for that category below zero. |
 | FR-BOOK-06 | A day MUST hold at most one booking. Changing the category replaces the existing booking. |
@@ -210,6 +210,7 @@ its primary users. The gate stays *"an admin created your account"*
 | FR-BOOK-10 | Sick leave MUST be bookable for the current day. |
 | FR-BOOK-11 | Removing a booking MUST return its cost to the user's remaining allowance for that period. |
 | FR-BOOK-12 | The booking form MUST show the user's remaining allowance for the selected category before they confirm. |
+| FR-BOOK-13 | A user MUST be able to book **Additional leave** once their own leave is used up: for today once sick leave cannot cover the day, for a later day once casual leave cannot. It has no allowance, is refused while the matching allowance can still cover the day, and otherwise follows the booking rules (approval, lock, half days, reason). The portal MUST NOT call it unpaid or loss of pay; the company treats these days as loss of pay outside the portal. *Added 5 November 2026.* |
 
 ### 5.4 Allowances and balances — FR-BAL
 
@@ -326,6 +327,7 @@ correct their own mistake and no ability at all to reach a genuine record.
 | Work from home | Yes | Yes | Yes | Optional |
 | Casual leave | Yes | No | Yes | Yes |
 | Sick leave | No | Yes | Yes | Yes |
+| Additional leave (FR-BOOK-13) | Yes, once casual is used up | Yes, once sick is used up | Yes | Yes |
 
 Casual leave is planned — a family event, an anniversary, an appointment. Sick
 leave is by nature unplanned and is marked the morning it happens. The system
@@ -528,7 +530,7 @@ small diff — never a rebuild. Nothing here is silently decided.
 | Q-04 | Fate of a pending booking that reaches its own date un-actioned. | **Auto-approve at lock.** A nightly sweep at 00:05 IST promotes them, writing `system` as the actor in the audit log. | `app/tasks/lock_sweep.py` | Devansh |
 | Q-05 | Who approves a lead's own leave, and who covers an absent lead? | **A lead's leave goes to an admin.** Concretely: a booking's approver is `profiles.lead_id`, and where that is null it falls to any admin. *No provisional answer existed in the source spec — this is our default.* | `app/domain/approval.py::approver_for` | Devansh |
 | Q-06 | Does the lead view show reasons, or only categories? | **Category only** in the team list; the reason is returned only on the approval screen, and only to the assigned lead or an admin. | `app/api/team.py` omits `reason` | Devansh |
-| Q-07 | Is a reason mandatory for work from home? | **Optional** for WFH; required for casual and sick. | `app/domain/rules.py::REASON_REQUIRED` | Devansh |
+| Q-07 | Is a reason mandatory for work from home? | **Optional** for WFH; required for casual and sick (and additional leave, FR-BOOK-13). | `app/domain/rules.py::REASON_REQUIRED` | Devansh |
 | Q-08 | Is booking beyond the allowance blocked, or allowed and flagged? | **Blocked.** The safer default and the easier one to relax later. | `app_settings.allow_excess_booking` (false) | Devansh |
 | Q-09 | Do consecutive leave days spanning a weekend consume the weekend? (The "sandwich" rule.) | **No** — weekends never consume. The setting exists and defaults to `false`; **the `true` branch is deliberately not implemented** (YAGNI — nobody has asked for it yet). Turning it on requires a small diff, not a migration. *No provisional answer existed in the source spec — this is our default.* | `app_settings.sandwich_rule` | Devansh |
 | Q-10 | Confirm project names for the eventual project dropdown. | Roadmap only. Not built. | — | Devansh |
