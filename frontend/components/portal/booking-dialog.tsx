@@ -30,7 +30,7 @@ import { CATEGORY_LABEL } from "@/lib/api/types";
  * marking leave must "require no arithmetic from the person doing it".
  */
 
-const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff"];
+const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff", "additional"];
 
 export function BookingDialog({
   day,
@@ -63,11 +63,13 @@ export function BookingDialog({
   // not the same as having used it up.
   const notSetUp =
     category !== "compoff" &&
+    category !== "additional" &&
     balances.find((b) => b.category === category)?.configured === false;
-  // Q-07 — a reason is required for casual and sick, optional for WFH and
-  // comp-off. The server enforces this; the form only mirrors it so the
-  // button state is honest before anyone presses it.
-  const reasonRequired = category === "casual" || category === "sick";
+  // Q-07 — a reason is required for casual, sick and additional leave,
+  // optional for WFH and comp-off. The server enforces this; the form only
+  // mirrors it so the button state is honest before anyone presses it.
+  const reasonRequired =
+    category === "casual" || category === "sick" || category === "additional";
   const canSubmit = !busy && (!reasonRequired || reason.trim().length > 0);
 
   async function save() {
@@ -177,8 +179,13 @@ export function BookingDialog({
             </div>
           </div>
 
-          {/* FR-BOOK-12 */}
-          {notSetUp ? (
+          {/* FR-BOOK-12; FR-BOOK-13 — additional leave has no allowance of its own */}
+          {category === "additional" ? (
+            <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+              For when your own leave is used up: sick leave for today, casual leave for a
+              later day.
+            </p>
+          ) : notSetUp ? (
             <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
               {CATEGORY_LABEL[category]} hasn&apos;t been set up yet — ask an admin.
             </p>

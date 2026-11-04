@@ -163,12 +163,13 @@ export default function TeamPage() {
         <div className="rounded-md bg-muted p-3 text-sm">{notice}</div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-7">
         <Stat label="Present" value={teamDay.summary.present} />
         <Stat label="WFH" value={teamDay.summary.wfh} />
         <Stat label="Casual" value={teamDay.summary.casual} />
         <Stat label="Sick" value={teamDay.summary.sick} />
         <Stat label="Comp-off" value={teamDay.summary.compoff} />
+        <Stat label="Additional" value={teamDay.summary.additional} />
         <Stat label="Unrecognised" value={teamDay.summary.unrecognised} />
       </div>
 

@@ -17,6 +17,7 @@ const RING_COLOUR: Record<Category, string> = {
   casual: "#8b5cf6",
   sick: "#f43f5e",
   compoff: "#10b981",
+  additional: "#f59e0b",
 };
 import { getMyCompoff } from "@/lib/api/portal";
 import { CATEGORY_LABEL, CATEGORY_SHORT } from "@/lib/api/types";
@@ -40,6 +41,7 @@ const CATEGORY_STYLE: Record<Category, string> = {
   casual: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200",
   sick: "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200",
   compoff: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
+  additional: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
 };
 
 export default function CalendarPage() {

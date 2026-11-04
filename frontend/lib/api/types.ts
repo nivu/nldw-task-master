@@ -12,7 +12,7 @@
  * owns the ledger.
  */
 
-export type Category = "wfh" | "casual" | "sick" | "compoff";
+export type Category = "wfh" | "casual" | "sick" | "compoff" | "additional";
 /** Spec 003 FR-ROLE-01 — `manager` sits between lead and admin. */
 export type Role = "user" | "lead" | "manager" | "admin";
 export type BookingStatus =
@@ -166,6 +166,7 @@ export interface TeamDay {
     casual: number;
     sick: number;
     compoff: number;
+    additional: number;
     unrecognised: number;
   };
 }
@@ -307,6 +308,8 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   sick: "Sick leave",
   /** Spec 006 — draws on earned credits, not a monthly allowance. */
   compoff: "Comp-off",
+  /** Spec 001 FR-BOOK-13 — once the person's own allowance is used up. */
+  additional: "Additional leave",
 };
 
 export const CATEGORY_SHORT: Record<Category, string> = {
@@ -314,6 +317,7 @@ export const CATEGORY_SHORT: Record<Category, string> = {
   casual: "Casual",
   sick: "Sick",
   compoff: "Comp-off",
+  additional: "Additional",
 };
 
 // ---------------------------------------------------------------------------

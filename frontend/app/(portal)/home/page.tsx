@@ -23,7 +23,13 @@ import { cn } from "@/lib/utils";
  * page itself does none. Sorted by name, never by any number.
  */
 
-const RING: Record<Category, string> = { wfh: "#0ea5e9", casual: "#8b5cf6", sick: "#f43f5e", compoff: "#10b981" };
+const RING: Record<Category, string> = {
+  wfh: "#0ea5e9",
+  casual: "#8b5cf6",
+  sick: "#f43f5e",
+  compoff: "#10b981",
+  additional: "#f59e0b",
+};
 const RAG: Record<Rag, string> = { green: "bg-emerald-500", amber: "bg-amber-500", red: "bg-red-500" };
 
 export default function HomePage() {

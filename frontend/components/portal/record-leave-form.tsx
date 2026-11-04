@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import type { Category } from "@/lib/api/types";
 import { CATEGORY_LABEL } from "@/lib/api/types";
 
-const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff"];
+const CATEGORIES: Category[] = ["wfh", "casual", "sick", "compoff", "additional"];
 
 export interface RecordLeaveInput {
   category: Category;
@@ -40,7 +40,8 @@ export function RecordLeaveForm({
   const [busy, setBusy] = useState(false);
 
   // Q-07 — casual and sick need the person's reason.
-  const reasonRequired = form.category === "casual" || form.category === "sick";
+  const reasonRequired =
+    form.category === "casual" || form.category === "sick" || form.category === "additional";
   const ready = form.note.trim() && (!reasonRequired || form.reason.trim()) && !busy;
 
   return (

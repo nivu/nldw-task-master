@@ -74,7 +74,7 @@ class TestDayStatus:
             "people": 6,
             "present": 1,
             "wfh": 1,
-            "leave": {"casual": 1, "sick": 1, "compoff": 1},
+            "leave": {"casual": 1, "sick": 1, "compoff": 1, "additional": 0},
             "unrecognised": 1,
         }
 

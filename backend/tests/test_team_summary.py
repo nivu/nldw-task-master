@@ -19,6 +19,7 @@ class TestSummarise:
             "casual": 0,
             "sick": 0,
             "compoff": 0,
+            "additional": 0,
             "unrecognised": 0,
         }
 
@@ -37,6 +38,7 @@ class TestSummarise:
             "casual": 2,
             "sick": 1,
             "compoff": 1,
+            "additional": 1,
             "unrecognised": 1,
         }
 

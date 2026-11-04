@@ -21,6 +21,7 @@ const HISTORY_COLOUR: Record<Category, string> = {
   casual: "#8b5cf6",
   sick: "#f43f5e",
   compoff: "#10b981",
+  additional: "#f59e0b",
 };
 
 /**
