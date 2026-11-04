@@ -17,6 +17,7 @@ from app.domain import holidays as holiday_rules
 from app.domain import timesheets as rules
 from app.domain.audit import actor_name
 from app.domain.calendar import period_of, today_in_company_tz
+from app.domain.rules import ALLOWANCE_CATEGORIES
 from app.schemas import (
     AbsenceConvertIn,
     AllocationIn,
@@ -863,6 +864,17 @@ def update_setting(key: str, payload: SettingUpdate, admin: AdminDep) -> dict:
                 422, "invoice_payment_terms_days must be a whole number of days from 0 to 365."
             )
         value = int(value)
+    if key == "no_carry_forward_categories":
+        # `001` FR-BAL-10. A list of allowance categories; anything else would
+        # be ignored by the reader, leaving an admin believing a category lapses
+        # when it still carries forward.
+        if not isinstance(value, list) or not all(item in ALLOWANCE_CATEGORIES for item in value):
+            raise ProblemDetail(
+                422,
+                "no_carry_forward_categories must be a list drawn from "
+                f'{list(ALLOWANCE_CATEGORIES)}, e.g. ["wfh", "sick"].',
+            )
+        value = sorted(set(value))
     if key == "tasks_default_level":
         # `008` FR-TASK-ROLL-01, TP-11: the phase of tasks switched on for
         # everyone without their own level, 0 (off) to 4.

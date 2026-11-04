@@ -29,6 +29,7 @@ _fetched_at: float = 0.0
 #: conservative values are the ones repeated here.
 FALLBACKS: dict[str, Any] = {
     "carry_forward_policy": "rolling",
+    "no_carry_forward_categories": ["wfh", "sick"],
     "allow_excess_booking": False,
     "sandwich_rule": False,
     "auto_approve_at_lock": True,
@@ -88,6 +89,12 @@ def invalidate() -> None:
 def carry_forward_policy() -> str:
     """Q-02 — `rolling` or `pooling`."""
     return str(get("carry_forward_policy", "rolling"))
+
+
+def no_carry_forward_categories() -> frozenset[str]:
+    """FR-BAL-10 — allowance categories whose unused days lapse at month end."""
+    value = get("no_carry_forward_categories", [])
+    return frozenset(value) if isinstance(value, list) else frozenset()
 
 
 def allow_excess_booking() -> bool:
